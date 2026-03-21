@@ -33,6 +33,24 @@ Gaps and product requirements to address in future phases.
 - [ ] **Workload modeling** — Estimate agent parallelism, optimal team size, cost projections.
 - [ ] **Delegation intelligence** — Recommend which tasks to delegate to agents vs. keep for humans.
 
+## Phase 6: gctl-board (Effect-TS Kanban)
+
+- [ ] **Effect-TS project setup** — Initialize packages/gctl-board/ with Effect, vitest, DuckDB bindings. Decide Bun vs Node.
+- [ ] **Core issue CRUD** — Create, read, update, delete issues with Schema validation. Status transitions with WIP limit enforcement.
+- [ ] **Dependency resolver** — DAG-based blocking/unblocking with cycle detection. Auto-unblock when dependencies complete.
+- [ ] **Event sourcing** — Append-only event log for all issue mutations. Enables audit trail and activity feeds.
+- [ ] **Agent coordination protocol** — Task claiming with device-level assignment. Prevent multiple agents claiming same issue. Agent-initiated decomposition.
+- [ ] **OTel auto-linkage** — Subscribe to span events, match to issues via branch name, commit message, or explicit link. Accumulate cost/tokens on issues.
+- [ ] **CLI bridge** — `gctl board *` commands in Rust that delegate to TS service via HTTP or subprocess spawn.
+- [ ] **Board context export** — `gctl board context` generates markdown summary for agent context windows.
+- [ ] **Linear sync** — Pull issues from Linear API, map statuses, sync back agent execution data as comments.
+- [ ] **GitHub Issues sync** — Pull issues from GitHub, map labels/milestones, push agent summaries.
+- [ ] **Kanban web view** — Local web dashboard showing board columns, drag-and-drop (HTMX or React + Effect Platform).
+- [ ] **Sub-issue rollup** — Parent issue auto-completes when all sub-issues are done. Cost/token rollup from children.
+- [ ] **Agent queue board** — Dedicated board view showing only agent-assignable issues, sorted by priority/unblocked status.
+- [ ] **WIP limit policies** — Configurable per-column WIP limits. Effect-based enforcement that returns typed errors.
+- [ ] **Acceptance criteria checking** — Machine-verifiable criteria (test pass, lint clean, etc.) that agents can self-evaluate.
+
 ## Cross-Cutting Concerns
 
 - [ ] **Config file support** — Load from `~/.config/gctl/config.toml` with proper precedence (env > file > defaults).

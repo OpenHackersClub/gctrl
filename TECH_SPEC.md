@@ -365,7 +365,147 @@ Output formats: `table`, `json`, `markdown`, `csv`
 - [ ] Forecasting and burndown
 - [ ] Sprint planning assistance
 
-## 10. Testing Strategy
+### Phase 6: gctl-board (Effect-TS)
+- [ ] Effect-TS project setup (packages/gctl-board/)
+- [ ] Core schemas: Issue, IssueEvent, Comment, Board, Project
+- [ ] BoardService with CRUD, status transitions, WIP limits
+- [ ] DependencyResolver with cycle detection
+- [ ] DuckDB storage for board tables (issues, events, comments)
+- [ ] HTTP API (Effect Platform HttpApi)
+- [ ] CLI bridge: `gctl board *` commands delegate to TS service
+- [ ] OTel integration: auto-link sessions to issues
+- [ ] Agent coordination: claim, decompose, block/unblock, handoff
+- [ ] External sync: Linear pull, GitHub Issues pull
+
+## 10. gctl-board Architecture (Effect-TS)
+
+### 10.1. Package Structure
+
+```
+packages/gctl-board/
+├── package.json
+├── tsconfig.json
+├── src/
+│   ├── index.ts                 # Entry point
+│   ├── schema/
+│   │   ├── Issue.ts             # Issue, IssueStatus, Priority schemas
+│   │   ├── IssueEvent.ts        # Event log schema
+│   │   ├── Comment.ts           # Comment schema
+│   │   ├── Board.ts             # Board, KanbanView schemas
+│   │   ├── Project.ts           # Project schema
+│   │   └── Assignee.ts          # Assignee (human | agent) schema
+│   ├── services/
+│   │   ├── BoardService.ts      # Core CRUD + status transitions
+│   │   ├── DependencyResolver.ts # DAG-based blocking/unblocking
+│   │   ├── EventLog.ts          # Append-only event log
+│   │   └── OtelBridge.ts        # Session-issue auto-linkage
+│   ├── storage/
+│   │   ├── BoardStore.ts        # DuckDB storage layer
+│   │   └── schema.sql           # Board-specific DuckDB tables
+│   ├── api/
+│   │   ├── routes.ts            # Effect HttpApi route definitions
+│   │   └── server.ts            # HTTP server setup
+│   └── cli/
+│       └── bridge.ts            # CLI argument handler (called from Rust)
+├── test/
+│   ├── BoardService.test.ts
+│   ├── DependencyResolver.test.ts
+│   └── api.test.ts
+└── vitest.config.ts
+```
+
+### 10.2. DuckDB Tables (Board)
+
+```sql
+CREATE TABLE IF NOT EXISTS board_projects (
+    id          VARCHAR PRIMARY KEY,
+    name        VARCHAR NOT NULL,
+    key         VARCHAR NOT NULL UNIQUE,
+    counter     INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS board_issues (
+    id              VARCHAR PRIMARY KEY,
+    project_id      VARCHAR NOT NULL,
+    title           VARCHAR NOT NULL,
+    description     VARCHAR,
+    status          VARCHAR NOT NULL DEFAULT 'backlog',
+    priority        VARCHAR NOT NULL DEFAULT 'none',
+    assignee_id     VARCHAR,
+    assignee_name   VARCHAR,
+    assignee_type   VARCHAR,  -- 'human' | 'agent'
+    labels          JSON DEFAULT '[]',
+    parent_id       VARCHAR,
+    estimate        DOUBLE,
+    due_date        VARCHAR,
+    created_at      VARCHAR NOT NULL,
+    updated_at      VARCHAR NOT NULL,
+    created_by_id   VARCHAR NOT NULL,
+    created_by_name VARCHAR NOT NULL,
+    created_by_type VARCHAR NOT NULL,
+    blocked_by      JSON DEFAULT '[]',
+    blocking        JSON DEFAULT '[]',
+    agent_notes     VARCHAR,
+    acceptance_criteria JSON DEFAULT '[]',
+    session_ids     JSON DEFAULT '[]',
+    total_cost_usd  DOUBLE DEFAULT 0.0,
+    total_tokens    BIGINT DEFAULT 0,
+    pr_numbers      JSON DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS board_events (
+    id          VARCHAR PRIMARY KEY,
+    issue_id    VARCHAR NOT NULL,
+    type        VARCHAR NOT NULL,
+    actor_id    VARCHAR NOT NULL,
+    actor_name  VARCHAR NOT NULL,
+    actor_type  VARCHAR NOT NULL,
+    timestamp   VARCHAR NOT NULL,
+    data        JSON
+);
+
+CREATE TABLE IF NOT EXISTS board_comments (
+    id          VARCHAR PRIMARY KEY,
+    issue_id    VARCHAR NOT NULL,
+    author_id   VARCHAR NOT NULL,
+    author_name VARCHAR NOT NULL,
+    author_type VARCHAR NOT NULL,
+    body        VARCHAR NOT NULL,
+    created_at  VARCHAR NOT NULL,
+    session_id  VARCHAR
+);
+
+CREATE INDEX IF NOT EXISTS idx_issues_project ON board_issues(project_id);
+CREATE INDEX IF NOT EXISTS idx_issues_status ON board_issues(status);
+CREATE INDEX IF NOT EXISTS idx_issues_assignee ON board_issues(assignee_id);
+CREATE INDEX IF NOT EXISTS idx_issues_parent ON board_issues(parent_id);
+CREATE INDEX IF NOT EXISTS idx_events_issue ON board_events(issue_id);
+CREATE INDEX IF NOT EXISTS idx_comments_issue ON board_comments(issue_id);
+```
+
+### 10.3. Integration with Rust Daemon
+
+The Rust CLI delegates board commands to the TS service:
+
+```
+gctl board issue list --status todo
+  → Rust CLI parses args
+  → HTTP GET http://localhost:4318/api/board/issues?status=todo
+  → TS service queries DuckDB, returns JSON
+  → Rust CLI formats output (table/json)
+```
+
+Or for offline/no-server mode, Rust can spawn a short-lived TS process:
+
+```
+gctl board issue list --status todo
+  → Rust CLI detects server not running
+  → Spawns: bun run packages/gctl-board/src/cli/bridge.ts issue list --status todo
+  → TS process opens DuckDB, runs query, outputs JSON
+  → Rust CLI formats output
+```
+
+## 11. Testing Strategy
 
 - **Unit tests**: Per-crate, covering type conversions, policy logic, config parsing
 - **Integration tests**: DuckDB round-trip (insert → query), OTel endpoint acceptance, proxy traffic logging

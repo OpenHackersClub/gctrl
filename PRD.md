@@ -864,3 +864,627 @@ GroundCtrl operates at the **protocol level** (HTTP proxy + OTLP + CLI gateway),
 
 The unique value proposition: **GroundCtrl is the only tool that connects what was planned (issues) → what was executed (agent traces) → what was delivered (PRs/commits) → what it cost (tokens/$) in a single data pipeline.** No other tool in the market stitches these layers together for developer+agent teams.
 
+## 13. Pillar 6: gctl-board — Agent-Native Issue Tracking & Kanban
+
+> **The missing piece: GroundCtrl knows what agents *did* (traces), but not what they *should do* (tasks). External issue trackers (Linear, GitHub Issues) are designed for humans — they require browser UIs, OAuth flows, and API tokens. Agents need a task system that speaks their language: structured data, local-first, CLI-native, and coordination-aware.**
+>
+> gctl-board is a simple Linear-inspired kanban and issue tracking system built with **Effect-TS**, embedded directly in the GroundCtrl platform. It bridges the gap between "project management" and "agent coordination" — agents can create, claim, update, and close issues through a type-safe API without leaving the terminal.
+
+### 13.1. Why Build This?
+
+| Problem | External Trackers | gctl-board |
+|---------|------------------|------------|
+| **Agent access** | Requires OAuth, API tokens, rate-limited REST APIs | Local CLI + HTTP API, zero auth for local agents |
+| **Coordination** | Agents can't see what other agents are working on without API calls | Shared local state — agents query the board directly |
+| **Task decomposition** | Humans break down issues; agents work on what they're given | Agents can decompose parent issues into sub-tasks and self-assign |
+| **Real-time status** | Polling webhooks or API endpoints | Event-driven via Effect-TS streams, instant state updates |
+| **Trace linkage** | Manual: paste trace IDs into issue comments | Automatic: sessions reference issue IDs, issues show execution profiles |
+| **Offline** | No internet = no issue tracker | Fully local DuckDB, works offline, syncs when connected |
+| **Cost attribution** | Separate billing spreadsheet | Issues automatically accumulate cost from linked agent sessions |
+
+### 13.2. Data Model
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                     Workspace                           │
+│                                                         │
+│  ┌───────────────────────────────────────────────┐     │
+│  │                   Project                      │     │
+│  │                                                │     │
+│  │  ┌─────────┐  ┌─────────┐  ┌──────────────┐  │     │
+│  │  │  Board   │  │  Board   │  │    Board     │  │     │
+│  │  │ "Sprint" │  │"Backlog" │  │ "Agent Queue"│  │     │
+│  │  └────┬─────┘  └────┬────┘  └──────┬───────┘  │     │
+│  │       │              │              │          │     │
+│  │  ┌────▼────────────────────────────▼────────┐ │     │
+│  │  │              Issues                       │ │     │
+│  │  │                                           │ │     │
+│  │  │  ┌───────┐  ┌───────┐  ┌──────────────┐ │ │     │
+│  │  │  │ Issue │  │ Issue │  │    Issue      │ │ │     │
+│  │  │  │       │  │       │  │  ┌─────────┐  │ │ │     │
+│  │  │  │       │  │       │  │  │Sub-issue│  │ │ │     │
+│  │  │  │       │  │       │  │  │Sub-issue│  │ │ │     │
+│  │  │  └───────┘  └───────┘  │  └─────────┘  │ │ │     │
+│  │  │                        └──────────────┘ │ │     │
+│  │  └──────────────────────────────────────────┘ │     │
+│  └───────────────────────────────────────────────┘     │
+└─────────────────────────────────────────────────────────┘
+```
+
+#### Core Entities (Effect-TS Schema)
+
+```typescript
+import { Schema } from "effect"
+
+// --- Identifiers ---
+const IssueId = Schema.String.pipe(Schema.brand("IssueId"))
+const ProjectId = Schema.String.pipe(Schema.brand("ProjectId"))
+const BoardId = Schema.String.pipe(Schema.brand("BoardId"))
+const LabelId = Schema.String.pipe(Schema.brand("LabelId"))
+
+// --- Issue Status (kanban columns) ---
+const IssueStatus = Schema.Literal(
+  "backlog",
+  "todo",
+  "in_progress",
+  "in_review",
+  "done",
+  "cancelled"
+)
+
+// --- Priority ---
+const Priority = Schema.Literal("urgent", "high", "medium", "low", "none")
+
+// --- Assignee can be human or agent ---
+const AssigneeType = Schema.Literal("human", "agent")
+
+const Assignee = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  type: AssigneeType,
+  deviceId: Schema.optional(Schema.String),  // for agents: which device they run on
+})
+
+// --- Issue ---
+const Issue = Schema.Struct({
+  id: IssueId,
+  projectId: ProjectId,
+  title: Schema.String,
+  description: Schema.optional(Schema.String),
+  status: IssueStatus,
+  priority: Priority,
+  assignee: Schema.optional(Assignee),
+  labels: Schema.Array(Schema.String),
+  parentId: Schema.optional(IssueId),           // sub-issue support
+  estimate: Schema.optional(Schema.Number),      // story points or hours
+  dueDate: Schema.optional(Schema.DateFromString),
+  createdAt: Schema.DateFromString,
+  updatedAt: Schema.DateFromString,
+  createdBy: Assignee,                           // who created it (human or agent)
+
+  // --- Execution linkage (auto-populated from OTel) ---
+  sessionIds: Schema.Array(Schema.String),       // linked agent sessions
+  totalCostUsd: Schema.Number,                   // accumulated from sessions
+  totalTokens: Schema.Number,                    // accumulated from sessions
+  prNumbers: Schema.Array(Schema.Number),        // linked PRs
+
+  // --- Agent coordination ---
+  blockedBy: Schema.Array(IssueId),              // dependency graph
+  blocking: Schema.Array(IssueId),
+  agentNotes: Schema.optional(Schema.String),    // agent-written context/findings
+  acceptanceCriteria: Schema.Array(Schema.String), // machine-checkable criteria
+})
+
+// --- Issue Event (append-only log) ---
+const IssueEventType = Schema.Literal(
+  "created",
+  "status_changed",
+  "assigned",
+  "unassigned",
+  "comment_added",
+  "label_added",
+  "label_removed",
+  "linked_session",
+  "linked_pr",
+  "estimate_changed",
+  "priority_changed",
+  "decomposed",       // parent issue split into sub-issues
+  "blocked",
+  "unblocked"
+)
+
+const IssueEvent = Schema.Struct({
+  id: Schema.String,
+  issueId: IssueId,
+  type: IssueEventType,
+  actor: Assignee,     // who triggered this (human or agent)
+  timestamp: Schema.DateFromString,
+  data: Schema.Unknown, // event-specific payload
+})
+
+// --- Comment ---
+const Comment = Schema.Struct({
+  id: Schema.String,
+  issueId: IssueId,
+  author: Assignee,
+  body: Schema.String,
+  createdAt: Schema.DateFromString,
+  sessionId: Schema.optional(Schema.String), // if posted during an agent session
+})
+
+// --- Board (kanban view) ---
+const Board = Schema.Struct({
+  id: BoardId,
+  projectId: ProjectId,
+  name: Schema.String,
+  columns: Schema.Array(IssueStatus),
+  filter: Schema.optional(Schema.String), // label/assignee filter expression
+  wipLimits: Schema.Record({ key: Schema.String, value: Schema.Number }),
+})
+
+// --- Project ---
+const Project = Schema.Struct({
+  id: ProjectId,
+  name: Schema.String,
+  key: Schema.String,             // e.g. "BACK" → issues are BACK-1, BACK-2
+  boards: Schema.Array(BoardId),
+  defaultBoard: BoardId,
+  autoIncrementCounter: Schema.Number,
+})
+```
+
+### 13.3. Agent Coordination Protocol
+
+The key innovation: gctl-board is designed for **multi-agent coordination**, not just human project management. Agents can autonomously:
+
+#### Task Claiming
+
+```
+# Agent checks what's available:
+gctl board issues --status todo --label "agent-ok" --no-assignee
+
+# Agent claims a task:
+gctl board assign BACK-42 --agent "claude-code" --device "alice-macbook"
+
+# Other agents see it's taken:
+gctl board issues --status in_progress --assignee-type agent
+→ BACK-42  "Add rate limiting"  claude-code@alice-macbook  $0.00  0 spans
+```
+
+#### Task Decomposition
+
+```
+# Agent decomposes a complex issue into sub-tasks:
+gctl board decompose BACK-42 \
+  --sub "Write rate limit middleware" \
+  --sub "Add Redis counter store" \
+  --sub "Write integration tests" \
+  --sub "Update API docs"
+
+→ Created:
+  BACK-42-1  "Write rate limit middleware"    [todo]
+  BACK-42-2  "Add Redis counter store"       [todo]
+  BACK-42-3  "Write integration tests"       [todo]  blocked-by: BACK-42-1
+  BACK-42-4  "Update API docs"               [todo]  blocked-by: BACK-42-1
+```
+
+#### Status Reporting
+
+```
+# Agent updates status as it works:
+gctl board move BACK-42-1 in_progress
+gctl board note BACK-42-1 "Using tower middleware. Found existing rate limit crate."
+
+# Agent marks done with evidence:
+gctl board move BACK-42-1 done \
+  --note "Implemented in src/middleware/rate_limit.rs. Tests passing." \
+  --link-session sess-4821 \
+  --link-pr 891
+```
+
+#### Blocking & Dependencies
+
+```
+# Agent discovers a blocker:
+gctl board block BACK-42-2 --by BACK-42-1 \
+  --reason "Need middleware interface before implementing store"
+
+# Agent checks if its task is unblocked:
+gctl board check BACK-42-3
+→ BLOCKED by BACK-42-1 (status: in_progress, assignee: claude-code@alice-macbook)
+
+# Automatic unblock when dependency completes:
+gctl board move BACK-42-1 done
+→ BACK-42-3 automatically moved from blocked → todo
+→ BACK-42-4 automatically moved from blocked → todo
+```
+
+#### Multi-Agent Handoff
+
+```
+# Agent can't complete a task (needs human review):
+gctl board move BACK-42-1 in_review \
+  --note "Implementation complete. Needs human review for security implications." \
+  --request-review "alice"
+
+# Agent hands off to another agent:
+gctl board reassign BACK-42-4 --agent "docs-bot" \
+  --note "API endpoints finalized. Docs bot can generate from OpenAPI spec."
+```
+
+### 13.4. Effect-TS Service Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   gctl-board (Effect-TS)                     │
+│                                                             │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │                  HTTP API Layer (Effect Platform)      │  │
+│  │  POST /api/board/issues          GET /api/board/kanban│  │
+│  │  PATCH /api/board/issues/:id     GET /api/board/feed  │  │
+│  │  POST /api/board/issues/:id/move                      │  │
+│  │  POST /api/board/issues/:id/decompose                 │  │
+│  └────────────────────┬─────────────────────────────────┘  │
+│                       │                                     │
+│  ┌────────────────────▼─────────────────────────────────┐  │
+│  │              Board Service (Effect.Service)           │  │
+│  │                                                       │  │
+│  │  createIssue    moveIssue    assignIssue              │  │
+│  │  decomposeIssue blockIssue   listIssues               │  │
+│  │  getKanban      addComment   linkSession              │  │
+│  │  getIssueFeed   checkBlocked resolveBlocked           │  │
+│  └───────┬──────────────┬───────────────┬───────────────┘  │
+│          │              │               │                   │
+│  ┌───────▼──────┐ ┌────▼──────┐ ┌──────▼────────────────┐ │
+│  │  EventLog    │ │ Dependency│ │ OTel Integration       │ │
+│  │  Service     │ │ Resolver  │ │ (session/cost linkage) │ │
+│  │  (append-    │ │ (DAG,     │ │                        │ │
+│  │   only log)  │ │  cycle    │ │ Subscribes to span     │ │
+│  │              │ │  detect)  │ │ events, auto-links     │ │
+│  └───────┬──────┘ └────┬──────┘ │ sessions to issues     │ │
+│          │              │        └──────────┬─────────────┘ │
+│          │              │                   │               │
+│  ┌───────▼──────────────▼───────────────────▼───────────┐  │
+│  │              Storage Layer                            │  │
+│  │  DuckDB (issues, events, comments, boards)            │  │
+│  │  ──── or ────                                         │  │
+│  │  SQLite via Effect-SQL (for lighter deployments)      │  │
+│  └──────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### Key Effect-TS Patterns
+
+```typescript
+import { Effect, Layer, Context, Stream, Schema, pipe } from "effect"
+
+// --- Service definition ---
+class BoardService extends Context.Tag("BoardService")<
+  BoardService,
+  {
+    readonly createIssue: (
+      input: typeof CreateIssueInput.Type
+    ) => Effect.Effect<typeof Issue.Type, BoardError>
+
+    readonly moveIssue: (
+      issueId: typeof IssueId.Type,
+      newStatus: typeof IssueStatus.Type,
+      note?: string
+    ) => Effect.Effect<typeof Issue.Type, BoardError | IssueNotFoundError>
+
+    readonly assignIssue: (
+      issueId: typeof IssueId.Type,
+      assignee: typeof Assignee.Type
+    ) => Effect.Effect<typeof Issue.Type, BoardError | IssueNotFoundError>
+
+    readonly decomposeIssue: (
+      parentId: typeof IssueId.Type,
+      subTasks: ReadonlyArray<string>
+    ) => Effect.Effect<ReadonlyArray<typeof Issue.Type>, BoardError>
+
+    readonly listIssues: (
+      filter: typeof IssueFilter.Type
+    ) => Effect.Effect<ReadonlyArray<typeof Issue.Type>, BoardError>
+
+    readonly getKanban: (
+      boardId: typeof BoardId.Type
+    ) => Effect.Effect<typeof KanbanView.Type, BoardError>
+
+    readonly getIssueFeed: (
+      issueId: typeof IssueId.Type
+    ) => Stream.Stream<typeof IssueEvent.Type, BoardError>
+
+    readonly linkSession: (
+      issueId: typeof IssueId.Type,
+      sessionId: string,
+      costUsd: number,
+      tokens: number
+    ) => Effect.Effect<void, BoardError>
+  }
+>() {}
+
+// --- Error types (tagged for Effect.catchTag) ---
+class BoardError extends Schema.TaggedError<BoardError>()(
+  "BoardError",
+  { message: Schema.String }
+) {}
+
+class IssueNotFoundError extends Schema.TaggedError<IssueNotFoundError>()(
+  "IssueNotFoundError",
+  { issueId: Schema.String }
+) {}
+
+class CyclicDependencyError extends Schema.TaggedError<CyclicDependencyError>()(
+  "CyclicDependencyError",
+  { issueIds: Schema.Array(Schema.String) }
+) {}
+
+class WipLimitExceededError extends Schema.TaggedError<WipLimitExceededError>()(
+  "WipLimitExceededError",
+  { column: Schema.String, limit: Schema.Number, current: Schema.Number }
+) {}
+
+// --- Dependency resolver (cycle detection via topological sort) ---
+class DependencyResolver extends Context.Tag("DependencyResolver")<
+  DependencyResolver,
+  {
+    readonly addDependency: (
+      issueId: typeof IssueId.Type,
+      blockedById: typeof IssueId.Type
+    ) => Effect.Effect<void, CyclicDependencyError>
+
+    readonly getBlocked: (
+      issueId: typeof IssueId.Type
+    ) => Effect.Effect<ReadonlyArray<typeof IssueId.Type>>
+
+    readonly resolveDependency: (
+      completedIssueId: typeof IssueId.Type
+    ) => Effect.Effect<ReadonlyArray<typeof IssueId.Type>>  // newly unblocked
+  }
+>() {}
+```
+
+#### WIP Limits & Policies (via Effect combinators)
+
+```typescript
+// WIP limit enforcement as an Effect middleware
+const enforceWipLimit = (boardId: typeof BoardId.Type, targetColumn: typeof IssueStatus.Type) =>
+  Effect.gen(function* () {
+    const board = yield* BoardService.pipe(Effect.flatMap(s => s.getKanban(boardId)))
+    const columnIssues = board.columns[targetColumn]?.length ?? 0
+    const limit = board.wipLimits[targetColumn]
+
+    if (limit !== undefined && columnIssues >= limit) {
+      return yield* new WipLimitExceededError({
+        column: targetColumn,
+        limit,
+        current: columnIssues,
+      })
+    }
+  })
+
+// Auto-unblock when dependency resolves
+const autoUnblock = (completedIssueId: typeof IssueId.Type) =>
+  Effect.gen(function* () {
+    const resolver = yield* DependencyResolver
+    const unblocked = yield* resolver.resolveDependency(completedIssueId)
+
+    for (const id of unblocked) {
+      yield* BoardService.pipe(
+        Effect.flatMap(s => s.moveIssue(id, "todo", `Auto-unblocked: ${completedIssueId} completed`))
+      )
+    }
+
+    return unblocked
+  })
+```
+
+### 13.5. CLI Interface
+
+The board is fully operable from the CLI — designed for both humans and agents.
+
+```
+gctl board <command>
+  ├── issue create    Create an issue
+  ├── issue view      View issue details + execution profile
+  ├── issue list      List/filter issues
+  ├── issue edit      Edit issue fields
+  ├── move            Move issue to a new status column
+  ├── assign          Assign to human or agent
+  ├── reassign        Hand off to different assignee
+  ├── decompose       Split issue into sub-tasks
+  ├── block           Add dependency between issues
+  ├── unblock         Remove dependency
+  ├── check           Check if issue is blocked/unblocked
+  ├── note            Add agent note to issue
+  ├── comment         Add comment
+  ├── link            Link session or PR to issue
+  ├── kanban          Show kanban board view
+  ├── feed            Show activity feed for issue/project
+  ├── project create  Create a project
+  ├── project list    List projects
+  └── sync            Sync with external tracker (Linear/GitHub)
+```
+
+#### Example Agent Workflow
+
+```sh
+# 1. Agent starts a session, checks the board for work
+gctl board issue list --status todo --label "agent-ok" --no-assignee --format json
+
+# 2. Agent picks the highest-priority unblocked issue
+gctl board assign BACK-42 --agent "claude-code" --device "$(hostname)"
+
+# 3. Agent moves to in_progress
+gctl board move BACK-42 in_progress
+
+# 4. Agent works (traces flow through OTel, auto-linked to BACK-42)
+# ... coding happens ...
+
+# 5. Agent discovers complexity, decomposes
+gctl board decompose BACK-42 \
+  --sub "Implement rate limit middleware" \
+  --sub "Add rate limit tests" \
+  --sub "Update API docs"
+
+# 6. Agent completes sub-task, links evidence
+gctl board move BACK-42-1 done \
+  --note "Implemented in src/middleware/rate_limit.rs" \
+  --link-pr 891
+
+# 7. Agent checks what's unblocked
+gctl board issue list --status todo --assignee "claude-code" --format json
+
+# 8. Agent marks parent done when all sub-tasks complete
+gctl board move BACK-42 done \
+  --note "All sub-tasks complete. Rate limiting active."
+```
+
+### 13.6. Automatic Session-Issue Linking
+
+When an agent starts a session, gctl-board auto-links it to the relevant issue:
+
+```
+Linking heuristics (in priority order):
+1. Explicit:     gctl board link BACK-42 --session $SESSION_ID
+2. Branch name:  git branch contains "BACK-42" → auto-link
+3. Commit msg:   commit contains "BACK-42" or "Fixes #42" → auto-link
+4. Assignment:   agent is assigned to BACK-42 + session starts → auto-link
+```
+
+Once linked, the issue automatically accumulates:
+- **Session cost** (from OTel spans)
+- **Token usage** (input + output)
+- **Duration** (wall clock)
+- **PR references** (from GitHub events)
+
+```
+gctl board issue view BACK-42
+
+Issue: BACK-42 "Add rate limiting to /api/users"
+Status: done │ Assignee: claude-code@alice-macbook │ Priority: high
+Labels: backend, agent-ok │ Estimate: 3h │ Actual: 1h 47m
+
+Sub-tasks:
+  ✓ BACK-42-1  "Implement rate limit middleware"  done   $1.12  45m
+  ✓ BACK-42-2  "Add rate limit tests"             done   $0.87  34m
+  ✓ BACK-42-3  "Update API docs"                  done   $0.22  28m
+
+Execution Profile:
+  Sessions:     3
+  Total cost:   $2.21
+  Total tokens: 18,400 (12.1k in / 6.3k out)
+  PRs:          #891 (merged), #894 (merged)
+  Eval score:   3/3 (tests pass, lint clean, docs updated)
+
+Activity:
+  03-22 14:00  claude-code  created issue
+  03-22 14:01  claude-code  decomposed into 3 sub-tasks
+  03-22 14:02  claude-code  moved BACK-42-1 → in_progress
+  03-22 14:47  claude-code  moved BACK-42-1 → done  (linked PR #891)
+  03-22 14:48  claude-code  moved BACK-42-2 → in_progress
+  03-22 15:22  claude-code  moved BACK-42-2 → done
+  03-22 15:23  docs-bot     assigned BACK-42-3
+  03-22 15:51  docs-bot     moved BACK-42-3 → done  (linked PR #894)
+  03-22 15:51  system       all sub-tasks done, moved BACK-42 → done
+```
+
+### 13.7. External Tracker Sync
+
+gctl-board can bidirectionally sync with existing trackers for teams that also use Linear or GitHub Issues:
+
+```
+gctl board sync --source linear --project "BACKEND" --direction both
+gctl board sync --source github --repo "org/api-server" --direction pull
+```
+
+| Direction | Behavior |
+|-----------|----------|
+| **pull** | Import issues from external tracker into gctl-board. Read-only mirror. |
+| **push** | Publish gctl-board issues + agent execution data back to external tracker as comments/fields. |
+| **both** | Bidirectional. External changes sync in, agent activity syncs out. Conflict: last-write-wins on status, append-only on comments. |
+
+#### What syncs back to Linear/GitHub
+
+- Agent session summaries (cost, tokens, duration)
+- Sub-task decomposition (created as child issues)
+- Status transitions with agent notes
+- PR linkage
+- Eval scores
+
+This means the engineering manager sees agent activity in their normal Linear/GitHub workflow — they don't need to adopt a new tool.
+
+### 13.8. Board as Agent Context
+
+The board provides structured context that agents load at session start:
+
+```
+gctl board context --project BACKEND --format markdown --output .tmp/board-context.md
+```
+
+Produces a concise markdown summary:
+
+```markdown
+## BACKEND Board — Current State
+
+### In Progress (3)
+- **BACK-42** "Add rate limiting" — claude-code@alice — $1.12 — 45m
+- **BACK-55** "Fix auth token leak" — alice (human) — not started
+- **BACK-58** "Migrate schema v2" — claude-bot-2@ci — $0.34 — 12m
+
+### Blocked (1)
+- **BACK-60** "Update client SDK" — blocked by BACK-58
+
+### Ready for Agent (5)
+- **BACK-61** "Add health check endpoint" [low] est: 1h
+- **BACK-62** "Fix pagination bug" [high] est: 30m
+- **BACK-63** "Add request logging" [medium] est: 2h
+- **BACK-64** "Update error codes" [low] est: 1h
+- **BACK-65** "Add rate limit headers" [medium] est: 1h — blocked-by: BACK-42
+
+### Sprint Progress
+Closed: 8/15 │ Velocity: 4.2/week │ On track for 03-29
+```
+
+This context lets agents make informed decisions about what to work on, what's blocked, and how the project is progressing — without calling any external APIs.
+
+### 13.9. Tech Stack & Deployment
+
+| Layer | Choice | Rationale |
+|-------|--------|-----------|
+| **Language** | TypeScript (Effect-TS) | Type-safe, composable services, excellent error handling |
+| **Runtime** | Bun or Node.js | Fast startup for CLI operations |
+| **Framework** | Effect Platform (HttpApi) | Schema-driven API, automatic OpenAPI docs |
+| **Storage** | DuckDB (via `duckdb-node`) or SQLite (via `@effect/sql-sqlite-node`) | Local-first, same as Rust daemon |
+| **Event system** | Effect Stream | Reactive event propagation for auto-unblock, WIP limits |
+| **CLI bridge** | `gctl board` delegates to TS process | Rust CLI spawns TS service or communicates via HTTP |
+| **Sync** | Effect Schedule + Effect Http | Periodic sync with Linear/GitHub APIs |
+
+#### Integration with Rust Daemon
+
+Two integration modes:
+
+1. **Sidecar process** — The TS board service runs alongside the Rust daemon. Rust CLI delegates `gctl board *` commands to the TS HTTP API. Shared DuckDB (TS writes board tables, Rust writes trace tables).
+
+2. **Embedded via HTTP** — The board service runs as part of `gctl serve`. The Rust daemon proxies `/api/board/*` requests to the TS process. Single port, unified API.
+
+```
+gctl serve --port 4318
+  ├── /v1/traces          (Rust — OTel ingestion)
+  ├── /api/sessions       (Rust — trace queries)
+  ├── /api/analytics      (Rust — analytics)
+  ├── /api/board/issues   (TS — board service)
+  ├── /api/board/kanban   (TS — board views)
+  └── /health             (Rust — health check)
+```
+
+### 13.10. Phased Delivery
+
+| Phase | Scope | Depends On |
+|-------|-------|------------|
+| **P1: Core Board** | Issue CRUD, status transitions, CLI commands, DuckDB storage | Effect-TS project setup |
+| **P2: Agent Coordination** | Claim/assign, decompose, block/unblock, agent notes | P1 |
+| **P3: OTel Integration** | Auto-link sessions, cost accumulation, execution profiles | P2 + Rust OTel receiver |
+| **P4: External Sync** | Linear pull, GitHub pull, bidirectional sync | P2 |
+| **P5: Kanban UI** | Local web dashboard (Effect Platform + HTMX or React) | P1 |
+
