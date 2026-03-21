@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS spans (
     session_id      VARCHAR NOT NULL,
     agent_name      VARCHAR NOT NULL,
     operation_name  VARCHAR NOT NULL,
+    span_type       VARCHAR NOT NULL DEFAULT 'span',
     model           VARCHAR,
     input_tokens    BIGINT DEFAULT 0,
     output_tokens   BIGINT DEFAULT 0,

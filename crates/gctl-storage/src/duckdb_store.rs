@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use duckdb::{params, Connection};
 use gctl_core::{
     AgentAnalytics, AlertEvent, AlertRule, Analytics, DailyAggregate, GctlError, ModelAnalytics,
-    PromptVersion, Result, Score, Session, SessionId, SessionStatus, Span, SpanStatus, Tag,
+    PromptVersion, Result, Score, Session, SessionId, SessionStatus, Span, SpanStatus, SpanType, Tag,
     TrafficFilter, TrafficRecord, TrafficStats,
 };
 
@@ -70,8 +70,8 @@ impl DuckDbStore {
     pub fn insert_span(&self, span: &Span) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO spans (span_id, trace_id, parent_span_id, session_id, agent_name, operation_name, model, input_tokens, output_tokens, cost_usd, status, error_message, started_at, duration_ms, attributes)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO spans (span_id, trace_id, parent_span_id, session_id, agent_name, operation_name, span_type, model, input_tokens, output_tokens, cost_usd, status, error_message, started_at, duration_ms, attributes)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 span.span_id.0,
                 span.trace_id.0,
@@ -79,6 +79,7 @@ impl DuckDbStore {
                 span.session_id.0,
                 span.agent_name,
                 span.operation_name,
+                span.span_type.as_str(),
                 span.model,
                 span.input_tokens as i64,
                 span.output_tokens as i64,
@@ -160,7 +161,7 @@ impl DuckDbStore {
     pub fn query_spans(&self, session_id: &SessionId) -> Result<Vec<Span>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT span_id, trace_id, parent_span_id, session_id, agent_name, operation_name, model, input_tokens, output_tokens, cost_usd, status, error_message, started_at, duration_ms, attributes FROM spans WHERE session_id = ? ORDER BY started_at ASC")
+            .prepare("SELECT span_id, trace_id, parent_span_id, session_id, agent_name, operation_name, span_type, model, input_tokens, output_tokens, cost_usd, status, error_message, started_at, duration_ms, attributes FROM spans WHERE session_id = ? ORDER BY started_at ASC")
             .map_err(|e| GctlError::Storage(e.to_string()))?;
 
         let mut rows = stmt
@@ -372,6 +373,76 @@ impl DuckDbStore {
             "SELECT COALESCE(AVG(value), 0) FROM scores WHERE name = ?", params![name], |row| row.get(0)
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok((pass as u64, (total - pass) as u64, avg))
+    }
+
+    pub fn auto_score_session(&self, session_id: &str) -> Result<Vec<Score>> {
+        let spans = self.query_spans(&SessionId(session_id.into()))?;
+        let mut scores = Vec::new();
+
+        // Score: span_count
+        scores.push(Score {
+            id: format!("auto-{session_id}-span_count"),
+            target_type: "session".into(),
+            target_id: session_id.into(),
+            name: "span_count".into(),
+            value: spans.len() as f64,
+            comment: None,
+            source: "auto".into(),
+            scored_by: None,
+            created_at: chrono::Utc::now(),
+        });
+
+        // Score: error_count
+        let error_count = spans.iter().filter(|s| matches!(s.status, SpanStatus::Error(_))).count();
+        scores.push(Score {
+            id: format!("auto-{session_id}-error_count"),
+            target_type: "session".into(),
+            target_id: session_id.into(),
+            name: "error_count".into(),
+            value: error_count as f64,
+            comment: None,
+            source: "auto".into(),
+            scored_by: None,
+            created_at: chrono::Utc::now(),
+        });
+
+        // Score: generation_count
+        let gen_count = spans.iter().filter(|s| s.span_type == SpanType::Generation).count();
+        scores.push(Score {
+            id: format!("auto-{session_id}-generation_count"),
+            target_type: "session".into(),
+            target_id: session_id.into(),
+            name: "generation_count".into(),
+            value: gen_count as f64,
+            comment: None,
+            source: "auto".into(),
+            scored_by: None,
+            created_at: chrono::Utc::now(),
+        });
+
+        // Score: cost_efficiency (cost per generation, or 0 if no generations)
+        let session = self.get_session(&SessionId(session_id.into()))?;
+        if let Some(session) = session {
+            if gen_count > 0 {
+                scores.push(Score {
+                    id: format!("auto-{session_id}-cost_per_gen"),
+                    target_type: "session".into(),
+                    target_id: session_id.into(),
+                    name: "cost_per_generation".into(),
+                    value: session.total_cost_usd / gen_count as f64,
+                    comment: None,
+                    source: "auto".into(),
+                    scored_by: None,
+                    created_at: chrono::Utc::now(),
+                });
+            }
+        }
+
+        for score in &scores {
+            self.insert_score(score)?;
+        }
+
+        Ok(scores)
     }
 
     // --- Tags ---
@@ -606,15 +677,16 @@ fn row_to_span(row: &duckdb::Row<'_>) -> Result<Span> {
     let session_id: String = row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?;
     let agent_name: String = row.get(4).map_err(|e| GctlError::Storage(e.to_string()))?;
     let operation_name: String = row.get(5).map_err(|e| GctlError::Storage(e.to_string()))?;
-    let model: Option<String> = row.get(6).map_err(|e| GctlError::Storage(e.to_string()))?;
-    let input_tokens: i64 = row.get(7).map_err(|e| GctlError::Storage(e.to_string()))?;
-    let output_tokens: i64 = row.get(8).map_err(|e| GctlError::Storage(e.to_string()))?;
-    let cost_usd: f64 = row.get(9).map_err(|e| GctlError::Storage(e.to_string()))?;
-    let status: String = row.get(10).map_err(|e| GctlError::Storage(e.to_string()))?;
-    let error_message: Option<String> = row.get(11).map_err(|e| GctlError::Storage(e.to_string()))?;
-    let started_at: String = row.get(12).map_err(|e| GctlError::Storage(e.to_string()))?;
-    let duration_ms: i64 = row.get(13).map_err(|e| GctlError::Storage(e.to_string()))?;
-    let attributes: String = row.get(14).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let span_type_str: String = row.get(6).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let model: Option<String> = row.get(7).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let input_tokens: i64 = row.get(8).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let output_tokens: i64 = row.get(9).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let cost_usd: f64 = row.get(10).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let status: String = row.get(11).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let error_message: Option<String> = row.get(12).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let started_at: String = row.get(13).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let duration_ms: i64 = row.get(14).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let attributes: String = row.get(15).map_err(|e| GctlError::Storage(e.to_string()))?;
 
     let span_status = match status.as_str() {
         "ok" => SpanStatus::Ok,
@@ -629,6 +701,7 @@ fn row_to_span(row: &duckdb::Row<'_>) -> Result<Span> {
         session_id: gctl_core::SessionId(session_id),
         agent_name,
         operation_name,
+        span_type: gctl_core::SpanType::from_str(&span_type_str),
         model,
         input_tokens: input_tokens as u64,
         output_tokens: output_tokens as u64,
@@ -737,6 +810,7 @@ mod tests {
             session_id: SessionId(session_id.into()),
             agent_name: "claude".into(),
             operation_name: "llm.call".into(),
+            span_type: SpanType::Generation,
             model: Some("claude-opus-4-6".into()),
             input_tokens: 1000,
             output_tokens: 500,
@@ -1044,5 +1118,23 @@ mod tests {
         let latencies = store.get_latency_by_model().unwrap();
         assert_eq!(latencies.len(), 1);
         assert_eq!(latencies[0].0, "claude-opus-4-6");
+    }
+
+    #[test]
+    fn test_auto_score_session() {
+        let store = test_store();
+        store.insert_session(&make_session("s1")).unwrap();
+        store.insert_spans(&[make_span("sp1", "s1"), make_span("sp2", "s1")]).unwrap();
+
+        let scores = store.auto_score_session("s1").unwrap();
+        assert!(scores.len() >= 3);
+
+        // Check span_count
+        let span_count = scores.iter().find(|s| s.name == "span_count").unwrap();
+        assert!((span_count.value - 2.0).abs() < f64::EPSILON);
+
+        // Check generation_count
+        let gen_count = scores.iter().find(|s| s.name == "generation_count").unwrap();
+        assert!((gen_count.value - 2.0).abs() < f64::EPSILON);  // make_span creates Generation type
     }
 }

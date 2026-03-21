@@ -1,5 +1,5 @@
 use chrono::{DateTime, TimeZone, Utc};
-use gctl_core::{Span, SpanId, SpanStatus, SessionId, TraceId};
+use gctl_core::{Span, SpanId, SpanStatus, SpanType, SessionId, TraceId};
 use serde::Deserialize;
 
 /// Simplified OTLP JSON span representation.
@@ -165,6 +165,18 @@ pub fn process_export_request(req: &OtlpExportRequest) -> Vec<Span> {
                     _ => SpanStatus::Unset,
                 };
 
+                // Detect span_type based on attributes and duration
+                let span_type = if model.is_some() {
+                    // Has ai.model.id or gen_ai.request.model → Generation
+                    SpanType::Generation
+                } else if duration_ms == 0 {
+                    // No duration → Event
+                    SpanType::Event
+                } else {
+                    // Default → Span
+                    SpanType::Span
+                };
+
                 // Build attributes JSON from remaining OTLP attributes
                 let attrs: serde_json::Map<String, serde_json::Value> = otlp_span
                     .attributes
@@ -193,6 +205,7 @@ pub fn process_export_request(req: &OtlpExportRequest) -> Vec<Span> {
                     session_id: SessionId(session_id.clone()),
                     agent_name: agent_name.clone(),
                     operation_name: otlp_span.name.clone(),
+                    span_type,
                     model,
                     input_tokens,
                     output_tokens,

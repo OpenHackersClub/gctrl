@@ -89,6 +89,31 @@ impl SpanStatus {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum SpanType {
+    Generation,  // LLM API call
+    Span,        // Tool execution or logical grouping
+    Event,       // Point-in-time marker (no duration)
+}
+
+impl SpanType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Generation => "generation",
+            Self::Span => "span",
+            Self::Event => "event",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "generation" => Self::Generation,
+            "event" => Self::Event,
+            _ => Self::Span,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Span {
     pub span_id: SpanId,
@@ -97,6 +122,7 @@ pub struct Span {
     pub session_id: SessionId,
     pub agent_name: String,
     pub operation_name: String,
+    pub span_type: SpanType,
     pub model: Option<String>,
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -322,6 +348,7 @@ mod tests {
             session_id: SessionId("sess1".into()),
             agent_name: "claude".into(),
             operation_name: "llm.call".into(),
+            span_type: SpanType::Generation,
             model: Some("claude-opus-4-6".into()),
             input_tokens: 1000,
             output_tokens: 500,
