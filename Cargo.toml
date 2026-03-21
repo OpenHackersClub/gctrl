@@ -1,0 +1,69 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/gctl-core",
+    "crates/gctl-cli",
+    "crates/gctl-storage",
+    "crates/gctl-otel",
+    "crates/gctl-guardrails",
+    "crates/gctl-query",
+    "crates/gctl-proxy",
+    "crates/gctl-net",
+    "crates/gctl-sync",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/debuggingfuture/gctrl"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Web framework
+axum = "0.8"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Storage
+duckdb = { version = "1.2", features = ["bundled"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Async trait
+async-trait = "0.1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# UUID
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Arrow/Parquet (for R2 sync)
+arrow = "54"
+parquet = "54"
+
+# MITM Proxy
+hudsucker = "0.24"
+
+# Testing
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace"] }
+http = "1"
+http-body-util = "0.1"

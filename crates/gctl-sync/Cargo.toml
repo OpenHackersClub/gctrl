@@ -1,0 +1,14 @@
+[package]
+name = "gctl-sync"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gctl-core = { path = "../gctl-core" }
+gctl-storage = { path = "../gctl-storage" }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }

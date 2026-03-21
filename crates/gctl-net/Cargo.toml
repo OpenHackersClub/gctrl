@@ -1,0 +1,14 @@
+[package]
+name = "gctl-net"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gctl-core = { path = "../gctl-core" }
+gctl-storage = { path = "../gctl-storage" }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

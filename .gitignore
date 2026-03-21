@@ -1,0 +1,4 @@
+/target
+.tmp/
+*.duckdb
+*.duckdb.wal
