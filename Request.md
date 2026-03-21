@@ -9,13 +9,30 @@ Gaps and product requirements to address in future phases.
 - [ ] **Real-time guardrail hooks** — MCP-compatible hook protocol so agents can check policies before tool execution, not just after-the-fact.
 - [ ] **Guardrail event persistence** — Store all policy decisions (allow/warn/deny) in guardrail_events table for audit trail.
 
-## Phase 3: Query + Eval
+## Phase 3: Query + Eval + Analytics (Langfuse-grade)
 
 - [ ] **Natural language to SQL** — NL query interface with column allowlist, query rewriting, and safety guards. Requires LLM integration for SQL generation.
 - [ ] **Raw SQL execution** — Gated by config flag. Needs sandboxing (read-only mode, row limits, blocked columns).
 - [ ] **Eval suite engine** — Define eval suites (YAML/JSON), run against stored traces, compute pass/fail scores. Support custom scoring functions.
 - [ ] **Prompt versioning** — Track prompt templates by version, link to spans, support A/B comparison of prompt variants.
 - [ ] **Annotation API** — Allow humans to annotate spans/sessions with quality labels for fine-tuning and eval calibration.
+- [ ] **Scoring system** — Human, automated (rule-based), and model-based scores on sessions/spans/generations. DuckDB scores table.
+- [ ] **Tag system** — Arbitrary key-value tags on sessions/spans for filtering and grouping (project, task_type, prompt_version).
+- [ ] **Cost analytics endpoints** — `/api/analytics/cost` with group_by model/agent/user/tag, time windows, daily aggregates.
+- [ ] **Latency analytics** — p50/p75/p90/p95/p99 latency per model, TTFT tracking, tokens-per-second output rate.
+- [ ] **Trace explorer** — Deep trace tree view with generation detail (input/output/tool_calls), span timeline.
+- [ ] **Generation detail view** — Full LLM call inspection: system prompt, user message, tool results, assistant output, metadata.
+- [ ] **User/agent analytics** — Per-user dashboards: sessions, cost, pass rate, model usage, daily activity.
+- [ ] **Prompt management** — Version tracking, diff view, A/B testing with statistical significance, token budget analysis.
+- [ ] **Prompt influence scoring** — Measure which prompt sections correlate with tool call patterns, identify low-influence sections.
+- [ ] **Daily aggregates** — Materialized daily_aggregates table for fast charting. Computed on session end.
+- [ ] **Live session feed** — SSE endpoint `/api/analytics/live` streaming active session updates.
+- [ ] **Alert rules engine** — Configurable alerts: cost breach, error loops, latency spikes. DuckDB alert_rules + alert_events tables.
+- [ ] **Anomaly detection** — Automatic detection of pass rate drops, cost spikes, latency regressions.
+- [ ] **Auto-scoring** — Automated scoring after session completion: tests_pass, lint_clean, build_success, error_loops, cost_efficiency.
+- [ ] **Eval benchmarks** — Run eval datasets across agent+model combinations, produce comparison tables.
+- [ ] **Web dashboard** — Local web UI at /dashboard: overview, traces, sessions, analytics charts, prompts, evals, scores.
+- [ ] **Dashboard tech decision** — Choose between static SPA (React), HTMX (zero JS build), or Effect Platform UI.
 
 ## Phase 4: Sync + Cloud
 

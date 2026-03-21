@@ -511,7 +511,9 @@ gctl<plugin> <command> [args/flags]
 4. **Policy enforcement** — The CLI layer can check permissions, budgets, and policies before executing.
 5. **Offline resilience** — Cached data available when network is unreliable.
 
-## 7. Pillar 3: Observe & Eval
+## 7. Pillar 3: Observe & Eval — Langfuse-Grade Analytics, Local-First
+
+> **GroundCtrl's observability layer is a local-first alternative to Langfuse.** Same depth of trace inspection, cost analytics, eval scoring, and prompt management — but running entirely on your machine in DuckDB, with optional cloud sync to R2 for team dashboards. No data leaves your laptop unless you explicitly sync it.
 
 ### 7.1. Telemetry & Trace Capture
 
@@ -520,19 +522,512 @@ gctl<plugin> <command> [args/flags]
 * **Storage:** DuckDB with full span hierarchy. Queryable via `gctl otel sessions/traces/spans/analytics`.
 * **Langfuse-inspired schema:** Session → Trace → Span model, with cost attribution at every level.
 
-### 7.2. Token & Cost Analytics
+#### Trace Hierarchy (Langfuse-compatible)
 
-* Aggregated spend per developer, per team, per repository, per agent, per model.
-* `gctl otel analytics` — p50/p95/p99 latencies, cost per agent/model/project.
-* Alerting thresholds tied to guardrails (Section 5.3).
+GroundCtrl adopts Langfuse's **Session → Trace → Observation** model but extends it for coding agents:
 
-### 7.3. Context Indexing
+```
+Session: "Implement rate limiting for /api/users"
+│
+├── Trace: "Initial implementation"
+│   ├── Generation (LLM call)
+│   │   ├── model: claude-opus-4-6
+│   │   ├── input_tokens: 4,200 │ output_tokens: 1,800
+│   │   ├── cost: $0.12
+│   │   ├── latency: 3.2s
+│   │   ├── input: { system_prompt, user_message, tool_results }
+│   │   └── output: { assistant_message, tool_calls }
+│   │
+│   ├── Span: "tool.Read" (file read)
+│   │   ├── input: { path: "src/routes/api.rs" }
+│   │   ├── output: { content: "..." , lines: 245 }
+│   │   └── duration: 12ms
+│   │
+│   ├── Generation (LLM call — follow-up)
+│   │   ├── model: claude-opus-4-6
+│   │   ├── input_tokens: 6,100 │ output_tokens: 2,400
+│   │   ├── cost: $0.17
+│   │   └── output: { tool_calls: [Edit, Write] }
+│   │
+│   ├── Span: "tool.Edit" (file edit)
+│   │   ├── input: { path: "src/middleware/rate_limit.rs", old: "...", new: "..." }
+│   │   ├── output: { success: true }
+│   │   └── duration: 8ms
+│   │
+│   ├── Span: "tool.Bash" (run tests)
+│   │   ├── input: { command: "cargo test" }
+│   │   ├── output: { exit_code: 0, stdout: "test result: ok. 12 passed" }
+│   │   └── duration: 4,200ms
+│   │
+│   └── Event: "session.checkpoint"
+│       └── metadata: { files_changed: 2, tests_passing: true }
+│
+├── Trace: "Address review feedback"
+│   ├── Generation → Span → Generation → Span ...
+│   └── (same nesting pattern)
+│
+└── Session Totals:
+    ├── cost: $2.47
+    ├── input_tokens: 32,400 │ output_tokens: 14,200
+    ├── duration: 12m 34s
+    ├── tool_calls: 28
+    ├── llm_calls: 8
+    └── outcome: success (PR merged)
+```
+
+#### Observation Types
+
+Like Langfuse, GroundCtrl distinguishes three observation types within a trace:
+
+| Type | Description | Key Fields |
+|------|-------------|------------|
+| **Generation** | LLM API call (the core unit of AI cost) | model, input/output tokens, cost, latency, prompt, completion, tool_calls |
+| **Span** | Tool execution or logical grouping | name, input, output, duration, status |
+| **Event** | Point-in-time marker (no duration) | name, metadata (e.g., "test passed", "git commit") |
+
+#### Span Metadata & Tagging
+
+Every observation can carry arbitrary metadata for filtering and grouping:
+
+```
+gctl otel tag <session_id> --key "project" --value "api-server"
+gctl otel tag <session_id> --key "task_type" --value "bug_fix"
+gctl otel tag <session_id> --key "prompt_version" --value "v2.3"
+```
+
+Built-in auto-tags (extracted from context):
+- `agent.name` — Which agent (claude-code, aider, custom)
+- `agent.model` — Primary model used
+- `git.branch` — Active branch during session
+- `git.repo` — Repository name
+- `issue.id` — Linked issue (from gctl-board or external tracker)
+- `prompt.hash` — SHA256 of the active CLAUDE.md / system prompt
+
+### 7.2. Analytics Dashboard
+
+> **Goal: Every metric Langfuse shows in its dashboard, GroundCtrl can produce from local DuckDB — via CLI, HTTP API, or web UI.**
+
+#### 7.2.1. Cost & Token Analytics
+
+```
+gctl analytics cost --window 7d
+
+=== Cost Analytics (last 7 days) ===
+
+Total spend:     $42.18
+Total tokens:    1,284,000 (892k in / 392k out)
+Total sessions:  67
+Total traces:    214
+Total LLM calls: 1,847
+
+┌────────────────┬──────────┬──────────┬─────────┬─────────┐
+│ Model          │ Cost     │ Calls    │ Avg $/c │ % Total │
+├────────────────┼──────────┼──────────┼─────────┼─────────┤
+│ claude-opus-4-6│ $31.24   │ 892      │ $0.035  │ 74.1%   │
+│ claude-sonnet  │ $8.47    │ 743      │ $0.011  │ 20.1%   │
+│ claude-haiku   │ $2.47    │ 212      │ $0.012  │ 5.9%    │
+└────────────────┴──────────┴──────────┴─────────┴─────────┘
+
+┌──────────────┬──────────┬──────────┬─────────┬──────────┐
+│ Agent        │ Cost     │ Sessions │ Avg $/s │ Success% │
+├──────────────┼──────────┼──────────┼─────────┼──────────┤
+│ claude-code  │ $28.90   │ 42       │ $0.69   │ 88%      │
+│ claude-bot-1 │ $8.12    │ 18       │ $0.45   │ 72%      │
+│ aider        │ $5.16    │ 7        │ $0.74   │ 100%     │
+└──────────────┴──────────┴──────────┴─────────┴──────────┘
+
+Daily trend:
+  Mon: ████████████████  $8.12  (14 sessions)
+  Tue: ██████████████    $7.44  (12 sessions)
+  Wed: ████████████      $6.20  (9 sessions)
+  Thu: ██████████████████ $9.02 (15 sessions)
+  Fri: ████████████      $5.88  (8 sessions)
+  Sat: ████              $2.40  (4 sessions)
+  Sun: ██████            $3.12  (5 sessions)
+```
+
+#### 7.2.2. Latency Analytics
+
+```
+gctl analytics latency --window 7d
+
+=== Latency Analytics (last 7 days) ===
+
+LLM Call Latency:
+┌────────────────┬─────────┬─────────┬─────────┬─────────┬─────────┐
+│ Model          │ p50     │ p75     │ p90     │ p95     │ p99     │
+├────────────────┼─────────┼─────────┼─────────┼─────────┼─────────┤
+│ claude-opus-4-6│ 3.2s    │ 5.1s    │ 8.4s    │ 12.1s   │ 22.3s   │
+│ claude-sonnet  │ 1.1s    │ 1.8s    │ 3.2s    │ 4.5s    │ 8.1s    │
+│ claude-haiku   │ 0.4s    │ 0.7s    │ 1.1s    │ 1.5s    │ 2.8s    │
+└────────────────┴─────────┴─────────┴─────────┴─────────┴─────────┘
+
+Time-to-First-Token (TTFT):
+  claude-opus-4-6:  p50=0.8s  p95=2.1s
+  claude-sonnet:    p50=0.3s  p95=0.9s
+  claude-haiku:     p50=0.1s  p95=0.4s
+
+Tokens per Second (output):
+  claude-opus-4-6:  p50=62 tok/s  p95=38 tok/s
+  claude-sonnet:    p50=89 tok/s  p95=52 tok/s
+  claude-haiku:     p50=120 tok/s p95=78 tok/s
+
+Session Duration Distribution:
+  < 1 min:   ██████████████████  27%
+  1-5 min:   ████████████████████████████████  48%
+  5-15 min:  ██████████████  21%
+  15-30 min: ██        3%
+  > 30 min:  █         1%
+```
+
+#### 7.2.3. Trace Explorer (Langfuse-style)
+
+Interactive trace browsing — the core Langfuse feature, replicated locally:
+
+```
+gctl analytics traces --window 24h --sort cost-desc --limit 20
+
+┌────────────────────┬───────────────┬──────────┬────────┬──────┬─────────┐
+│ Session            │ Agent         │ Cost     │ Tokens │ Dur  │ Status  │
+├────────────────────┼───────────────┼──────────┼────────┼──────┼─────────┤
+│ Implement auth...  │ claude-code   │ $3.42    │ 28.4k  │ 18m  │ ✓ done  │
+│ Fix flaky test...  │ claude-bot-1  │ $2.18    │ 16.2k  │ 12m  │ ✓ done  │
+│ Migrate schema...  │ claude-code   │ $1.87    │ 14.8k  │ 9m   │ ✗ fail  │
+│ Update API docs... │ docs-bot      │ $0.34    │ 4.2k   │ 2m   │ ✓ done  │
+│ ...                │               │          │        │      │         │
+└────────────────────┴───────────────┴──────────┴────────┴──────┴─────────┘
+```
+
+Drill into a session:
+
+```
+gctl analytics trace <session_id> --tree
+
+Session: sess-4821 "Implement rate limiting"
+├── cost: $2.47 │ tokens: 18.4k │ duration: 12m 34s │ status: done
+├── tags: project=api-server, task_type=feature, issue=BACK-42
+├── prompt_version: v2.3 (sha: a1b2c3d4)
+│
+├── [trace-001] "Initial implementation" (8m 22s, $1.62)
+│   ├── [gen] claude-opus-4-6  4200→1800 tok  $0.12  3.2s
+│   │   └── tool_calls: [Read("src/routes/api.rs")]
+│   ├── [span] tool.Read  12ms  ✓
+│   ├── [gen] claude-opus-4-6  6100→2400 tok  $0.17  4.8s
+│   │   └── tool_calls: [Edit("src/middleware/rate_limit.rs"), Write("src/middleware/mod.rs")]
+│   ├── [span] tool.Edit  8ms  ✓
+│   ├── [span] tool.Write  5ms  ✓
+│   ├── [gen] claude-opus-4-6  8200→3100 tok  $0.24  6.1s
+│   │   └── tool_calls: [Bash("cargo test")]
+│   ├── [span] tool.Bash  4200ms  ✓ (exit 0)
+│   ├── [gen] claude-opus-4-6  3400→1200 tok  $0.09  2.4s
+│   │   └── tool_calls: [Bash("git add ..."), Bash("git commit ...")]
+│   ├── [span] tool.Bash  120ms  ✓
+│   ├── [span] tool.Bash  340ms  ✓
+│   └── [event] session.checkpoint { files: 3, tests: 12/12 }
+│
+└── [trace-002] "Review feedback" (4m 12s, $0.85)
+    ├── [gen] claude-opus-4-6  5200→1800 tok  $0.14  3.8s
+    ├── [span] tool.Read  8ms  ✓
+    ├── [gen] claude-opus-4-6  4100→2200 tok  $0.13  3.2s
+    ├── [span] tool.Edit  6ms  ✓
+    └── [span] tool.Bash  3800ms  ✓ (cargo test, exit 0)
+```
+
+#### 7.2.4. Generation Detail View
+
+Deep inspection of a single LLM call (like Langfuse's generation detail panel):
+
+```
+gctl analytics generation <generation_id>
+
+Generation: gen-a1b2c3
+├── Model:      claude-opus-4-6
+├── Timestamp:  2026-03-22 14:23:18 UTC
+├── Latency:    3.2s (TTFT: 0.8s)
+├── Tokens:     4,200 input │ 1,800 output │ 6,000 total
+├── Cost:       $0.12
+├── Status:     success
+│
+├── Input:
+│   ├── System prompt: [2,100 tokens] (hash: a1b2c3d4)
+│   ├── User message:  [1,400 tokens]
+│   │   "I need to add rate limiting to the /api/users endpoint..."
+│   └── Tool results:  [700 tokens] (from previous Read tool call)
+│
+├── Output:
+│   ├── Assistant message: [1,200 tokens]
+│   │   "I'll implement rate limiting using a token bucket algorithm..."
+│   └── Tool calls:
+│       └── Read { path: "src/routes/api.rs" }
+│
+├── Metadata:
+│   ├── session_id: sess-4821
+│   ├── trace_id: trace-001
+│   ├── parent_span_id: null
+│   ├── prompt_version: v2.3
+│   └── tags: { task_type: "feature" }
+│
+└── Scores:  (if annotated)
+    ├── quality: 4/5
+    ├── relevance: 5/5
+    └── helpfulness: 4/5
+```
+
+### 7.3. Scoring & Annotation
+
+> **Langfuse's scoring system lets users rate LLM outputs. GroundCtrl extends this for coding agents — scores can be human-annotated or machine-computed.**
+
+#### Score Types
+
+| Score Type | Source | Example |
+|-----------|--------|---------|
+| **Human annotation** | Developer rates a generation/session | quality: 4/5, "good approach but missed edge case" |
+| **Automated (rule-based)** | Computed from observable state | tests_pass: 1/1, lint_clean: 1/1, build_success: 1/1 |
+| **Automated (model-based)** | LLM-as-judge evaluates output | code_quality: 3.7/5.0 (evaluated by gpt-4o-mini) |
+| **Outcome-based** | Derived from downstream events | pr_merged: true, code_reverted: false, issue_closed: true |
+
+#### Score CLI
+
+```
+# Human annotation
+gctl analytics score <session_id> --name quality --value 4 --comment "Clean implementation"
+gctl analytics score <generation_id> --name relevance --value 5
+
+# Automated scoring (runs after session completes)
+gctl analytics auto-score <session_id>
+→ tests_pass:    ✓ (1/1)
+→ lint_clean:    ✓ (1/1)
+→ build_success: ✓ (1/1)
+→ diff_size:     moderate (142 lines)
+→ tool_loops:    none detected
+→ cost_efficiency: $0.017/line
+
+# Batch scoring
+gctl analytics auto-score --window 7d --unscored-only
+→ Scored 23 sessions. Summary: 87% pass rate, avg $0.62/session.
+```
+
+#### Score Dashboard
+
+```
+gctl analytics scores --window 30d
+
+=== Score Summary (last 30 days) ===
+
+Automated Scores:
+┌──────────────────┬─────────┬──────────┬──────────┬─────────┐
+│ Score            │ Pass    │ Fail     │ Rate     │ Trend   │
+├──────────────────┼─────────┼──────────┼──────────┼─────────┤
+│ tests_pass       │ 187     │ 27       │ 87.4%    │ ↑ +2.1% │
+│ lint_clean       │ 201     │ 13       │ 93.9%    │ ↔ 0.0%  │
+│ build_success    │ 208     │ 6        │ 97.2%    │ ↑ +0.8% │
+│ pr_merged        │ 142     │ 31       │ 82.1%    │ ↓ -1.4% │
+│ no_error_loops   │ 194     │ 20       │ 90.7%    │ ↑ +3.2% │
+└──────────────────┴─────────┴──────────┴──────────┴─────────┘
+
+Human Scores (where annotated):
+  quality:      avg 3.8/5  (n=42)
+  relevance:    avg 4.2/5  (n=38)
+  helpfulness:  avg 4.0/5  (n=35)
+
+Cost per Successful Session:
+  Overall:      $0.74  (down from $0.92 last month)
+  claude-code:  $0.82
+  claude-bot:   $0.51
+  aider:        $0.68
+```
+
+### 7.4. Prompt Management
+
+> **Like Langfuse's prompt management, but for CLAUDE.md files and agent system prompts — version-tracked, A/B tested, and correlated with execution outcomes.**
+
+#### Prompt Versioning
+
+Every time an agent session starts, GroundCtrl captures and hashes the active prompt configuration:
+
+```
+gctl analytics prompts
+
+┌─────────┬──────────────────────────┬──────────┬──────────┬─────────┬─────────┐
+│ Version │ Prompt File              │ Hash     │ Sessions │ Avg Cost│ Pass %  │
+├─────────┼──────────────────────────┼──────────┼──────────┼─────────┼─────────┤
+│ v2.3    │ .claude/CLAUDE.md        │ a1b2c3d4 │ 42       │ $0.69   │ 88%     │
+│ v2.2    │ .claude/CLAUDE.md        │ e5f6g7h8 │ 31       │ $0.87   │ 81%     │
+│ v2.1    │ .claude/CLAUDE.md        │ i9j0k1l2 │ 18       │ $1.12   │ 72%     │
+│ v1.0    │ AGENTS.md                │ m3n4o5p6 │ 8        │ $0.45   │ 63%     │
+└─────────┴──────────────────────────┴──────────┴──────────┴─────────┴─────────┘
+
+Insight: v2.3 is 22% cheaper and 16% more successful than v2.1.
+         Main change: added "prefer editing over creating files" instruction.
+```
+
+#### Prompt Diff & Impact Analysis
+
+```
+gctl analytics prompt-diff v2.2 v2.3
+
+--- v2.2 (hash: e5f6g7h8)
++++ v2.3 (hash: a1b2c3d4)
+
+@@ Section: Coding Conventions @@
++ - Prefer editing existing files over creating new ones
++ - Always run tests after making changes
+- - Write comprehensive docstrings for all public functions
+
+Impact Analysis (v2.2 → v2.3):
+  Sessions compared: 31 vs 42
+  Avg cost:          $0.87 → $0.69  (-21%)
+  Pass rate:         81% → 88%      (+7%)
+  Avg tool calls:    24 → 19        (-21%)
+  Avg file creates:  3.2 → 1.1      (-66%)  ← direct impact of new rule
+  Avg test runs:     1.4 → 2.8      (+100%) ← direct impact of new rule
+```
+
+#### Prompt A/B Testing
+
+```
+gctl analytics prompt-ab \
+  --control ./claude-md-v2.2.md \
+  --variant ./claude-md-v2.3.md \
+  --metric pass_rate --metric cost \
+  --sessions 50
+
+A/B Test Results (n=50 per group):
+
+                 Control (v2.2)    Variant (v2.3)    Delta       Sig?
+  Pass rate:     82% (41/50)       90% (45/50)       +8%         p=0.04 ✓
+  Avg cost:      $0.84             $0.67             -20%         p=0.01 ✓
+  Avg duration:  8.2 min           6.8 min           -17%         p=0.03 ✓
+  Avg tokens:    14.2k             11.8k             -17%         p=0.02 ✓
+  Error loops:   12% of sessions   6% of sessions    -50%         p=0.08
+
+Recommendation: Deploy variant (v2.3). Statistically significant improvement
+                in pass rate and cost. Error loop reduction trending but
+                needs more data.
+```
+
+#### Prompt Token Budget Analysis
+
+```
+gctl analytics prompt-tokens <prompt_hash>
+
+Prompt Token Budget (hash: a1b2c3d4, 2,100 tokens)
+
+┌──────────────────────────┬────────┬────────┬─────────────────────┐
+│ Section                  │ Tokens │ % Bud  │ Influence Score*    │
+├──────────────────────────┼────────┼────────┼─────────────────────┤
+│ System identity          │ 180    │ 8.6%   │ ████████  high      │
+│ Coding conventions       │ 420    │ 20.0%  │ ██████████ highest  │
+│ Git workflow             │ 290    │ 13.8%  │ ███████  high       │
+│ Tool usage rules         │ 380    │ 18.1%  │ ████████  high      │
+│ Output formatting        │ 210    │ 10.0%  │ ████  medium        │
+│ Project-specific context │ 340    │ 16.2%  │ ██████  medium-high │
+│ Examples                 │ 280    │ 13.3%  │ ██  low             │
+└──────────────────────────┴────────┴────────┴─────────────────────┘
+
+* Influence score: correlation between section content and tool call patterns.
+  "Examples" section consumes 13% of budget but has low measured influence.
+  Consider reducing examples to save ~280 tokens/call (saves ~$0.02/session).
+```
+
+### 7.5. User & Session Analytics
+
+#### User-Level Dashboard (Langfuse-style)
+
+```
+gctl analytics users --window 30d
+
+=== User Analytics (last 30 days) ===
+
+┌──────────────┬──────────┬──────────┬─────────┬────────┬─────────┬─────────┐
+│ User/Agent   │ Sessions │ Cost     │ Tokens  │ Pass%  │ Avg $/s │ Trend   │
+├──────────────┼──────────┼──────────┼─────────┼────────┼─────────┼─────────┤
+│ alice        │ 42       │ $28.90   │ 892k    │ 88%    │ $0.69   │ ↑ +12%  │
+│ bob          │ 31       │ $18.40   │ 612k    │ 81%    │ $0.59   │ ↔ 0%   │
+│ claude-bot-1 │ 67       │ $31.20   │ 1,024k  │ 72%    │ $0.47   │ ↑ +8%  │
+│ claude-bot-2 │ 28       │ $12.80   │ 420k    │ 82%    │ $0.46   │ new     │
+│ docs-bot     │ 14       │ $2.40    │ 84k     │ 100%   │ $0.17   │ ↔ 0%   │
+└──────────────┴──────────┴──────────┴─────────┴────────┴─────────┴─────────┘
+```
+
+Drill into a user:
+
+```
+gctl analytics user alice --window 7d
+
+=== alice — Last 7 Days ===
+
+Sessions: 12 │ Cost: $8.24 │ Tokens: 284k │ Pass rate: 92%
+
+Model Usage:
+  claude-opus-4-6:  $6.12 (74%) │ 8 sessions
+  claude-sonnet:    $2.12 (26%) │ 4 sessions
+
+Session Outcomes:
+  ✓ Completed:  11 (92%)
+  ✗ Failed:     1  (8%)  ← sess-5012: error loop on test fixture
+
+Top Tags:
+  task_type=feature:   7 sessions ($5.40)
+  task_type=bug_fix:   3 sessions ($1.84)
+  task_type=refactor:  2 sessions ($1.00)
+
+Daily Activity:
+  Mon: ███  3 sessions
+  Tue: ██   2 sessions
+  Wed: ███  3 sessions
+  Thu: ██   2 sessions
+  Fri: ██   2 sessions
+```
+
+### 7.6. Real-Time Monitoring
+
+#### Live Session Feed
+
+```
+gctl analytics live
+
+=== Live Sessions ===  (auto-refreshes every 5s)
+
+● sess-5821  alice+claude-code   "Add webhook retry logic"
+  │ Running 4m 12s │ $0.82 │ 12.4k tokens │ 6 tool calls
+  │ Last: [gen] claude-opus-4-6 → Edit("src/webhooks/retry.rs")
+  │
+● sess-5822  claude-bot-1        "Fix pagination offset bug"
+  │ Running 2m 08s │ $0.34 │ 6.2k tokens │ 3 tool calls
+  │ Last: [span] tool.Bash("cargo test -- pagination")
+  │
+◌ sess-5820  bob+claude-code     "Migrate to new auth provider"
+  │ Completed 8m ago │ $1.24 │ 18.8k tokens │ ✓ tests pass
+```
+
+#### Alerting & Anomaly Detection
+
+```
+gctl analytics alerts
+
+Active Alerts:
+  ⚠ [cost] claude-bot-1 session sess-5815 exceeded $5.00 budget (current: $5.42)
+  ⚠ [loop] alice session sess-5821 has 4 consecutive Read calls on same file
+  ⚠ [latency] claude-opus-4-6 p95 latency spiked to 18.2s (baseline: 12.1s)
+  ℹ [trend] Overall pass rate dropped from 88% to 82% this week
+
+Alert Rules:
+  gctl analytics alert create --name "budget-breach" \
+    --condition "session.cost > 5.00" --action warn
+  gctl analytics alert create --name "error-loop" \
+    --condition "session.repeated_tool_calls > 3" --action pause
+  gctl analytics alert create --name "latency-spike" \
+    --condition "model.p95_latency > 2x baseline" --action notify
+```
+
+### 7.7. Context Indexing
 
 * Link traces to git diffs — capture file changes produced during a specific trace span.
 * Index terminal output (errors/warnings) that prompted agent actions.
 * Semantic search over trace context (e.g., "Find the trace where Claude updated the auth middleware").
 
-### 7.4. Evals & Prompt Analytics (For Developers)
+### 7.8. Evals & Prompt Analytics (For Developers)
 
 Unlike Langfuse/Braintrust which evaluate production chatbot quality, GroundCtrl evaluates **developer agent effectiveness**. Inspired by [OpenAI Agents SDK evals](https://developers.openai.com/cookbook/examples/agents_sdk/evaluate_agents) but adapted for coding agents.
 
@@ -575,23 +1070,162 @@ Unlike Langfuse/Braintrust which evaluate production chatbot quality, GroundCtrl
      --config-a ./claude-md-v1.md --config-b ./claude-md-v2.md
 ```
 
-#### Prompt analytics
-
-* **Prompt versioning** — Track which CLAUDE.md / system prompt was active during each session. Hash + store prompt content alongside traces.
-* **A/B comparison** — Compare agent performance across prompt configs: cost, completion rate, tool call patterns, error loops.
-* **Prompt drift detection** — Alert when a prompt config change correlates with degraded agent performance.
-* **Token budget analysis** — Which parts of the prompt consume the most context? Are there sections that never influence tool calls?
-
-#### Dataset generation (from real sessions)
+#### Eval Datasets & Benchmarks
 
 ```
+# Create dataset from real sessions
 gctl eval dataset create --from-sessions "last 7 days" \
-  --filter "completed=true" --output ./evals/dataset.jsonl
+  --filter "completed=true AND score.quality >= 4" \
+  --output ./evals/dataset.jsonl
+
+# Run benchmark across agents
+gctl eval benchmark --dataset ./evals/dataset.jsonl \
+  --agents "claude-code,aider" \
+  --models "claude-opus-4-6,claude-sonnet-4-6"
+
+Benchmark Results (dataset: 24 tasks):
+┌───────────────────────────┬───────┬──────────┬──────────┬─────────┐
+│ Agent + Model             │ Pass  │ Avg Cost │ Avg Time │ Loops   │
+├───────────────────────────┼───────┼──────────┼──────────┼─────────┤
+│ claude-code + opus-4-6    │ 22/24 │ $0.82    │ 6.4m     │ 2       │
+│ claude-code + sonnet-4-6  │ 19/24 │ $0.34    │ 4.2m     │ 5       │
+│ aider + opus-4-6          │ 20/24 │ $0.91    │ 8.1m     │ 3       │
+│ aider + sonnet-4-6        │ 17/24 │ $0.42    │ 5.8m     │ 7       │
+└───────────────────────────┴───────┴──────────┴──────────┴─────────┘
+
+Best cost-efficiency: claude-code + sonnet-4-6 ($0.018/passing task)
+Best pass rate:       claude-code + opus-4-6 (91.7%)
 ```
 
-Convert real agent sessions into replayable eval datasets — ground truth from actual developer workflows, not synthetic benchmarks.
+### 7.9. HTTP API for Analytics (Langfuse-Compatible Endpoints)
 
-### 7.5. GitHub Integration
+All analytics are accessible via HTTP API when the daemon is running. Designed to be consumed by web dashboards, CI scripts, or external tools.
+
+```
+GET  /api/analytics/cost          ?window=7d&group_by=model
+GET  /api/analytics/latency       ?window=7d&model=claude-opus-4-6&percentiles=50,95,99
+GET  /api/analytics/traces        ?window=24h&sort=cost&order=desc&limit=50
+GET  /api/analytics/trace/:id     (full trace tree with all observations)
+GET  /api/analytics/generation/:id (single LLM call detail)
+GET  /api/analytics/users         ?window=30d
+GET  /api/analytics/user/:id      ?window=7d
+GET  /api/analytics/scores        ?window=30d&name=tests_pass
+GET  /api/analytics/prompts       ?window=30d
+GET  /api/analytics/prompt/:hash  (token budget breakdown)
+GET  /api/analytics/live          (SSE stream of active sessions)
+GET  /api/analytics/alerts        (active alerts)
+GET  /api/analytics/daily         ?days=30  (daily aggregates for charts)
+
+POST /api/analytics/score         { target_id, name, value, comment }
+POST /api/analytics/tag           { target_id, key, value }
+POST /api/analytics/alert         { name, condition, action }
+```
+
+#### Daily Aggregates for Charting
+
+```
+GET /api/analytics/daily?days=14&metrics=cost,sessions,tokens,pass_rate
+
+[
+  { "date": "2026-03-08", "cost": 5.42, "sessions": 8, "tokens": 184000, "pass_rate": 0.875 },
+  { "date": "2026-03-09", "cost": 7.18, "sessions": 12, "tokens": 241000, "pass_rate": 0.833 },
+  { "date": "2026-03-10", "cost": 6.90, "sessions": 11, "tokens": 228000, "pass_rate": 0.909 },
+  ...
+]
+```
+
+This powers time-series charts in the web UI — cost trends, token usage, pass rates over time — exactly like Langfuse's dashboard but from local data.
+
+### 7.10. Web Dashboard (Local)
+
+A local web UI served by `gctl serve` at `http://localhost:4318/dashboard`. Provides visual equivalents of all CLI analytics.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  GroundCtrl Dashboard                          localhost:4318       │
+├────────┬────────────┬──────────┬──────────┬────────────┬───────────┤
+│ Home   │ Traces     │ Sessions │ Analytics│ Prompts    │ Evals     │
+├────────┴────────────┴──────────┴──────────┴────────────┴───────────┤
+│                                                                     │
+│  ┌─── Overview (last 7 days) ──────────────────────────────────┐   │
+│  │                                                              │   │
+│  │  Total Cost: $42.18    Sessions: 67     Pass Rate: 87%      │   │
+│  │  ▲ +12% from last wk  ▲ +8 from last  ▲ +2% from last     │   │
+│  │                                                              │   │
+│  │  ┌─────────────── Cost Over Time ────────────────────┐      │   │
+│  │  │  $10 ┤                                             │      │   │
+│  │  │      ┤      ╭─╮                                   │      │   │
+│  │  │  $ 8 ┤  ╭─╮ │ │ ╭─╮                              │      │   │
+│  │  │      ┤  │ │ │ │ │ │ ╭─╮                           │      │   │
+│  │  │  $ 6 ┤  │ │ │ │ │ │ │ │ ╭─╮ ╭─╮                  │      │   │
+│  │  │      ┤  │ │ │ │ │ │ │ │ │ │ │ │ ╭─╮              │      │   │
+│  │  │  $ 4 ┤──│─│─│─│─│─│─│─│─│─│─│─│─│─│──            │      │   │
+│  │  │      ┤  Mon Tue Wed Thu Fri Sat Sun                │      │   │
+│  │  │  $ 0 ┤                                             │      │   │
+│  │  └────────────────────────────────────────────────────┘      │   │
+│  │                                                              │   │
+│  │  ┌── Model Breakdown ──┐  ┌── Top Agents ──────────────┐   │   │
+│  │  │ ████████ opus  74%  │  │ claude-code   42 sess $28   │   │   │
+│  │  │ ████  sonnet   20%  │  │ claude-bot-1  18 sess $8    │   │   │
+│  │  │ ██  haiku       6%  │  │ aider          7 sess $5    │   │   │
+│  │  └─────────────────────┘  └─────────────────────────────┘   │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│  ┌─── Recent Sessions ─────────────────────────────────────────┐   │
+│  │ ● sess-5821  alice+claude   "Add webhook retry"    $0.82    │   │
+│  │ ● sess-5822  claude-bot-1   "Fix pagination"       $0.34    │   │
+│  │ ◌ sess-5820  bob+claude     "Migrate auth"  ✓done  $1.24   │   │
+│  │ ◌ sess-5819  docs-bot       "Update API docs" ✓    $0.17   │   │
+│  │ ◌ sess-5818  alice+claude   "Refactor tests"  ✗    $2.18   │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+Dashboard pages:
+
+| Page | Content | Langfuse Equivalent |
+|------|---------|-------------------|
+| **Home** | Overview cards, cost chart, recent sessions, alerts | Dashboard |
+| **Traces** | Searchable/filterable trace list, drill into tree view | Traces |
+| **Sessions** | Session list grouped by user/agent, timeline view | Sessions |
+| **Analytics** | Cost/latency/token charts, model comparison, daily trends | Metrics |
+| **Prompts** | Prompt versions, diff view, A/B test results, token budget | Prompts |
+| **Evals** | Eval suites, benchmark results, score distributions | Evals |
+| **Scores** | Score overview, annotation interface, quality trends | Scores |
+| **Users** | Per-user/agent analytics, activity heatmaps | Users |
+
+#### Technology
+
+The dashboard is a lightweight local web app:
+- **Option A**: Static SPA (React/Solid) served from the Rust binary, queries `/api/analytics/*` endpoints
+- **Option B**: Server-rendered HTMX pages generated by the Rust daemon (zero JS build step)
+- **Option C**: Effect Platform (from gctl-board) serves both board UI and analytics UI
+
+All options read from the same DuckDB + HTTP API. The dashboard is purely a visualization layer — all data logic lives in the API.
+
+### 7.11. Comparison: GroundCtrl vs Langfuse
+
+| Feature | Langfuse | GroundCtrl |
+|---------|----------|------------|
+| **Deployment** | Cloud SaaS or self-hosted server | Local daemon on developer machine |
+| **Storage** | PostgreSQL + ClickHouse | DuckDB (embedded, zero ops) |
+| **Data residency** | Your server or Langfuse cloud | Your laptop (never leaves unless synced) |
+| **Trace model** | Session → Trace → Observation | Same hierarchy, extended for coding agents |
+| **Cost tracking** | Per-generation, per-trace | Per-generation + per-session + per-issue + per-sprint |
+| **Scoring** | Human + automated | Human + automated + outcome-based (PR merged, tests pass) |
+| **Prompt management** | Version, deploy, A/B test | Same + CLAUDE.md-aware + token budget analysis |
+| **Evals** | Dataset-based eval runs | Same + coding-specific metrics (acceptance rate, tool loops) |
+| **User analytics** | Per-user usage metrics | Same + agent-as-user + human+agent pair analytics |
+| **Integration** | SDK (Python, JS, etc.) | OTel protocol (any language) + MITM proxy (zero code) |
+| **Real-time** | WebSocket updates | SSE live feed + CLI watch mode |
+| **Dashboard** | Web UI (React) | Local web UI + full CLI equivalents |
+| **Offline** | Requires server connection | Fully offline, sync when ready |
+| **Cost** | Free tier + paid plans | Free forever (runs on your machine) |
+| **Team sharing** | Built-in (server-based) | R2 sync for team dashboards |
+| **Project management** | None | gctl-board integration (issues ↔ traces) |
+
+### 7.12. GitHub Integration
 
 * **PR Enrichment** — GitHub App auto-comments on PRs with agent summary (tokens, cost, trace link, eval score).
 * **Session Sharing** — Secure shareable links to agent traces for team review.

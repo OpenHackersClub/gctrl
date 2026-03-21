@@ -275,6 +275,84 @@ CREATE INDEX IF NOT EXISTS idx_traffic_timestamp ON traffic(timestamp);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at);
 ```
 
+## 3.5. Analytics Schema (DuckDB)
+
+```sql
+-- Scores (human annotation + automated)
+CREATE TABLE IF NOT EXISTS scores (
+    id              VARCHAR PRIMARY KEY,
+    target_type     VARCHAR NOT NULL,  -- 'session', 'span', 'generation'
+    target_id       VARCHAR NOT NULL,
+    name            VARCHAR NOT NULL,  -- 'quality', 'tests_pass', 'cost_efficiency'
+    value           DOUBLE NOT NULL,
+    comment         VARCHAR,
+    source          VARCHAR NOT NULL DEFAULT 'human',  -- 'human', 'auto', 'model'
+    scored_by       VARCHAR,
+    created_at      VARCHAR NOT NULL
+);
+
+-- Tags (arbitrary metadata on sessions/spans)
+CREATE TABLE IF NOT EXISTS tags (
+    id              VARCHAR PRIMARY KEY,
+    target_type     VARCHAR NOT NULL,
+    target_id       VARCHAR NOT NULL,
+    key             VARCHAR NOT NULL,
+    value           VARCHAR NOT NULL
+);
+
+-- Prompt versions (snapshot of active prompt at session start)
+CREATE TABLE IF NOT EXISTS prompt_versions (
+    hash            VARCHAR PRIMARY KEY,
+    content         VARCHAR NOT NULL,
+    file_path       VARCHAR,
+    label           VARCHAR,
+    created_at      VARCHAR NOT NULL,
+    token_count     INTEGER
+);
+
+-- Session-to-prompt linkage
+CREATE TABLE IF NOT EXISTS session_prompts (
+    session_id      VARCHAR NOT NULL,
+    prompt_hash     VARCHAR NOT NULL,
+    PRIMARY KEY (session_id, prompt_hash)
+);
+
+-- Daily aggregates (materialized for fast charting)
+CREATE TABLE IF NOT EXISTS daily_aggregates (
+    date            VARCHAR NOT NULL,
+    metric          VARCHAR NOT NULL,  -- 'cost', 'sessions', 'tokens', 'pass_rate'
+    dimension       VARCHAR NOT NULL DEFAULT 'total',  -- 'total', model name, agent name
+    value           DOUBLE NOT NULL,
+    PRIMARY KEY (date, metric, dimension)
+);
+
+-- Alert rules
+CREATE TABLE IF NOT EXISTS alert_rules (
+    id              VARCHAR PRIMARY KEY,
+    name            VARCHAR NOT NULL,
+    condition_type  VARCHAR NOT NULL,  -- 'session_cost', 'error_loop', 'latency_spike'
+    threshold       DOUBLE NOT NULL,
+    action          VARCHAR NOT NULL DEFAULT 'warn',  -- 'warn', 'pause', 'notify'
+    enabled         BOOLEAN DEFAULT TRUE
+);
+
+-- Alert events (fired alerts)
+CREATE TABLE IF NOT EXISTS alert_events (
+    id              VARCHAR PRIMARY KEY,
+    rule_id         VARCHAR NOT NULL,
+    session_id      VARCHAR,
+    timestamp       VARCHAR NOT NULL,
+    message         VARCHAR NOT NULL,
+    acknowledged    BOOLEAN DEFAULT FALSE
+);
+
+CREATE INDEX IF NOT EXISTS idx_scores_target ON scores(target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_tags_target ON tags(target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_tags_key ON tags(key, value);
+CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_aggregates(date);
+CREATE INDEX IF NOT EXISTS idx_session_prompts ON session_prompts(prompt_hash);
+```
+
 ## 4. OTel Receiver (`gctl-otel`)
 
 ### HTTP Endpoint
