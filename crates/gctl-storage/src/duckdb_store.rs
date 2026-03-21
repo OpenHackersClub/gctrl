@@ -3,8 +3,9 @@ use std::sync::Mutex;
 
 use duckdb::{params, Connection};
 use gctl_core::{
-    AgentAnalytics, Analytics, GctlError, ModelAnalytics, Result, Session, SessionId,
-    SessionStatus, Span, SpanStatus, TrafficFilter, TrafficRecord, TrafficStats,
+    AgentAnalytics, AlertEvent, AlertRule, Analytics, DailyAggregate, GctlError, ModelAnalytics,
+    PromptVersion, Result, Score, Session, SessionId, SessionStatus, Span, SpanStatus, Tag,
+    TrafficFilter, TrafficRecord, TrafficStats,
 };
 
 use crate::schema;
@@ -334,6 +335,234 @@ impl DuckDbStore {
             by_model,
         })
     }
+
+    // --- Scores ---
+    pub fn insert_score(&self, score: &Score) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO scores (id, target_type, target_id, name, value, comment, source, scored_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![score.id, score.target_type, score.target_id, score.name, score.value, score.comment, score.source, score.scored_by, score.created_at.to_rfc3339()],
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_scores(&self, target_type: &str, target_id: &str) -> Result<Vec<Score>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, target_type, target_id, name, value, comment, source, scored_by, created_at FROM scores WHERE target_type = ? AND target_id = ? ORDER BY created_at DESC"
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt.query(params![target_type, target_id]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut scores = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            scores.push(row_to_score(row)?);
+        }
+        Ok(scores)
+    }
+
+    pub fn get_score_summary(&self, name: &str) -> Result<(u64, u64, f64)> {
+        // Returns (pass_count, fail_count, avg_value)
+        let conn = self.conn.lock().unwrap();
+        let total: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM scores WHERE name = ?", params![name], |row| row.get(0)
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let pass: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM scores WHERE name = ? AND value >= 1.0", params![name], |row| row.get(0)
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let avg: f64 = conn.query_row(
+            "SELECT COALESCE(AVG(value), 0) FROM scores WHERE name = ?", params![name], |row| row.get(0)
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok((pass as u64, (total - pass) as u64, avg))
+    }
+
+    // --- Tags ---
+    pub fn insert_tag(&self, tag: &Tag) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO tags (id, target_type, target_id, key, value) VALUES (?, ?, ?, ?, ?)",
+            params![tag.id, tag.target_type, tag.target_id, tag.key, tag.value],
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_tags(&self, target_type: &str, target_id: &str) -> Result<Vec<Tag>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, target_type, target_id, key, value FROM tags WHERE target_type = ? AND target_id = ?"
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt.query(params![target_type, target_id]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut tags = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            let id: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let tt: String = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let ti: String = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let k: String = row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let v: String = row.get(4).map_err(|e| GctlError::Storage(e.to_string()))?;
+            tags.push(Tag { id, target_type: tt, target_id: ti, key: k, value: v });
+        }
+        Ok(tags)
+    }
+
+    // --- Prompt Versions ---
+    pub fn insert_prompt_version(&self, pv: &PromptVersion) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO prompt_versions (hash, content, file_path, label, created_at, token_count) VALUES (?, ?, ?, ?, ?, ?)",
+            params![pv.hash, pv.content, pv.file_path, pv.label, pv.created_at.to_rfc3339(), pv.token_count],
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn link_session_prompt(&self, session_id: &str, prompt_hash: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO session_prompts (session_id, prompt_hash) VALUES (?, ?)",
+            params![session_id, prompt_hash],
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_prompt_version(&self, hash: &str) -> Result<Option<PromptVersion>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT hash, content, file_path, label, created_at, token_count FROM prompt_versions WHERE hash = ?"
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt.query(params![hash]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        if let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            Ok(Some(row_to_prompt_version(row)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn list_prompt_versions(&self) -> Result<Vec<PromptVersion>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT hash, content, file_path, label, created_at, token_count FROM prompt_versions ORDER BY created_at DESC"
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut pvs = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            pvs.push(row_to_prompt_version(row)?);
+        }
+        Ok(pvs)
+    }
+
+    // --- Daily Aggregates ---
+    pub fn upsert_daily_aggregate(&self, agg: &DailyAggregate) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO daily_aggregates (date, metric, dimension, value) VALUES (?, ?, ?, ?)",
+            params![agg.date, agg.metric, agg.dimension, agg.value],
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_daily_aggregates(&self, days: u32) -> Result<Vec<DailyAggregate>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT date, metric, dimension, value FROM daily_aggregates ORDER BY date DESC LIMIT ?"
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt.query(params![(days * 10) as i64]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut aggs = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            let date: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let metric: String = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let dimension: String = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let value: f64 = row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?;
+            aggs.push(DailyAggregate { date, metric, dimension, value });
+        }
+        Ok(aggs)
+    }
+
+    // --- Alert Rules ---
+    pub fn insert_alert_rule(&self, rule: &AlertRule) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO alert_rules (id, name, condition_type, threshold, action, enabled) VALUES (?, ?, ?, ?, ?, ?)",
+            params![rule.id, rule.name, rule.condition_type, rule.threshold, rule.action, rule.enabled],
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn list_alert_rules(&self) -> Result<Vec<AlertRule>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, condition_type, threshold, action, enabled FROM alert_rules WHERE enabled = TRUE"
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rules = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            let id: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let name: String = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let ct: String = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let threshold: f64 = row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let action: String = row.get(4).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let enabled: bool = row.get(5).map_err(|e| GctlError::Storage(e.to_string()))?;
+            rules.push(AlertRule { id, name, condition_type: ct, threshold, action, enabled });
+        }
+        Ok(rules)
+    }
+
+    pub fn insert_alert_event(&self, event: &AlertEvent) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO alert_events (id, rule_id, session_id, timestamp, message, acknowledged) VALUES (?, ?, ?, ?, ?, ?)",
+            params![event.id, event.rule_id, event.session_id, event.timestamp.to_rfc3339(), event.message, event.acknowledged],
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    // --- Cost Analytics ---
+    pub fn get_cost_by_model(&self) -> Result<Vec<(String, f64, u64)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT model, COALESCE(SUM(cost_usd), 0), COUNT(*) FROM spans WHERE model IS NOT NULL GROUP BY model ORDER BY SUM(cost_usd) DESC"
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut results = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            let model: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let cost: f64 = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let count: i64 = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
+            results.push((model, cost, count as u64));
+        }
+        Ok(results)
+    }
+
+    pub fn get_cost_by_agent(&self) -> Result<Vec<(String, f64, u64)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT agent_name, COALESCE(SUM(total_cost_usd), 0), COUNT(*) FROM sessions GROUP BY agent_name ORDER BY SUM(total_cost_usd) DESC"
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut results = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            let agent: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let cost: f64 = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let count: i64 = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
+            results.push((agent, cost, count as u64));
+        }
+        Ok(results)
+    }
+
+    // --- Latency Analytics ---
+    pub fn get_latency_by_model(&self) -> Result<Vec<(String, f64, f64, f64)>> {
+        // Returns (model, p50_ms, p95_ms, p99_ms)
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT model, PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_ms), PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms), PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY duration_ms) FROM spans WHERE model IS NOT NULL GROUP BY model"
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut results = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            let model: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let p50: f64 = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let p95: f64 = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let p99: f64 = row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?;
+            results.push((model, p50, p95, p99));
+        }
+        Ok(results)
+    }
 }
 
 fn row_to_session(row: &duckdb::Row<'_>) -> Result<Session> {
@@ -438,6 +667,40 @@ fn row_to_traffic(row: &duckdb::Row<'_>) -> Result<TrafficRecord> {
         response_size_bytes: response_size as u64,
         duration_ms: duration_ms as u64,
         session_id: session_id.map(gctl_core::SessionId),
+    })
+}
+
+fn row_to_score(row: &duckdb::Row<'_>) -> Result<Score> {
+    let id: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let target_type: String = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let target_id: String = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let name: String = row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let value: f64 = row.get(4).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let comment: Option<String> = row.get(5).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let source: String = row.get(6).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let scored_by: Option<String> = row.get(7).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let created_at: String = row.get(8).map_err(|e| GctlError::Storage(e.to_string()))?;
+    Ok(Score {
+        id, target_type, target_id, name, value, comment, source, scored_by,
+        created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+            .map_err(|e| GctlError::Storage(format!("parse timestamp: {e}")))?
+            .with_timezone(&chrono::Utc),
+    })
+}
+
+fn row_to_prompt_version(row: &duckdb::Row<'_>) -> Result<PromptVersion> {
+    let hash: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let content: String = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let file_path: Option<String> = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let label: Option<String> = row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let created_at: String = row.get(4).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let token_count: Option<i32> = row.get(5).map_err(|e| GctlError::Storage(e.to_string()))?;
+    Ok(PromptVersion {
+        hash, content, file_path, label,
+        created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+            .map_err(|e| GctlError::Storage(format!("parse timestamp: {e}")))?
+            .with_timezone(&chrono::Utc),
+        token_count,
     })
 }
 
@@ -630,5 +893,156 @@ mod tests {
         assert_eq!(analytics.by_model.len(), 1);
         assert_eq!(analytics.by_model[0].model, "claude-opus-4-6");
         assert_eq!(analytics.by_model[0].span_count, 2);
+    }
+
+    #[test]
+    fn test_score_insert_and_query() {
+        let store = test_store();
+        let score = Score {
+            id: "score1".into(),
+            target_type: "session".into(),
+            target_id: "s1".into(),
+            name: "quality".into(),
+            value: 4.0,
+            comment: Some("Good work".into()),
+            source: "human".into(),
+            scored_by: Some("alice".into()),
+            created_at: Utc::now(),
+        };
+        store.insert_score(&score).unwrap();
+        let scores = store.get_scores("session", "s1").unwrap();
+        assert_eq!(scores.len(), 1);
+        assert_eq!(scores[0].name, "quality");
+        assert!((scores[0].value - 4.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_score_summary() {
+        let store = test_store();
+        for i in 0..5 {
+            let score = Score {
+                id: format!("score{i}"),
+                target_type: "session".into(),
+                target_id: format!("s{i}"),
+                name: "tests_pass".into(),
+                value: if i < 4 { 1.0 } else { 0.0 },
+                comment: None,
+                source: "auto".into(),
+                scored_by: None,
+                created_at: Utc::now(),
+            };
+            store.insert_score(&score).unwrap();
+        }
+        let (pass, fail, avg) = store.get_score_summary("tests_pass").unwrap();
+        assert_eq!(pass, 4);
+        assert_eq!(fail, 1);
+        assert!((avg - 0.8).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_tag_insert_and_query() {
+        let store = test_store();
+        let tag = Tag {
+            id: "tag1".into(),
+            target_type: "session".into(),
+            target_id: "s1".into(),
+            key: "project".into(),
+            value: "api-server".into(),
+        };
+        store.insert_tag(&tag).unwrap();
+        let tags = store.get_tags("session", "s1").unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].key, "project");
+        assert_eq!(tags[0].value, "api-server");
+    }
+
+    #[test]
+    fn test_prompt_version_roundtrip() {
+        let store = test_store();
+        let pv = PromptVersion {
+            hash: "abc123".into(),
+            content: "You are a helpful assistant.".into(),
+            file_path: Some("CLAUDE.md".into()),
+            label: Some("v2.3".into()),
+            created_at: Utc::now(),
+            token_count: Some(42),
+        };
+        store.insert_prompt_version(&pv).unwrap();
+        let retrieved = store.get_prompt_version("abc123").unwrap();
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.hash, "abc123");
+        assert_eq!(retrieved.token_count, Some(42));
+    }
+
+    #[test]
+    fn test_prompt_version_not_found() {
+        let store = test_store();
+        assert!(store.get_prompt_version("nonexistent").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_daily_aggregates() {
+        let store = test_store();
+        let agg = DailyAggregate {
+            date: "2026-03-22".into(),
+            metric: "cost".into(),
+            dimension: "total".into(),
+            value: 42.18,
+        };
+        store.upsert_daily_aggregate(&agg).unwrap();
+        let aggs = store.get_daily_aggregates(7).unwrap();
+        assert_eq!(aggs.len(), 1);
+        assert_eq!(aggs[0].date, "2026-03-22");
+        assert!((aggs[0].value - 42.18).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_alert_rules() {
+        let store = test_store();
+        let rule = AlertRule {
+            id: "rule1".into(),
+            name: "budget-breach".into(),
+            condition_type: "session_cost".into(),
+            threshold: 5.0,
+            action: "warn".into(),
+            enabled: true,
+        };
+        store.insert_alert_rule(&rule).unwrap();
+        let rules = store.list_alert_rules().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "budget-breach");
+    }
+
+    #[test]
+    fn test_cost_by_model() {
+        let store = test_store();
+        store.insert_session(&make_session("s1")).unwrap();
+        store.insert_spans(&[make_span("sp1", "s1"), make_span("sp2", "s1")]).unwrap();
+        let costs = store.get_cost_by_model().unwrap();
+        assert_eq!(costs.len(), 1);
+        assert_eq!(costs[0].0, "claude-opus-4-6");
+        assert!((costs[0].1 - 0.10).abs() < 0.001);  // 2 * 0.05
+        assert_eq!(costs[0].2, 2);
+    }
+
+    #[test]
+    fn test_cost_by_agent() {
+        let store = test_store();
+        store.insert_session(&make_session("s1")).unwrap();
+        store.insert_spans(&[make_span("sp1", "s1")]).unwrap();
+        let costs = store.get_cost_by_agent().unwrap();
+        assert_eq!(costs.len(), 1);
+        assert_eq!(costs[0].0, "claude");
+    }
+
+    #[test]
+    fn test_latency_by_model() {
+        let store = test_store();
+        store.insert_session(&make_session("s1")).unwrap();
+        store.insert_spans(&[make_span("sp1", "s1"), make_span("sp2", "s1")]).unwrap();
+        let latencies = store.get_latency_by_model().unwrap();
+        assert_eq!(latencies.len(), 1);
+        assert_eq!(latencies[0].0, "claude-opus-4-6");
     }
 }

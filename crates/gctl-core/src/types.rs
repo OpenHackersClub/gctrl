@@ -194,6 +194,72 @@ impl PolicyDecision {
     }
 }
 
+// --- Scores ---
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Score {
+    pub id: String,
+    pub target_type: String,  // "session", "span", "generation"
+    pub target_id: String,
+    pub name: String,
+    pub value: f64,
+    pub comment: Option<String>,
+    pub source: String,  // "human", "auto", "model"
+    pub scored_by: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+// --- Tags ---
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Tag {
+    pub id: String,
+    pub target_type: String,
+    pub target_id: String,
+    pub key: String,
+    pub value: String,
+}
+
+// --- Prompt Version ---
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptVersion {
+    pub hash: String,
+    pub content: String,
+    pub file_path: Option<String>,
+    pub label: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub token_count: Option<i32>,
+}
+
+// --- Alert Rule ---
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertRule {
+    pub id: String,
+    pub name: String,
+    pub condition_type: String,
+    pub threshold: f64,
+    pub action: String,
+    pub enabled: bool,
+}
+
+// --- Alert Event ---
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertEvent {
+    pub id: String,
+    pub rule_id: String,
+    pub session_id: Option<String>,
+    pub timestamp: DateTime<Utc>,
+    pub message: String,
+    pub acknowledged: bool,
+}
+
+// --- Daily Aggregate ---
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DailyAggregate {
+    pub date: String,
+    pub metric: String,
+    pub dimension: String,
+    pub value: f64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

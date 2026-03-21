@@ -63,12 +63,92 @@ CREATE TABLE IF NOT EXISTS guardrail_events (
 )
 "#;
 
+pub const CREATE_SCORES_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS scores (
+    id VARCHAR PRIMARY KEY,
+    target_type VARCHAR NOT NULL,
+    target_id VARCHAR NOT NULL,
+    name VARCHAR NOT NULL,
+    value DOUBLE NOT NULL,
+    comment VARCHAR,
+    source VARCHAR NOT NULL DEFAULT 'human',
+    scored_by VARCHAR,
+    created_at VARCHAR NOT NULL
+)
+"#;
+
+pub const CREATE_TAGS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS tags (
+    id VARCHAR PRIMARY KEY,
+    target_type VARCHAR NOT NULL,
+    target_id VARCHAR NOT NULL,
+    key VARCHAR NOT NULL,
+    value VARCHAR NOT NULL
+)
+"#;
+
+pub const CREATE_PROMPT_VERSIONS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS prompt_versions (
+    hash VARCHAR PRIMARY KEY,
+    content VARCHAR NOT NULL,
+    file_path VARCHAR,
+    label VARCHAR,
+    created_at VARCHAR NOT NULL,
+    token_count INTEGER
+)
+"#;
+
+pub const CREATE_SESSION_PROMPTS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS session_prompts (
+    session_id VARCHAR NOT NULL,
+    prompt_hash VARCHAR NOT NULL,
+    PRIMARY KEY (session_id, prompt_hash)
+)
+"#;
+
+pub const CREATE_DAILY_AGGREGATES_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS daily_aggregates (
+    date VARCHAR NOT NULL,
+    metric VARCHAR NOT NULL,
+    dimension VARCHAR NOT NULL DEFAULT 'total',
+    value DOUBLE NOT NULL,
+    PRIMARY KEY (date, metric, dimension)
+)
+"#;
+
+pub const CREATE_ALERT_RULES_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS alert_rules (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR NOT NULL,
+    condition_type VARCHAR NOT NULL,
+    threshold DOUBLE NOT NULL,
+    action VARCHAR NOT NULL DEFAULT 'warn',
+    enabled BOOLEAN DEFAULT TRUE
+)
+"#;
+
+pub const CREATE_ALERT_EVENTS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS alert_events (
+    id VARCHAR PRIMARY KEY,
+    rule_id VARCHAR NOT NULL,
+    session_id VARCHAR,
+    timestamp VARCHAR NOT NULL,
+    message VARCHAR NOT NULL,
+    acknowledged BOOLEAN DEFAULT FALSE
+)
+"#;
+
 pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_spans_session ON spans(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(trace_id)",
     "CREATE INDEX IF NOT EXISTS idx_traffic_host ON traffic(host)",
     "CREATE INDEX IF NOT EXISTS idx_traffic_timestamp ON traffic(timestamp)",
     "CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at)",
+    "CREATE INDEX IF NOT EXISTS idx_scores_target ON scores(target_type, target_id)",
+    "CREATE INDEX IF NOT EXISTS idx_tags_target ON tags(target_type, target_id)",
+    "CREATE INDEX IF NOT EXISTS idx_tags_key ON tags(key, value)",
+    "CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_aggregates(date)",
+    "CREATE INDEX IF NOT EXISTS idx_session_prompts ON session_prompts(prompt_hash)",
 ];
 
 pub fn all_migrations() -> Vec<&'static str> {
@@ -77,6 +157,13 @@ pub fn all_migrations() -> Vec<&'static str> {
         CREATE_SPANS_TABLE,
         CREATE_TRAFFIC_TABLE,
         CREATE_GUARDRAIL_EVENTS_TABLE,
+        CREATE_SCORES_TABLE,
+        CREATE_TAGS_TABLE,
+        CREATE_PROMPT_VERSIONS_TABLE,
+        CREATE_SESSION_PROMPTS_TABLE,
+        CREATE_DAILY_AGGREGATES_TABLE,
+        CREATE_ALERT_RULES_TABLE,
+        CREATE_ALERT_EVENTS_TABLE,
     ];
     stmts.extend(CREATE_INDEXES.iter());
     stmts
