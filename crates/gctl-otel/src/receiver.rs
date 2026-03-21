@@ -1,13 +1,14 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::State,
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
 use gctl_storage::DuckDbStore;
+use serde::Deserialize;
 
 use crate::span_processor::{self, OtlpExportRequest};
 
@@ -18,13 +19,68 @@ pub struct AppState {
 pub fn create_router(store: DuckDbStore) -> Router {
     let state = Arc::new(AppState { store });
     Router::new()
+        // OTel ingestion
         .route("/v1/traces", post(ingest_traces))
+        // Query endpoints
+        .route("/api/sessions", get(list_sessions))
+        .route("/api/sessions/{session_id}", get(get_session))
+        .route("/api/sessions/{session_id}/spans", get(get_spans))
+        .route("/api/analytics", get(get_analytics))
+        // Health
         .route("/health", get(health))
         .with_state(state)
 }
 
 async fn health() -> impl IntoResponse {
     Json(serde_json::json!({"status": "ok"}))
+}
+
+#[derive(Deserialize)]
+struct ListParams {
+    #[serde(default = "default_limit")]
+    limit: usize,
+}
+
+fn default_limit() -> usize {
+    20
+}
+
+async fn list_sessions(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ListParams>,
+) -> impl IntoResponse {
+    match state.store.list_sessions(params.limit) {
+        Ok(sessions) => Json(serde_json::to_value(&sessions).unwrap()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn get_session(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    match state.store.get_session(&gctl_core::SessionId(session_id.clone())) {
+        Ok(Some(session)) => Json(serde_json::to_value(&session).unwrap()).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, format!("session {session_id} not found")).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn get_spans(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    match state.store.query_spans(&gctl_core::SessionId(session_id)) {
+        Ok(spans) => Json(serde_json::to_value(&spans).unwrap()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn get_analytics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match state.store.get_analytics() {
+        Ok(analytics) => Json(serde_json::to_value(&analytics).unwrap()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 async fn ingest_traces(
@@ -76,6 +132,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use http::Request;
+    use http_body_util::BodyExt;
     use tower::ServiceExt;
 
     fn test_app() -> Router {
@@ -96,23 +153,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_ingest_traces_empty() {
+    async fn test_list_sessions_empty() {
         let app = test_app();
-        let body = serde_json::json!({"resourceSpans": []});
         let req = Request::builder()
-            .method("POST")
-            .uri("/v1/traces")
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .uri("/api/sessions")
+            .body(Body::empty())
             .unwrap();
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.as_array().unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn test_ingest_traces_with_spans() {
+    async fn test_get_session_not_found() {
         let app = test_app();
+        let req = Request::builder()
+            .uri("/api/sessions/nonexistent")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_ingest_then_query() {
+        let store = DuckDbStore::open(":memory:").unwrap();
+        let app = create_router(store);
+
+        // Ingest spans
         let body = serde_json::json!({
             "resourceSpans": [{
                 "resource": {
@@ -139,6 +211,61 @@ mod tests {
             }]
         });
 
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/traces")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Query sessions
+        let req = Request::builder()
+            .uri("/api/sessions")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let sessions: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(sessions.as_array().unwrap().len(), 1);
+        assert_eq!(sessions[0]["agent_name"], "test-agent");
+
+        // Query spans
+        let req = Request::builder()
+            .uri("/api/sessions/test-session/spans")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let spans: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(spans.as_array().unwrap().len(), 1);
+        assert_eq!(spans[0]["operation_name"], "llm.call");
+        assert_eq!(spans[0]["input_tokens"], 500);
+
+        // Query analytics
+        let req = Request::builder()
+            .uri("/api/analytics")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let analytics: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(analytics["total_sessions"], 1);
+        assert_eq!(analytics["total_spans"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_ingest_traces_empty() {
+        let app = test_app();
+        let body = serde_json::json!({"resourceSpans": []});
         let req = Request::builder()
             .method("POST")
             .uri("/v1/traces")

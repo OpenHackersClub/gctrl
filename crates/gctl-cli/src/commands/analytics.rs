@@ -1,10 +1,8 @@
 use anyhow::Result;
-use gctl_core::GctlConfig;
 use gctl_storage::DuckDbStore;
 
-pub fn run() -> Result<()> {
-    let config = GctlConfig::default();
-    let store = DuckDbStore::open(&config.storage.db_path.to_string_lossy())?;
+pub fn run(db_path: &str) -> Result<()> {
+    let store = DuckDbStore::open(db_path)?;
     let analytics = store.get_analytics()?;
 
     println!("=== GroundCtrl Analytics ===");

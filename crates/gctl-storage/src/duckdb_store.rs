@@ -3,8 +3,8 @@ use std::sync::Mutex;
 
 use duckdb::{params, Connection};
 use gctl_core::{
-    Analytics, GctlError, Result, Session, SessionId, SessionStatus, Span, SpanStatus,
-    TrafficFilter, TrafficRecord, TrafficStats,
+    AgentAnalytics, Analytics, GctlError, ModelAnalytics, Result, Session, SessionId,
+    SessionStatus, Span, SpanStatus, TrafficFilter, TrafficRecord, TrafficStats,
 };
 
 use crate::schema;
@@ -97,6 +97,28 @@ impl DuckDbStore {
         for span in spans {
             self.insert_span(span)?;
         }
+        // Update session aggregates for affected sessions
+        let mut session_ids = std::collections::HashSet::new();
+        for span in spans {
+            session_ids.insert(span.session_id.0.clone());
+        }
+        for sid in session_ids {
+            self.update_session_aggregates(&sid)?;
+        }
+        Ok(())
+    }
+
+    fn update_session_aggregates(&self, session_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE sessions SET
+                total_cost_usd = (SELECT COALESCE(SUM(cost_usd), 0) FROM spans WHERE session_id = ?1),
+                total_input_tokens = (SELECT COALESCE(SUM(input_tokens), 0) FROM spans WHERE session_id = ?1),
+                total_output_tokens = (SELECT COALESCE(SUM(output_tokens), 0) FROM spans WHERE session_id = ?1)
+             WHERE id = ?1",
+            params![session_id],
+        )
+        .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
     }
 
@@ -244,11 +266,72 @@ impl DuckDbStore {
             )
             .map_err(|e| GctlError::Storage(e.to_string()))?;
 
+        let total_input: i64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(total_input_tokens), 0) FROM sessions",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+
+        let total_output: i64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(total_output_tokens), 0) FROM sessions",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+
+        // By agent
+        let mut by_agent = Vec::new();
+        {
+            let mut stmt = conn
+                .prepare("SELECT agent_name, COUNT(*), COALESCE(SUM(total_cost_usd), 0) FROM sessions GROUP BY agent_name ORDER BY SUM(total_cost_usd) DESC")
+                .map_err(|e| GctlError::Storage(e.to_string()))?;
+            let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+            while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+                let agent_name: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+                let count: i64 = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+                let cost: f64 = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
+                by_agent.push(AgentAnalytics {
+                    agent_name,
+                    session_count: count as u64,
+                    total_cost_usd: cost,
+                });
+            }
+        }
+
+        // By model
+        let mut by_model = Vec::new();
+        {
+            let mut stmt = conn
+                .prepare("SELECT model, COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(cost_usd), 0) FROM spans WHERE model IS NOT NULL GROUP BY model ORDER BY SUM(cost_usd) DESC")
+                .map_err(|e| GctlError::Storage(e.to_string()))?;
+            let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+            while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+                let model: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+                let count: i64 = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+                let input: i64 = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
+                let output: i64 = row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?;
+                let cost: f64 = row.get(4).map_err(|e| GctlError::Storage(e.to_string()))?;
+                by_model.push(ModelAnalytics {
+                    model,
+                    span_count: count as u64,
+                    total_input_tokens: input as u64,
+                    total_output_tokens: output as u64,
+                    total_cost_usd: cost,
+                });
+            }
+        }
+
         Ok(Analytics {
             total_sessions: total_sessions as u64,
             total_spans: total_spans as u64,
             total_cost_usd: total_cost,
-            ..Default::default()
+            total_input_tokens: total_input as u64,
+            total_output_tokens: total_output as u64,
+            by_agent,
+            by_model,
         })
     }
 }
@@ -499,16 +582,53 @@ mod tests {
     }
 
     #[test]
-    fn test_analytics() {
+    fn test_analytics_empty() {
         let store = test_store();
-        let mut session = make_session("s1");
-        session.total_cost_usd = 1.50;
-        store.insert_session(&session).unwrap();
-        store.insert_span(&make_span("sp1", "s1")).unwrap();
+        let analytics = store.get_analytics().unwrap();
+        assert_eq!(analytics.total_sessions, 0);
+        assert_eq!(analytics.total_spans, 0);
+        assert!(analytics.by_agent.is_empty());
+        assert!(analytics.by_model.is_empty());
+    }
+
+    #[test]
+    fn test_session_aggregation_on_insert_spans() {
+        let store = test_store();
+        store.insert_session(&make_session("s1")).unwrap();
+
+        let spans: Vec<Span> = (0..3).map(|i| make_span(&format!("sp{i}"), "s1")).collect();
+        store.insert_spans(&spans).unwrap();
+
+        // Session should now have aggregated totals
+        let session = store.get_session(&SessionId("s1".into())).unwrap().unwrap();
+        assert_eq!(session.total_input_tokens, 3000);  // 3 * 1000
+        assert_eq!(session.total_output_tokens, 1500); // 3 * 500
+        assert!((session.total_cost_usd - 0.15).abs() < 0.001); // 3 * 0.05
+    }
+
+    #[test]
+    fn test_analytics_by_agent_and_model() {
+        let store = test_store();
+        store.insert_session(&make_session("s1")).unwrap();
+
+        let spans: Vec<Span> = (0..2).map(|i| make_span(&format!("sp{i}"), "s1")).collect();
+        store.insert_spans(&spans).unwrap();
 
         let analytics = store.get_analytics().unwrap();
         assert_eq!(analytics.total_sessions, 1);
-        assert_eq!(analytics.total_spans, 1);
-        assert!((analytics.total_cost_usd - 1.50).abs() < f64::EPSILON);
+        assert_eq!(analytics.total_spans, 2);
+        assert!((analytics.total_cost_usd - 0.10).abs() < 0.001);
+        assert_eq!(analytics.total_input_tokens, 2000);
+        assert_eq!(analytics.total_output_tokens, 1000);
+
+        // by_agent
+        assert_eq!(analytics.by_agent.len(), 1);
+        assert_eq!(analytics.by_agent[0].agent_name, "claude");
+        assert_eq!(analytics.by_agent[0].session_count, 1);
+
+        // by_model
+        assert_eq!(analytics.by_model.len(), 1);
+        assert_eq!(analytics.by_model[0].model, "claude-opus-4-6");
+        assert_eq!(analytics.by_model[0].span_count, 2);
     }
 }

@@ -6,9 +6,9 @@ use gctl_guardrails::policies::{
 };
 use gctl_storage::DuckDbStore;
 
-pub fn run(session_id: &str) -> Result<()> {
+pub fn run(session_id: &str, db_path: &str) -> Result<()> {
     let config = GctlConfig::default();
-    let store = DuckDbStore::open(&config.storage.db_path.to_string_lossy())?;
+    let store = DuckDbStore::open(db_path)?;
 
     let session = store.get_session(&SessionId(session_id.into()))?;
     let session = match session {

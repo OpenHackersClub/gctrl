@@ -6,6 +6,10 @@ mod commands;
 #[derive(Parser)]
 #[command(name = "gctl", version, about = "GroundCtrl — local-first OS for human+agent teams")]
 struct Cli {
+    /// Path to DuckDB database file (default: ~/.local/share/gctl/gctl.duckdb)
+    #[arg(long, global = true)]
+    db: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -57,6 +61,15 @@ enum Commands {
     Status,
 }
 
+fn resolve_db_path(db_override: &Option<String>) -> String {
+    if let Some(ref db) = db_override {
+        db.clone()
+    } else {
+        let config = gctl_core::GctlConfig::default();
+        config.storage.db_path.to_string_lossy().to_string()
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -67,14 +80,15 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    let db_path = resolve_db_path(&cli.db);
 
     match cli.command {
-        Commands::Serve { port, host } => commands::serve::run(host, port).await,
-        Commands::Sessions { limit, format } => commands::sessions::run(limit, &format),
-        Commands::Spans { session_id, format } => commands::spans::run(&session_id, &format),
-        Commands::Analytics => commands::analytics::run(),
-        Commands::Query { query, raw } => commands::query::run(&query, raw),
-        Commands::Check { session_id } => commands::check::run(&session_id),
+        Commands::Serve { port, host } => commands::serve::run(host, port, &db_path).await,
+        Commands::Sessions { limit, format } => commands::sessions::run(limit, &format, &db_path),
+        Commands::Spans { session_id, format } => commands::spans::run(&session_id, &format, &db_path),
+        Commands::Analytics => commands::analytics::run(&db_path),
+        Commands::Query { query, raw } => commands::query::run(&query, raw, &db_path),
+        Commands::Check { session_id } => commands::check::run(&session_id, &db_path),
         Commands::Status => commands::status::run(),
     }
 }

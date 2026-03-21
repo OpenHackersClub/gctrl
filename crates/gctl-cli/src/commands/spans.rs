@@ -1,10 +1,9 @@
 use anyhow::Result;
-use gctl_core::{GctlConfig, SessionId};
+use gctl_core::SessionId;
 use gctl_storage::DuckDbStore;
 
-pub fn run(session_id: &str, format: &str) -> Result<()> {
-    let config = GctlConfig::default();
-    let store = DuckDbStore::open(&config.storage.db_path.to_string_lossy())?;
+pub fn run(session_id: &str, format: &str, db_path: &str) -> Result<()> {
+    let store = DuckDbStore::open(db_path)?;
     let spans = store.query_spans(&SessionId(session_id.into()))?;
 
     match format {
