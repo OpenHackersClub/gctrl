@@ -33,6 +33,10 @@ pub fn create_router(store: DuckDbStore) -> Router {
         .route("/api/analytics/score", post(create_score))
         .route("/api/analytics/tag", post(create_tag))
         .route("/api/analytics/alerts", get(list_alerts))
+        // Trace tree (Langfuse-style)
+        .route("/api/sessions/{session_id}/tree", get(get_trace_tree))
+        // Auto-score
+        .route("/api/sessions/{session_id}/auto-score", post(auto_score_session))
         // Health
         .route("/health", get(health))
         .with_state(state)
@@ -79,6 +83,89 @@ async fn get_spans(
 ) -> impl IntoResponse {
     match state.store.query_spans(&gctl_core::SessionId(session_id)) {
         Ok(spans) => Json(serde_json::to_value(&spans).unwrap()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn get_trace_tree(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    let sid = gctl_core::SessionId(session_id.clone());
+    let session = match state.store.get_session(&sid) {
+        Ok(Some(s)) => s,
+        Ok(None) => return (StatusCode::NOT_FOUND, format!("session {session_id} not found")).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let spans = match state.store.query_spans(&sid) {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let scores = state.store.get_scores("session", &session_id).unwrap_or_default();
+    let tags = state.store.get_tags("session", &session_id).unwrap_or_default();
+
+    // Build tree: root spans (no parent) with children nested
+    let root_spans: Vec<&gctl_core::Span> = spans.iter()
+        .filter(|s| s.parent_span_id.is_none())
+        .collect();
+
+    let build_node = |span: &gctl_core::Span| -> serde_json::Value {
+        let children: Vec<serde_json::Value> = spans.iter()
+            .filter(|s| s.parent_span_id.as_ref().map(|p| &p.0) == Some(&span.span_id.0))
+            .map(|child| {
+                serde_json::json!({
+                    "span_id": child.span_id.0,
+                    "type": child.span_type.as_str(),
+                    "operation": child.operation_name,
+                    "model": child.model,
+                    "input_tokens": child.input_tokens,
+                    "output_tokens": child.output_tokens,
+                    "cost_usd": child.cost_usd,
+                    "duration_ms": child.duration_ms,
+                    "status": child.status.as_str(),
+                })
+            })
+            .collect();
+
+        serde_json::json!({
+            "span_id": span.span_id.0,
+            "type": span.span_type.as_str(),
+            "operation": span.operation_name,
+            "model": span.model,
+            "input_tokens": span.input_tokens,
+            "output_tokens": span.output_tokens,
+            "cost_usd": span.cost_usd,
+            "duration_ms": span.duration_ms,
+            "status": span.status.as_str(),
+            "children": children,
+        })
+    };
+
+    let tree: Vec<serde_json::Value> = root_spans.iter().map(|s| build_node(s)).collect();
+
+    Json(serde_json::json!({
+        "session": {
+            "id": session.id.0,
+            "agent_name": session.agent_name,
+            "status": session.status.as_str(),
+            "total_cost_usd": session.total_cost_usd,
+            "total_input_tokens": session.total_input_tokens,
+            "total_output_tokens": session.total_output_tokens,
+            "started_at": session.started_at.to_rfc3339(),
+        },
+        "spans": tree,
+        "span_count": spans.len(),
+        "scores": scores.iter().map(|s| serde_json::json!({"name": s.name, "value": s.value, "source": s.source})).collect::<Vec<_>>(),
+        "tags": tags.iter().map(|t| serde_json::json!({"key": t.key, "value": t.value})).collect::<Vec<_>>(),
+    })).into_response()
+}
+
+async fn auto_score_session(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    match state.store.auto_score_session(&session_id) {
+        Ok(scores) => (StatusCode::OK, Json(serde_json::to_value(&scores).unwrap())).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
