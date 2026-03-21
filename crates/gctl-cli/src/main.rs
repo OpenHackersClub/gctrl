@@ -42,8 +42,9 @@ enum Commands {
         #[arg(short, long, default_value = "table")]
         format: String,
     },
-    /// Show analytics dashboard
-    Analytics,
+    /// Analytics dashboard and queries
+    #[command(subcommand)]
+    Analytics(AnalyticsCmd),
     /// Run a named or SQL query
     Query {
         /// Named query (sessions, analytics) or SQL if --raw is set
@@ -52,6 +53,40 @@ enum Commands {
         #[arg(long)]
         raw: bool,
     },
+    /// Score a session or span
+    Score {
+        /// Target type: session, span, generation
+        #[arg(long, default_value = "session")]
+        target_type: String,
+        /// Target ID
+        target_id: String,
+        /// Score name (e.g. quality, tests_pass)
+        #[arg(long)]
+        name: String,
+        /// Score value (numeric)
+        #[arg(long)]
+        value: f64,
+        /// Optional comment
+        #[arg(long)]
+        comment: Option<String>,
+        /// Score source: human, auto, model
+        #[arg(long, default_value = "human")]
+        source: String,
+    },
+    /// Tag a session or span
+    Tag {
+        /// Target type: session, span
+        #[arg(long, default_value = "session")]
+        target_type: String,
+        /// Target ID
+        target_id: String,
+        /// Tag key
+        #[arg(long)]
+        key: String,
+        /// Tag value
+        #[arg(long)]
+        value: String,
+    },
     /// Guardrail policy check (for testing)
     Check {
         /// Session ID to check
@@ -59,6 +94,27 @@ enum Commands {
     },
     /// Show status and config
     Status,
+}
+
+#[derive(Subcommand)]
+enum AnalyticsCmd {
+    /// Show overview dashboard
+    Overview,
+    /// Show cost breakdown by model and agent
+    Cost,
+    /// Show latency percentiles by model
+    Latency,
+    /// Show score summary
+    Scores {
+        /// Score name to summarize (e.g. tests_pass, quality)
+        name: String,
+    },
+    /// Show daily aggregate trends
+    Daily {
+        /// Number of days
+        #[arg(short, long, default_value = "7")]
+        days: u32,
+    },
 }
 
 fn resolve_db_path(db_override: &Option<String>) -> String {
@@ -86,8 +142,20 @@ async fn main() -> Result<()> {
         Commands::Serve { port, host } => commands::serve::run(host, port, &db_path).await,
         Commands::Sessions { limit, format } => commands::sessions::run(limit, &format, &db_path),
         Commands::Spans { session_id, format } => commands::spans::run(&session_id, &format, &db_path),
-        Commands::Analytics => commands::analytics::run(&db_path),
+        Commands::Analytics(cmd) => match cmd {
+            AnalyticsCmd::Overview => commands::analytics::run(&db_path),
+            AnalyticsCmd::Cost => commands::analytics_cost::run(&db_path),
+            AnalyticsCmd::Latency => commands::analytics_latency::run(&db_path),
+            AnalyticsCmd::Scores { name } => commands::analytics_scores::run(&name, &db_path),
+            AnalyticsCmd::Daily { days } => commands::analytics_daily::run(days, &db_path),
+        },
         Commands::Query { query, raw } => commands::query::run(&query, raw, &db_path),
+        Commands::Score { target_type, target_id, name, value, comment, source } => {
+            commands::score::run(&target_type, &target_id, &name, value, comment.as_deref(), &source, &db_path)
+        }
+        Commands::Tag { target_type, target_id, key, value } => {
+            commands::tag::run(&target_type, &target_id, &key, &value, &db_path)
+        }
         Commands::Check { session_id } => commands::check::run(&session_id, &db_path),
         Commands::Status => commands::status::run(),
     }

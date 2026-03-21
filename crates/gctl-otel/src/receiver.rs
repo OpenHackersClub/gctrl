@@ -26,6 +26,12 @@ pub fn create_router(store: DuckDbStore) -> Router {
         .route("/api/sessions/{session_id}", get(get_session))
         .route("/api/sessions/{session_id}/spans", get(get_spans))
         .route("/api/analytics", get(get_analytics))
+        .route("/api/analytics/cost", get(analytics_cost))
+        .route("/api/analytics/latency", get(analytics_latency))
+        .route("/api/analytics/scores", get(analytics_scores))
+        .route("/api/analytics/daily", get(analytics_daily))
+        .route("/api/analytics/score", post(create_score))
+        .route("/api/analytics/tag", post(create_tag))
         // Health
         .route("/health", get(health))
         .with_state(state)
@@ -79,6 +85,102 @@ async fn get_spans(
 async fn get_analytics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match state.store.get_analytics() {
         Ok(analytics) => Json(serde_json::to_value(&analytics).unwrap()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn analytics_cost(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let cost_by_model = state.store.get_cost_by_model().unwrap_or_default();
+    let cost_by_agent = state.store.get_cost_by_agent().unwrap_or_default();
+    Json(serde_json::json!({
+        "by_model": cost_by_model.iter().map(|(m, c, n)| serde_json::json!({"model": m, "cost": c, "calls": n})).collect::<Vec<_>>(),
+        "by_agent": cost_by_agent.iter().map(|(a, c, n)| serde_json::json!({"agent": a, "cost": c, "sessions": n})).collect::<Vec<_>>(),
+    })).into_response()
+}
+
+async fn analytics_latency(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let latencies = state.store.get_latency_by_model().unwrap_or_default();
+    Json(serde_json::json!({
+        "by_model": latencies.iter().map(|(m, p50, p95, p99)| serde_json::json!({"model": m, "p50_ms": p50, "p95_ms": p95, "p99_ms": p99})).collect::<Vec<_>>(),
+    })).into_response()
+}
+
+#[derive(Deserialize)]
+struct ScoreQueryParams {
+    name: String,
+}
+
+async fn analytics_scores(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ScoreQueryParams>,
+) -> impl IntoResponse {
+    match state.store.get_score_summary(&params.name) {
+        Ok((pass, fail, avg)) => Json(serde_json::json!({
+            "name": params.name,
+            "pass": pass,
+            "fail": fail,
+            "total": pass + fail,
+            "pass_rate": if pass + fail > 0 { pass as f64 / (pass + fail) as f64 } else { 0.0 },
+            "avg_value": avg,
+        })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct DailyParams {
+    #[serde(default = "default_days")]
+    days: u32,
+}
+
+fn default_days() -> u32 {
+    7
+}
+
+async fn analytics_daily(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<DailyParams>,
+) -> impl IntoResponse {
+    match state.store.get_daily_aggregates(params.days) {
+        Ok(aggs) => Json(serde_json::to_value(&aggs).unwrap()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn create_score(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let score = gctl_core::Score {
+        id: payload["id"].as_str().unwrap_or(&uuid::Uuid::new_v4().to_string()).to_string(),
+        target_type: payload["target_type"].as_str().unwrap_or("session").to_string(),
+        target_id: payload["target_id"].as_str().unwrap_or("").to_string(),
+        name: payload["name"].as_str().unwrap_or("").to_string(),
+        value: payload["value"].as_f64().unwrap_or(0.0),
+        comment: payload["comment"].as_str().map(String::from),
+        source: payload["source"].as_str().unwrap_or("human").to_string(),
+        scored_by: payload["scored_by"].as_str().map(String::from),
+        created_at: chrono::Utc::now(),
+    };
+    match state.store.insert_score(&score) {
+        Ok(()) => (StatusCode::CREATED, Json(serde_json::json!({"id": score.id}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn create_tag(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let tag = gctl_core::Tag {
+        id: payload["id"].as_str().unwrap_or(&uuid::Uuid::new_v4().to_string()).to_string(),
+        target_type: payload["target_type"].as_str().unwrap_or("session").to_string(),
+        target_id: payload["target_id"].as_str().unwrap_or("").to_string(),
+        key: payload["key"].as_str().unwrap_or("").to_string(),
+        value: payload["value"].as_str().unwrap_or("").to_string(),
+    };
+    match state.store.insert_tag(&tag) {
+        Ok(()) => (StatusCode::CREATED, Json(serde_json::json!({"id": tag.id}))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -275,5 +377,91 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_analytics_cost_empty() {
+        let app = test_app();
+        let req = Request::builder().uri("/api/analytics/cost").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["by_model"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_analytics_latency_empty() {
+        let app = test_app();
+        let req = Request::builder().uri("/api/analytics/latency").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_create_score() {
+        let app = test_app();
+        let body = serde_json::json!({
+            "target_type": "session",
+            "target_id": "s1",
+            "name": "quality",
+            "value": 4.5
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/analytics/score")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn test_create_tag() {
+        let app = test_app();
+        let body = serde_json::json!({
+            "target_type": "session",
+            "target_id": "s1",
+            "key": "project",
+            "value": "api-server"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/analytics/tag")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn test_analytics_scores_query() {
+        let store = DuckDbStore::open(":memory:").unwrap();
+        // Insert a score directly
+        store.insert_score(&gctl_core::Score {
+            id: "s1".into(),
+            target_type: "session".into(),
+            target_id: "sess1".into(),
+            name: "tests_pass".into(),
+            value: 1.0,
+            comment: None,
+            source: "auto".into(),
+            scored_by: None,
+            created_at: chrono::Utc::now(),
+        }).unwrap();
+
+        let app = create_router(store);
+        let req = Request::builder()
+            .uri("/api/analytics/scores?name=tests_pass")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["pass"], 1);
+        assert_eq!(json["total"], 1);
     }
 }

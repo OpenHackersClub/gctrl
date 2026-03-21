@@ -1,7 +1,13 @@
 pub mod analytics;
+pub mod analytics_cost;
+pub mod analytics_daily;
+pub mod analytics_latency;
+pub mod analytics_scores;
 pub mod check;
 pub mod query;
+pub mod score;
 pub mod serve;
 pub mod sessions;
 pub mod spans;
 pub mod status;
+pub mod tag;
