@@ -32,6 +32,7 @@ pub fn create_router(store: DuckDbStore) -> Router {
         .route("/api/analytics/daily", get(analytics_daily))
         .route("/api/analytics/score", post(create_score))
         .route("/api/analytics/tag", post(create_tag))
+        .route("/api/analytics/alerts", get(list_alerts))
         // Health
         .route("/health", get(health))
         .with_state(state)
@@ -185,6 +186,15 @@ async fn create_tag(
     }
 }
 
+async fn list_alerts(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    // Query alert_events from DuckDB
+    // For now, just return the rules since we don't have a list_alert_events method yet
+    match state.store.list_alert_rules() {
+        Ok(rules) => Json(serde_json::to_value(&rules).unwrap()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
 async fn ingest_traces(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<OtlpExportRequest>,
@@ -220,6 +230,42 @@ async fn ingest_traces(
     match state.store.insert_spans(&spans) {
         Ok(()) => {
             tracing::info!(count = spans.len(), "ingested spans");
+
+            // Check alert rules
+            if let Ok(rules) = state.store.list_alert_rules() {
+                for session_id_str in &seen_sessions {
+                    if let Ok(Some(session)) = state.store.get_session(&gctl_core::SessionId(session_id_str.clone())) {
+                        for rule in &rules {
+                            let should_fire = match rule.condition_type.as_str() {
+                                "session_cost" => session.total_cost_usd > rule.threshold,
+                                _ => false,
+                            };
+                            if should_fire {
+                                let alert = gctl_core::AlertEvent {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    rule_id: rule.id.clone(),
+                                    session_id: Some(session_id_str.clone()),
+                                    timestamp: chrono::Utc::now(),
+                                    message: format!(
+                                        "[{}] {}: session {} cost ${:.2} exceeds threshold ${:.2}",
+                                        rule.action, rule.name, session_id_str, session.total_cost_usd, rule.threshold
+                                    ),
+                                    acknowledged: false,
+                                };
+                                let _ = state.store.insert_alert_event(&alert);
+                                tracing::warn!(
+                                    rule = %rule.name,
+                                    session = %session_id_str,
+                                    cost = session.total_cost_usd,
+                                    threshold = rule.threshold,
+                                    "alert fired"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
             StatusCode::OK
         }
         Err(e) => {

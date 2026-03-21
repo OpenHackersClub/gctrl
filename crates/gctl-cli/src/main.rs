@@ -94,6 +94,16 @@ enum Commands {
     },
     /// Show status and config
     Status,
+    /// Register a prompt version
+    Prompt {
+        #[command(subcommand)]
+        cmd: PromptCmd,
+    },
+    /// Auto-score a session
+    AutoScore {
+        /// Session ID
+        session_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -115,6 +125,20 @@ enum AnalyticsCmd {
         #[arg(short, long, default_value = "7")]
         days: u32,
     },
+}
+
+#[derive(Subcommand)]
+enum PromptCmd {
+    /// Register a prompt file
+    Register {
+        /// Path to prompt file (e.g. CLAUDE.md)
+        file: String,
+        /// Version label
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// List registered prompt versions
+    List,
 }
 
 fn resolve_db_path(db_override: &Option<String>) -> String {
@@ -158,5 +182,10 @@ async fn main() -> Result<()> {
         }
         Commands::Check { session_id } => commands::check::run(&session_id, &db_path),
         Commands::Status => commands::status::run(),
+        Commands::Prompt { cmd } => match cmd {
+            PromptCmd::Register { file, label } => commands::prompt::register(&db_path, &file, label.as_deref()),
+            PromptCmd::List => commands::prompt::list(&db_path),
+        },
+        Commands::AutoScore { session_id } => commands::auto_score::run(&session_id, &db_path),
     }
 }
