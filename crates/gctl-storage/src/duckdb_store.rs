@@ -124,6 +124,43 @@ impl DuckDbStore {
         Ok(())
     }
 
+    pub fn end_session(&self, session_id: &str, status: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE sessions SET status = ?, ended_at = ? WHERE id = ?",
+            params![status, chrono::Utc::now().to_rfc3339(), session_id],
+        )
+        .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Detect error loops: sequences of N identical consecutive operations.
+    pub fn detect_error_loops(&self, session_id: &str, threshold: usize) -> Result<Vec<String>> {
+        let spans = self.query_spans(&SessionId(session_id.into()))?;
+        let ops: Vec<&str> = spans.iter().map(|s| s.operation_name.as_str()).collect();
+
+        let mut loops = Vec::new();
+        if ops.len() < threshold {
+            return Ok(loops);
+        }
+
+        let mut i = 0;
+        while i + threshold <= ops.len() {
+            let window = &ops[i..i + threshold];
+            if window.iter().all(|op| *op == window[0]) {
+                let msg = format!(
+                    "{} consecutive '{}' calls at position {}",
+                    threshold, window[0], i
+                );
+                if !loops.contains(&msg) {
+                    loops.push(msg);
+                }
+            }
+            i += 1;
+        }
+        Ok(loops)
+    }
+
     pub fn get_session(&self, id: &SessionId) -> Result<Option<Session>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
@@ -1136,5 +1173,51 @@ mod tests {
         // Check generation_count
         let gen_count = scores.iter().find(|s| s.name == "generation_count").unwrap();
         assert!((gen_count.value - 2.0).abs() < f64::EPSILON);  // make_span creates Generation type
+    }
+
+    #[test]
+    fn test_end_session() {
+        let store = test_store();
+        store.insert_session(&make_session("s1")).unwrap();
+        store.end_session("s1", "completed").unwrap();
+
+        let session = store.get_session(&SessionId("s1".into())).unwrap().unwrap();
+        assert_eq!(session.status, SessionStatus::Completed);
+        assert!(session.ended_at.is_some());
+    }
+
+    #[test]
+    fn test_detect_error_loops_none() {
+        let store = test_store();
+        store.insert_session(&make_session("s1")).unwrap();
+        // 3 different operations — no loop
+        let mut s1 = make_span("sp1", "s1");
+        s1.operation_name = "llm.call".into();
+        let mut s2 = make_span("sp2", "s1");
+        s2.operation_name = "tool.bash".into();
+        let mut s3 = make_span("sp3", "s1");
+        s3.operation_name = "tool.read".into();
+        store.insert_spans(&[s1, s2, s3]).unwrap();
+
+        let loops = store.detect_error_loops("s1", 3).unwrap();
+        assert!(loops.is_empty());
+    }
+
+    #[test]
+    fn test_detect_error_loops_found() {
+        let store = test_store();
+        store.insert_session(&make_session("s1")).unwrap();
+        // 3 identical operations — loop detected
+        let mut spans = Vec::new();
+        for i in 0..3 {
+            let mut s = make_span(&format!("sp{i}"), "s1");
+            s.operation_name = "tool.read".into();
+            spans.push(s);
+        }
+        store.insert_spans(&spans).unwrap();
+
+        let loops = store.detect_error_loops("s1", 3).unwrap();
+        assert_eq!(loops.len(), 1);
+        assert!(loops[0].contains("tool.read"));
     }
 }

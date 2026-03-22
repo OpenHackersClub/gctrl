@@ -1,3 +1,4 @@
+pub mod alert;
 pub mod analytics;
 pub mod analytics_cost;
 pub mod analytics_daily;
@@ -13,3 +14,4 @@ pub mod sessions;
 pub mod spans;
 pub mod status;
 pub mod tag;
+pub mod trace_tree;

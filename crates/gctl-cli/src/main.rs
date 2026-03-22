@@ -104,6 +104,14 @@ enum Commands {
         /// Session ID
         session_id: String,
     },
+    /// Show trace tree for a session
+    Tree {
+        /// Session ID
+        session_id: String,
+    },
+    /// Manage alert rules
+    #[command(subcommand)]
+    Alert(AlertCmd),
 }
 
 #[derive(Subcommand)]
@@ -138,6 +146,27 @@ enum PromptCmd {
         label: Option<String>,
     },
     /// List registered prompt versions
+    List,
+}
+
+#[derive(Subcommand)]
+enum AlertCmd {
+    /// Create an alert rule
+    Create {
+        /// Rule name
+        #[arg(long)]
+        name: String,
+        /// Condition type: session_cost, error_loop
+        #[arg(long)]
+        condition: String,
+        /// Threshold value
+        #[arg(long)]
+        threshold: f64,
+        /// Action: warn, pause, notify
+        #[arg(long, default_value = "warn")]
+        action: String,
+    },
+    /// List alert rules
     List,
 }
 
@@ -187,5 +216,12 @@ async fn main() -> Result<()> {
             PromptCmd::List => commands::prompt::list(&db_path),
         },
         Commands::AutoScore { session_id } => commands::auto_score::run(&session_id, &db_path),
+        Commands::Tree { session_id } => commands::trace_tree::run(&session_id, &db_path),
+        Commands::Alert(cmd) => match cmd {
+            AlertCmd::Create { name, condition, threshold, action } => {
+                commands::alert::create(&name, &condition, threshold, &action, &db_path)
+            }
+            AlertCmd::List => commands::alert::list(&db_path),
+        },
     }
 }

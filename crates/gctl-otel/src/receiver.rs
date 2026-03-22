@@ -35,8 +35,10 @@ pub fn create_router(store: DuckDbStore) -> Router {
         .route("/api/analytics/alerts", get(list_alerts))
         // Trace tree (Langfuse-style)
         .route("/api/sessions/{session_id}/tree", get(get_trace_tree))
-        // Auto-score
+        // Auto-score and session lifecycle
         .route("/api/sessions/{session_id}/auto-score", post(auto_score_session))
+        .route("/api/sessions/{session_id}/end", post(end_session))
+        .route("/api/sessions/{session_id}/loops", get(detect_loops))
         // Health
         .route("/health", get(health))
         .with_state(state)
@@ -166,6 +168,57 @@ async fn auto_score_session(
 ) -> impl IntoResponse {
     match state.store.auto_score_session(&session_id) {
         Ok(scores) => (StatusCode::OK, Json(serde_json::to_value(&scores).unwrap())).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn end_session(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let status = payload["status"].as_str().unwrap_or("completed");
+    match state.store.end_session(&session_id, status) {
+        Ok(()) => {
+            // Auto-score on session end
+            let _ = state.store.auto_score_session(&session_id);
+            // Check for error loops
+            let loops = state.store.detect_error_loops(&session_id, 3).unwrap_or_default();
+            if !loops.is_empty() {
+                // Create a loop detection score
+                let loop_score = gctl_core::Score {
+                    id: format!("auto-{session_id}-error_loops"),
+                    target_type: "session".into(),
+                    target_id: session_id.clone(),
+                    name: "error_loops".into(),
+                    value: loops.len() as f64,
+                    comment: Some(loops.join("; ")),
+                    source: "auto".into(),
+                    scored_by: None,
+                    created_at: chrono::Utc::now(),
+                };
+                let _ = state.store.insert_score(&loop_score);
+            }
+            Json(serde_json::json!({
+                "session_id": session_id,
+                "status": status,
+                "loops_detected": loops.len(),
+            })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn detect_loops(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    match state.store.detect_error_loops(&session_id, 3) {
+        Ok(loops) => Json(serde_json::json!({
+            "session_id": session_id,
+            "loops": loops,
+            "count": loops.len(),
+        })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
