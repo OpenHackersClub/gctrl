@@ -2,3 +2,5 @@
 .tmp/
 *.duckdb
 *.duckdb.wal
+node_modules/
+dist/

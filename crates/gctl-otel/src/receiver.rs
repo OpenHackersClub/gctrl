@@ -199,6 +199,10 @@ async fn end_session(
                 };
                 let _ = state.store.insert_score(&loop_score);
             }
+            // Compute daily aggregates for today
+            let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+            let _ = state.store.compute_daily_aggregates(&today);
+
             Json(serde_json::json!({
                 "session_id": session_id,
                 "status": status,

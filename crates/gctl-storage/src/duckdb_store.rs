@@ -582,6 +582,52 @@ impl DuckDbStore {
         Ok(aggs)
     }
 
+    /// Compute and store daily aggregates for today from sessions/spans.
+    pub fn compute_daily_aggregates(&self, date: &str) -> Result<Vec<DailyAggregate>> {
+        let conn = self.conn.lock().unwrap();
+        let mut aggs = Vec::new();
+
+        // Total cost for the day
+        let cost: f64 = conn.query_row(
+            "SELECT COALESCE(SUM(total_cost_usd), 0) FROM sessions WHERE started_at LIKE ?",
+            params![format!("{date}%")],
+            |row| row.get(0),
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        aggs.push(DailyAggregate { date: date.into(), metric: "cost".into(), dimension: "total".into(), value: cost });
+
+        // Session count
+        let sessions: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE started_at LIKE ?",
+            params![format!("{date}%")],
+            |row| row.get(0),
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        aggs.push(DailyAggregate { date: date.into(), metric: "sessions".into(), dimension: "total".into(), value: sessions as f64 });
+
+        // Total tokens
+        let tokens: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(total_input_tokens + total_output_tokens), 0) FROM sessions WHERE started_at LIKE ?",
+            params![format!("{date}%")],
+            |row| row.get(0),
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        aggs.push(DailyAggregate { date: date.into(), metric: "tokens".into(), dimension: "total".into(), value: tokens as f64 });
+
+        // Span count
+        let spans: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM spans WHERE started_at LIKE ?",
+            params![format!("{date}%")],
+            |row| row.get(0),
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        aggs.push(DailyAggregate { date: date.into(), metric: "spans".into(), dimension: "total".into(), value: spans as f64 });
+
+        drop(conn);
+
+        for agg in &aggs {
+            self.upsert_daily_aggregate(agg)?;
+        }
+
+        Ok(aggs)
+    }
+
     // --- Alert Rules ---
     pub fn insert_alert_rule(&self, rule: &AlertRule) -> Result<()> {
         let conn = self.conn.lock().unwrap();
@@ -1219,5 +1265,28 @@ mod tests {
         let loops = store.detect_error_loops("s1", 3).unwrap();
         assert_eq!(loops.len(), 1);
         assert!(loops[0].contains("tool.read"));
+    }
+
+    #[test]
+    fn test_compute_daily_aggregates() {
+        let store = test_store();
+        store.insert_session(&make_session("s1")).unwrap();
+        store.insert_spans(&[make_span("sp1", "s1"), make_span("sp2", "s1")]).unwrap();
+
+        // Get the date from the session's started_at
+        let session = store.get_session(&SessionId("s1".into())).unwrap().unwrap();
+        let date = session.started_at.format("%Y-%m-%d").to_string();
+
+        let aggs = store.compute_daily_aggregates(&date).unwrap();
+        assert!(aggs.len() >= 4);
+
+        let cost_agg = aggs.iter().find(|a| a.metric == "cost").unwrap();
+        assert!((cost_agg.value - 0.10).abs() < 0.001); // 2 spans * $0.05
+
+        let session_agg = aggs.iter().find(|a| a.metric == "sessions").unwrap();
+        assert!((session_agg.value - 1.0).abs() < f64::EPSILON);
+
+        let span_agg = aggs.iter().find(|a| a.metric == "spans").unwrap();
+        assert!((span_agg.value - 2.0).abs() < f64::EPSILON);
     }
 }
