@@ -195,6 +195,33 @@ impl DuckDbStore {
         Ok(sessions)
     }
 
+    pub fn list_sessions_filtered(&self, limit: usize, agent: Option<&str>, status: Option<&str>) -> Result<Vec<Session>> {
+        let conn = self.conn.lock().unwrap();
+        let mut sql = "SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens FROM sessions WHERE 1=1".to_string();
+        let mut bound_params: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
+
+        if let Some(agent_name) = agent {
+            sql.push_str(" AND agent_name = ?");
+            bound_params.push(Box::new(agent_name.to_string()));
+        }
+        if let Some(status_val) = status {
+            sql.push_str(" AND status = ?");
+            bound_params.push(Box::new(status_val.to_string()));
+        }
+        sql.push_str(" ORDER BY started_at DESC");
+        sql.push_str(&format!(" LIMIT {}", limit));
+
+        let mut stmt = conn.prepare(&sql).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let params_refs: Vec<&dyn duckdb::ToSql> = bound_params.iter().map(|p| p.as_ref()).collect();
+        let mut rows = stmt.query(params_refs.as_slice()).map_err(|e| GctlError::Storage(e.to_string()))?;
+
+        let mut sessions = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            sessions.push(row_to_session(row)?);
+        }
+        Ok(sessions)
+    }
+
     pub fn query_spans(&self, session_id: &SessionId) -> Result<Vec<Span>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
@@ -697,6 +724,66 @@ impl DuckDbStore {
             results.push((agent, cost, count as u64));
         }
         Ok(results)
+    }
+
+    /// Get per-model cost breakdown for a specific session.
+    pub fn get_session_cost_breakdown(&self, session_id: &str) -> Result<Vec<(String, f64, u64, u64, u64)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(model, 'unknown'), COALESCE(SUM(cost_usd), 0), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COUNT(*) FROM spans WHERE session_id = ? GROUP BY model ORDER BY SUM(cost_usd) DESC"
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt.query(params![session_id]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut results = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            let model: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let cost: f64 = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let input: i64 = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let output: i64 = row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let count: i64 = row.get(4).map_err(|e| GctlError::Storage(e.to_string()))?;
+            results.push((model, cost, input as u64, output as u64, count as u64));
+        }
+        Ok(results)
+    }
+
+    /// Get span type distribution: count of Generation, Span, Event types.
+    pub fn get_span_type_distribution(&self) -> Result<Vec<(String, u64, f64)>> {
+        let conn = self.conn.lock().unwrap();
+        let total: i64 = conn.query_row("SELECT COUNT(*) FROM spans", [], |row| row.get(0))
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        if total == 0 {
+            return Ok(Vec::new());
+        }
+        let mut stmt = conn.prepare(
+            "SELECT span_type, COUNT(*) FROM spans GROUP BY span_type ORDER BY COUNT(*) DESC"
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut results = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            let span_type: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let count: i64 = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let pct = count as f64 / total as f64 * 100.0;
+            results.push((span_type, count as u64, pct));
+        }
+        Ok(results)
+    }
+
+    /// Return table counts for health endpoint.
+    pub fn get_health_info(&self) -> Result<serde_json::Value> {
+        let conn = self.conn.lock().unwrap();
+        let sessions: i64 = conn.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let spans: i64 = conn.query_row("SELECT COUNT(*) FROM spans", [], |row| row.get(0))
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let traffic: i64 = conn.query_row("SELECT COUNT(*) FROM traffic", [], |row| row.get(0))
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let alerts: i64 = conn.query_row("SELECT COUNT(*) FROM alert_rules WHERE enabled = TRUE", [], |row| row.get(0))
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(serde_json::json!({
+            "sessions": sessions,
+            "spans": spans,
+            "traffic_records": traffic,
+            "active_alert_rules": alerts,
+        }))
     }
 
     // --- Latency Analytics ---
@@ -1265,6 +1352,98 @@ mod tests {
         let loops = store.detect_error_loops("s1", 3).unwrap();
         assert_eq!(loops.len(), 1);
         assert!(loops[0].contains("tool.read"));
+    }
+
+    #[test]
+    fn test_span_type_distribution() {
+        let store = test_store();
+        store.insert_session(&make_session("s1")).unwrap();
+
+        let mut gen_span = make_span("sp1", "s1");
+        gen_span.span_type = SpanType::Generation;
+        let mut tool_span = make_span("sp2", "s1");
+        tool_span.span_type = SpanType::Span;
+        tool_span.model = None;
+        let mut event_span = make_span("sp3", "s1");
+        event_span.span_type = SpanType::Event;
+        event_span.model = None;
+
+        store.insert_spans(&[gen_span, tool_span, event_span]).unwrap();
+
+        let dist = store.get_span_type_distribution().unwrap();
+        assert_eq!(dist.len(), 3);
+        let total: u64 = dist.iter().map(|(_, c, _)| c).sum();
+        assert_eq!(total, 3);
+    }
+
+    #[test]
+    fn test_span_type_distribution_empty() {
+        let store = test_store();
+        let dist = store.get_span_type_distribution().unwrap();
+        assert!(dist.is_empty());
+    }
+
+    #[test]
+    fn test_health_info() {
+        let store = test_store();
+        let info = store.get_health_info().unwrap();
+        assert_eq!(info["sessions"], 0);
+        assert_eq!(info["spans"], 0);
+    }
+
+    #[test]
+    fn test_list_sessions_filtered_by_agent() {
+        let store = test_store();
+        let mut s1 = make_session("s1");
+        s1.agent_name = "claude".into();
+        let mut s2 = make_session("s2");
+        s2.agent_name = "aider".into();
+        store.insert_session(&s1).unwrap();
+        store.insert_session(&s2).unwrap();
+
+        let filtered = store.list_sessions_filtered(20, Some("claude"), None).unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].agent_name, "claude");
+    }
+
+    #[test]
+    fn test_list_sessions_filtered_by_status() {
+        let store = test_store();
+        store.insert_session(&make_session("s1")).unwrap();
+        store.end_session("s1", "completed").unwrap();
+        store.insert_session(&make_session("s2")).unwrap();
+
+        let filtered = store.list_sessions_filtered(20, None, Some("completed")).unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id.0, "s1");
+    }
+
+    #[test]
+    fn test_session_cost_breakdown() {
+        let store = test_store();
+        store.insert_session(&make_session("s1")).unwrap();
+
+        let mut s1 = make_span("sp1", "s1");
+        s1.model = Some("claude-opus-4-6".into());
+        s1.cost_usd = 0.10;
+        let mut s2 = make_span("sp2", "s1");
+        s2.model = Some("claude-haiku-4-5".into());
+        s2.cost_usd = 0.01;
+
+        store.insert_spans(&[s1, s2]).unwrap();
+
+        let breakdown = store.get_session_cost_breakdown("s1").unwrap();
+        assert_eq!(breakdown.len(), 2);
+        assert_eq!(breakdown[0].0, "claude-opus-4-6");
+        assert!((breakdown[0].1 - 0.10).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_session_cost_breakdown_empty() {
+        let store = test_store();
+        store.insert_session(&make_session("s1")).unwrap();
+        let breakdown = store.get_session_cost_breakdown("s1").unwrap();
+        assert!(breakdown.is_empty());
     }
 
     #[test]

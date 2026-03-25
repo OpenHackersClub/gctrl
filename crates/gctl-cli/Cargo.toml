@@ -13,6 +13,7 @@ gctl-storage = { path = "../gctl-storage" }
 gctl-otel = { path = "../gctl-otel" }
 gctl-guardrails = { path = "../gctl-guardrails" }
 gctl-query = { path = "../gctl-query" }
+gctl-net = { path = "../gctl-net" }
 
 clap = { workspace = true }
 tokio = { workspace = true }

@@ -1,25 +1,35 @@
-//! Network tools: web crawling, single-page fetch, readability extraction.
-//! Phase 2: Will integrate spider crate for crawling.
+//! Network tools: web fetching, crawling, readability extraction, and agent-optimized context.
+//!
+//! Converts web content to markdown optimized for LLM context windows.
+//! Supports single-page fetch, multi-page crawl, and gitingest-style compaction.
 
-pub struct FetchResult {
+mod fetch;
+mod crawl;
+mod compact;
+mod storage;
+mod error;
+
+pub use fetch::{fetch_page, FetchOptions};
+pub use crawl::{crawl_site, CrawlConfig};
+pub use compact::{compact_site, CompactOptions, CompactFormat};
+pub use storage::{SiteStore, PageEntry};
+pub use error::NetError;
+
+/// Result of fetching or crawling a single page.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PageContent {
     pub url: String,
-    pub status: u16,
-    pub body: String,
+    pub title: String,
+    pub markdown: String,
     pub word_count: usize,
+    pub status: u16,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_fetch_result() {
-        let result = FetchResult {
-            url: "https://example.com".into(),
-            status: 200,
-            body: "hello world".into(),
-            word_count: 2,
-        };
-        assert_eq!(result.word_count, 2);
-    }
+/// Summary of a crawl operation.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CrawlResult {
+    pub domain: String,
+    pub pages_crawled: usize,
+    pub pages_skipped: usize,
+    pub total_words: usize,
 }

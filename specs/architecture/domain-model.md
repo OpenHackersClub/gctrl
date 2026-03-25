@@ -1,61 +1,26 @@
-# GroundCtrl (gctl) — Technical Specification
+# Domain Model Reference
 
-> Local-first operating system for human+agent teams. Rust daemon with DuckDB storage, OTel ingestion, MITM proxy, and Cloudflare R2 sync.
+> Canonical domain model for GroundCtrl (gctl).
 
-## 1. Crate Architecture
+---
 
-Cargo workspace with feature-gated crates. Each crate has a clear boundary.
-
-```
-gctrl/
-├── Cargo.toml              # workspace root
-├── crates/
-│   ├── gctl-core/          # Domain types, traits, config, errors
-│   ├── gctl-cli/           # clap binary, subcommand routing
-│   ├── gctl-otel/          # OTLP HTTP receiver (axum), span processing
-│   ├── gctl-storage/       # DuckDB embedded storage, schema migrations
-│   ├── gctl-proxy/         # MITM proxy (hudsucker), traffic logging
-│   ├── gctl-net/           # Web crawl (spider), fetch, readability
-│   ├── gctl-sync/          # R2 sync engine (Parquet export, S3 upload)
-│   ├── gctl-guardrails/    # Policy engine, cost limits, loop detection
-│   ├── gctl-eval/          # Eval suites, scoring, prompt analytics
-│   ├── gctl-capacity/      # Throughput, forecasting, workload modeling
-│   └── gctl-query/         # Agent data interface, NL→SQL (planned)
-├── tests/                  # Integration tests
-├── TECH_SPEC.md
-├── PRD.md
-└── Request.md
-```
-
-### Dependency Graph
-
-```
-gctl-cli
-  ├── gctl-core
-  ├── gctl-otel        → gctl-core, gctl-storage
-  ├── gctl-storage     → gctl-core
-  ├── gctl-proxy       → gctl-core, gctl-storage    [feature: proxy]
-  ├── gctl-net         → gctl-core, gctl-storage    [feature: network]
-  ├── gctl-sync        → gctl-core, gctl-storage    [feature: r2-sync]
-  ├── gctl-guardrails  → gctl-core, gctl-storage
-  ├── gctl-eval        → gctl-core, gctl-storage, gctl-otel
-  ├── gctl-capacity    → gctl-core, gctl-storage
-  └── gctl-query       → gctl-core, gctl-storage
-```
-
-## 2. Core Types (`gctl-core`)
-
-### 2.1 Domain Model
+## 1. Domain Identifiers
 
 ```rust
-// Identifiers
 pub struct WorkspaceId(pub String);
 pub struct DeviceId(pub String);
 pub struct SessionId(pub String);
 pub struct TraceId(pub String);
 pub struct SpanId(pub String);
+```
 
-// Execution Layer
+---
+
+## 2. Core Domain Types
+
+### Session
+
+```rust
 pub struct Session {
     pub id: SessionId,
     pub workspace_id: WorkspaceId,
@@ -68,14 +33,22 @@ pub struct Session {
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
 }
+```
 
+### SessionStatus
+
+```rust
 pub enum SessionStatus {
     Active,
     Completed,
     Failed,
     Cancelled,
 }
+```
 
+### Span
+
+```rust
 pub struct Span {
     pub span_id: SpanId,
     pub trace_id: TraceId,
@@ -92,13 +65,21 @@ pub struct Span {
     pub duration_ms: u64,
     pub attributes: serde_json::Value,
 }
+```
 
+### SpanStatus
+
+```rust
 pub enum SpanStatus {
     Ok,
     Error(String),
     Unset,
 }
+```
 
+### TrafficRecord
+
+```rust
 pub struct TrafficRecord {
     pub id: String,
     pub timestamp: DateTime<Utc>,
@@ -113,10 +94,52 @@ pub struct TrafficRecord {
 }
 ```
 
-### 2.2 Key Traits
+### PolicyDecision
 
 ```rust
-/// Storage backend abstraction (DuckDB is the primary impl)
+pub enum PolicyDecision {
+    Allow,
+    Warn(String),
+    Deny(String),
+}
+```
+
+### BrowserRef
+
+```rust
+/// Element reference from accessibility tree snapshot
+pub struct BrowserRef {
+    pub id: String,              // "@e1", "@e2", "@c1", etc.
+    pub role: String,            // ARIA role: "button", "textbox", "link"
+    pub name: String,            // Accessible name
+    pub namespace: RefNamespace, // Element vs Cursor-interactive
+}
+
+pub enum RefNamespace {
+    Element,          // @e1, @e2 -- from ARIA tree
+    CursorInteractive, // @c1, @c2 -- cursor:pointer / onclick not in ARIA
+}
+```
+
+### BrowserDaemonState
+
+```rust
+pub struct BrowserDaemonState {
+    pub pid: u32,
+    pub port: u16,
+    pub token: String,          // UUID v4, bearer auth
+    pub started_at: DateTime<Utc>,
+    pub version: String,        // gctl binary version
+}
+```
+
+---
+
+## 3. Key Traits
+
+### SpanStore
+
+```rust
 #[async_trait]
 pub trait SpanStore: Send + Sync {
     async fn insert_spans(&self, spans: &[Span]) -> Result<()>;
@@ -125,26 +148,37 @@ pub trait SpanStore: Send + Sync {
     async fn query_spans(&self, session_id: &SessionId) -> Result<Vec<Span>>;
     async fn get_analytics(&self, window: Duration) -> Result<Analytics>;
 }
+```
 
+### TrafficStore
+
+```rust
 #[async_trait]
 pub trait TrafficStore: Send + Sync {
     async fn insert_record(&self, record: &TrafficRecord) -> Result<()>;
     async fn query_records(&self, filter: &TrafficFilter) -> Result<Vec<TrafficRecord>>;
     async fn get_stats(&self, window: Option<Duration>) -> Result<TrafficStats>;
 }
+```
 
-/// Guardrail policy check
+### GuardrailPolicy
+
+```rust
 pub trait GuardrailPolicy: Send + Sync {
     fn check(&self, context: &ExecutionContext) -> PolicyDecision;
 }
+```
 
-pub enum PolicyDecision {
-    Allow,
-    Warn(String),
-    Deny(String),
-}
+Built-in policies:
+- `SessionBudgetPolicy` -- halt if session cost exceeds threshold
+- `LoopDetectionPolicy` -- flag repeated identical tool calls
+- `DiffSizePolicy` -- alert on large diffs
+- `CommandAllowlistPolicy` -- block unauthorized commands
+- `BranchProtectionPolicy` -- prevent direct pushes to main
 
-/// Sync engine for R2
+### SyncEngine
+
+```rust
 #[async_trait]
 pub trait SyncEngine: Send + Sync {
     async fn push(&self, tables: &[&str]) -> Result<SyncResult>;
@@ -153,7 +187,25 @@ pub trait SyncEngine: Send + Sync {
 }
 ```
 
-### 2.3 Configuration
+---
+
+### BrowserPort
+
+```rust
+#[async_trait]
+pub trait BrowserPort: Send + Sync {
+    async fn start(&self) -> Result<BrowserDaemonState>;
+    async fn stop(&self) -> Result<()>;
+    async fn status(&self) -> Result<Option<BrowserDaemonState>>;
+    async fn execute(&self, command: BrowserCommand) -> Result<String>;
+    async fn snapshot(&self, interactive: bool) -> Result<Vec<BrowserRef>>;
+    async fn screenshot(&self) -> Result<Vec<u8>>;
+}
+```
+
+---
+
+## 4. Configuration Types
 
 ```rust
 pub struct GctlConfig {
@@ -161,6 +213,7 @@ pub struct GctlConfig {
     pub storage: StorageConfig,
     pub otel: OtelConfig,
     pub proxy: ProxyConfig,
+    pub browser: BrowserConfig,
     pub sync: SyncConfig,
     pub guardrails: GuardrailsConfig,
 }
@@ -190,6 +243,15 @@ pub struct SyncConfig {
     pub device_id: DeviceId,
 }
 
+pub struct BrowserConfig {
+    pub headless: bool,              // default: true
+    pub idle_timeout_seconds: u64,   // default: 1800
+    pub viewport_width: u32,         // default: 1280
+    pub viewport_height: u32,        // default: 720
+    pub chromium_path: Option<PathBuf>,
+    pub user_data_dir: Option<PathBuf>,
+}
+
 pub struct GuardrailsConfig {
     pub session_budget_usd: Option<f64>,
     pub max_diff_lines: Option<u32>,
@@ -201,9 +263,11 @@ pub struct GuardrailsConfig {
 }
 ```
 
-## 3. Storage Schema (`gctl-storage`)
+---
 
-DuckDB tables created on first run:
+## 5. Storage Schema (DuckDB)
+
+### 5.1 Core Tables
 
 ```sql
 -- Sessions table
@@ -266,8 +330,11 @@ CREATE TABLE IF NOT EXISTS guardrail_events (
     reason          VARCHAR,
     context         JSON
 );
+```
 
--- Indexes
+### 5.2 Core Indexes
+
+```sql
 CREATE INDEX IF NOT EXISTS idx_spans_session ON spans(session_id);
 CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(trace_id);
 CREATE INDEX IF NOT EXISTS idx_traffic_host ON traffic(host);
@@ -275,7 +342,7 @@ CREATE INDEX IF NOT EXISTS idx_traffic_timestamp ON traffic(timestamp);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at);
 ```
 
-## 3.5. Analytics Schema (DuckDB)
+### 5.3 Analytics Tables
 
 ```sql
 -- Scores (human annotation + automated)
@@ -345,7 +412,11 @@ CREATE TABLE IF NOT EXISTS alert_events (
     message         VARCHAR NOT NULL,
     acknowledged    BOOLEAN DEFAULT FALSE
 );
+```
 
+### 5.4 Analytics Indexes
+
+```sql
 CREATE INDEX IF NOT EXISTS idx_scores_target ON scores(target_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_tags_target ON tags(target_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_tags_key ON tags(key, value);
@@ -353,146 +424,7 @@ CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_aggregates(date);
 CREATE INDEX IF NOT EXISTS idx_session_prompts ON session_prompts(prompt_hash);
 ```
 
-## 4. OTel Receiver (`gctl-otel`)
-
-### HTTP Endpoint
-
-- `POST /v1/traces` — Accept OTLP/HTTP protobuf or JSON spans
-- Parses OpenTelemetry `ExportTraceServiceRequest`
-- Extracts semantic conventions: `ai.model.id`, `ai.tokens.input`, `ai.tokens.output`, `ai.tool.name`
-- Maps to internal `Span` type
-- Writes to DuckDB via `SpanStore`
-
-### Session Management
-
-- Groups spans into sessions by `session.id` resource attribute
-- Auto-creates sessions on first span
-- Updates session aggregates (cost, tokens) on each span batch
-
-## 5. MITM Proxy (`gctl-proxy`)
-
-- Uses `hudsucker` for transparent HTTP(S) proxy
-- Auto-generates CA cert on first run (`~/.local/share/gctl/ca/`)
-- Logs every request/response to DuckDB `traffic` table
-- Domain allowlist enforcement from config
-- Rate limiting per-domain
-
-## 6. Guardrails Engine (`gctl-guardrails`)
-
-Composable policy chain:
-
-```rust
-pub struct GuardrailEngine {
-    policies: Vec<Box<dyn GuardrailPolicy>>,
-}
-
-// Built-in policies:
-// - SessionBudgetPolicy: halt if session cost > threshold
-// - LoopDetectionPolicy: flag repeated identical tool calls
-// - DiffSizePolicy: alert on large diffs
-// - CommandAllowlistPolicy: block unauthorized commands
-// - BranchProtectionPolicy: prevent direct pushes to main
-```
-
-## 7. Query Interface (`gctl-query`)
-
-Three access modes:
-1. **Pre-built queries** — Named commands with fixed SQL
-2. **Natural language** (planned) — NL→SQL with column allowlist
-3. **Raw SQL** (opt-in) — Gated by `allow_raw_sql` config
-
-Output formats: `table`, `json`, `markdown`, `csv`
-
-## 8. Sync Engine (`gctl-sync`)
-
-- Export DuckDB rows to Parquet via `arrow` + `parquet` crates
-- Upload to R2 via S3-compatible API
-- Partition: `r2://{workspace}/{device}/traces/{timestamp}.parquet`
-- Manifest tracking at `r2://_manifests/{device}.json`
-- Modes: periodic, on-session-end, manual push/pull
-
-## 9. Phased Implementation Plan
-
-### Phase 1: Foundation (MVP)
-- [x] Core types and traits
-- [x] DuckDB storage with schema migrations
-- [x] CLI skeleton with clap
-- [x] OTel HTTP receiver (axum)
-- [x] Basic session/span queries
-
-### Phase 2: Guardrails + Proxy
-- [ ] Guardrail policy engine
-- [ ] MITM proxy with traffic logging
-- [ ] Command gateway enforcement
-- [ ] Cost limits and loop detection
-
-### Phase 3: Query + Eval
-- [ ] `gctl query` agent data interface
-- [ ] Eval suite definition and scoring
-- [ ] Prompt versioning and A/B comparison
-
-### Phase 4: Sync + Cloud
-- [ ] Parquet export from DuckDB
-- [ ] R2 upload/download
-- [ ] Manifest-based sync state
-- [ ] Knowledge store (markdown in R2)
-
-### Phase 5: Capacity + Project Intelligence
-- [ ] Issue tracker sync (GitHub, Linear, Notion)
-- [ ] Throughput measurement
-- [ ] Forecasting and burndown
-- [ ] Sprint planning assistance
-
-### Phase 6: gctl-board (Effect-TS)
-- [ ] Effect-TS project setup (packages/gctl-board/)
-- [ ] Core schemas: Issue, IssueEvent, Comment, Board, Project
-- [ ] BoardService with CRUD, status transitions, WIP limits
-- [ ] DependencyResolver with cycle detection
-- [ ] DuckDB storage for board tables (issues, events, comments)
-- [ ] HTTP API (Effect Platform HttpApi)
-- [ ] CLI bridge: `gctl board *` commands delegate to TS service
-- [ ] OTel integration: auto-link sessions to issues
-- [ ] Agent coordination: claim, decompose, block/unblock, handoff
-- [ ] External sync: Linear pull, GitHub Issues pull
-
-## 10. gctl-board Architecture (Effect-TS)
-
-### 10.1. Package Structure
-
-```
-packages/gctl-board/
-├── package.json
-├── tsconfig.json
-├── src/
-│   ├── index.ts                 # Entry point
-│   ├── schema/
-│   │   ├── Issue.ts             # Issue, IssueStatus, Priority schemas
-│   │   ├── IssueEvent.ts        # Event log schema
-│   │   ├── Comment.ts           # Comment schema
-│   │   ├── Board.ts             # Board, KanbanView schemas
-│   │   ├── Project.ts           # Project schema
-│   │   └── Assignee.ts          # Assignee (human | agent) schema
-│   ├── services/
-│   │   ├── BoardService.ts      # Core CRUD + status transitions
-│   │   ├── DependencyResolver.ts # DAG-based blocking/unblocking
-│   │   ├── EventLog.ts          # Append-only event log
-│   │   └── OtelBridge.ts        # Session-issue auto-linkage
-│   ├── storage/
-│   │   ├── BoardStore.ts        # DuckDB storage layer
-│   │   └── schema.sql           # Board-specific DuckDB tables
-│   ├── api/
-│   │   ├── routes.ts            # Effect HttpApi route definitions
-│   │   └── server.ts            # HTTP server setup
-│   └── cli/
-│       └── bridge.ts            # CLI argument handler (called from Rust)
-├── test/
-│   ├── BoardService.test.ts
-│   ├── DependencyResolver.test.ts
-│   └── api.test.ts
-└── vitest.config.ts
-```
-
-### 10.2. DuckDB Tables (Board)
+### 5.5 Board Tables
 
 ```sql
 CREATE TABLE IF NOT EXISTS board_projects (
@@ -552,7 +484,11 @@ CREATE TABLE IF NOT EXISTS board_comments (
     created_at  VARCHAR NOT NULL,
     session_id  VARCHAR
 );
+```
 
+### 5.6 Board Indexes
+
+```sql
 CREATE INDEX IF NOT EXISTS idx_issues_project ON board_issues(project_id);
 CREATE INDEX IF NOT EXISTS idx_issues_status ON board_issues(status);
 CREATE INDEX IF NOT EXISTS idx_issues_assignee ON board_issues(assignee_id);
@@ -561,32 +497,157 @@ CREATE INDEX IF NOT EXISTS idx_events_issue ON board_events(issue_id);
 CREATE INDEX IF NOT EXISTS idx_comments_issue ON board_comments(issue_id);
 ```
 
-### 10.3. Integration with Rust Daemon
+---
 
-The Rust CLI delegates board commands to the TS service:
+## 6. gctl-board Effect-TS Schemas
 
-```
-gctl board issue list --status todo
-  → Rust CLI parses args
-  → HTTP GET http://localhost:4318/api/board/issues?status=todo
-  → TS service queries DuckDB, returns JSON
-  → Rust CLI formats output (table/json)
-```
+Source: `packages/gctl-board/src/schema/`
 
-Or for offline/no-server mode, Rust can spawn a short-lived TS process:
+### Branded Identifiers (Value Objects)
 
-```
-gctl board issue list --status todo
-  → Rust CLI detects server not running
-  → Spawns: bun run packages/gctl-board/src/cli/bridge.ts issue list --status todo
-  → TS process opens DuckDB, runs query, outputs JSON
-  → Rust CLI formats output
+```typescript
+const IssueId = Schema.String.pipe(Schema.brand("IssueId"))
+const ProjectId = Schema.String.pipe(Schema.brand("ProjectId"))
+const BoardId = Schema.String.pipe(Schema.brand("BoardId"))
 ```
 
-## 11. Testing Strategy
+### Enumerations
 
-- **Unit tests**: Per-crate, covering type conversions, policy logic, config parsing
-- **Integration tests**: DuckDB round-trip (insert → query), OTel endpoint acceptance, proxy traffic logging
-- **Test fixtures**: Sample OTLP payloads, mock traffic logs
-- **Property tests**: Span hierarchy invariants, cost aggregation accuracy
-- **No external deps in tests**: In-memory DuckDB, mock HTTP servers via `axum::test`
+```typescript
+const IssueStatus = Schema.Literal(
+  "backlog", "todo", "in_progress", "in_review", "done", "cancelled"
+)
+
+const Priority = Schema.Literal("urgent", "high", "medium", "low", "none")
+
+const AssigneeType = Schema.Literal("human", "agent")
+```
+
+### Assignee
+
+```typescript
+const Assignee = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  type: AssigneeType,
+  deviceId: Schema.optional(Schema.String),
+})
+```
+
+### Issue
+
+```typescript
+const Issue = Schema.Struct({
+  id: IssueId,
+  projectId: ProjectId,
+  title: Schema.String,
+  description: Schema.optional(Schema.String),
+  status: IssueStatus,
+  priority: Priority,
+  assignee: Schema.optional(Assignee),
+  labels: Schema.Array(Schema.String),
+  parentId: Schema.optional(IssueId),
+  estimate: Schema.optional(Schema.Number),
+  createdAt: Schema.String,
+  updatedAt: Schema.String,
+  createdBy: Assignee,
+  // Execution linkage
+  sessionIds: Schema.Array(Schema.String),
+  totalCostUsd: Schema.Number,
+  totalTokens: Schema.Number,
+  prNumbers: Schema.Array(Schema.Number),
+  // Agent coordination
+  blockedBy: Schema.Array(IssueId),
+  blocking: Schema.Array(IssueId),
+  agentNotes: Schema.optional(Schema.String),
+  acceptanceCriteria: Schema.Array(Schema.String),
+})
+```
+
+### CreateIssueInput
+
+```typescript
+const CreateIssueInput = Schema.Struct({
+  projectId: ProjectId,
+  title: Schema.String,
+  description: Schema.optional(Schema.String),
+  priority: Schema.optional(Priority),
+  labels: Schema.optional(Schema.Array(Schema.String)),
+  parentId: Schema.optional(IssueId),
+  estimate: Schema.optional(Schema.Number),
+  createdBy: Assignee,
+  acceptanceCriteria: Schema.optional(Schema.Array(Schema.String)),
+})
+```
+
+### IssueFilter
+
+```typescript
+const IssueFilter = Schema.Struct({
+  projectId: Schema.optional(ProjectId),
+  status: Schema.optional(IssueStatus),
+  priority: Schema.optional(Priority),
+  assigneeId: Schema.optional(Schema.String),
+  assigneeType: Schema.optional(AssigneeType),
+  label: Schema.optional(Schema.String),
+  parentId: Schema.optional(IssueId),
+  unassigned: Schema.optional(Schema.Boolean),
+})
+```
+
+### IssueEvent
+
+```typescript
+const IssueEventType = Schema.Literal(
+  "created", "status_changed", "assigned", "unassigned",
+  "comment_added", "label_added", "label_removed",
+  "linked_session", "linked_pr", "estimate_changed",
+  "priority_changed", "decomposed", "blocked", "unblocked"
+)
+
+const IssueEvent = Schema.Struct({
+  id: Schema.String,
+  issueId: Schema.String,
+  type: IssueEventType,
+  actor: Assignee,
+  timestamp: Schema.String,
+  data: Schema.Unknown,
+})
+```
+
+### Comment
+
+```typescript
+const Comment = Schema.Struct({
+  id: Schema.String,
+  issueId: Schema.String,
+  author: Assignee,
+  body: Schema.String,
+  createdAt: Schema.String,
+  sessionId: Schema.optional(Schema.String),
+})
+```
+
+### Board
+
+```typescript
+const Board = Schema.Struct({
+  id: BoardId,
+  projectId: Schema.String,
+  name: Schema.String,
+  columns: Schema.Array(IssueStatus),
+  wipLimits: Schema.Record({ key: Schema.String, value: Schema.Number }),
+})
+```
+
+### Project
+
+```typescript
+const Project = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  key: Schema.String,
+  defaultBoard: Schema.optional(BoardId),
+  autoIncrementCounter: Schema.Number,
+})
+```

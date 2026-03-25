@@ -1,68 +1,263 @@
 # GroundCtrl — Product Requirements Document
 
-> **GroundCtrl is an operating system for human+agent teams to build software projects.** The "kernel" is the local daemon; the "filesystem" is DuckDB + R2; the "scheduler" is the capacity engine; the "process manager" is guardrails. Every developer runs their own ground control station locally; together, the stations form a distributed mission control network.
+> **GroundCtrl is a small, local-first operating system for human+agent teams, modeled after Unix.** Usable out of the box by an individual developer or a small team — no infrastructure required. The **Kernel** is intentionally small: telemetry, storage, guardrails, and an orchestrator. The **Shell** mediates access via CLI and HTTP API. **Applications & Utilities** are all optional — gctl ships useful defaults (board, eval, net tools) but every external tool you already use (Linear, Notion, Obsidian, Arize Phoenix, etc.) integrates via adapters, not replacement.
 >
-> Or, in product terms: **Langfuse observability + Notion knowledge workspace + custom Claude Code skills — but local-first, running entirely on your machine.**
+> The "kernel" is the local daemon; the "filesystem" is DuckDB; the "shell" is the CLI + HTTP API; the "process manager" is guardrails. Utilities are small composable tools (like Unix `grep`, `curl`). Install, run `gctl serve`, and you have a working ground control station. Cloud sync, external integrations, and team features layer on when you need them — not before.
 >
-> See [local-ccli.md](../strategy/local-ccli.md) for executive summary, pillars overview, and target audience.
+
+## 1. Unix-Inspired Architecture
+
+GroundCtrl separates concerns into three layers, modeled after Unix:
+
+```mermaid
+flowchart TB
+  subgraph Apps["APPLICATIONS & UTILITIES"]
+    direction TB
+    subgraph AppRow["Applications"]
+      Board["gctl-board\n(project management)"]
+      Research["Research\nAssistant"]
+      CodeReview["Code Review\nAutomation"]
+      YourApp["Your App"]
+    end
+    subgraph UtilRow["Utilities"]
+      Net["net (fetch,\ncrawl, compact)"]
+      Browser["browser (goto,\nsnap, click)"]
+      Future["future utilities\n(grep, diff, ...)"]
+    end
+  end
+
+  subgraph Shell["SHELL"]
+    CLI["CLI Gateway\n(clap plugins)"]
+    Query["Query Engine\n(DuckDB SQL)"]
+    HTTP["HTTP API (:4318)\n(axum REST + SSE)"]
+  end
+
+  subgraph Kernel["KERNEL"]
+    direction TB
+    Telemetry["Telemetry\n(OTel)"]
+    Storage["Storage\n(DuckDB)"]
+    Guardrails["Guardrails\nEngine"]
+    Network["Network\nControl"]
+    CloudSync["Cloud Sync\n(R2)"]
+    BrowserCtrl["Browser Control\n(CDP Daemon)"]
+    FutureKernel["(future: process\nmgmt, scheduling)"]
+  end
+
+  Apps --> Shell --> Kernel
+```
+
+### 1.1. Kernel — Small by Design
+
+The kernel is intentionally small, agent-agnostic, and use-case-agnostic. An individual developer gets a working system with just the core primitives — no external services, no cloud accounts, no configuration files.
+
+**Core primitives (always present):**
+
+| Primitive | What It Does | Consumed By |
+|-----------|-------------|-------------|
+| **Telemetry** | OTLP span ingestion, session tracking, cost attribution | Shell, apps, utilities |
+| **Storage** | DuckDB embedded DB with schema migrations, retention policies | Shell, all apps (shared DB, isolated table namespaces) |
+| **Guardrails** | Policy engine (cost limits, loop detection, command gateway) | Shell, any app enforcing agent safety |
+| **Orchestrator** | Agent-agnostic dispatch, retry, reconciliation (see [orchestration.md](gctl/workflows/orchestration.md)) | Shell, any app dispatching agent work |
+
+**Optional kernel extensions (feature-gated):**
+
+| Extension | What It Does | When to Enable |
+|-----------|-------------|----------------|
+| **Network Control** | MITM proxy, domain allowlists, traffic logging | When you need network visibility |
+| **Browser Control** | CDP daemon, persistent Chromium, ref system, tab management | When you need browser automation |
+| **Cloud Sync** | R2 Parquet export, device-partitioned sync, knowledge store | When sharing data across devices/teams |
+| **Scheduler** | Deferred and recurring task execution (adapters: tokio, macOS launchd, Cloudflare DO Alarms) | When you need timed triggers beyond the orchestrator |
+
+The kernel makes **no assumptions** about what you're building. A solo developer running `gctl serve` gets telemetry, storage, guardrails, and orchestration. Everything else layers on as needed.
+
+### 1.2. Shell — Dispatcher & Interface Layer
+
+The shell mediates all access to the kernel, like `bash` mediates access to Linux syscalls. The shell is the *dispatcher* — it parses input and routes to the right command. Individual CLI subcommands (like `gctl sessions`, `gctl net fetch`) are utilities/applications that *run through* the shell, not part of it.
+
+| Interface | What It Does | Unix Analogy |
+|-----------|-------------|--------------|
+| **CLI Dispatcher** | Unified `gctl` CLI, parses args, routes to commands | `bash` / `zsh` (the interpreter, not the commands) |
+| **HTTP API** | REST endpoints on `:4318`, SSE for live feeds | Network sockets / IPC |
+| **Query Engine** | Guardrailed DuckDB queries, NL-to-SQL (planned) | `awk` / `sed` for structured data |
+
+### 1.3. Applications & Utilities
+
+**All applications are optional.** gctl ships useful defaults, but the real power is the driver model: integrate the tools you already use instead of replacing them.
+
+**Applications** are larger, stateful programs that orchestrate kernel primitives through the shell. **Utilities** are smaller, single-purpose tools that do one thing well and compose via stdin/stdout where practical.
+
+#### Shipped Applications (all optional)
+
+| Application | Use Case | Kernel Primitives Used (via Shell) |
+|-------------|----------|-----------------------------------|
+| **gctl-board** | Lightweight project management & kanban | Storage, Telemetry (session-issue linking), Cloud Sync |
+| **Observe & Eval** | Analytics, scoring, prompt management | Telemetry, Storage, Query Engine |
+| **Capacity Engine** | Throughput measurement, forecasting | Storage, Telemetry, Query Engine |
+
+#### Shipped Utilities
+
+| Utility | Use Case | Unix Analogy |
+|---------|----------|--------------|
+| **net fetch** | Fetch a URL, convert to markdown | `curl` |
+| **net crawl** | Crawl a site, extract readable content | `wget -r` |
+| **net compact** | Compact crawled pages into LLM-ready context | `tar` / `cat` |
+| **browser goto/snapshot/click** | Browser automation via CDP | headless Chrome scripting |
+
+#### External Applications (Installed via Drivers)
+
+gctl does not replace your existing tools — it connects to them as external applications installed on the OS. Each driver is optional and independently enabled. Use the tools you already know; gctl provides the kernel primitives (telemetry, orchestration, guardrails) underneath.
+
+| Category | External App | Driver | What It Does |
+|----------|-------------|--------|-------------|
+| **Project Tracking** | Linear | `driver-linear` | Bidirectional issue sync, dispatch from Linear issues |
+| **Project Tracking** | GitHub Issues | `driver-github` | Issue sync, PR linking, status mirroring |
+| **Project Tracking** | Notion | `driver-notion` | Read/write Notion databases as issue source |
+| **Knowledge & Docs** | Obsidian | `driver-obsidian` | Mount `specs/` as vault, edit specs in Obsidian UI |
+| **Observability** | Arize Phoenix | `driver-phoenix` | Export traces/evals to Phoenix for LLM analysis |
+| **Observability** | Langfuse | `driver-langfuse` | Export traces/scores to Langfuse |
+| **Observability** | SigNoz | `driver-signoz` | Forward OTel spans to SigNoz for dashboarding |
+| **Agents** | Claude Code | built-in | Orchestrator dispatches via `claude` CLI |
+| **Agents** | Aider | built-in | Orchestrator dispatches via `aider` CLI |
+| **Agents** | Custom | built-in | Any executable that accepts a prompt |
+
+Drivers follow the Unix device driver model: each implements a kernel interface trait (e.g., `TrackerPort`, `ObservabilityExportPort`) and is wired at startup via configuration. Zero drivers = gctl works standalone. Add drivers as your workflow grows.
+
+#### Example Future Applications
+
+| Application | Use Case | Kernel Primitives Used |
+|-------------|----------|----------------------|
+| **Research Assistant** | Build knowledge bases, semantic search | Network Control, Storage, Cloud Sync |
+| **Code Review Bot** | Automated PR review with trace-informed context | Telemetry, CLI Gateway, HTTP API |
+| **Incident Response** | Alert triage, runbook execution, post-mortem generation | Guardrails, Telemetry, Network Control |
+| **Compliance & Audit** | Track all agent actions for regulatory compliance | Telemetry (full trace), Guardrails (policy log), Storage |
+
+### 1.4. Extension Model
+
+Applications and utilities integrate with gctl through the shell:
+
+```mermaid
+flowchart LR
+  subgraph AppReg["Application Registration"]
+    A1["1. Storage — Declare table schemas\n(CREATE TABLE IF NOT EXISTS board_*)"]
+    A2["2. CLI — Register subcommands\n(clap plugin or TS CLI bridge)"]
+    A3["3. HTTP — Mount routes\nunder /api/{app}/*"]
+    A4["4. Events — Subscribe to kernel events\n(span ingested, session ended, alert fired)"]
+    A5["5. Sync — Declare R2 prefixes\n(analytics/{app}/, knowledge/{app}/)"]
+    A1 --> A2 --> A3 --> A4 --> A5
+  end
+
+  subgraph UtilReg["Utility Registration"]
+    U1["1. CLI — Register subcommands\n(e.g. gctl net fetch, gctl browser goto)"]
+    U2["2. Compose — Accept stdin,\nproduce stdout (Unix pipes)"]
+    U1 --> U2
+  end
+```
+
+**Rust applications** (like Observe & Eval, Capacity) are compiled into the `gctl` binary as feature-gated crates. They have direct access to `DuckDbStore` and can register axum routes on the shared router.
+
+**TypeScript applications** (like gctl-board) run as sidecar processes or are proxied through the Rust daemon. They communicate via the shell (HTTP API or CLI subprocess calls).
+
+```mermaid
+flowchart LR
+  Serve["gctl serve --port 4318"] --> Traces["/v1/traces\n(OS — OTel ingestion)"]
+  Serve --> Sessions["/api/sessions\n(OS — trace queries)"]
+  Serve --> Analytics["/api/analytics/*\n(App: Observe & Eval)"]
+  Serve --> BoardAPI["/api/board/*\n(App: gctl-board, TS sidecar)"]
+  Serve --> CapAPI["/api/capacity/*\n(App: Capacity Engine)"]
+  Serve --> CustomAPI["/api/{your-app}/*\n(App: your custom application)"]
+  Serve --> Health["/health\n(OS — health check)"]
+```
+
+## 2. Design Principles
+
+1. **Usable out of the box by one person.** `cargo install gctl && gctl serve` — no config files, no cloud accounts, no Docker. An individual developer or a small team gets telemetry, storage, guardrails, and orchestration immediately. Complexity is opt-in, not opt-out.
+2. **Small kernel, optional everything else.** The kernel has four core primitives (telemetry, storage, guardrails, orchestrator). Network control, browser control, cloud sync, and the scheduler are feature-gated extensions. All applications and adapters are optional.
+3. **Adapt, don't replace.** gctl connects to the tools you already use (Linear, Notion, Obsidian, Arize Phoenix, etc.) via adapters. Shipped applications (gctl-board, Observe & Eval) are defaults, not mandates. Zero adapters = standalone. Add what you need.
+4. **OS layer is stable; applications evolve fast.** The telemetry format, storage schema, and CLI gateway change rarely. Applications can ship, iterate, and break independently.
+5. **Applications share primitives, not state.** Apps read from the same DuckDB but own their table namespaces (`board_*`, `eval_*`, `capacity_*`). Cross-app data flows through OS-level events, not direct table joins.
+6. **Agents are first-class application consumers.** Applications expose CLI and HTTP interfaces that agents can call directly. No browser-only UIs — every feature is automatable.
+7. **Local-first, cloud-optional.** The OS layer works fully offline. Cloud sync (R2) is opt-in. Applications inherit this property automatically.
+
+## 3. Target Use Cases
+
+gctl is designed for **individuals first, small teams second**. A solo developer with one agent gets full value on day one. Team features layer on naturally — not as a separate product.
+
+### Individual Developer (zero config)
+
+| Use Case | What You Use |
+|----------|-------------|
+| **"What did my agent do and how much did it cost?"** | Kernel (Telemetry + Query) |
+| **"Prevent my agent from force-pushing to main"** | Kernel (Guardrails) |
+| **"Dispatch work to my agent and track progress"** | Kernel (Orchestrator) + gctl-board |
+| **"What should my agent work on next?"** | gctl-board |
+| **"Crawl these docs and make them agent-ready"** | net utilities |
+
+### Small Team (add adapters as needed)
+
+| Use Case | What You Use |
+|----------|-------------|
+| **"Sync our Linear/GitHub issues to gctl orchestration"** | Kernel + driver-linear / driver-github |
+| **"View and edit specs in Obsidian"** | driver-obsidian |
+| **"Export traces to Arize Phoenix for LLM analysis"** | Kernel (Telemetry) + driver-phoenix |
+| **"How is our team's agent adoption trending?"** | Observe & Eval |
+| **"Can we ship this milestone on time?"** | Capacity Engine |
+| **"Orchestrate 5 agents across 20 issues"** | Kernel (Orchestrator) with concurrency config |
 
 ## 4. System Architecture
 
-The system operates on a **Local-First + Cloud-Sync** model.
+The system operates on a **Local-First + Cloud-Sync** model, with a clear separation between OS primitives and applications.
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  Developer Machine                                                │
-│                                                                   │
-│  ┌──────────┐    ┌──────────────────────────────────────────┐    │
-│  │ Claude   │───▶│              GroundCtrl Daemon                   │    │
-│  │ Code     │    │                                            │    │
-│  ├──────────┤    │  ┌───────────┐  ┌──────────────────────┐  │    │
-│  │ Aider    │───▶│  │ Guardrails│  │ Unified DevOps CLI   │  │    │
-│  ├──────────┤    │  │ Engine    │  │ (gh/aws/pulumi/slack) │  │    │
-│  │ OpenDevin│───▶│  └───────────┘  └──────────────────────┘  │    │
-│  ├──────────┤    │  ┌───────────┐  ┌──────────────────────┐  │    │
-│  │ Custom   │───▶│  │ MITM Proxy│  │ OTel + Eval Engine   │  │    │
-│  │ Agents   │    │  │ (network) │  │                      │  │    │
-│  └──────────┘    │  └───────────┘  └──────────────────────┘  │    │
-│                  │  ┌────────────────────────────────────────┐│    │
-│                  │  │ Capacity & Project Intelligence Engine ││    │
-│                  │  │ (issue sync, throughput, forecasting)  ││    │
-│                  │  └────────────────────────────────────────┘│    │
-│                  │         │              │            │       │    │
-│                  │    ┌────▼──────────────▼────────────▼──┐   │    │
-│                  │    │      DuckDB (local store)          │   │    │
-│                  │    │  traces │ traffic │ events │ tasks │   │    │
-│                  │    └──────────────┬─────────────────────┘   │    │
-│                  │                   │ R2 Sync Engine          │    │
-│                  │                   │ (WAL export + Parquet)  │    │
-│                  └──────────────────┬┘────────────────────────┘    │
-│                                     │                              │
-└─────────────────────────────────────┼──────────────────────────────┘
-                                      │ S3-compatible API
-                        ┌─────────────▼──────────────┐
-                        │    Cloudflare R2 Bucket     │
-                        │                             │
-                        │  /{workspace}/traces/*.pq   │
-                        │  /{workspace}/traffic/*.pq  │
-                        │  /{workspace}/events/*.pq   │
-                        │  /{workspace}/evals/*.pq    │
-                        │  /{workspace}/capacity/*.pq │
-                        │  /_manifests/{device}.json  │
-                        └─────────────┬──────────────┘
-                                      │
-               ┌──────────────────────▼──────────────────────┐
-               │     Cloudflare Workers + D1 + Analytics     │
-               │                                              │
-               │  ┌─────────┐ ┌──────────┐ ┌──────────────┐ │
-               │  │ Team    │ │ Project  │ │ Org-wide     │ │
-               │  │ Dash    │ │ Planning │ │ AI Adoption  │ │
-               │  │ (Pages) │ │ & Forecast│ │ Metrics      │ │
-               │  └─────────┘ └──────────┘ └──────────────┘ │
-               │                                              │
-               │  D1 (relational) │ R2 (analytical/bulk)     │
-               │  ◄──── Linear / GitHub Issues / Notion ────► │
-               └──────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+  subgraph DevMachine["Developer Machine"]
+    subgraph Agents["Agents"]
+      Claude["Claude Code"]
+      Aider["Aider"]
+      OpenDevin["OpenDevin"]
+      Custom["Custom Agents"]
+    end
+
+    subgraph Daemon["GroundCtrl Daemon"]
+      subgraph AppLayer["APPLICATION LAYER"]
+        Board2["gctl-board\n(project mgmt, TS)"]
+        ObsEval["Observe & Eval\n(scoring)"]
+        Cap["Capacity Engine\n(forecast)"]
+        FutureApps["+ future: Research,\nCode Review..."]
+      end
+
+      subgraph OSLayer["OS LAYER (kernel primitives)"]
+        Guard["Guardrails Engine"]
+        CLIGw["CLI Gateway (clap)"]
+        MITM["MITM Proxy (network)"]
+        OTelRx["OTel Receiver (telemetry)"]
+        QE["Query Engine"]
+        HTTPAPI["HTTP API (axum REST + SSE)"]
+      end
+
+      DuckDB["DuckDB (local store)\nOS: sessions | spans | traffic | guardrails\nApps: board_* | eval_* | capacity_*"]
+      R2Sync["R2 Sync Engine\n(WAL export + Parquet)"]
+    end
+  end
+
+  Agents -->|OTLP / CLI| Daemon
+  AppLayer -->|OS APIs| OSLayer
+  OSLayer --> DuckDB --> R2Sync
+
+  R2Sync -->|S3-compatible API| R2
+
+  subgraph R2["Cloudflare R2 Bucket"]
+    R2Data["/{workspace}/traces/*.pq\n/{workspace}/traffic/*.pq\n/{workspace}/events/*.pq\n/{workspace}/evals/*.pq\n/{workspace}/capacity/*.pq\n/_manifests/{device}.json"]
+  end
+
+  R2 --> CF
+
+  subgraph CF["Cloudflare Workers + D1 + Analytics"]
+    TeamDash["Team Dash (Pages)"]
+    ProjPlan["Project Planning\n& Forecast"]
+    OrgMetrics["Org-wide AI\nAdoption Metrics"]
+    CFStore["D1 (relational) | R2 (analytical/bulk)"]
+    ExtSync["Linear / GitHub Issues / Notion"]
+  end
 ```
 
 ### 4.1. The Local Daemon
@@ -118,28 +313,20 @@ The sync engine is the bridge between local-first DuckDB and the Cloudflare clou
 
 #### How it works
 
-```
-1. Local writes happen to DuckDB (zero latency, always available)
+```mermaid
+sequenceDiagram
+  participant App as Application
+  participant DB as DuckDB (local)
+  participant Sync as Sync Daemon
+  participant R2 as Cloudflare R2
+  participant CF as Cloud Workers
 
-2. Sync daemon batches new rows into Parquet files (every N minutes or N rows):
-   DuckDB → COPY TO '*.parquet' → upload to R2
-
-3. Each device writes to its own partition:
-   r2://gctl-data/{workspace_id}/{device_id}/traces/2026-03-22T14:00.parquet
-
-4. Manifest file tracks sync state:
-   r2://gctl-data/_manifests/{device_id}.json
-   {
-     "device_id": "alice-macbook",
-     "last_sync": "2026-03-22T14:05:00Z",
-     "tables": {
-       "traces": { "last_row_id": 4821, "last_file": "..." },
-       "traffic": { "last_row_id": 12044, "last_file": "..." }
-     }
-   }
-
-5. Cloud Workers read Parquet directly from R2 for queries
-   (or materialize into D1 for relational joins)
+  App->>DB: 1. Local writes (zero latency, always available)
+  Sync->>DB: 2. Batch new rows
+  Sync->>R2: COPY TO *.parquet → upload
+  Note over R2: 3. Device-partitioned:<br/>r2://gctl-data/{workspace}/{device}/traces/*.parquet
+  Sync->>R2: 4. Update manifest<br/>r2://gctl-data/_manifests/{device}.json
+  CF->>R2: 5. Read Parquet directly for queries<br/>(or materialize into D1 for relational joins)
 ```
 
 #### Sync modes
@@ -155,17 +342,21 @@ The sync engine is the bridge between local-first DuckDB and the Cloudflare clou
 
 No conflicts by design — each device writes to its own R2 prefix. The cloud layer merges by reading all device partitions. This is an **append-only, partition-per-device** model:
 
-```
-r2://gctl-data/workspace-123/
-  ├── alice-macbook/
-  │   ├── traces/2026-03-22T10:00.parquet
-  │   ├── traces/2026-03-22T14:00.parquet
-  │   └── traffic/2026-03-22T10:00.parquet
-  ├── bob-desktop/
-  │   ├── traces/2026-03-22T11:00.parquet
-  │   └── traffic/2026-03-22T11:00.parquet
-  └── claude-bot-1/   ← autonomous agents are devices too
-      └── traces/2026-03-22T09:00.parquet
+```mermaid
+flowchart TB
+  R2Root["r2://gctl-data/workspace-123/"]
+  R2Root --> Alice["alice-macbook/"]
+  R2Root --> Bob["bob-desktop/"]
+  R2Root --> Bot["claude-bot-1/\n(autonomous agents are devices too)"]
+
+  Alice --> AT1["traces/2026-03-22T10:00.parquet"]
+  Alice --> AT2["traces/2026-03-22T14:00.parquet"]
+  Alice --> ATr["traffic/2026-03-22T10:00.parquet"]
+
+  Bob --> BT1["traces/2026-03-22T11:00.parquet"]
+  Bob --> BTr["traffic/2026-03-22T11:00.parquet"]
+
+  Bot --> CT1["traces/2026-03-22T09:00.parquet"]
 ```
 
 #### Why R2?
@@ -181,16 +372,16 @@ r2://gctl-data/workspace-123/
 
 ```
 gctl sync status
-┌─────────────┬──────────┬────────────┬────────────┐
-│ Table       │ Local    │ Synced     │ Pending    │
-├─────────────┼──────────┼────────────┼────────────┤
-│ traces      │ 4,821    │ 4,500      │ 321 rows   │
-│ traffic     │ 12,044   │ 12,044     │ 0 rows     │
-│ events      │ 892      │ 890        │ 2 rows     │
-│ evals       │ 47       │ 47         │ 0 rows     │
-└─────────────┴──────────┴────────────┴────────────┘
-Last sync: 3 min ago │ Next: 2 min │ R2 bucket: gctl-data
 ```
+
+| Table   | Local  | Synced | Pending  |
+|---------|--------|--------|----------|
+| traces  | 4,821  | 4,500  | 321 rows |
+| traffic | 12,044 | 12,044 | 0 rows   |
+| events  | 892    | 890    | 2 rows   |
+| evals   | 47     | 47     | 0 rows   |
+
+Last sync: 3 min ago | Next: 2 min | R2 bucket: gctl-data
 
 * **Local retention:** Configurable TTL (default 30 days). Old data pruned from DuckDB after sync confirmed.
 * **R2 retention:** Configurable per workspace (default 90 days). Lifecycle rules auto-delete old Parquet files.
@@ -202,37 +393,25 @@ R2 is not just for analytics Parquet files — it is equally suited as the backi
 
 #### The two data planes
 
-```
-r2://gctl-data/{workspace}/
-  │
-  ├── analytics/                    ← PARQUET (columnar, append-only)
-  │   ├── {device}/traces/*.parquet
-  │   ├── {device}/traffic/*.parquet
-  │   ├── {device}/events/*.parquet
-  │   ├── {device}/evals/*.parquet
-  │   └── {device}/capacity/*.parquet
-  │
-  └── knowledge/                    ← MARKDOWN (document, mutable)
-      ├── crawls/
-      │   ├── docs.anthropic.com/
-      │   │   ├── _index.json         ← site manifest (pages, last crawl, staleness)
-      │   │   ├── getting-started.md
-      │   │   ├── tool-use.md
-      │   │   └── agents.md
-      │   ├── docs.cloudflare.com/
-      │   │   ├── _index.json
-      │   │   ├── r2/overview.md
-      │   │   └── workers/api.md
-      │   └── internal-wiki/
-      │       ├── _index.json
-      │       └── onboarding.md
-      ├── context/
-      │   ├── CLAUDE.md               ← shared team prompt configs
-      │   ├── runbooks/deploy.md      ← operational runbooks
-      │   └── architecture.md         ← system design docs
-      └── snapshots/
-          ├── issues-2026-03-22.md    ← periodic issue tracker snapshots
-          └── prs-open-2026-03-22.md  ← open PR summaries
+```mermaid
+flowchart TB
+  Root["r2://gctl-data/{workspace}/"]
+
+  Root --> Analytics["analytics/\nPARQUET (columnar, append-only)"]
+  Analytics --> DevTraces["{device}/traces/*.parquet"]
+  Analytics --> DevTraffic["{device}/traffic/*.parquet"]
+  Analytics --> DevEvents["{device}/events/*.parquet"]
+  Analytics --> DevEvals["{device}/evals/*.parquet"]
+  Analytics --> DevCap["{device}/capacity/*.parquet"]
+
+  Root --> Knowledge["knowledge/\nMARKDOWN (document, mutable)"]
+  Knowledge --> Crawls["crawls/"]
+  Crawls --> Anthropic["docs.anthropic.com/\n_index.json, getting-started.md,\ntool-use.md, agents.md"]
+  Crawls --> Cloudflare["docs.cloudflare.com/\n_index.json, r2/overview.md,\nworkers/api.md"]
+  Crawls --> Wiki["internal-wiki/\n_index.json, onboarding.md"]
+
+  Knowledge --> Context["context/\nCLAUDE.md, runbooks/deploy.md,\narchitecture.md"]
+  Knowledge --> Snapshots["snapshots/\nissues-2026-03-22.md,\nprs-open-2026-03-22.md"]
 ```
 
 #### Why R2 works for both
@@ -249,24 +428,19 @@ r2://gctl-data/{workspace}/
 
 #### Agent knowledge workflow
 
-```
-1. Developer crawls docs locally:
-   gctl net crawl https://docs.anthropic.com --depth 3
+```mermaid
+sequenceDiagram
+  participant Dev as Developer
+  participant Local as Local Storage<br/>(~/.local/share/gctl/spider/)
+  participant R2 as Cloudflare R2
+  participant Team as Team Member's Agent
 
-2. Markdown stored locally:
-   ~/.local/share/gctl/spider/docs.anthropic.com/*.md
-
-3. Sync to R2 for team-wide access:
-   gctl sync push --include knowledge
-   → uploads to r2://gctl-data/{workspace}/knowledge/crawls/docs.anthropic.com/
-
-4. Any team member's agent can pull:
-   gctl sync pull --include knowledge
-   → downloads to local spider cache
-
-5. Agents consume markdown as context:
-   gctl net compact docs.anthropic.com
-   → concatenates into single LLM-ready document (gitingest-style)
+  Dev->>Local: 1. gctl net crawl https://docs.anthropic.com --depth 3
+  Note over Local: 2. Markdown stored locally:<br/>docs.anthropic.com/*.md
+  Dev->>R2: 3. gctl sync push --include knowledge
+  Note over R2: r2://gctl-data/{workspace}/knowledge/crawls/docs.anthropic.com/
+  Team->>Local: 4. gctl sync pull --include knowledge<br/>(downloads to local spider cache)
+  Team->>Team: 5. gctl net compact docs.anthropic.com<br/>(concatenates into single LLM-ready document)
 ```
 
 #### Shared agent context via R2
@@ -487,20 +661,21 @@ The local spider cache and R2-synced knowledge are both searchable through the s
 
 All agent-initiated infrastructure operations go through GroundCtrl's plugin system:
 
-```
-gctl<plugin> <command> [args/flags]
-  ├── gh         GitHub: issues, PRs, runs, dispatch, repos
-  ├── aws        AWS: status, CloudWatch logs, ECS services/tasks/deploys
-  ├── pulumi     IaC: stack status, preview, outputs
-  ├── signoz     Observability: alerts, services, traces, logs
-  ├── slack      Notifications: send Block Kit messages
-  ├── net        Network: crawl, fetch, proxy, traffic analytics
-  ├── otel       Telemetry: OTLP receiver, trace/span queries
-  ├── gh-events  GitHub event streaming & analytics
-  ├── eval       Evals: define suites, run benchmarks, compare configs
-  ├── capacity   Capacity: throughput, forecasts, workload balance
-  ├── project    Project: issue sync, milestone tracking, risk alerts
-  └── query      Data: agent-safe DuckDB queries, knowledge search
+```mermaid
+flowchart LR
+  GCTL["gctl &lt;plugin&gt; &lt;command&gt;"]
+  GCTL --> gh["gh — GitHub: issues, PRs, runs, dispatch, repos"]
+  GCTL --> aws["aws — AWS: status, CloudWatch logs, ECS"]
+  GCTL --> pulumi["pulumi — IaC: stack status, preview, outputs"]
+  GCTL --> signoz["signoz — Observability: alerts, services, traces, logs"]
+  GCTL --> slack["slack — Notifications: send Block Kit messages"]
+  GCTL --> net["net — Network: crawl, fetch, proxy, traffic analytics"]
+  GCTL --> otel["otel — Telemetry: OTLP receiver, trace/span queries"]
+  GCTL --> ghevents["gh-events — GitHub event streaming & analytics"]
+  GCTL --> eval["eval — Evals: define suites, run benchmarks"]
+  GCTL --> capacity["capacity — Throughput, forecasts, workload balance"]
+  GCTL --> project["project — Issue sync, milestone tracking, risk alerts"]
+  GCTL --> query["query — Agent-safe DuckDB queries, knowledge search"]
 ```
 
 ### Why route everything through GroundCtrl?
@@ -526,53 +701,22 @@ gctl<plugin> <command> [args/flags]
 
 GroundCtrl adopts Langfuse's **Session → Trace → Observation** model but extends it for coding agents:
 
-```
-Session: "Implement rate limiting for /api/users"
-│
-├── Trace: "Initial implementation"
-│   ├── Generation (LLM call)
-│   │   ├── model: claude-opus-4-6
-│   │   ├── input_tokens: 4,200 │ output_tokens: 1,800
-│   │   ├── cost: $0.12
-│   │   ├── latency: 3.2s
-│   │   ├── input: { system_prompt, user_message, tool_results }
-│   │   └── output: { assistant_message, tool_calls }
-│   │
-│   ├── Span: "tool.Read" (file read)
-│   │   ├── input: { path: "src/routes/api.rs" }
-│   │   ├── output: { content: "..." , lines: 245 }
-│   │   └── duration: 12ms
-│   │
-│   ├── Generation (LLM call — follow-up)
-│   │   ├── model: claude-opus-4-6
-│   │   ├── input_tokens: 6,100 │ output_tokens: 2,400
-│   │   ├── cost: $0.17
-│   │   └── output: { tool_calls: [Edit, Write] }
-│   │
-│   ├── Span: "tool.Edit" (file edit)
-│   │   ├── input: { path: "src/middleware/rate_limit.rs", old: "...", new: "..." }
-│   │   ├── output: { success: true }
-│   │   └── duration: 8ms
-│   │
-│   ├── Span: "tool.Bash" (run tests)
-│   │   ├── input: { command: "cargo test" }
-│   │   ├── output: { exit_code: 0, stdout: "test result: ok. 12 passed" }
-│   │   └── duration: 4,200ms
-│   │
-│   └── Event: "session.checkpoint"
-│       └── metadata: { files_changed: 2, tests_passing: true }
-│
-├── Trace: "Address review feedback"
-│   ├── Generation → Span → Generation → Span ...
-│   └── (same nesting pattern)
-│
-└── Session Totals:
-    ├── cost: $2.47
-    ├── input_tokens: 32,400 │ output_tokens: 14,200
-    ├── duration: 12m 34s
-    ├── tool_calls: 28
-    ├── llm_calls: 8
-    └── outcome: success (PR merged)
+```mermaid
+flowchart TB
+  Session["Session: Implement rate limiting for /api/users"]
+
+  Session --> Trace1["Trace: Initial implementation"]
+  Session --> Trace2["Trace: Address review feedback"]
+  Session --> Totals["Session Totals\ncost: $2.47 | tokens: 32.4k in / 14.2k out\nduration: 12m 34s | tool_calls: 28 | llm_calls: 8\noutcome: success (PR merged)"]
+
+  Trace1 --> Gen1["Generation (LLM call)\nmodel: claude-opus-4-6\ntokens: 4,200 in / 1,800 out | cost: $0.12 | latency: 3.2s"]
+  Trace1 --> Span1["Span: tool.Read\npath: src/routes/api.rs | duration: 12ms"]
+  Trace1 --> Gen2["Generation (LLM follow-up)\nmodel: claude-opus-4-6\ntokens: 6,100 in / 2,400 out | cost: $0.17"]
+  Trace1 --> Span2["Span: tool.Edit\npath: src/middleware/rate_limit.rs | duration: 8ms"]
+  Trace1 --> Span3["Span: tool.Bash\ncommand: cargo test | exit: 0 | duration: 4,200ms"]
+  Trace1 --> Event1["Event: session.checkpoint\nfiles_changed: 2, tests_passing: true"]
+
+  Trace2 --> Gen3["Generation → Span → Generation → Span ...\n(same nesting pattern)"]
 ```
 
 #### Observation Types
@@ -619,31 +763,29 @@ Total tokens:    1,284,000 (892k in / 392k out)
 Total sessions:  67
 Total traces:    214
 Total LLM calls: 1,847
+```
 
-┌────────────────┬──────────┬──────────┬─────────┬─────────┐
-│ Model          │ Cost     │ Calls    │ Avg $/c │ % Total │
-├────────────────┼──────────┼──────────┼─────────┼─────────┤
-│ claude-opus-4-6│ $31.24   │ 892      │ $0.035  │ 74.1%   │
-│ claude-sonnet  │ $8.47    │ 743      │ $0.011  │ 20.1%   │
-│ claude-haiku   │ $2.47    │ 212      │ $0.012  │ 5.9%    │
-└────────────────┴──────────┴──────────┴─────────┴─────────┘
+| Model           | Cost   | Calls | Avg $/c | % Total |
+|-----------------|--------|-------|---------|---------|
+| claude-opus-4-6 | $31.24 | 892   | $0.035  | 74.1%   |
+| claude-sonnet   | $8.47  | 743   | $0.011  | 20.1%   |
+| claude-haiku    | $2.47  | 212   | $0.012  | 5.9%    |
 
-┌──────────────┬──────────┬──────────┬─────────┬──────────┐
-│ Agent        │ Cost     │ Sessions │ Avg $/s │ Success% │
-├──────────────┼──────────┼──────────┼─────────┼──────────┤
-│ claude-code  │ $28.90   │ 42       │ $0.69   │ 88%      │
-│ claude-bot-1 │ $8.12    │ 18       │ $0.45   │ 72%      │
-│ aider        │ $5.16    │ 7        │ $0.74   │ 100%     │
-└──────────────┴──────────┴──────────┴─────────┴──────────┘
+| Agent        | Cost   | Sessions | Avg $/s | Success% |
+|--------------|--------|----------|---------|----------|
+| claude-code  | $28.90 | 42       | $0.69   | 88%      |
+| claude-bot-1 | $8.12  | 18       | $0.45   | 72%      |
+| aider        | $5.16  | 7        | $0.74   | 100%     |
 
+```
 Daily trend:
-  Mon: ████████████████  $8.12  (14 sessions)
-  Tue: ██████████████    $7.44  (12 sessions)
-  Wed: ████████████      $6.20  (9 sessions)
-  Thu: ██████████████████ $9.02 (15 sessions)
-  Fri: ████████████      $5.88  (8 sessions)
-  Sat: ████              $2.40  (4 sessions)
-  Sun: ██████            $3.12  (5 sessions)
+  Mon: ################  $8.12  (14 sessions)
+  Tue: ##############    $7.44  (12 sessions)
+  Wed: ############      $6.20  (9 sessions)
+  Thu: ################## $9.02 (15 sessions)
+  Fri: ############      $5.88  (8 sessions)
+  Sat: ####              $2.40  (4 sessions)
+  Sun: ######            $3.12  (5 sessions)
 ```
 
 #### 7.2.2. Latency Analytics
@@ -652,16 +794,17 @@ Daily trend:
 gctl analytics latency --window 7d
 
 === Latency Analytics (last 7 days) ===
+```
 
 LLM Call Latency:
-┌────────────────┬─────────┬─────────┬─────────┬─────────┬─────────┐
-│ Model          │ p50     │ p75     │ p90     │ p95     │ p99     │
-├────────────────┼─────────┼─────────┼─────────┼─────────┼─────────┤
-│ claude-opus-4-6│ 3.2s    │ 5.1s    │ 8.4s    │ 12.1s   │ 22.3s   │
-│ claude-sonnet  │ 1.1s    │ 1.8s    │ 3.2s    │ 4.5s    │ 8.1s    │
-│ claude-haiku   │ 0.4s    │ 0.7s    │ 1.1s    │ 1.5s    │ 2.8s    │
-└────────────────┴─────────┴─────────┴─────────┴─────────┴─────────┘
 
+| Model           | p50  | p75  | p90  | p95   | p99   |
+|-----------------|------|------|------|-------|-------|
+| claude-opus-4-6 | 3.2s | 5.1s | 8.4s | 12.1s | 22.3s |
+| claude-sonnet   | 1.1s | 1.8s | 3.2s | 4.5s  | 8.1s  |
+| claude-haiku    | 0.4s | 0.7s | 1.1s | 1.5s  | 2.8s  |
+
+```
 Time-to-First-Token (TTFT):
   claude-opus-4-6:  p50=0.8s  p95=2.1s
   claude-sonnet:    p50=0.3s  p95=0.9s
@@ -673,11 +816,11 @@ Tokens per Second (output):
   claude-haiku:     p50=120 tok/s p95=78 tok/s
 
 Session Duration Distribution:
-  < 1 min:   ██████████████████  27%
-  1-5 min:   ████████████████████████████████  48%
-  5-15 min:  ██████████████  21%
-  15-30 min: ██        3%
-  > 30 min:  █         1%
+  < 1 min:   ##################  27%
+  1-5 min:   ################################  48%
+  5-15 min:  ##############  21%
+  15-30 min: ##        3%
+  > 30 min:  #         1%
 ```
 
 #### 7.2.3. Trace Explorer (Langfuse-style)
@@ -686,91 +829,56 @@ Interactive trace browsing — the core Langfuse feature, replicated locally:
 
 ```
 gctl analytics traces --window 24h --sort cost-desc --limit 20
-
-┌────────────────────┬───────────────┬──────────┬────────┬──────┬─────────┐
-│ Session            │ Agent         │ Cost     │ Tokens │ Dur  │ Status  │
-├────────────────────┼───────────────┼──────────┼────────┼──────┼─────────┤
-│ Implement auth...  │ claude-code   │ $3.42    │ 28.4k  │ 18m  │ ✓ done  │
-│ Fix flaky test...  │ claude-bot-1  │ $2.18    │ 16.2k  │ 12m  │ ✓ done  │
-│ Migrate schema...  │ claude-code   │ $1.87    │ 14.8k  │ 9m   │ ✗ fail  │
-│ Update API docs... │ docs-bot      │ $0.34    │ 4.2k   │ 2m   │ ✓ done  │
-│ ...                │               │          │        │      │         │
-└────────────────────┴───────────────┴──────────┴────────┴──────┴─────────┘
 ```
+
+| Session            | Agent        | Cost  | Tokens | Dur | Status |
+|--------------------|--------------|-------|--------|-----|--------|
+| Implement auth...  | claude-code  | $3.42 | 28.4k  | 18m | ✓ done |
+| Fix flaky test...  | claude-bot-1 | $2.18 | 16.2k  | 12m | ✓ done |
+| Migrate schema...  | claude-code  | $1.87 | 14.8k  | 9m  | ✗ fail |
+| Update API docs... | docs-bot     | $0.34 | 4.2k   | 2m  | ✓ done |
+| ...                |              |       |        |     |        |
 
 Drill into a session:
 
-```
-gctl analytics trace <session_id> --tree
+```mermaid
+flowchart TB
+  S["Session: sess-4821 'Implement rate limiting'\ncost: $2.47 | tokens: 18.4k | duration: 12m 34s | status: done\ntags: project=api-server, task_type=feature, issue=BACK-42\nprompt_version: v2.3 (sha: a1b2c3d4)"]
 
-Session: sess-4821 "Implement rate limiting"
-├── cost: $2.47 │ tokens: 18.4k │ duration: 12m 34s │ status: done
-├── tags: project=api-server, task_type=feature, issue=BACK-42
-├── prompt_version: v2.3 (sha: a1b2c3d4)
-│
-├── [trace-001] "Initial implementation" (8m 22s, $1.62)
-│   ├── [gen] claude-opus-4-6  4200→1800 tok  $0.12  3.2s
-│   │   └── tool_calls: [Read("src/routes/api.rs")]
-│   ├── [span] tool.Read  12ms  ✓
-│   ├── [gen] claude-opus-4-6  6100→2400 tok  $0.17  4.8s
-│   │   └── tool_calls: [Edit("src/middleware/rate_limit.rs"), Write("src/middleware/mod.rs")]
-│   ├── [span] tool.Edit  8ms  ✓
-│   ├── [span] tool.Write  5ms  ✓
-│   ├── [gen] claude-opus-4-6  8200→3100 tok  $0.24  6.1s
-│   │   └── tool_calls: [Bash("cargo test")]
-│   ├── [span] tool.Bash  4200ms  ✓ (exit 0)
-│   ├── [gen] claude-opus-4-6  3400→1200 tok  $0.09  2.4s
-│   │   └── tool_calls: [Bash("git add ..."), Bash("git commit ...")]
-│   ├── [span] tool.Bash  120ms  ✓
-│   ├── [span] tool.Bash  340ms  ✓
-│   └── [event] session.checkpoint { files: 3, tests: 12/12 }
-│
-└── [trace-002] "Review feedback" (4m 12s, $0.85)
-    ├── [gen] claude-opus-4-6  5200→1800 tok  $0.14  3.8s
-    ├── [span] tool.Read  8ms  ✓
-    ├── [gen] claude-opus-4-6  4100→2200 tok  $0.13  3.2s
-    ├── [span] tool.Edit  6ms  ✓
-    └── [span] tool.Bash  3800ms  ✓ (cargo test, exit 0)
+  S --> T1["[trace-001] Initial implementation\n8m 22s, $1.62"]
+  S --> T2["[trace-002] Review feedback\n4m 12s, $0.85"]
+
+  T1 --> G1["[gen] opus-4-6 4200→1800 tok $0.12 3.2s\ntool_calls: Read(src/routes/api.rs)"]
+  T1 --> S1["[span] tool.Read 12ms ✓"]
+  T1 --> G2["[gen] opus-4-6 6100→2400 tok $0.17 4.8s\ntool_calls: Edit, Write"]
+  T1 --> S2["[span] tool.Edit 8ms ✓"]
+  T1 --> S3["[span] tool.Write 5ms ✓"]
+  T1 --> G3["[gen] opus-4-6 8200→3100 tok $0.24 6.1s\ntool_calls: Bash(cargo test)"]
+  T1 --> S4["[span] tool.Bash 4200ms ✓ (exit 0)"]
+  T1 --> G4["[gen] opus-4-6 3400→1200 tok $0.09 2.4s\ntool_calls: Bash(git add/commit)"]
+  T1 --> S5["[span] tool.Bash 120ms ✓"]
+  T1 --> S6["[span] tool.Bash 340ms ✓"]
+  T1 --> E1["[event] session.checkpoint\nfiles: 3, tests: 12/12"]
+
+  T2 --> G5["[gen] opus-4-6 5200→1800 tok $0.14 3.8s"]
+  T2 --> S7["[span] tool.Read 8ms ✓"]
+  T2 --> G6["[gen] opus-4-6 4100→2200 tok $0.13 3.2s"]
+  T2 --> S8["[span] tool.Edit 6ms ✓"]
+  T2 --> S9["[span] tool.Bash 3800ms ✓ (cargo test, exit 0)"]
 ```
 
 #### 7.2.4. Generation Detail View
 
 Deep inspection of a single LLM call (like Langfuse's generation detail panel):
 
-```
-gctl analytics generation <generation_id>
+```mermaid
+flowchart TB
+  Gen["Generation: gen-a1b2c3\nModel: claude-opus-4-6 | Timestamp: 2026-03-22 14:23:18 UTC\nLatency: 3.2s (TTFT: 0.8s) | Tokens: 4,200 in / 1,800 out / 6,000 total\nCost: $0.12 | Status: success"]
 
-Generation: gen-a1b2c3
-├── Model:      claude-opus-4-6
-├── Timestamp:  2026-03-22 14:23:18 UTC
-├── Latency:    3.2s (TTFT: 0.8s)
-├── Tokens:     4,200 input │ 1,800 output │ 6,000 total
-├── Cost:       $0.12
-├── Status:     success
-│
-├── Input:
-│   ├── System prompt: [2,100 tokens] (hash: a1b2c3d4)
-│   ├── User message:  [1,400 tokens]
-│   │   "I need to add rate limiting to the /api/users endpoint..."
-│   └── Tool results:  [700 tokens] (from previous Read tool call)
-│
-├── Output:
-│   ├── Assistant message: [1,200 tokens]
-│   │   "I'll implement rate limiting using a token bucket algorithm..."
-│   └── Tool calls:
-│       └── Read { path: "src/routes/api.rs" }
-│
-├── Metadata:
-│   ├── session_id: sess-4821
-│   ├── trace_id: trace-001
-│   ├── parent_span_id: null
-│   ├── prompt_version: v2.3
-│   └── tags: { task_type: "feature" }
-│
-└── Scores:  (if annotated)
-    ├── quality: 4/5
-    ├── relevance: 5/5
-    └── helpfulness: 4/5
+  Gen --> Input["Input\nSystem prompt: 2,100 tokens (hash: a1b2c3d4)\nUser message: 1,400 tokens\nTool results: 700 tokens"]
+  Gen --> Output["Output\nAssistant message: 1,200 tokens\nTool calls: Read(src/routes/api.rs)"]
+  Gen --> Meta["Metadata\nsession_id: sess-4821 | trace_id: trace-001\nprompt_version: v2.3 | tags: task_type=feature"]
+  Gen --> Scores["Scores (if annotated)\nquality: 4/5 | relevance: 5/5 | helpfulness: 4/5"]
 ```
 
 ### 7.3. Scoring & Annotation
@@ -813,18 +921,19 @@ gctl analytics auto-score --window 7d --unscored-only
 gctl analytics scores --window 30d
 
 === Score Summary (last 30 days) ===
+```
 
 Automated Scores:
-┌──────────────────┬─────────┬──────────┬──────────┬─────────┐
-│ Score            │ Pass    │ Fail     │ Rate     │ Trend   │
-├──────────────────┼─────────┼──────────┼──────────┼─────────┤
-│ tests_pass       │ 187     │ 27       │ 87.4%    │ ↑ +2.1% │
-│ lint_clean       │ 201     │ 13       │ 93.9%    │ ↔ 0.0%  │
-│ build_success    │ 208     │ 6        │ 97.2%    │ ↑ +0.8% │
-│ pr_merged        │ 142     │ 31       │ 82.1%    │ ↓ -1.4% │
-│ no_error_loops   │ 194     │ 20       │ 90.7%    │ ↑ +3.2% │
-└──────────────────┴─────────┴──────────┴──────────┴─────────┘
 
+| Score          | Pass | Fail | Rate  | Trend   |
+|----------------|------|------|-------|---------|
+| tests_pass     | 187  | 27   | 87.4% | ↑ +2.1% |
+| lint_clean     | 201  | 13   | 93.9% | ↔ 0.0%  |
+| build_success  | 208  | 6    | 97.2% | ↑ +0.8% |
+| pr_merged      | 142  | 31   | 82.1% | ↓ -1.4% |
+| no_error_loops | 194  | 20   | 90.7% | ↑ +3.2% |
+
+```
 Human Scores (where annotated):
   quality:      avg 3.8/5  (n=42)
   relevance:    avg 4.2/5  (n=38)
@@ -847,19 +956,17 @@ Every time an agent session starts, GroundCtrl captures and hashes the active pr
 
 ```
 gctl analytics prompts
+```
 
-┌─────────┬──────────────────────────┬──────────┬──────────┬─────────┬─────────┐
-│ Version │ Prompt File              │ Hash     │ Sessions │ Avg Cost│ Pass %  │
-├─────────┼──────────────────────────┼──────────┼──────────┼─────────┼─────────┤
-│ v2.3    │ .claude/CLAUDE.md        │ a1b2c3d4 │ 42       │ $0.69   │ 88%     │
-│ v2.2    │ .claude/CLAUDE.md        │ e5f6g7h8 │ 31       │ $0.87   │ 81%     │
-│ v2.1    │ .claude/CLAUDE.md        │ i9j0k1l2 │ 18       │ $1.12   │ 72%     │
-│ v1.0    │ AGENTS.md                │ m3n4o5p6 │ 8        │ $0.45   │ 63%     │
-└─────────┴──────────────────────────┴──────────┴──────────┴─────────┴─────────┘
+| Version | Prompt File       | Hash     | Sessions | Avg Cost | Pass % |
+|---------|-------------------|----------|----------|----------|--------|
+| v2.3    | .claude/CLAUDE.md | a1b2c3d4 | 42       | $0.69    | 88%    |
+| v2.2    | .claude/CLAUDE.md | e5f6g7h8 | 31       | $0.87    | 81%    |
+| v2.1    | .claude/CLAUDE.md | i9j0k1l2 | 18       | $1.12    | 72%    |
+| v1.0    | AGENTS.md         | m3n4o5p6 | 8        | $0.45    | 63%    |
 
 Insight: v2.3 is 22% cheaper and 16% more successful than v2.1.
-         Main change: added "prefer editing over creating files" instruction.
-```
+Main change: added "prefer editing over creating files" instruction.
 
 #### Prompt Diff & Impact Analysis
 
@@ -912,23 +1019,21 @@ Recommendation: Deploy variant (v2.3). Statistically significant improvement
 gctl analytics prompt-tokens <prompt_hash>
 
 Prompt Token Budget (hash: a1b2c3d4, 2,100 tokens)
-
-┌──────────────────────────┬────────┬────────┬─────────────────────┐
-│ Section                  │ Tokens │ % Bud  │ Influence Score*    │
-├──────────────────────────┼────────┼────────┼─────────────────────┤
-│ System identity          │ 180    │ 8.6%   │ ████████  high      │
-│ Coding conventions       │ 420    │ 20.0%  │ ██████████ highest  │
-│ Git workflow             │ 290    │ 13.8%  │ ███████  high       │
-│ Tool usage rules         │ 380    │ 18.1%  │ ████████  high      │
-│ Output formatting        │ 210    │ 10.0%  │ ████  medium        │
-│ Project-specific context │ 340    │ 16.2%  │ ██████  medium-high │
-│ Examples                 │ 280    │ 13.3%  │ ██  low             │
-└──────────────────────────┴────────┴────────┴─────────────────────┘
-
-* Influence score: correlation between section content and tool call patterns.
-  "Examples" section consumes 13% of budget but has low measured influence.
-  Consider reducing examples to save ~280 tokens/call (saves ~$0.02/session).
 ```
+
+| Section                  | Tokens | % Bud | Influence Score |
+|--------------------------|--------|-------|-----------------|
+| System identity          | 180    | 8.6%  | high            |
+| Coding conventions       | 420    | 20.0% | highest         |
+| Git workflow             | 290    | 13.8% | high            |
+| Tool usage rules         | 380    | 18.1% | high            |
+| Output formatting        | 210    | 10.0% | medium          |
+| Project-specific context | 340    | 16.2% | medium-high     |
+| Examples                 | 280    | 13.3% | low             |
+
+*Influence score: correlation between section content and tool call patterns.
+"Examples" section consumes 13% of budget but has low measured influence.
+Consider reducing examples to save ~280 tokens/call (saves ~$0.02/session).*
 
 ### 7.5. User & Session Analytics
 
@@ -938,17 +1043,15 @@ Prompt Token Budget (hash: a1b2c3d4, 2,100 tokens)
 gctl analytics users --window 30d
 
 === User Analytics (last 30 days) ===
-
-┌──────────────┬──────────┬──────────┬─────────┬────────┬─────────┬─────────┐
-│ User/Agent   │ Sessions │ Cost     │ Tokens  │ Pass%  │ Avg $/s │ Trend   │
-├──────────────┼──────────┼──────────┼─────────┼────────┼─────────┼─────────┤
-│ alice        │ 42       │ $28.90   │ 892k    │ 88%    │ $0.69   │ ↑ +12%  │
-│ bob          │ 31       │ $18.40   │ 612k    │ 81%    │ $0.59   │ ↔ 0%   │
-│ claude-bot-1 │ 67       │ $31.20   │ 1,024k  │ 72%    │ $0.47   │ ↑ +8%  │
-│ claude-bot-2 │ 28       │ $12.80   │ 420k    │ 82%    │ $0.46   │ new     │
-│ docs-bot     │ 14       │ $2.40    │ 84k     │ 100%   │ $0.17   │ ↔ 0%   │
-└──────────────┴──────────┴──────────┴─────────┴────────┴─────────┴─────────┘
 ```
+
+| User/Agent   | Sessions | Cost   | Tokens | Pass% | Avg $/s | Trend  |
+|--------------|----------|--------|--------|-------|---------|--------|
+| alice        | 42       | $28.90 | 892k   | 88%   | $0.69   | ↑ +12% |
+| bob          | 31       | $18.40 | 612k   | 81%   | $0.59   | ↔ 0%   |
+| claude-bot-1 | 67       | $31.20 | 1,024k | 72%   | $0.47   | ↑ +8%  |
+| claude-bot-2 | 28       | $12.80 | 420k   | 82%   | $0.46   | new    |
+| docs-bot     | 14       | $2.40  | 84k    | 100%  | $0.17   | ↔ 0%   |
 
 Drill into a user:
 
@@ -1058,12 +1161,10 @@ Unlike Langfuse/Braintrust which evaluate production chatbot quality, GroundCtrl
 
 4. Eval engine scores the session:
    gctl eval results --suite "auth-refactor"
-   ┌────────────┬──────────┬───────┬──────────┬────────┐
-   │ Run        │ Agent    │ Score │ Cost     │ Time   │
-   ├────────────┼──────────┼───────┼──────────┼────────┤
-   │ run-001    │ claude   │ 3/3   │ $1.24    │ 4m 12s │
-   │ run-002    │ aider    │ 2/3   │ $0.87    │ 6m 30s │
-   └────────────┴──────────┴───────┴──────────┴────────┘
+   | Run     | Agent  | Score | Cost  | Time   |
+   |---------|--------|-------|-------|--------|
+   | run-001 | claude | 3/3   | $1.24 | 4m 12s |
+   | run-002 | aider  | 2/3   | $0.87 | 6m 30s |
 
 5. Compare prompt configs:
    gctl eval compare --suite "auth-refactor" \
@@ -1084,14 +1185,12 @@ gctl eval benchmark --dataset ./evals/dataset.jsonl \
   --models "claude-opus-4-6,claude-sonnet-4-6"
 
 Benchmark Results (dataset: 24 tasks):
-┌───────────────────────────┬───────┬──────────┬──────────┬─────────┐
-│ Agent + Model             │ Pass  │ Avg Cost │ Avg Time │ Loops   │
-├───────────────────────────┼───────┼──────────┼──────────┼─────────┤
-│ claude-code + opus-4-6    │ 22/24 │ $0.82    │ 6.4m     │ 2       │
-│ claude-code + sonnet-4-6  │ 19/24 │ $0.34    │ 4.2m     │ 5       │
-│ aider + opus-4-6          │ 20/24 │ $0.91    │ 8.1m     │ 3       │
-│ aider + sonnet-4-6        │ 17/24 │ $0.42    │ 5.8m     │ 7       │
-└───────────────────────────┴───────┴──────────┴──────────┴─────────┘
+| Agent + Model            | Pass  | Avg Cost | Avg Time | Loops |
+|--------------------------|-------|----------|----------|-------|
+| claude-code + opus-4-6   | 22/24 | $0.82    | 6.4m     | 2     |
+| claude-code + sonnet-4-6 | 19/24 | $0.34    | 4.2m     | 5     |
+| aider + opus-4-6         | 20/24 | $0.91    | 8.1m     | 3     |
+| aider + sonnet-4-6       | 17/24 | $0.42    | 5.8m     | 7     |
 
 Best cost-efficiency: claude-code + sonnet-4-6 ($0.018/passing task)
 Best pass rate:       claude-code + opus-4-6 (91.7%)
@@ -1140,46 +1239,34 @@ This powers time-series charts in the web UI — cost trends, token usage, pass 
 
 A local web UI served by `gctl serve` at `http://localhost:4318/dashboard`. Provides visual equivalents of all CLI analytics.
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  GroundCtrl Dashboard                          localhost:4318       │
-├────────┬────────────┬──────────┬──────────┬────────────┬───────────┤
-│ Home   │ Traces     │ Sessions │ Analytics│ Prompts    │ Evals     │
-├────────┴────────────┴──────────┴──────────┴────────────┴───────────┤
-│                                                                     │
-│  ┌─── Overview (last 7 days) ──────────────────────────────────┐   │
-│  │                                                              │   │
-│  │  Total Cost: $42.18    Sessions: 67     Pass Rate: 87%      │   │
-│  │  ▲ +12% from last wk  ▲ +8 from last  ▲ +2% from last     │   │
-│  │                                                              │   │
-│  │  ┌─────────────── Cost Over Time ────────────────────┐      │   │
-│  │  │  $10 ┤                                             │      │   │
-│  │  │      ┤      ╭─╮                                   │      │   │
-│  │  │  $ 8 ┤  ╭─╮ │ │ ╭─╮                              │      │   │
-│  │  │      ┤  │ │ │ │ │ │ ╭─╮                           │      │   │
-│  │  │  $ 6 ┤  │ │ │ │ │ │ │ │ ╭─╮ ╭─╮                  │      │   │
-│  │  │      ┤  │ │ │ │ │ │ │ │ │ │ │ │ ╭─╮              │      │   │
-│  │  │  $ 4 ┤──│─│─│─│─│─│─│─│─│─│─│─│─│─│──            │      │   │
-│  │  │      ┤  Mon Tue Wed Thu Fri Sat Sun                │      │   │
-│  │  │  $ 0 ┤                                             │      │   │
-│  │  └────────────────────────────────────────────────────┘      │   │
-│  │                                                              │   │
-│  │  ┌── Model Breakdown ──┐  ┌── Top Agents ──────────────┐   │   │
-│  │  │ ████████ opus  74%  │  │ claude-code   42 sess $28   │   │   │
-│  │  │ ████  sonnet   20%  │  │ claude-bot-1  18 sess $8    │   │   │
-│  │  │ ██  haiku       6%  │  │ aider          7 sess $5    │   │   │
-│  │  └─────────────────────┘  └─────────────────────────────┘   │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-│                                                                     │
-│  ┌─── Recent Sessions ─────────────────────────────────────────┐   │
-│  │ ● sess-5821  alice+claude   "Add webhook retry"    $0.82    │   │
-│  │ ● sess-5822  claude-bot-1   "Fix pagination"       $0.34    │   │
-│  │ ◌ sess-5820  bob+claude     "Migrate auth"  ✓done  $1.24   │   │
-│  │ ◌ sess-5819  docs-bot       "Update API docs" ✓    $0.17   │   │
-│  │ ◌ sess-5818  alice+claude   "Refactor tests"  ✗    $2.18   │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+  subgraph Dashboard["GroundCtrl Dashboard — localhost:4318"]
+    direction TB
+    subgraph Nav["Navigation"]
+      Home["Home"]
+      Traces["Traces"]
+      Sessions["Sessions"]
+      AnalyticsTab["Analytics"]
+      Prompts["Prompts"]
+      Evals["Evals"]
+    end
+
+    subgraph Overview["Overview (last 7 days)"]
+      Cards["Total Cost: $42.18 (↑+12%)\nSessions: 67 (↑+8)\nPass Rate: 87% (↑+2%)"]
+      Chart["Cost Over Time\nMon–Sun bar chart"]
+      ModelBreakdown["Model Breakdown\nopus 74% | sonnet 20% | haiku 6%"]
+      TopAgents["Top Agents\nclaude-code 42s $28 | claude-bot-1 18s $8 | aider 7s $5"]
+    end
+
+    subgraph RecentSessions["Recent Sessions"]
+      S1["● sess-5821 alice+claude 'Add webhook retry' $0.82"]
+      S2["● sess-5822 claude-bot-1 'Fix pagination' $0.34"]
+      S3["◌ sess-5820 bob+claude 'Migrate auth' ✓done $1.24"]
+      S4["◌ sess-5819 docs-bot 'Update API docs' ✓ $0.17"]
+      S5["◌ sess-5818 alice+claude 'Refactor tests' ✗ $2.18"]
+    end
+  end
 ```
 
 Dashboard pages:
@@ -1239,14 +1326,16 @@ Traditional capacity planning treats developers as interchangeable units with gu
 
 GroundCtrl correlates three data sources to produce real throughput metrics:
 
-```
-GitHub Events (issues, PRs, reviews)
-        +
-OTel Traces (agent sessions, tool calls, cost)
-        +
-Git History (commits, diffs, file churn)
-        =
-Measured Throughput per Developer+Agent Pair
+```mermaid
+flowchart LR
+  GH["GitHub Events\n(issues, PRs, reviews)"]
+  OTel["OTel Traces\n(agent sessions, tool calls, cost)"]
+  Git["Git History\n(commits, diffs, file churn)"]
+  Result["Measured Throughput\nper Developer+Agent Pair"]
+
+  GH --> Result
+  OTel --> Result
+  Git --> Result
 ```
 
 | Metric | Definition | Source |
@@ -1263,19 +1352,18 @@ Measured Throughput per Developer+Agent Pair
 
 ```
 gctl capacity status --team "backend"
-┌──────────────┬────────┬───────────┬──────────┬────────────────┐
-│ Developer    │ Active │ In Review │ Blocked  │ Agent Sessions │
-├──────────────┼────────┼───────────┼──────────┼────────────────┤
-│ alice        │ 3      │ 1         │ 0        │ 12 today       │
-│ bob          │ 2      │ 3         │ 1        │ 4 today        │
-│ carol        │ 1      │ 0         │ 0        │ 8 today        │
-│ ── agents ── │        │           │          │                │
-│ claude-bot-1 │ 1      │ 2         │ 0        │ autonomous     │
-│ claude-bot-2 │ 0      │ 1         │ 0        │ autonomous     │
-└──────────────┴────────┴───────────┴──────────┴────────────────┘
-
-Utilization: 78% │ Bottleneck: review queue (4 PRs > 24h)
 ```
+
+| Developer    | Active | In Review | Blocked | Agent Sessions |
+|--------------|--------|-----------|---------|----------------|
+| alice        | 3      | 1         | 0       | 12 today       |
+| bob          | 2      | 3         | 1       | 4 today        |
+| carol        | 1      | 0         | 0       | 8 today        |
+| *agents*     |        |           |         |                |
+| claude-bot-1 | 1      | 2         | 0       | autonomous     |
+| claude-bot-2 | 0      | 1         | 0       | autonomous     |
+
+Utilization: 78% | Bottleneck: review queue (4 PRs > 24h)
 
 Key capabilities:
 * **WIP Limits** — Alert when a developer has too many concurrent issues (context-switching tax).
@@ -1367,22 +1455,19 @@ GroundCtrl builds a historical model of how long different types of work actuall
 
 ```
 gctl project estimates --team "backend" --last "90 days"
-
-Issue Type      │ Estimated │ Actual (p50) │ Actual (p80) │ Accuracy
-────────────────┼───────────┼──────────────┼──────────────┼──────────
-Bug fix         │ 2h        │ 1.1h         │ 2.8h         │ ±45%
-Feature (S)     │ 4h        │ 2.3h         │ 5.1h         │ ±38%
-Feature (M)     │ 2d        │ 1.4d         │ 3.2d         │ ±52%
-Refactor        │ 1d        │ 0.6d         │ 1.8d         │ ±41%
-Docs            │ 1h        │ 0.3h         │ 0.8h         │ ±62%
-
-Insight: Agent-assisted estimates are 40% more accurate than
-         pre-agent baselines. Docs tasks are over-estimated 3x
-         (agents handle them efficiently).
-
-Recommendation: Reduce doc estimates to 30m. Increase Feature (M)
-                buffer — high variance suggests hidden complexity.
 ```
+
+| Issue Type  | Estimated | Actual (p50) | Actual (p80) | Accuracy |
+|-------------|-----------|--------------|--------------|----------|
+| Bug fix     | 2h        | 1.1h         | 2.8h         | ±45%     |
+| Feature (S) | 4h        | 2.3h         | 5.1h         | ±38%     |
+| Feature (M) | 2d        | 1.4d         | 3.2d         | ±52%     |
+| Refactor    | 1d        | 0.6d         | 1.8d         | ±41%     |
+| Docs        | 1h        | 0.3h         | 0.8h         | ±62%     |
+
+Insight: Agent-assisted estimates are 40% more accurate than pre-agent baselines. Docs tasks are over-estimated 3x (agents handle them efficiently).
+
+Recommendation: Reduce doc estimates to 30m. Increase Feature (M) buffer — high variance suggests hidden complexity.
 
 * **Automatic sizing** — Suggest issue size based on similar completed work.
 * **Agent impact factor** — How much does agent assistance reduce actual time for each category?
@@ -1494,15 +1579,21 @@ Recommended sprint (priority-ordered, fits capacity):
 
 ### 12.3. Key Insight
 
-GroundCtrl operates at the **protocol level** (HTTP proxy + OTLP + CLI gateway), not the agent level. This means it works with any agent that speaks HTTP or emits OTel spans — today and in the future. The guardrails, telemetry, evals, and capacity planning are orthogonal to the agent implementation.
+GroundCtrl operates at the **protocol level** (HTTP proxy + OTLP + CLI gateway), not the agent level. This means it works with any agent that speaks HTTP or emits OTel spans — today and in the future. The OS-layer primitives (telemetry, guardrails, storage, sync) are orthogonal to both the agent implementation and the application built on top.
 
-The unique value proposition: **GroundCtrl is the only tool that connects what was planned (issues) → what was executed (agent traces) → what was delivered (PRs/commits) → what it cost (tokens/$) in a single data pipeline.** No other tool in the market stitches these layers together for developer+agent teams.
+This is the **OS design principle in action**: the kernel doesn't know about project management, research, or code review. It captures telemetry, enforces safety, stores data, and exposes APIs. Applications like gctl-board, Observe & Eval, or a future Research Assistant compose these primitives into domain-specific workflows.
 
-## 13. Pillar 6: gctl-board — Agent-Native Issue Tracking & Kanban
+The unique value proposition: **GroundCtrl is the only tool that connects what was planned (issues) → what was executed (agent traces) → what was delivered (PRs/commits) → what it cost (tokens/$) in a single data pipeline.** The OS layer provides the data pipeline; applications provide the intelligence on top.
 
-> **The missing piece: GroundCtrl knows what agents *did* (traces), but not what they *should do* (tasks). External issue trackers (Linear, GitHub Issues) are designed for humans — they require browser UIs, OAuth flows, and API tokens. Agents need a task system that speaks their language: structured data, local-first, CLI-native, and coordination-aware.**
+## 13. Application: gctl-board — Agent-Native Issue Tracking & Kanban
+
+> **gctl-board is the first application built on the GroundCtrl OS layer.** It demonstrates how applications consume OS primitives (telemetry for session-issue linking, storage for board tables, CLI gateway for `gctl board` commands) to deliver domain-specific value.
 >
-> gctl-board is a simple Linear-inspired kanban and issue tracking system built with **Effect-TS**, embedded directly in the GroundCtrl platform. It bridges the gap between "project management" and "agent coordination" — agents can create, claim, update, and close issues through a type-safe API without leaving the terminal.
+> The OS layer knows what agents *did* (traces), but not what they *should do* (tasks). External issue trackers (Linear, GitHub Issues) are designed for humans — they require browser UIs, OAuth flows, and API tokens. Agents need a task system that speaks their language: structured data, local-first, CLI-native, and coordination-aware.
+>
+> gctl-board is a simple Linear-inspired kanban and issue tracking system built with **Effect-TS**, embedded in the GroundCtrl platform. It bridges the gap between "project management" and "agent coordination" — agents can create, claim, update, and close issues through a type-safe API without leaving the terminal.
+>
+> **As a reference application**, gctl-board also establishes patterns that future applications follow: table namespace isolation (`board_*`), CLI subcommand registration (`gctl board`), HTTP route mounting (`/api/board/*`), and event-driven integration with OS telemetry.
 
 ### 13.1. Why Build This?
 
@@ -1518,31 +1609,24 @@ The unique value proposition: **GroundCtrl is the only tool that connects what w
 
 ### 13.2. Data Model
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                     Workspace                           │
-│                                                         │
-│  ┌───────────────────────────────────────────────┐     │
-│  │                   Project                      │     │
-│  │                                                │     │
-│  │  ┌─────────┐  ┌─────────┐  ┌──────────────┐  │     │
-│  │  │  Board   │  │  Board   │  │    Board     │  │     │
-│  │  │ "Sprint" │  │"Backlog" │  │ "Agent Queue"│  │     │
-│  │  └────┬─────┘  └────┬────┘  └──────┬───────┘  │     │
-│  │       │              │              │          │     │
-│  │  ┌────▼────────────────────────────▼────────┐ │     │
-│  │  │              Issues                       │ │     │
-│  │  │                                           │ │     │
-│  │  │  ┌───────┐  ┌───────┐  ┌──────────────┐ │ │     │
-│  │  │  │ Issue │  │ Issue │  │    Issue      │ │ │     │
-│  │  │  │       │  │       │  │  ┌─────────┐  │ │ │     │
-│  │  │  │       │  │       │  │  │Sub-issue│  │ │ │     │
-│  │  │  │       │  │       │  │  │Sub-issue│  │ │ │     │
-│  │  │  └───────┘  └───────┘  │  └─────────┘  │ │ │     │
-│  │  │                        └──────────────┘ │ │     │
-│  │  └──────────────────────────────────────────┘ │     │
-│  └───────────────────────────────────────────────┘     │
-└─────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+  Workspace["Workspace"]
+  Workspace --> Project["Project"]
+
+  Project --> Sprint["Board: Sprint"]
+  Project --> Backlog["Board: Backlog"]
+  Project --> AgentQueue["Board: Agent Queue"]
+
+  Sprint --> Issues["Issues"]
+  Backlog --> Issues
+  AgentQueue --> Issues
+
+  Issues --> I1["Issue"]
+  Issues --> I2["Issue"]
+  Issues --> I3["Issue"]
+  I3 --> Sub1["Sub-issue"]
+  I3 --> Sub2["Sub-issue"]
 ```
 
 #### Core Entities (Effect-TS Schema)
@@ -1748,43 +1832,39 @@ gctl board reassign BACK-42-4 --agent "docs-bot" \
 
 ### 13.4. Effect-TS Service Architecture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                   gctl-board (Effect-TS)                     │
-│                                                             │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │                  HTTP API Layer (Effect Platform)      │  │
-│  │  POST /api/board/issues          GET /api/board/kanban│  │
-│  │  PATCH /api/board/issues/:id     GET /api/board/feed  │  │
-│  │  POST /api/board/issues/:id/move                      │  │
-│  │  POST /api/board/issues/:id/decompose                 │  │
-│  └────────────────────┬─────────────────────────────────┘  │
-│                       │                                     │
-│  ┌────────────────────▼─────────────────────────────────┐  │
-│  │              Board Service (Effect.Service)           │  │
-│  │                                                       │  │
-│  │  createIssue    moveIssue    assignIssue              │  │
-│  │  decomposeIssue blockIssue   listIssues               │  │
-│  │  getKanban      addComment   linkSession              │  │
-│  │  getIssueFeed   checkBlocked resolveBlocked           │  │
-│  └───────┬──────────────┬───────────────┬───────────────┘  │
-│          │              │               │                   │
-│  ┌───────▼──────┐ ┌────▼──────┐ ┌──────▼────────────────┐ │
-│  │  EventLog    │ │ Dependency│ │ OTel Integration       │ │
-│  │  Service     │ │ Resolver  │ │ (session/cost linkage) │ │
-│  │  (append-    │ │ (DAG,     │ │                        │ │
-│  │   only log)  │ │  cycle    │ │ Subscribes to span     │ │
-│  │              │ │  detect)  │ │ events, auto-links     │ │
-│  └───────┬──────┘ └────┬──────┘ │ sessions to issues     │ │
-│          │              │        └──────────┬─────────────┘ │
-│          │              │                   │               │
-│  ┌───────▼──────────────▼───────────────────▼───────────┐  │
-│  │              Storage Layer                            │  │
-│  │  DuckDB (issues, events, comments, boards)            │  │
-│  │  ──── or ────                                         │  │
-│  │  SQLite via Effect-SQL (for lighter deployments)      │  │
-│  └──────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+  subgraph Board["gctl-board (Effect-TS)"]
+    subgraph HTTPAPI["HTTP API Layer (Effect Platform)"]
+      POST1["POST /api/board/issues"]
+      PATCH1["PATCH /api/board/issues/:id"]
+      POST2["POST /api/board/issues/:id/move"]
+      POST3["POST /api/board/issues/:id/decompose"]
+      GET1["GET /api/board/kanban"]
+      GET2["GET /api/board/feed"]
+    end
+
+    subgraph Service["Board Service (Effect.Service)"]
+      Ops["createIssue | moveIssue | assignIssue\ndecomposeIssue | blockIssue | listIssues\ngetKanban | addComment | linkSession\ngetIssueFeed | checkBlocked | resolveBlocked"]
+    end
+
+    EventLog["EventLog Service\n(append-only log)"]
+    DepResolver["Dependency Resolver\n(DAG, cycle detect)"]
+    OTelInt["OTel Integration\n(session/cost linkage,\nauto-links sessions to issues)"]
+
+    subgraph StorageLayer["Storage Layer"]
+      DuckDB2["DuckDB (issues, events, comments, boards)"]
+      SQLite["or SQLite via Effect-SQL\n(for lighter deployments)"]
+    end
+
+    HTTPAPI --> Service
+    Service --> EventLog
+    Service --> DepResolver
+    Service --> OTelInt
+    EventLog --> StorageLayer
+    DepResolver --> StorageLayer
+    OTelInt --> StorageLayer
+  end
 ```
 
 #### Key Effect-TS Patterns
@@ -1917,27 +1997,28 @@ const autoUnblock = (completedIssueId: typeof IssueId.Type) =>
 
 The board is fully operable from the CLI — designed for both humans and agents.
 
-```
-gctl board <command>
-  ├── issue create    Create an issue
-  ├── issue view      View issue details + execution profile
-  ├── issue list      List/filter issues
-  ├── issue edit      Edit issue fields
-  ├── move            Move issue to a new status column
-  ├── assign          Assign to human or agent
-  ├── reassign        Hand off to different assignee
-  ├── decompose       Split issue into sub-tasks
-  ├── block           Add dependency between issues
-  ├── unblock         Remove dependency
-  ├── check           Check if issue is blocked/unblocked
-  ├── note            Add agent note to issue
-  ├── comment         Add comment
-  ├── link            Link session or PR to issue
-  ├── kanban          Show kanban board view
-  ├── feed            Show activity feed for issue/project
-  ├── project create  Create a project
-  ├── project list    List projects
-  └── sync            Sync with external tracker (Linear/GitHub)
+```mermaid
+flowchart LR
+  Board["gctl board"]
+  Board --> IC["issue create — Create an issue"]
+  Board --> IV["issue view — View issue details + execution profile"]
+  Board --> IL["issue list — List/filter issues"]
+  Board --> IE["issue edit — Edit issue fields"]
+  Board --> Move["move — Move issue to a new status column"]
+  Board --> Assign["assign — Assign to human or agent"]
+  Board --> Reassign["reassign — Hand off to different assignee"]
+  Board --> Decompose["decompose — Split issue into sub-tasks"]
+  Board --> Block["block — Add dependency between issues"]
+  Board --> Unblock["unblock — Remove dependency"]
+  Board --> Check["check — Check if issue is blocked/unblocked"]
+  Board --> Note["note — Add agent note to issue"]
+  Board --> Comment["comment — Add comment"]
+  Board --> Link["link — Link session or PR to issue"]
+  Board --> Kanban["kanban — Show kanban board view"]
+  Board --> Feed["feed — Show activity feed"]
+  Board --> PC["project create — Create a project"]
+  Board --> PL["project list — List projects"]
+  Board --> Sync["sync — Sync with external tracker"]
 ```
 
 #### Example Agent Workflow
@@ -1978,12 +2059,13 @@ gctl board move BACK-42 done \
 
 When an agent starts a session, gctl-board auto-links it to the relevant issue:
 
-```
-Linking heuristics (in priority order):
-1. Explicit:     gctl board link BACK-42 --session $SESSION_ID
-2. Branch name:  git branch contains "BACK-42" → auto-link
-3. Commit msg:   commit contains "BACK-42" or "Fixes #42" → auto-link
-4. Assignment:   agent is assigned to BACK-42 + session starts → auto-link
+```mermaid
+flowchart TB
+  L["Linking heuristics (priority order)"]
+  L --> L1["1. Explicit: gctl board link BACK-42 --session $SESSION_ID"]
+  L --> L2["2. Branch name: git branch contains 'BACK-42' → auto-link"]
+  L --> L3["3. Commit msg: commit contains 'BACK-42' or 'Fixes #42' → auto-link"]
+  L --> L4["4. Assignment: agent assigned to BACK-42 + session starts → auto-link"]
 ```
 
 Once linked, the issue automatically accumulates:
@@ -2102,14 +2184,15 @@ Two integration modes:
 
 2. **Embedded via HTTP** — The board service runs as part of `gctl serve`. The Rust daemon proxies `/api/board/*` requests to the TS process. Single port, unified API.
 
-```
-gctl serve --port 4318
-  ├── /v1/traces          (Rust — OTel ingestion)
-  ├── /api/sessions       (Rust — trace queries)
-  ├── /api/analytics      (Rust — analytics)
-  ├── /api/board/issues   (TS — board service)
-  ├── /api/board/kanban   (TS — board views)
-  └── /health             (Rust — health check)
+```mermaid
+flowchart LR
+  Serve2["gctl serve --port 4318"]
+  Serve2 --> V1["/v1/traces (Rust — OTel)"]
+  Serve2 --> APISess["/api/sessions (Rust — trace queries)"]
+  Serve2 --> APIAnal["/api/analytics (Rust — analytics)"]
+  Serve2 --> APIBoard["/api/board/issues (TS — board)"]
+  Serve2 --> APIKanban["/api/board/kanban (TS — views)"]
+  Serve2 --> Health2["/health (Rust — health check)"]
 ```
 
 ### 13.10. Phased Delivery
@@ -2122,3 +2205,121 @@ gctl serve --port 4318
 | **P4: External Sync** | Linear pull, GitHub pull, bidirectional sync | P2 |
 | **P5: Kanban UI** | Local web dashboard (Effect Platform + HTMX or React) | P1 |
 
+## 14. Application Roadmap
+
+gctl-board is the first application. The OS layer is designed to support a growing ecosystem of applications — both first-party and community-built.
+
+### 14.1. Planned Applications
+
+| Application | Description | OS Primitives | Status |
+|-------------|-------------|---------------|--------|
+| **gctl-board** | Agent-native project management & kanban (Effect-TS) | Storage, Telemetry, CLI, Sync | P1 shipped (schemas + daily aggregates) |
+| **Observe & Eval** | Langfuse-grade analytics, scoring, prompt management | Telemetry, Storage, Query, HTTP API | Partially shipped (analytics endpoints, scoring, alerts) |
+| **Capacity Engine** | Throughput measurement, forecasting, sprint planning | Storage, Telemetry, Query | Planned |
+| **Research Assistant** | Crawl docs, build knowledge bases, semantic search over crawled content | Network (crawl/fetch), Storage, Sync (knowledge/) | Planned |
+| **Code Review Bot** | Auto-review PRs with trace context, suggest improvements | Telemetry, CLI (`gctl review`), HTTP API | Planned |
+| **Multi-Agent Orchestrator** | Route tasks across agent pools, manage concurrency | Telemetry, Guardrails, Storage, gctl-board | Planned |
+
+### 14.2. Building a Custom Application
+
+A gctl application follows this pattern:
+
+```mermaid
+flowchart TB
+  Step1["1. Define your domain\nTable schemas (namespaced: yourapp_*)\nDomain types and business rules"]
+  Step2["2. Integrate with OS primitives\nSubscribe to telemetry events\nRead OS tables via Query Engine\nWrite to your own tables via DuckDB"]
+  Step3["3. Expose interfaces\nCLI: gctl yourapp subcommands\nHTTP: /api/yourapp/* routes\nAgent: all features automatable"]
+  Step4["4. Optional: cloud sync\nDeclare R2 prefixes\nExport to Parquet"]
+
+  Step1 --> Step2 --> Step3 --> Step4
+```
+
+**Rust applications** add a crate to `crates/gctl-yourapp/`, feature-gate it in `Cargo.toml`, and register routes/commands in `gctl-cli`.
+
+**TypeScript applications** add a package to `packages/gctl-yourapp/`, expose an HTTP API, and integrate via the sidecar or proxy pattern established by gctl-board.
+
+### 14.3. Cross-Application Data Flow
+
+Applications don't talk to each other directly. They communicate through OS-level events and shared storage:
+
+```mermaid
+sequenceDiagram
+  participant Board as gctl-board
+  participant Agent as Agent
+  participant OS as OS: OTel Receiver
+  participant Eval as Observe & Eval
+  participant Cap as Capacity Engine
+  participant Guard as Guardrails
+
+  Board->>Agent: Creates issue BACK-42
+  Agent->>OS: Claims BACK-42, starts coding session
+  OS->>OS: Ingests spans (telemetry primitive)
+  OS->>Board: Auto-links session to BACK-42, accumulates cost
+  OS->>Eval: Scores session, checks prompt effectiveness
+  OS->>Cap: Updates throughput metrics for team
+  OS->>Guard: Checks cost limits, detects error loops
+```
+
+This event-driven architecture means applications are loosely coupled. Adding a new application (e.g., Code Review Bot) doesn't require changes to existing applications — it just subscribes to the same OS events.
+
+## 15. Opinionated Usages
+
+gctl ships with opinionated defaults for how it SHOULD be used. These are not hard constraints — they are recommended workflows that maximize the value of the OS primitives.
+
+### 15.1. Obsidian as Spec Viewer & Editor
+
+The `specs/` directory is designed to be **mounted as an Obsidian vault** for rich viewing and editing. This gives developers and agents a graph-based knowledge base for navigating architecture, domain model, workflows, and decisions — without leaving their local environment.
+
+#### Setup
+
+```sh
+# Option 1: Open specs/ directly as a vault
+# In Obsidian: "Open folder as vault" → select <project>/specs/
+
+# Option 2: Symlink into an existing vault
+ln -s /path/to/gctrl/specs ~/obsidian-vault/gctrl-specs
+```
+
+#### Conventions for Obsidian Compatibility
+
+All `specs/` documents MUST use **raw CommonMark / GitHub-Flavored Markdown** (see `AGENTS.md` Documentation Standard #2). This ensures files render correctly in both Obsidian and any other Markdown viewer (GitHub, VS Code, terminal).
+
+What this means in practice:
+1. **No Obsidian-specific syntax** — no wikilinks `[[...]]`, no callouts `> [!note]`, no block references `^block-id`, no empty-text links `[](url)`.
+2. **Standard links only** — use `[text](relative/path.md)` for cross-references.
+3. **Mermaid diagrams** — Obsidian renders mermaid natively in preview mode, so architecture diagrams work out of the box.
+4. **YAML frontmatter** — Obsidian reads frontmatter for metadata. Spec files MAY include frontmatter for Obsidian tags/aliases but MUST NOT require it for the document to make sense.
+5. **Directory structure = vault structure** — the `specs/` folder hierarchy maps directly to Obsidian's file explorer:
+
+```mermaid
+flowchart TB
+  Root["specs/ (Obsidian vault root)"]
+
+  Root --> Arch["architecture/\nREADME.md, domain-model.md,\nscheduler.md, gctl-board.md,\nos.md"]
+  Root --> Impl["implementation/\ncomponents.md, repo.md,\nstyle-guide.md, testing.md"]
+  Root --> Workflows["gctl/workflows/\nREADME.md, issue-lifecycle.md,\ntask-planning.md, pr-review.md,\nworkflow-file.md"]
+  Root --> Team["team/\npersonas.md"]
+  Root --> Decisions["decisions/ (ADRs)"]
+  Root --> PRD["prd.md (this file)"]
+  Root --> Principles["principles.md"]
+  Root --> Workflow["workflow.md"]
+  Root --> BrowserSpec["browser.md"]
+```
+
+#### Graph View
+
+Obsidian's graph view visualizes the link structure across specs. Cross-references between documents (e.g., `gctl-board.md` → `domain-model.md` → `workflow.md`) form a navigable knowledge graph. This is especially useful for:
+- Tracing how a domain type flows from schema definition to storage DDL to CLI command.
+- Understanding which specs a proposed change impacts.
+- Onboarding new contributors by exploring the spec graph.
+
+#### Editing Workflow
+
+Obsidian edits are local file changes — they show up in `git status` like any other edit. The recommended workflow:
+
+1. Open `specs/` in Obsidian for reading and light editing.
+2. Use Obsidian's preview mode to verify mermaid diagrams and cross-references.
+3. Commit spec changes via the normal git workflow (`gctl task`, feature branch, PR).
+4. Agents can also edit specs — they work with the same raw markdown files.
+
+This makes specs a **living document** that both humans (via Obsidian) and agents (via file I/O) can read and write.

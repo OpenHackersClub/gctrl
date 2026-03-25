@@ -14,10 +14,11 @@ use crate::span_processor::{self, OtlpExportRequest};
 
 pub struct AppState {
     pub store: DuckDbStore,
+    pub started_at: std::time::Instant,
 }
 
 pub fn create_router(store: DuckDbStore) -> Router {
-    let state = Arc::new(AppState { store });
+    let state = Arc::new(AppState { store, started_at: std::time::Instant::now() });
     Router::new()
         // OTel ingestion
         .route("/v1/traces", post(ingest_traces))
@@ -28,6 +29,7 @@ pub fn create_router(store: DuckDbStore) -> Router {
         .route("/api/analytics", get(get_analytics))
         .route("/api/analytics/cost", get(analytics_cost))
         .route("/api/analytics/latency", get(analytics_latency))
+        .route("/api/analytics/spans", get(analytics_spans))
         .route("/api/analytics/scores", get(analytics_scores))
         .route("/api/analytics/daily", get(analytics_daily))
         .route("/api/analytics/score", post(create_score))
@@ -39,19 +41,28 @@ pub fn create_router(store: DuckDbStore) -> Router {
         .route("/api/sessions/{session_id}/auto-score", post(auto_score_session))
         .route("/api/sessions/{session_id}/end", post(end_session))
         .route("/api/sessions/{session_id}/loops", get(detect_loops))
+        .route("/api/sessions/{session_id}/cost-breakdown", get(session_cost_breakdown))
         // Health
         .route("/health", get(health))
         .with_state(state)
 }
 
-async fn health() -> impl IntoResponse {
-    Json(serde_json::json!({"status": "ok"}))
+async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let storage = state.store.get_health_info().unwrap_or(serde_json::json!({}));
+    Json(serde_json::json!({
+        "status": "ok",
+        "version": env!("CARGO_PKG_VERSION"),
+        "uptime_seconds": state.started_at.elapsed().as_secs(),
+        "storage": storage,
+    }))
 }
 
 #[derive(Deserialize)]
 struct ListParams {
     #[serde(default = "default_limit")]
     limit: usize,
+    agent: Option<String>,
+    status: Option<String>,
 }
 
 fn default_limit() -> usize {
@@ -62,7 +73,7 @@ async fn list_sessions(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListParams>,
 ) -> impl IntoResponse {
-    match state.store.list_sessions(params.limit) {
+    match state.store.list_sessions_filtered(params.limit, params.agent.as_deref(), params.status.as_deref()) {
         Ok(sessions) => Json(serde_json::to_value(&sessions).unwrap()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -227,6 +238,21 @@ async fn detect_loops(
     }
 }
 
+async fn session_cost_breakdown(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    match state.store.get_session_cost_breakdown(&session_id) {
+        Ok(breakdown) => Json(serde_json::json!({
+            "session_id": session_id,
+            "breakdown": breakdown.iter().map(|(m, c, i, o, n)| serde_json::json!({
+                "model": m, "cost_usd": c, "input_tokens": i, "output_tokens": o, "span_count": n
+            })).collect::<Vec<_>>(),
+        })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
 async fn get_analytics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match state.store.get_analytics() {
         Ok(analytics) => Json(serde_json::to_value(&analytics).unwrap()).into_response(),
@@ -247,6 +273,13 @@ async fn analytics_latency(State(state): State<Arc<AppState>>) -> impl IntoRespo
     let latencies = state.store.get_latency_by_model().unwrap_or_default();
     Json(serde_json::json!({
         "by_model": latencies.iter().map(|(m, p50, p95, p99)| serde_json::json!({"model": m, "p50_ms": p50, "p95_ms": p95, "p99_ms": p99})).collect::<Vec<_>>(),
+    })).into_response()
+}
+
+async fn analytics_spans(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let dist = state.store.get_span_type_distribution().unwrap_or_default();
+    Json(serde_json::json!({
+        "distribution": dist.iter().map(|(t, c, p)| serde_json::json!({"type": t, "count": c, "percentage": p})).collect::<Vec<_>>(),
     })).into_response()
 }
 
@@ -627,6 +660,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_analytics_spans_empty() {
+        let app = test_app();
+        let req = Request::builder()
+            .uri("/api/analytics/spans")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["distribution"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn test_analytics_scores_query() {
         let store = DuckDbStore::open(":memory:").unwrap();
         // Insert a score directly
@@ -653,5 +700,48 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["pass"], 1);
         assert_eq!(json["total"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_health_detailed() {
+        let app = test_app();
+        let req = Request::builder().uri("/health").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "ok");
+        assert!(json["version"].is_string());
+        assert!(json["uptime_seconds"].is_number());
+        assert!(json["storage"]["sessions"].is_number());
+    }
+
+    #[tokio::test]
+    async fn test_session_cost_breakdown_endpoint() {
+        let store = DuckDbStore::open(":memory:").unwrap();
+        store.insert_session(&gctl_core::Session {
+            id: gctl_core::SessionId("s1".into()),
+            workspace_id: gctl_core::WorkspaceId("ws1".into()),
+            device_id: gctl_core::DeviceId("dev1".into()),
+            agent_name: "claude".into(),
+            started_at: chrono::Utc::now(),
+            ended_at: None,
+            status: gctl_core::SessionStatus::Active,
+            total_cost_usd: 0.0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+        }).unwrap();
+
+        let app = create_router(store);
+        let req = Request::builder()
+            .uri("/api/sessions/s1/cost-breakdown")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["session_id"], "s1");
+        assert!(json["breakdown"].is_array());
     }
 }

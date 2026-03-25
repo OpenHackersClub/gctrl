@@ -1,11 +1,14 @@
 pub mod alert;
 pub mod analytics;
 pub mod analytics_cost;
+pub mod analytics_cost_breakdown;
 pub mod analytics_daily;
 pub mod analytics_latency;
 pub mod analytics_scores;
+pub mod analytics_spans;
 pub mod auto_score;
 pub mod check;
+pub mod net;
 pub mod prompt;
 pub mod query;
 pub mod score;

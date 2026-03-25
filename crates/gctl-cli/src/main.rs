@@ -33,6 +33,12 @@ enum Commands {
         /// Output format: table, json
         #[arg(short, long, default_value = "table")]
         format: String,
+        /// Filter by agent name
+        #[arg(short, long)]
+        agent: Option<String>,
+        /// Filter by status (active, completed, failed, cancelled)
+        #[arg(short = 'S', long)]
+        status: Option<String>,
     },
     /// Show spans for a session
     Spans {
@@ -112,6 +118,9 @@ enum Commands {
     /// Manage alert rules
     #[command(subcommand)]
     Alert(AlertCmd),
+    /// Web scraping and agent-optimized context
+    #[command(subcommand)]
+    Net(NetCmd),
 }
 
 #[derive(Subcommand)]
@@ -133,6 +142,13 @@ enum AnalyticsCmd {
         #[arg(short, long, default_value = "7")]
         days: u32,
     },
+    /// Show span type distribution (Generation/Span/Event)
+    Spans,
+    /// Show per-model cost breakdown for a session
+    CostBreakdown {
+        /// Session ID
+        session_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -147,6 +163,67 @@ enum PromptCmd {
     },
     /// List registered prompt versions
     List,
+}
+
+#[derive(Subcommand)]
+enum NetCmd {
+    /// Fetch a single URL and convert to markdown
+    Fetch {
+        /// URL to fetch
+        url: String,
+        /// Disable readability extraction
+        #[arg(long)]
+        no_readability: bool,
+        /// Minimum word count to accept
+        #[arg(long, default_value = "50")]
+        min_words: usize,
+    },
+    /// Crawl a website and save pages as markdown
+    Crawl {
+        /// URL to start crawling from
+        url: String,
+        /// Maximum crawl depth
+        #[arg(short, long, default_value = "3")]
+        depth: usize,
+        /// Maximum pages to crawl
+        #[arg(long, default_value = "50")]
+        max_pages: usize,
+        /// Delay between requests in ms
+        #[arg(long, default_value = "200")]
+        delay: u64,
+        /// Disable readability extraction
+        #[arg(long)]
+        no_readability: bool,
+        /// Minimum word count to keep a page
+        #[arg(long, default_value = "50")]
+        min_words: usize,
+    },
+    /// List all crawled sites
+    List,
+    /// Show crawled content for a domain
+    Show {
+        /// Domain name (e.g. docs.example.com)
+        domain: String,
+        /// Specific page file to display
+        #[arg(long)]
+        page: Option<String>,
+    },
+    /// Compact pages into a single agent-optimized context file
+    Compact {
+        /// Domain name
+        domain: String,
+        /// Output format: gitingest (single file) or index (table)
+        #[arg(long, default_value = "gitingest")]
+        format: String,
+        /// Output directory (prints to stdout if not set)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Show crawl statistics for a domain
+    Stats {
+        /// Domain name (e.g. docs.example.com)
+        domain: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -193,7 +270,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Serve { port, host } => commands::serve::run(host, port, &db_path).await,
-        Commands::Sessions { limit, format } => commands::sessions::run(limit, &format, &db_path),
+        Commands::Sessions { limit, format, agent, status } => commands::sessions::run(limit, &format, agent.as_deref(), status.as_deref(), &db_path),
         Commands::Spans { session_id, format } => commands::spans::run(&session_id, &format, &db_path),
         Commands::Analytics(cmd) => match cmd {
             AnalyticsCmd::Overview => commands::analytics::run(&db_path),
@@ -201,6 +278,8 @@ async fn main() -> Result<()> {
             AnalyticsCmd::Latency => commands::analytics_latency::run(&db_path),
             AnalyticsCmd::Scores { name } => commands::analytics_scores::run(&name, &db_path),
             AnalyticsCmd::Daily { days } => commands::analytics_daily::run(days, &db_path),
+            AnalyticsCmd::Spans => commands::analytics_spans::run(&db_path),
+            AnalyticsCmd::CostBreakdown { session_id } => commands::analytics_cost_breakdown::run(&session_id, &db_path),
         },
         Commands::Query { query, raw } => commands::query::run(&query, raw, &db_path),
         Commands::Score { target_type, target_id, name, value, comment, source } => {
@@ -222,6 +301,20 @@ async fn main() -> Result<()> {
                 commands::alert::create(&name, &condition, threshold, &action, &db_path)
             }
             AlertCmd::List => commands::alert::list(&db_path),
+        },
+        Commands::Net(cmd) => match cmd {
+            NetCmd::Fetch { url, no_readability, min_words } => {
+                commands::net::fetch(&url, no_readability, min_words).await
+            }
+            NetCmd::Crawl { url, depth, max_pages, delay, no_readability, min_words } => {
+                commands::net::crawl(&url, depth, max_pages, delay, no_readability, min_words).await
+            }
+            NetCmd::List => commands::net::list(),
+            NetCmd::Show { domain, page } => commands::net::show(&domain, page.as_deref()),
+            NetCmd::Compact { domain, format, output } => {
+                commands::net::compact(&domain, &format, output.as_deref())
+            }
+            NetCmd::Stats { domain } => commands::net::stats(&domain),
         },
     }
 }
