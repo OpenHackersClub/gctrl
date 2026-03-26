@@ -7,7 +7,7 @@
 
 ## 1. Unix-Inspired Architecture
 
-GroundCtrl separates concerns into three layers, modeled after Unix:
+GroundCtrl separates concerns into four layers, modeled after Unix:
 
 ```mermaid
 flowchart TB
@@ -21,7 +21,7 @@ flowchart TB
     end
     subgraph UtilRow["Utilities"]
       Net["net (fetch,\ncrawl, compact)"]
-      Browser["browser (goto,\nsnap, click)"]
+      BrowserUtil["browser (goto,\nsnap, click)"]
       Future["future utilities\n(grep, diff, ...)"]
     end
   end
@@ -32,18 +32,23 @@ flowchart TB
     HTTP["HTTP API (:4318)\n(axum REST + SSE)"]
   end
 
-  subgraph Kernel["KERNEL"]
+  subgraph KernelExt["KERNEL EXTENSIONS (feature-gated, optional)"]
+    Scheduler["Scheduler\n(tokio / launchd / DO Alarms)"]
+    Network["Network Control\n(MITM proxy)"]
+    BrowserCtrl["Browser Control\n(CDP Daemon)"]
+    CloudSync["Cloud Sync\n(R2 Parquet)"]
+  end
+
+  subgraph Kernel["KERNEL (small, always present)"]
     direction TB
     Telemetry["Telemetry\n(OTel)"]
     Storage["Storage\n(DuckDB)"]
     Guardrails["Guardrails\nEngine"]
-    Network["Network\nControl"]
-    CloudSync["Cloud Sync\n(R2)"]
-    BrowserCtrl["Browser Control\n(CDP Daemon)"]
-    FutureKernel["(future: process\nmgmt, scheduling)"]
+    Orchestrator["Orchestrator\n(dispatch + retry)"]
   end
 
   Apps --> Shell --> Kernel
+  KernelExt -->|"extends"| Kernel
 ```
 
 ### 1.1. Kernel — Small by Design

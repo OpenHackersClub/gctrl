@@ -27,6 +27,9 @@ stateDiagram-v2
     [*] --> Unclaimed
     Unclaimed --> Claimed : dispatch_eligible
     Claimed --> Running : agent_launched
+    Running --> Paused : guardrail_suspend / human_pause
+    Paused --> Running : human_resume
+    Paused --> Released : reconciliation_terminal
     Running --> RetryQueued : agent_exit_normal / agent_exit_abnormal
     Running --> Released : reconciliation_terminal
     RetryQueued --> Running : retry_dispatch
@@ -41,6 +44,7 @@ stateDiagram-v2
 | `Unclaimed` | Issue exists and is not reserved by the orchestrator. Default state for all issues. |
 | `Claimed` | Orchestrator has reserved the issue to prevent duplicate dispatch. Transient — transitions quickly to `Running` or `Released`. |
 | `Running` | An agent process is actively working on the issue. |
+| `Paused` | Session suspended by a guardrail trigger or human operator. Awaiting explicit resume. MUST NOT be re-dispatched. |
 | `RetryQueued` | Agent exited but a retry is scheduled. |
 | `Released` | Claim removed. Issue returns to the candidate pool on the next tick if still eligible. |
 
@@ -59,6 +63,7 @@ The state machine MUST satisfy these properties (to be formally verified):
 3. **Liveness.** An issue MUST NOT remain in `Claimed` or `RetryQueued` indefinitely — all paths lead to `Running` or `Released` within bounded time.
 4. **Determinism.** For any (state, trigger) pair, there is exactly one target state.
 5. **Terminal convergence.** If the tracker marks an issue terminal, the orchestration state MUST eventually reach `Released` regardless of current state.
+6. **Pause/resume integrity.** A `Paused` session MUST NOT be re-dispatched. It MUST only return to `Running` via an explicit `human_resume` trigger.
 
 ## 3. Run Attempt Lifecycle
 
@@ -100,7 +105,10 @@ stateDiagram-v2
 | **Agent Exit (Normal)** | Remove from running set, record telemetry, schedule continuation check. |
 | **Agent Exit (Abnormal)** | Remove from running set, record error telemetry, schedule exponential-backoff retry. |
 | **Retry Timer Fired** | Re-fetch candidates, re-dispatch if still eligible, else release claim. |
-| **Reconciliation** | Detect stalls (elapsed > timeout → kill + retry). Refresh tracker state (terminal → release, active → update snapshot, fetch failure → keep running). |
+| **Guardrail Suspend** | Guardrails engine emits suspend signal → running session transitions to `Paused`. |
+| **Human Pause** | Operator issues `gctl orchestrate pause` → running session transitions to `Paused`. |
+| **Human Resume** | Operator issues `gctl orchestrate resume` → `Paused` session transitions back to `Running`. |
+| **Reconciliation** | Detect stalls (elapsed > timeout → kill + retry). Refresh tracker state (terminal → release, active → update snapshot, fetch failure → keep running). Paused sessions are skipped — they are not stale. |
 
 ### Tick Sequence
 
@@ -120,10 +128,12 @@ An issue is dispatch-eligible only if all conditions hold:
 
 1. It has an identifier, title, and state.
 2. Its kanban state is active (not terminal).
-3. It is not already `Claimed` or `Running`.
+3. It is not already `Claimed`, `Running`, or `Paused`.
 4. Global concurrency slots are available.
 5. Per-state concurrency slots are available.
 6. If in `todo` state, no blocker (from the dependency DAG in [task-planning.md](task-planning.md)) is non-terminal.
+7. A `user_id` can be resolved — the issue has a configured persona in WORKFLOW.md or a default persona is set.
+8. Per-user concurrency slots are available for the resolved `user_id`.
 
 ### Dispatch Ordering
 
@@ -158,6 +168,16 @@ Total running agents MUST NOT exceed the configured maximum.
 ### Per-State Limit
 
 Each kanban state MAY have its own concurrency cap. States without explicit limits fall back to the global maximum.
+
+### Per-User Limit
+
+Each user (persona) MAY have its own concurrency cap, configured in WORKFLOW.md or guardrails config. Per-user limits are enforced after the global and per-state limits — all three must pass for dispatch to proceed.
+
+```toml
+[orchestrator]
+max_sessions_per_user.agent = 2        # applies to all agent personas
+max_sessions_per_user.reviewer-bot = 1 # override for a specific persona
+```
 
 ### Blocker Rule
 
@@ -197,8 +217,8 @@ The orchestrator MUST emit structured telemetry for every state transition:
 
 | Event | Fields |
 |-------|--------|
-| `orchestrator.claim` | `issue_id`, `agent_kind`, `attempt` |
-| `orchestrator.dispatch` | `issue_id`, `agent_kind`, `workspace` |
+| `orchestrator.claim` | `issue_id`, `user_id`, `agent_kind`, `attempt` |
+| `orchestrator.dispatch` | `issue_id`, `user_id`, `agent_kind`, `workspace` |
 | `orchestrator.agent_exit` | `issue_id`, `exit_code`, `duration_ms` |
 | `orchestrator.retry_scheduled` | `issue_id`, `attempt`, `delay_ms`, `reason` |
 | `orchestrator.released` | `issue_id`, `reason` |
@@ -221,8 +241,10 @@ gctl orchestrate inspect BACK-42
 
 # Manual control
 gctl orchestrate dispatch BACK-42
-gctl orchestrate cancel BACK-42
-gctl orchestrate retry BACK-42
+gctl orchestrate pause   BACK-42   # SIGSTOP — suspend, await human review
+gctl orchestrate resume  BACK-42   # SIGCONT — approve continuation
+gctl orchestrate cancel  BACK-42   # SIGTERM — graceful stop
+gctl orchestrate retry   BACK-42
 gctl orchestrate release BACK-42
 
 # Configuration

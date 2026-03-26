@@ -1,6 +1,9 @@
-# Unix Architecture — Layers, Examples, and Extension Points
+# Unix Architecture — Layers, Execution Model, and Extension Points
 
-gctl is modeled after Unix. This document describes each architectural layer in detail — what belongs there, concrete examples, and how to extend each layer with new functionality.
+gctl is modeled after Unix. This document covers two complementary views:
+
+1. **Layer structure** — what belongs in each architectural layer (Kernel, Shell, Apps, Utilities, Drivers, Skills) and how to extend each layer.
+2. **Execution model** — how agent work is scheduled, who runs it, and how identity works in a world where humans and agents are first-class actors.
 
 For the high-level diagram and internal code architecture, see [README.md](README.md). For implementation details (crates, packages, code patterns), see [../implementation/components.md](../implementation/components.md).
 
@@ -466,3 +469,333 @@ When adding new functionality, use this guide to decide where it belongs:
 | Is it an opinionated prompt that invokes gctl commands? | Yes | **Skill** |
 
 When in doubt, start as a utility. Promote to an application only when the utility accumulates its own state and domain rules. External tools are always external applications — they connect through drivers and communicate via kernel IPC, never through direct coupling.
+
+---
+
+## Execution Model — Processes, Users, and Scheduling
+
+An extension of the Unix metaphor to cover processes and users — humans and agents alike.
+
+| Unix Concept | gctl Equivalent |
+|---|---|
+| User (`uid`) | User (human or agent persona, with `user_id`) |
+| Process (`pid`) | Agent Session (`session_id`) |
+| `fork` / `exec` | Dispatch — orchestrator picks up a work item and spawns a session |
+| `init` / `systemd` | Orchestrator — schedules, retries, reconciles |
+| Job queue | Issue backlog (`todo` → `in_progress`) |
+| `wait(pid)` / dependency | Issue dependency graph — blocked until predecessors complete |
+| `cgroups` / `ulimit` | Guardrails — cost caps, token budgets, loop detection |
+| `/proc/<pid>` | Telemetry — live span tree, session state, resource usage |
+| Signal (`SIGTERM`, `SIGKILL`) | Alert → guardrail intervention (warn, pause, terminate) |
+| `setuid` / capabilities | Agent capability grants — what tools and resources a session may use |
+| Login / `su` | Persona adoption — agent assumes a configured persona at dispatch time |
+
+---
+
+### 7. Users
+
+In Unix, every process runs as a user identified by a `uid`. In gctl, every session runs on behalf of a **user** — a human or an agent persona, each with a `user_id`.
+
+```
+user_id  name         kind     capabilities
+──────────────────────────────────────────────────
+p0       system       system   all (kernel-internal only)
+p1       alice        human    read, write, dispatch, review
+p2       claude-code  agent    read, write, bash, dispatch
+p3       reviewer-bot agent    read, comment
+p4       nightly-run  agent    read, dispatch, net
+```
+
+#### 7.1 User Types
+
+**Human users** correspond to real team members. Their sessions are interactive; they spawn agent sessions explicitly (e.g. `gctl board assign BACK-42 --agent claude-code`).
+
+**Agent personas** are configured identities with a fixed capability set. A persona is like a Unix system account (`www-data`, `postgres`) — it defines *what* the agent may do, not *who* the agent is at the model level. The same LLM (Claude) can run under different personas with different capability grants.
+
+```toml
+# Example: WORKFLOW.md persona section
+[persona.reviewer-bot]
+kind       = "agent"
+model      = "claude-sonnet-4-6"
+tools      = ["read", "comment"]        # capability allowlist
+cost_limit = { per_session = "0.10" }   # guardrail binding
+```
+
+#### 7.2 Persona ↔ Unix Analogy
+
+| Unix | gctl |
+|---|---|
+| `uid=0` (root) | `system` user — kernel-internal, never dispatched from user code |
+| Named system user (`postgres`) | Agent persona (`claude-code`, `reviewer-bot`) |
+| `sudo` / `setuid` | Capability grant — promote a session's allowed tools for a specific issue |
+| `getent passwd` | `gctl user list` |
+| `/etc/sudoers` | WORKFLOW.md `[persona.*]` capability config |
+
+#### 7.3 Session → User Binding
+
+Every session record carries a `user_id`. Telemetry, guardrail decisions, cost attribution, and audit trails are all keyed to the user.
+
+```sql
+-- sessions table (gctl-storage)
+user_id     VARCHAR  -- FK → users
+session_id  VARCHAR  -- the running "process"
+cost_usd    DECIMAL  -- attributed to this user
+```
+
+---
+
+### 8. Processes (Sessions)
+
+A **session** is the unit of agent execution — the gctl analogue of a Unix process.
+
+#### 8.1 Session Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> todo
+    todo --> in_progress : dispatch
+    todo --> blocked : dep_unresolved
+    blocked --> todo : dep_done
+    in_progress --> done : success
+    in_progress --> paused : guardrail / human
+    paused --> in_progress : human_resume
+    in_progress --> failed : error_exit
+    failed --> todo : retry_eligible
+    done --> [*]
+```
+
+| State | Unix Analogy | Description |
+|---|---|---|
+| `todo` | Ready queue | Work item exists, no session running |
+| `blocked` | `sleep(fd)` / `wait(pid)` | Dependency not yet resolved |
+| `in_progress` | Running (`R`) | Active session holds the slot |
+| `paused` | Stopped (`T`) / `SIGSTOP` | Guardrail or human intervention |
+| `done` | Exited (`Z` → reaped) | Issue closed, session archived |
+| `failed` | Non-zero exit | Session terminated with error, eligible for retry |
+
+#### 8.2 Dispatch — `fork` + `exec`
+
+The **Orchestrator** is the gctl equivalent of `init`/`systemd` — the always-running supervisor that manages the lifecycle of all agent sessions.
+
+**Dispatch flow:**
+
+```
+1. Orchestrator polls: SELECT issues WHERE status = 'todo' AND deps_met = true
+2. Reserve slot:       UPDATE issues SET status = 'in_progress', session_id = ? WHERE id = ?
+3. Fork context:       Build prompt from WORKFLOW.md template + issue frontmatter
+4. Exec agent:         Spawn session under configured persona
+5. Monitor:            Ingest OTel spans → update session state
+6. Reap:               On session exit, transition issue to done/failed; release slot
+```
+
+Step 2 is a single atomic write — the DuckDB single-writer invariant prevents double-dispatch races.
+
+#### 8.3 Dependency Graph — `wait(pid)`
+
+Issues declare dependencies via `blocked_by: [BACK-40, BACK-41]` in their frontmatter. The orchestrator only promotes an issue to `todo` (dispatch-eligible) when all blocking issues are `done`.
+
+```
+BACK-40 (done) ─┐
+                 ├─→ BACK-42 (now eligible) ─→ dispatch
+BACK-41 (done) ─┘
+
+BACK-43 (blocked by BACK-42) → stays blocked until BACK-42 is done
+```
+
+This is the equivalent of `wait(pid)` / `waitpid()` — a dependent issue cannot proceed until its dependency exits successfully.
+
+```sh
+gctl board graph                        # visualize the dependency DAG
+gctl board ready                        # list issues eligible for dispatch
+gctl board blocked --reason deps        # list issues blocked on dependencies
+```
+
+#### 8.4 Slots and Concurrency
+
+The orchestrator respects a configurable **slot count** — the maximum number of concurrently running sessions per user or globally. This mirrors Unix process limits (`ulimit -u`, `MaxStartups`).
+
+```toml
+[orchestrator]
+max_concurrent_sessions = 4        # global slot pool
+max_sessions_per_user.agent = 2    # per-persona cap
+```
+
+When all slots are full, newly eligible issues remain in `todo` until a slot opens. No busy-waiting — the orchestrator reconciles on session-exit events and on a configurable polling interval.
+
+---
+
+### 9. Guardrails as cgroups
+
+Unix `cgroups` limit CPU, memory, and I/O per process group. gctl **Guardrails** play the same role for agent sessions:
+
+| cgroup | gctl Guardrail |
+|---|---|
+| `cpu.max` | Token budget — max tokens per session |
+| `memory.max` | Context window guard — truncate or compact before overflow |
+| `blkio.weight` | Rate limiting — requests/minute to external APIs |
+| `pids.max` | Sub-agent spawn cap — max child sessions per parent |
+| `cgroup.freeze` | Pause — guardrail suspends session pending human review |
+| `cgroup kill` | Terminate — guardrail hard-stops a runaway session |
+
+Guardrail policies are attached to **users**, not individual sessions — just as cgroup policies are attached to users or services in systemd, not individual PIDs.
+
+```toml
+[guardrails.user.claude-code]
+max_cost_per_session  = "1.00"
+max_loop_iterations   = 20
+allowed_commands      = ["cargo", "git", "gctl"]
+```
+
+---
+
+### 10. Telemetry as `/proc`
+
+In Unix, `/proc/<pid>` exposes live process state. In gctl, **OTel telemetry** is the equivalent — every running session emits structured spans that the kernel stores and exposes via the shell.
+
+```sh
+gctl tree <session_id>          # like ls /proc/<pid>/ — span hierarchy
+gctl sessions --status running  # like ps aux
+gctl status                     # like top — overview of all running sessions
+gctl spans <session_id>         # like /proc/<pid>/status — raw resource data
+```
+
+The telemetry layer is always on. You cannot opt a session out of `/proc` — observability is a kernel primitive, not an application feature.
+
+---
+
+### 11. Signals and Alerts
+
+Unix signals interrupt running processes. gctl **alerts** are the equivalent — guardrail-triggered or human-triggered interrupts that change session behavior.
+
+| Signal | gctl Alert / Action |
+|---|---|
+| `SIGTERM` | Graceful stop — finish current tool call, then exit |
+| `SIGKILL` | Hard terminate — immediate session end, no cleanup |
+| `SIGSTOP` | Pause — session suspended, awaiting human review |
+| `SIGCONT` | Resume — human approves continuation |
+| `SIGUSR1` | Custom hook — `PostToolUse` guardrail intervention |
+
+Alerts are emitted by the Guardrails engine and delivered to the running session via the kernel's alert channel. Human operators can also send signals directly via the CLI:
+
+```sh
+gctl session pause  <session_id>    # SIGSTOP
+gctl session resume <session_id>    # SIGCONT
+gctl session stop   <session_id>    # SIGTERM
+gctl session kill   <session_id>    # SIGKILL
+```
+
+---
+
+### 12. Multi-Agent Teams — Process Groups
+
+Unix **process groups** let you signal a tree of related processes together. gctl **agent teams** are the equivalent — a lead session that spawns sub-sessions, all operating on related work.
+
+```mermaid
+graph TD
+    lead["lead session (BACK-42)"]
+    lead --> t["sub-session: test-runner (BACK-42-tests)"]
+    lead --> d["sub-session: doc-writer (BACK-42-docs)"]
+    lead --> r["sub-session: reviewer-bot (BACK-42-review)"]
+```
+
+1. The lead holds the issue slot; sub-sessions are scoped to the parent session.
+2. Sub-sessions share the parent user's capability grants but MAY be further restricted.
+3. Killing the lead session (`SIGKILL`) propagates to all sub-sessions — equivalent to `kill(-pgid)`.
+4. Cost and token usage roll up to the parent issue for attribution.
+
+```sh
+gctl session tree <lead_session_id>      # show process group tree
+gctl session kill --group <session_id>   # kill the whole group
+```
+
+---
+
+### 13. Everything is a File
+
+Unix's most powerful abstraction is that every resource — devices, sockets, pipes, proc state — is a file. gctl applies this principle to its storage model: **everything the kernel persists is a file**, owned and managed by the kernel, not by individual applications.
+
+#### 13.1 DuckDB → Parquet → R2
+
+DuckDB is gctl's filesystem. But DuckDB files are local, mutable, and single-writer. To cross device and team boundaries, the kernel serializes state as **Parquet** — the universal, columnar, open format that both DuckDB and Cloudflare Workers can read natively.
+
+```mermaid
+flowchart TD
+    A["Local (DuckDB in-process)"]
+    B["Parquet files (~/.local/share/gctl/sync/)"]
+    C["R2 bucket (Cloudflare)"]
+    D["Remote consumers (dashboards, team views, cross-device queries)"]
+
+    A -->|"COPY … TO … FORMAT PARQUET"| B
+    B -->|"gctl sync push (Cloud Sync kernel primitive)"| C
+    C -->|"Workers / D1 / Analytics Engine read directly"| D
+```
+
+The sync layer is a **kernel responsibility**, not an application concern. Applications write through the shell (DuckDB). The kernel handles durability, format translation, and replication — just as the Unix kernel owns block I/O and the VFS layer, not userspace programs.
+
+#### 13.2 Everything is a File — Mapping
+
+| Unix Resource | File Representation | gctl Equivalent |
+|---|---|---|
+| Process state | `/proc/<pid>/status` | Session Parquet row, OTel span |
+| Block device | `/dev/sda` | DuckDB WAL segment |
+| Network socket | `/proc/net/tcp` | HTTP API `:4318`, MITM proxy logs |
+| Config | `/etc/`, dotfiles | WORKFLOW.md, AGENTS.md, driver configs |
+| Audit log | `/var/log/audit/` | `spans` table, `net_traffic` table |
+| Shared memory | `/dev/shm/` | DuckDB in-memory (`:memory:`) for tests |
+| Archive / backup | tar / dump | Parquet export under `~/.local/share/gctl/sync/` |
+| Cloud object store | NFS / remote mount | R2 bucket — Parquet files, read by Workers |
+
+#### 13.3 Kernel Owns All I/O
+
+Applications MUST NOT write Parquet directly or sync to R2 themselves. They write rows through the Shell (SQL via DuckDB or HTTP API). The Kernel's Cloud Sync primitive handles:
+
+1. **Serialization** — `COPY … TO … (FORMAT PARQUET)` on schedule or trigger
+2. **Partitioning** — by device ID and date for parallel, non-conflicting multi-device writes
+3. **Upload** — `PUT` to the R2 bucket via the kernel's sync adapter
+4. **Conflict resolution** — last-write-wins with device-partition isolation; no row-level merging needed
+5. **Remote query** — Cloudflare Workers query R2 Parquet directly via DuckDB WASM or Workers Analytics Engine
+
+```sh
+gctl sync status                  # what's been exported, when
+gctl sync push --table sessions   # manual export trigger
+gctl sync push --all              # full export
+gctl sync pull --since 7d         # pull remote Parquet into local DuckDB
+```
+
+---
+
+### 14. Execution Model Summary
+
+```
+gctl OS Model
+
+  Users (uid)                     humans and agent personas
+  ├── capability grants           setuid / sudoers
+  └── cost/resource quotas        cgroups / ulimit
+
+  Processes / Sessions (pid)      Running units of execution
+  ├── lifecycle states            ps / proc states (R, T, Z)
+  ├── dependency graph            wait(pid) / waitpid()
+  ├── concurrency slots           pids.max / MaxStartups
+  └── sub-sessions                process groups (pgid)
+
+  Orchestrator (init/systemd)     Dispatch, retry, reconciliation
+  ├── dependency-aware scheduler  eligible = deps_met AND slot_free
+  └── reconciliation loop         systemd watchdog / restart policy
+
+  Guardrails (cgroups)            Resource limits per user
+  ├── token / cost budgets        cpu.max / memory.max
+  ├── loop detection              watchdog timeout
+  └── command gateway             seccomp / allowlist
+
+  Telemetry (/proc)               Live session state, span trees
+  Alerts (signals)                SIGTERM / SIGKILL / SIGSTOP / SIGCONT
+  Shell (bash)                    CLI + HTTP API gateway to kernel
+  Filesystem (DuckDB)             Structured, queryable system state
+  Everything is a file            DuckDB → Parquet → R2 (kernel owns all I/O)
+  ├── local state                 DuckDB (single-writer, in-process)
+  ├── portable format             Parquet (columnar, open, DuckDB + Workers native)
+  └── cloud sync                  R2 bucket (device-partitioned, conflict-free)
+```
+
+The key design insight: **agents are users, not just tools.** Giving agents a first-class user identity with Unix-like properties — UID scoping, capability grants, resource limits, process trees — makes the entire system composable, auditable, and safe by default.
