@@ -12,6 +12,8 @@ pub struct DeviceId(pub String);
 pub struct SessionId(pub String);
 pub struct TraceId(pub String);
 pub struct SpanId(pub String);
+pub struct TaskId(pub String);
+pub struct ScheduleId(pub String);
 ```
 
 ---
@@ -25,7 +27,10 @@ pub struct Session {
     pub id: SessionId,
     pub workspace_id: WorkspaceId,
     pub device_id: DeviceId,
-    pub agent_name: String,
+    pub user_id: Option<UserId>,   // persona identity (FK → users)
+    pub agent_kind: AgentKind,     // agent system: claude-code, codex, aider, etc.
+    pub agent_name: String,        // display name of the agent program instance
+    pub task_id: Option<TaskId>,   // the Scheduler Task this session is executing (if any)
     pub started_at: DateTime<Utc>,
     pub ended_at: Option<DateTime<Utc>>,
     pub status: SessionStatus,
@@ -35,16 +40,17 @@ pub struct Session {
 }
 ```
 
+**Terminology disambiguation:**
+- `user_id` — the persona identity (who is running this session, e.g. `reviewer-bot`)
+- `agent_kind` — the agent system/program (what is running, e.g. `ClaudeCode`, `Codex`)
+- `agent_name` — display label (e.g. `"Claude Code"`, `"Codex CLI"`)
+- `task_id` — the Scheduler Task this session is working on (nullable for ad-hoc sessions)
+
 ### SessionStatus
 
-```rust
-pub enum SessionStatus {
-    Active,
-    Completed,
-    Failed,
-    Cancelled,
-}
-```
+> **Source of truth:** [`specs/formal/KernelSpec/SessionState.lean`](../formal/KernelSpec/SessionState.lean)
+> States: `Active` (initial) → `Completed` | `Failed` | `Cancelled` (terminal).
+> Verified: reachability, terminal convergence, determinism.
 
 ### Span
 
@@ -69,12 +75,61 @@ pub struct Span {
 
 ### SpanStatus
 
+> **Source of truth:** [`specs/formal/KernelSpec/DomainTypes.lean`](../formal/KernelSpec/DomainTypes.lean)
+> States: `Ok` (success) | `Error` | `Unset` (pending).
+> Verified: trichotomy (exactly one of three states).
+
+### Task
+
+Owned by the **Scheduler** kernel primitive. Represents a unit of agent work, normalized across all agent systems. See `specs/architecture/kernel/scheduler.md` for the full type definition and port interface.
+
 ```rust
-pub enum SpanStatus {
-    Ok,
-    Error(String),
-    Unset,
+pub struct Task {
+    pub id: TaskId,
+    pub title: String,
+    pub description: Option<String>,
+    pub status: TaskStatus,
+    pub agent_kind: AgentKind,
+    pub session_id: Option<SessionId>,
+    pub prompt_hash: Option<String>,    // FK → prompt_versions
+    pub parent_task_id: Option<TaskId>,
+    pub blocked_by: Vec<TaskId>,
+    pub blocking: Vec<TaskId>,
+    pub workspace: Option<String>,
+    pub created_by_id: String,
+    pub created_by_kind: ActorKind,
+    pub context: serde_json::Value,     // agent-system-specific metadata
+    pub result: Option<serde_json::Value>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
+
+// TaskStatus — source of truth: specs/formal/KernelSpec/TaskState.lean
+// AgentKind  — source of truth: specs/formal/KernelSpec/DomainTypes.lean
+// ActorKind  — source of truth: specs/formal/KernelSpec/DomainTypes.lean
+```
+
+### User
+
+See `specs/architecture/os.md` § 6 for the full execution model (users, personas, capabilities).
+
+```rust
+pub struct UserId(pub String);
+
+pub struct User {
+    pub id: UserId,
+    pub name: String,
+    pub kind: UserKind,
+    pub model: Option<String>,       // LLM model for agent personas
+    pub capabilities: Vec<String>,   // tool/command allowlist
+    pub cost_limit_usd: Option<f64>, // per-session cost cap
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+// UserKind — source of truth: specs/formal/KernelSpec/DomainTypes.lean
+// States: Human | Agent | System (kernel-internal only)
+// Verified: ActorKind ↪ UserKind injective embedding, System not an actor
 ```
 
 ### TrafficRecord
@@ -96,13 +151,9 @@ pub struct TrafficRecord {
 
 ### PolicyDecision
 
-```rust
-pub enum PolicyDecision {
-    Allow,
-    Warn(String),
-    Deny(String),
-}
-```
+> **Source of truth:** [`specs/formal/KernelSpec/DomainTypes.lean`](../formal/KernelSpec/DomainTypes.lean)
+> States: `Allow` (severity 0) | `Warn` (severity 1) | `Deny` (severity 2).
+> Verified: severity total order, Deny most severe, Allow least severe.
 
 ### BrowserRef
 
@@ -270,12 +321,27 @@ pub struct GuardrailsConfig {
 ### 5.1 Core Tables
 
 ```sql
+-- Users table (humans and agent personas — see os.md § 6)
+CREATE TABLE IF NOT EXISTS users (
+    id              VARCHAR PRIMARY KEY,
+    name            VARCHAR NOT NULL,
+    kind            VARCHAR NOT NULL,       -- 'human', 'agent', 'system'
+    model           VARCHAR,                -- LLM model for agent personas (e.g. 'claude-sonnet-4-6')
+    capabilities    JSON DEFAULT '[]',      -- tool/command allowlist
+    cost_limit_usd  DOUBLE,                 -- per-session cost cap (guardrails binding)
+    created_at      VARCHAR NOT NULL,
+    updated_at      VARCHAR NOT NULL
+);
+
 -- Sessions table
 CREATE TABLE IF NOT EXISTS sessions (
     id              VARCHAR PRIMARY KEY,
     workspace_id    VARCHAR NOT NULL,
     device_id       VARCHAR NOT NULL,
-    agent_name      VARCHAR NOT NULL,
+    user_id         VARCHAR REFERENCES users(id),  -- persona identity (who is running)
+    agent_kind      VARCHAR NOT NULL,               -- agent system: 'claude-code', 'codex', 'aider', 'openai', 'custom:<name>'
+    agent_name      VARCHAR NOT NULL,               -- display label (e.g. 'Claude Code')
+    task_id         VARCHAR,                        -- FK → tasks (Scheduler Task being executed, nullable for ad-hoc)
     started_at      TIMESTAMP NOT NULL,
     ended_at        TIMESTAMP,
     status          VARCHAR NOT NULL DEFAULT 'active',
@@ -320,6 +386,30 @@ CREATE TABLE IF NOT EXISTS traffic (
     synced          BOOLEAN DEFAULT FALSE
 );
 
+-- Tasks table (Scheduler kernel primitive)
+-- Normalized record of all agent work across all agent systems (Claude Code, Codex, Aider, OpenAI, custom).
+-- Every agent MUST create tasks here via SchedulerPort — never write directly.
+CREATE TABLE IF NOT EXISTS tasks (
+    id              VARCHAR PRIMARY KEY,
+    title           VARCHAR NOT NULL,
+    description     VARCHAR,
+    status          VARCHAR NOT NULL DEFAULT 'pending',  -- pending, running, paused, done, failed, cancelled
+    agent_kind      VARCHAR NOT NULL,                    -- 'claude-code', 'codex', 'aider', 'openai', 'custom:<name>'
+    session_id      VARCHAR REFERENCES sessions(id),     -- active or last session executing this task
+    prompt_hash     VARCHAR,                             -- FK → prompt_versions (the rendered prompt)
+    parent_task_id  VARCHAR,                             -- sub-task relationship (nullable)
+    blocked_by      JSON DEFAULT '[]',                   -- dependency DAG: list of task IDs this is blocked by
+    blocking        JSON DEFAULT '[]',                   -- reverse edges for fast lookup
+    workspace       VARCHAR,                             -- isolated workspace directory path
+    created_by_id   VARCHAR NOT NULL,
+    created_by_kind VARCHAR NOT NULL,                    -- 'human' | 'agent'
+    context         JSON,                               -- agent-system-specific metadata (model, persona, flags, etc.)
+    result          JSON,                               -- artifacts produced (commits, PRs, file paths)
+    created_at      VARCHAR NOT NULL,
+    updated_at      VARCHAR NOT NULL,
+    synced          BOOLEAN DEFAULT FALSE
+);
+
 -- Guardrail events
 CREATE TABLE IF NOT EXISTS guardrail_events (
     id              VARCHAR PRIMARY KEY,
@@ -340,34 +430,22 @@ CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(trace_id);
 CREATE INDEX IF NOT EXISTS idx_traffic_host ON traffic(host);
 CREATE INDEX IF NOT EXISTS idx_traffic_timestamp ON traffic(timestamp);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at);
+CREATE INDEX IF NOT EXISTS idx_users_kind ON users(kind);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_agent_kind ON tasks(agent_kind);
+CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_prompt ON tasks(prompt_hash);
 ```
 
-### 5.3 Analytics Tables
+### 5.3 Core Tables (continued) — Prompts, Alerts, Metadata
+
+These are **kernel-owned** tables, not application tables. They support kernel primitives (Scheduler, Guardrails, Telemetry) and do not carry application namespace prefixes.
 
 ```sql
--- Scores (human annotation + automated)
-CREATE TABLE IF NOT EXISTS scores (
-    id              VARCHAR PRIMARY KEY,
-    target_type     VARCHAR NOT NULL,  -- 'session', 'span', 'generation'
-    target_id       VARCHAR NOT NULL,
-    name            VARCHAR NOT NULL,  -- 'quality', 'tests_pass', 'cost_efficiency'
-    value           DOUBLE NOT NULL,
-    comment         VARCHAR,
-    source          VARCHAR NOT NULL DEFAULT 'human',  -- 'human', 'auto', 'model'
-    scored_by       VARCHAR,
-    created_at      VARCHAR NOT NULL
-);
-
--- Tags (arbitrary metadata on sessions/spans)
-CREATE TABLE IF NOT EXISTS tags (
-    id              VARCHAR PRIMARY KEY,
-    target_type     VARCHAR NOT NULL,
-    target_id       VARCHAR NOT NULL,
-    key             VARCHAR NOT NULL,
-    value           VARCHAR NOT NULL
-);
-
--- Prompt versions (snapshot of active prompt at session start)
+-- Prompt versions — kernel-owned snapshot of rendered prompts.
+-- Referenced by tasks.prompt_hash (Scheduler) and session_prompts (Telemetry).
 CREATE TABLE IF NOT EXISTS prompt_versions (
     hash            VARCHAR PRIMARY KEY,
     content         VARCHAR NOT NULL,
@@ -377,14 +455,23 @@ CREATE TABLE IF NOT EXISTS prompt_versions (
     token_count     INTEGER
 );
 
--- Session-to-prompt linkage
+-- Session-to-prompt linkage (kernel: Telemetry)
 CREATE TABLE IF NOT EXISTS session_prompts (
     session_id      VARCHAR NOT NULL,
     prompt_hash     VARCHAR NOT NULL,
     PRIMARY KEY (session_id, prompt_hash)
 );
 
--- Daily aggregates (materialized for fast charting)
+-- Tags (kernel: general-purpose metadata on sessions/spans/tasks)
+CREATE TABLE IF NOT EXISTS tags (
+    id              VARCHAR PRIMARY KEY,
+    target_type     VARCHAR NOT NULL,  -- 'session', 'span', 'task'
+    target_id       VARCHAR NOT NULL,
+    key             VARCHAR NOT NULL,
+    value           VARCHAR NOT NULL
+);
+
+-- Daily aggregates (kernel: materialized for fast charting)
 CREATE TABLE IF NOT EXISTS daily_aggregates (
     date            VARCHAR NOT NULL,
     metric          VARCHAR NOT NULL,  -- 'cost', 'sessions', 'tokens', 'pass_rate'
@@ -393,7 +480,7 @@ CREATE TABLE IF NOT EXISTS daily_aggregates (
     PRIMARY KEY (date, metric, dimension)
 );
 
--- Alert rules
+-- Alert rules (kernel: Guardrails primitive)
 CREATE TABLE IF NOT EXISTS alert_rules (
     id              VARCHAR PRIMARY KEY,
     name            VARCHAR NOT NULL,
@@ -403,7 +490,7 @@ CREATE TABLE IF NOT EXISTS alert_rules (
     enabled         BOOLEAN DEFAULT TRUE
 );
 
--- Alert events (fired alerts)
+-- Alert events (kernel: Guardrails primitive)
 CREATE TABLE IF NOT EXISTS alert_events (
     id              VARCHAR PRIMARY KEY,
     rule_id         VARCHAR NOT NULL,
@@ -414,17 +501,39 @@ CREATE TABLE IF NOT EXISTS alert_events (
 );
 ```
 
-### 5.4 Analytics Indexes
+### 5.4 Eval Application Tables
+
+These are owned by the **Observe & Eval** application and MUST carry the `eval_` namespace prefix per Invariant #3.
 
 ```sql
-CREATE INDEX IF NOT EXISTS idx_scores_target ON scores(target_type, target_id);
+-- Eval scores (human annotation + automated evaluation)
+CREATE TABLE IF NOT EXISTS eval_scores (
+    id              VARCHAR PRIMARY KEY,
+    target_type     VARCHAR NOT NULL,  -- 'session', 'span', 'task'
+    target_id       VARCHAR NOT NULL,
+    name            VARCHAR NOT NULL,  -- 'quality', 'tests_pass', 'cost_efficiency'
+    value           DOUBLE NOT NULL,
+    comment         VARCHAR,
+    source          VARCHAR NOT NULL DEFAULT 'human',  -- 'human', 'auto', 'model'
+    scored_by       VARCHAR,
+    created_at      VARCHAR NOT NULL
+);
+```
+
+### 5.5 Core + Eval Indexes
+
+```sql
+-- Core (kernel-owned)
 CREATE INDEX IF NOT EXISTS idx_tags_target ON tags(target_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_tags_key ON tags(key, value);
 CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_aggregates(date);
 CREATE INDEX IF NOT EXISTS idx_session_prompts ON session_prompts(prompt_hash);
+
+-- Eval application
+CREATE INDEX IF NOT EXISTS idx_eval_scores_target ON eval_scores(target_type, target_id);
 ```
 
-### 5.5 Board Tables
+### 5.6 Board Tables
 
 ```sql
 CREATE TABLE IF NOT EXISTS board_projects (
@@ -486,7 +595,7 @@ CREATE TABLE IF NOT EXISTS board_comments (
 );
 ```
 
-### 5.6 Board Indexes
+### 5.7 Board Indexes
 
 ```sql
 CREATE INDEX IF NOT EXISTS idx_issues_project ON board_issues(project_id);

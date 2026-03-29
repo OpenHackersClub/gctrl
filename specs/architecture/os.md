@@ -2,10 +2,10 @@
 
 gctl is modeled after Unix. This document covers two complementary views:
 
-1. **Layer structure** — what belongs in each architectural layer (Kernel, Shell, Apps, Utilities, Drivers, Skills) and how to extend each layer.
+1. **Layer structure** — what belongs in each architectural layer (Kernel, Shell, Apps, Utilities, Drivers) and how to extend each layer.
 2. **Execution model** — how agent work is scheduled, who runs it, and how identity works in a world where humans and agents are first-class actors.
 
-For the high-level diagram and internal code architecture, see [README.md](README.md). For implementation details (crates, packages, code patterns), see [../implementation/components.md](../implementation/components.md).
+For the high-level diagram and internal code architecture, see [README.md](README.md). For implementation details (crates, packages, code patterns), see [../implementation/kernel/components.md](../implementation/kernel/components.md).
 
 ---
 
@@ -22,7 +22,7 @@ gctl uses **Unix terminology** as the primary architectural language. Some terms
 | **Driver** | Kernel module connecting an external app (`driver-linear`, `driver-github`) | Device driver (`/dev/sda`) | "Adapter" in hexagonal architecture |
 | **Kernel Interface** | Trait in `gctl-core` that drivers implement (`TrackerPort`, `ObservabilityExportPort`) | Driver interface / syscall interface | "Port" as a network port |
 | **Kernel IPC** | Cross-app communication (event bus, pipes, sockets) | Unix IPC (pipes, signals, sockets) | — |
-| **Adapter** | Internal kernel implementation of a trait (DuckDB storage, OTel receiver) — used only in [implementation specs](../implementation/components.md) | — | "Driver" (which connects external apps) |
+| **Adapter** | Internal kernel implementation of a trait (DuckDB storage, OTel receiver) — used only in [implementation specs](../implementation/kernel/components.md) | — | "Driver" (which connects external apps) |
 
 **Rule:** In architecture specs and user-facing docs, use **driver** for external app connectors and **kernel interface** for the traits they implement. Reserve **adapter** for implementation-level discussion of internal kernel code only.
 
@@ -32,14 +32,6 @@ gctl uses **Unix terminology** as the primary architectural language. Some terms
 
 ```mermaid
 flowchart TB
-  subgraph Skills["CLAUDE CODE SKILLS (.claude/commands/)"]
-    AuditSpecs["/audit-specs"]
-    ReviewSpecs["/review-specs"]
-    StatusSkill["/status"]
-    TraceSkill["/trace"]
-    CustomSkill["/your-skill"]
-  end
-
   subgraph ExtApps["EXTERNAL APPLICATIONS (installed, all optional)"]
     Linear["Linear"]
     Plane["Plane"]
@@ -87,7 +79,6 @@ flowchart TB
     Sync["Cloud Sync"]
   end
 
-  Skills -->|"invoke"| CLI
   ExtApps -.->|"drivers\n(kernel interfaces)"| IPC
   Apps -->|"Shell APIs"| Shell
   Apps ---|"events"| IPC
@@ -235,9 +226,11 @@ Applications are larger, stateful programs that orchestrate kernel primitives th
 
 | Application | Tables Owned | Kernel Primitives Used | Runtime |
 |-------------|-------------|----------------------|---------|
-| **gctl-board** | `board_issues`, `board_tasks` | Storage, Telemetry (session-issue linking), Orchestrator | Effect-TS |
-| **Observe & Eval** | `eval_scores`, `eval_prompts` | Telemetry, Storage, Query Engine | Rust (compiled into binary) |
+| **gctl-board** | `board_issues`, `board_events`, `board_comments` | Storage, Scheduler (reads Tasks), Telemetry (session-issue linking) | Effect-TS |
+| **Observe & Eval** | `eval_scores` | Telemetry, Storage, Query Engine | Rust (compiled into binary) |
 | **Capacity Engine** | `capacity_*` | Storage, Telemetry, Query Engine | Rust (compiled into binary) |
+
+> **Note:** `tasks`, `prompt_versions`, `tags`, `daily_aggregates`, `alert_rules`, `alert_events` are **kernel-owned** tables — they support kernel primitives (Scheduler, Telemetry, Guardrails) and do NOT carry application namespace prefixes. See [domain-model.md](domain-model.md) § 5.1 and § 5.3 for DDL.
 
 ### What makes something an application (not a utility)
 
@@ -287,6 +280,11 @@ Utilities are small tools that do one thing well and compose via stdin/stdout wh
 | `gctl net show <domain>` | Show crawled content | `cat` | — |
 | `gctl browser goto <url>` | Navigate browser to URL | headless Chrome | — |
 | `gctl browser snapshot` | Capture page screenshot/DOM | `screencapture` | — |
+| `gctl spec audit` | Check specs against principles and documentation standards | `lint` | `gctl spec review` |
+| `gctl spec review` | Identify spec gaps, contradictions, ambiguities | Linter + inspector | — |
+| `gctl spec list` | List all spec files with metadata | `ls -la` | Pipe to `gctl spec refs` |
+| `gctl spec refs` | Validate cross-references between spec files | Link checker | — |
+| `gctl spec diff <base>` | Show spec changes since a git ref | `diff` | — |
 
 ### What makes something a utility (not an application)
 
@@ -381,80 +379,6 @@ Native apps (gctl-board, Observe & Eval) and external apps (Linear, Plane, Notio
 
 ---
 
-## 6. Claude Code Skills — Thin Wrappers over gctl
-
-gctl ships Claude Code slash commands (`.claude/commands/*.md`) as a first-class extension surface. Skills are the outermost layer — **opinionated prompts that invoke gctl CLI commands** and reference spec templates. They follow the same Unix philosophy as shell scripts: compose small tools into higher-level workflows.
-
-### Relationship to Other Layers
-
-```mermaid
-flowchart LR
-  Skill["/review-specs\n(.claude/commands/review-specs.md)"]
-  Skill -->|"reads"| Specs["specs/*.md\n(context)"]
-  Skill -->|"invokes"| CLI["gctl CLI\n(commands)"]
-  Skill -->|"formats"| Output["Structured output\n(for the user)"]
-```
-
-Skills sit **outside** the gctl binary. They are Markdown prompt files that tell Claude what to do using gctl's existing capabilities. They are analogous to shell scripts that compose Unix commands — the script itself has no logic; the commands do the work.
-
-### Skill Rules
-
-1. **Skills MUST be thin wrappers.** A skill is a Markdown prompt that tells Claude *what to do* using `gctl` CLI commands, spec file references, and output formatting instructions. It MUST NOT contain substantial business logic.
-2. **Logic lives in gctl.** If a skill needs computation, querying, or mutation, that capability MUST exist as a `gctl` CLI command or utility first. The skill invokes it; it does not reimplement it.
-3. **Skills compose gctl commands.** A skill MAY chain multiple commands (e.g., `gctl sessions` then `gctl analytics overview` then `gctl tree`) and synthesize the results.
-4. **Skills reference specs as context.** Skills SHOULD load relevant `specs/` files to ground Claude's behavior in the project's architecture and domain model.
-5. **Skills are project-scoped.** Skill files live in `.claude/commands/` and are versioned with the repo. They evolve alongside the specs and CLI they reference.
-
-### Anatomy of a Skill
-
-```markdown
-# .claude/commands/my-skill.md
-
-One-line description of what the skill does.
-
-## Instructions
-
-### 1. Load Context
-Read these files: `specs/architecture/README.md`, `specs/principles.md`, ...
-
-### 2. Do the Work
-Run `gctl <command>` to gather data.
-Run `gctl <command>` to perform the action.
-Analyze results against the loaded spec context.
-
-### 3. Output Format
-Format results as: ...
-
-$ARGUMENTS
-```
-
-### Shipped Skills
-
-| Skill | What It Does | gctl Commands / Specs Used |
-|-------|-------------|---------------------------|
-| `/audit-specs` | Check specs against principles and invariants | Reads `specs/`, applies `specs/principles.md` rules |
-| `/review-specs` | Identify spec gaps, contradictions, ambiguities | Reads `specs/`, cross-references for completeness |
-| `/status` | System health overview | `gctl status`, `gctl sessions`, `gctl analytics overview` |
-| `/cost-report` | Summarize cost and token usage | `gctl analytics cost`, `gctl analytics cost-breakdown`, `gctl analytics daily` |
-| `/trace` | Investigate a session's trace tree | `gctl tree <id>`, `gctl spans --session <id>` |
-| `/dispatch` | Prepare dispatch recommendation for agent work | `gctl sessions`, `gctl status`, `gctl analytics overview` |
-
-### Anti-Patterns
-
-- **Fat skills**: A skill that parses DuckDB output, computes aggregates, or applies business rules inline. Move that logic into a `gctl` CLI command.
-- **Duplicate logic**: A skill that reimplements what `gctl analytics` or `gctl query` already provides. Invoke the command instead.
-- **Ungrounded skills**: A skill that does not load spec context and relies solely on Claude's training data for project-specific decisions. Always load the relevant specs.
-
-### Extending with a new skill
-
-1. Identify what gctl CLI commands and spec files the skill needs
-2. If the skill requires computation that no command provides, **build the command first**
-3. Create `.claude/commands/{skill-name}.md`
-4. Structure: load context (spec files) → invoke gctl commands → format output
-5. The skill MUST be a thin orchestration layer — all logic lives in gctl
-
----
-
 ## Layer Decision Guide
 
 When adding new functionality, use this guide to decide where it belongs:
@@ -466,7 +390,6 @@ When adding new functionality, use this guide to decide where it belongs:
 | Does it own state, have domain logic, and orchestrate multiple primitives? | Yes | **Native Application** |
 | Does it do one thing, compose via pipes, and have no domain model? | Yes | **Utility** |
 | Is it an external tool with its own state that connects via a kernel interface? | Yes | **External Application** (with driver) |
-| Is it an opinionated prompt that invokes gctl commands? | Yes | **Skill** |
 
 When in doubt, start as a utility. Promote to an application only when the utility accumulates its own state and domain rules. External tools are always external applications — they connect through drivers and communicate via kernel IPC, never through direct coupling.
 
@@ -480,19 +403,23 @@ An extension of the Unix metaphor to cover processes and users — humans and ag
 |---|---|
 | User (`uid`) | User (human or agent persona, with `user_id`) |
 | Process (`pid`) | Agent Session (`session_id`) |
-| `fork` / `exec` | Dispatch — orchestrator picks up a work item and spawns a session |
-| `init` / `systemd` | Orchestrator — schedules, retries, reconciles |
-| Job queue | Issue backlog (`todo` → `in_progress`) |
-| `wait(pid)` / dependency | Issue dependency graph — blocked until predecessors complete |
+| `fork` / `exec` | Dispatch — Orchestrator picks up an eligible Task and spawns a Session |
+| `init` / `systemd` | Orchestrator — schedules, retries, reconciles Sessions over Tasks |
+| Job queue | Task queue (Scheduler — `pending` → `running`) |
+| `wait(pid)` / dependency | Task dependency graph (Scheduler) — blocked until prerequisite Tasks complete |
 | `cgroups` / `ulimit` | Guardrails — cost caps, token budgets, loop detection |
 | `/proc/<pid>` | Telemetry — live span tree, session state, resource usage |
 | Signal (`SIGTERM`, `SIGKILL`) | Alert → guardrail intervention (warn, pause, terminate) |
 | `setuid` / capabilities | Agent capability grants — what tools and resources a session may use |
 | Login / `su` | Persona adoption — agent assumes a configured persona at dispatch time |
 
+> **Issues are not in this model.** Issues are an application-level concept owned by gctl-board. The kernel only knows about Tasks (Scheduler) and Sessions (Telemetry/Orchestrator). Applications observe Task and Session events via kernel IPC and update their own work items (Issues) accordingly.
+>
+> **Multi-agent normalization.** The kernel tracks Tasks and prompts uniformly across all agent systems — Claude Code, Codex, Aider, OpenAI API, and custom executables. Every Task records `agent_kind`, `prompt_hash`, and `context` so the full audit trail of who did what is queryable regardless of which agent system was used. See `specs/architecture/kernel/scheduler.md` for the `AgentKind` enum and `SchedulerPort` interface.
+
 ---
 
-### 7. Users
+### 6. Users
 
 In Unix, every process runs as a user identified by a `uid`. In gctl, every session runs on behalf of a **user** — a human or an agent persona, each with a `user_id`.
 
@@ -506,7 +433,7 @@ p3       reviewer-bot agent    read, comment
 p4       nightly-run  agent    read, dispatch, net
 ```
 
-#### 7.1 User Types
+#### 6.1 User Types
 
 **Human users** correspond to real team members. Their sessions are interactive; they spawn agent sessions explicitly (e.g. `gctl board assign BACK-42 --agent claude-code`).
 
@@ -521,7 +448,7 @@ tools      = ["read", "comment"]        # capability allowlist
 cost_limit = { per_session = "0.10" }   # guardrail binding
 ```
 
-#### 7.2 Persona ↔ Unix Analogy
+#### 6.2 Persona ↔ Unix Analogy
 
 | Unix | gctl |
 |---|---|
@@ -531,7 +458,7 @@ cost_limit = { per_session = "0.10" }   # guardrail binding
 | `getent passwd` | `gctl user list` |
 | `/etc/sudoers` | WORKFLOW.md `[persona.*]` capability config |
 
-#### 7.3 Session → User Binding
+#### 6.3 Session → User Binding
 
 Every session record carries a `user_id`. Telemetry, guardrail decisions, cost attribution, and audit trails are all keyed to the user.
 
@@ -544,73 +471,69 @@ cost_usd    DECIMAL  -- attributed to this user
 
 ---
 
-### 8. Processes (Sessions)
+### 7. Processes (Sessions)
 
-A **session** is the unit of agent execution — the gctl analogue of a Unix process.
+A **session** is the unit of agent execution — the gctl analogue of a Unix process. Sessions execute **Tasks**. The kernel manages two independent lifecycles:
 
-#### 8.1 Session Lifecycle
+- The **Task** (Scheduler) is the kernel-level work unit. It has a state the Orchestrator transitions as Sessions execute it.
+- The **Session** (Telemetry) is the execution vehicle. It has its own execution state (`active`, `completed`, `failed`, `cancelled`) tracked in the `sessions` table.
 
-```mermaid
-stateDiagram-v2
-    [*] --> todo
-    todo --> in_progress : dispatch
-    todo --> blocked : dep_unresolved
-    blocked --> todo : dep_done
-    in_progress --> done : success
-    in_progress --> paused : guardrail / human
-    paused --> in_progress : human_resume
-    in_progress --> failed : error_exit
-    failed --> todo : retry_eligible
-    done --> [*]
-```
+**Issues are application-level** (gctl-board). The kernel has no concept of Issues. Applications observe Task and Session events via kernel IPC and update their own work items accordingly.
 
-| State | Unix Analogy | Description |
-|---|---|---|
-| `todo` | Ready queue | Work item exists, no session running |
-| `blocked` | `sleep(fd)` / `wait(pid)` | Dependency not yet resolved |
-| `in_progress` | Running (`R`) | Active session holds the slot |
-| `paused` | Stopped (`T`) / `SIGSTOP` | Guardrail or human intervention |
-| `done` | Exited (`Z` → reaped) | Issue closed, session archived |
-| `failed` | Non-zero exit | Session terminated with error, eligible for retry |
+#### 7.1 Task Lifecycle (as managed by the Orchestrator)
 
-#### 8.2 Dispatch — `fork` + `exec`
+> **Source of truth:** [`specs/formal/KernelSpec/TaskState.lean`](../formal/KernelSpec/TaskState.lean) (task states) and [`specs/formal/KernelSpec/Orchestrator.lean`](../formal/KernelSpec/Orchestrator.lean) (claim states)
+> All properties (reachability, terminal convergence, paused/blocked integrity) are machine-checked in Lean 4.
+
+The Scheduler owns 7 Task states; the Orchestrator drives transitions as it dispatches Sessions, monitors outcomes, and reconciles. See the Lean source for the complete `step` function and all verified transition rules.
+
+| Task State | Unix Analogy |
+|---|---|
+| `pending` | Ready queue |
+| `blocked` | `sleep(fd)` / `wait(pid)` |
+| `running` | Running (`R`) |
+| `paused` | Stopped (`T`) / `SIGSTOP` |
+| `done` | Exited (`Z` → reaped) — terminal |
+| `failed` | Non-zero exit — retryable |
+| `cancelled` | Killed — terminal |
+
+> **Session execution state** (`active`, `completed`, `failed`, `cancelled`) is tracked separately by the Telemetry primitive. A session completing does not directly set the Task state — the Orchestrator reconciles session outcomes (e.g., a completed session may leave a Task as `running` if more work remains).
+
+#### 7.2 Dispatch — `fork` + `exec`
 
 The **Orchestrator** is the gctl equivalent of `init`/`systemd` — the always-running supervisor that manages the lifecycle of all agent sessions.
 
 **Dispatch flow:**
 
 ```
-1. Orchestrator polls: SELECT issues WHERE status = 'todo' AND deps_met = true
-2. Reserve slot:       UPDATE issues SET status = 'in_progress', session_id = ? WHERE id = ?
-3. Fork context:       Build prompt from WORKFLOW.md template + issue frontmatter
-4. Exec agent:         Spawn session under configured persona
-5. Monitor:            Ingest OTel spans → update session state
-6. Reap:               On session exit, transition issue to done/failed; release slot
+1. Orchestrator polls: fetch Tasks WHERE state = 'pending' AND deps_met = true (from Scheduler)
+2. Reserve slot:       mark Task as claimed (atomic via Scheduler — prevents double-dispatch)
+3. Fork context:       build prompt from WORKFLOW.md template + task context
+4. Exec agent:         spawn Session under configured persona
+5. Monitor:            ingest OTel spans → update Session execution state (active → completed/failed)
+6. Reap:               on Session exit, update Task state via Scheduler (done/failed/pending); release slot
 ```
 
-Step 2 is a single atomic write — the DuckDB single-writer invariant prevents double-dispatch races.
+#### 7.3 Dependency Graph — `wait(pid)`
 
-#### 8.3 Dependency Graph — `wait(pid)`
-
-Issues declare dependencies via `blocked_by: [BACK-40, BACK-41]` in their frontmatter. The orchestrator only promotes an issue to `todo` (dispatch-eligible) when all blocking issues are `done`.
+Tasks declare dependencies via `blocked_by` in their payload. The Orchestrator only dispatches a Task when all its blocking Tasks are `done`.
 
 ```
-BACK-40 (done) ─┐
-                 ├─→ BACK-42 (now eligible) ─→ dispatch
-BACK-41 (done) ─┘
+Task-A (done) ─┐
+                ├─→ Task-C (now eligible) ─→ dispatch
+Task-B (done) ─┘
 
-BACK-43 (blocked by BACK-42) → stays blocked until BACK-42 is done
+Task-D (blocked by Task-C) → stays blocked until Task-C is done
 ```
 
-This is the equivalent of `wait(pid)` / `waitpid()` — a dependent issue cannot proceed until its dependency exits successfully.
+This is the equivalent of `wait(pid)` / `waitpid()` — a dependent Task cannot proceed until its dependency exits successfully.
 
 ```sh
-gctl board graph                        # visualize the dependency DAG
-gctl board ready                        # list issues eligible for dispatch
-gctl board blocked --reason deps        # list issues blocked on dependencies
+gctl orchestrate list --state pending   # tasks eligible for dispatch
+gctl orchestrate list --state blocked   # tasks blocked on dependencies
 ```
 
-#### 8.4 Slots and Concurrency
+#### 7.4 Slots and Concurrency
 
 The orchestrator respects a configurable **slot count** — the maximum number of concurrently running sessions per user or globally. This mirrors Unix process limits (`ulimit -u`, `MaxStartups`).
 
@@ -624,7 +547,7 @@ When all slots are full, newly eligible issues remain in `todo` until a slot ope
 
 ---
 
-### 9. Guardrails as cgroups
+### 8. Guardrails as cgroups
 
 Unix `cgroups` limit CPU, memory, and I/O per process group. gctl **Guardrails** play the same role for agent sessions:
 
@@ -648,7 +571,7 @@ allowed_commands      = ["cargo", "git", "gctl"]
 
 ---
 
-### 10. Telemetry as `/proc`
+### 9. Telemetry as `/proc`
 
 In Unix, `/proc/<pid>` exposes live process state. In gctl, **OTel telemetry** is the equivalent — every running session emits structured spans that the kernel stores and exposes via the shell.
 
@@ -663,7 +586,7 @@ The telemetry layer is always on. You cannot opt a session out of `/proc` — ob
 
 ---
 
-### 11. Signals and Alerts
+### 10. Signals and Alerts
 
 Unix signals interrupt running processes. gctl **alerts** are the equivalent — guardrail-triggered or human-triggered interrupts that change session behavior.
 
@@ -686,7 +609,7 @@ gctl session kill   <session_id>    # SIGKILL
 
 ---
 
-### 12. Multi-Agent Teams — Process Groups
+### 11. Multi-Agent Teams — Process Groups
 
 Unix **process groups** let you signal a tree of related processes together. gctl **agent teams** are the equivalent — a lead session that spawns sub-sessions, all operating on related work.
 
@@ -710,11 +633,11 @@ gctl session kill --group <session_id>   # kill the whole group
 
 ---
 
-### 13. Everything is a File
+### 12. Everything is a File
 
 Unix's most powerful abstraction is that every resource — devices, sockets, pipes, proc state — is a file. gctl applies this principle to its storage model: **everything the kernel persists is a file**, owned and managed by the kernel, not by individual applications.
 
-#### 13.1 DuckDB → Parquet → R2
+#### 12.1 DuckDB → Parquet → R2
 
 DuckDB is gctl's filesystem. But DuckDB files are local, mutable, and single-writer. To cross device and team boundaries, the kernel serializes state as **Parquet** — the universal, columnar, open format that both DuckDB and Cloudflare Workers can read natively.
 
@@ -732,7 +655,7 @@ flowchart TD
 
 The sync layer is a **kernel responsibility**, not an application concern. Applications write through the shell (DuckDB). The kernel handles durability, format translation, and replication — just as the Unix kernel owns block I/O and the VFS layer, not userspace programs.
 
-#### 13.2 Everything is a File — Mapping
+#### 12.2 Everything is a File — Mapping
 
 | Unix Resource | File Representation | gctl Equivalent |
 |---|---|---|
@@ -745,7 +668,7 @@ The sync layer is a **kernel responsibility**, not an application concern. Appli
 | Archive / backup | tar / dump | Parquet export under `~/.local/share/gctl/sync/` |
 | Cloud object store | NFS / remote mount | R2 bucket — Parquet files, read by Workers |
 
-#### 13.3 Kernel Owns All I/O
+#### 12.3 Kernel Owns All I/O
 
 Applications MUST NOT write Parquet directly or sync to R2 themselves. They write rows through the Shell (SQL via DuckDB or HTTP API). The Kernel's Cloud Sync primitive handles:
 
@@ -764,7 +687,7 @@ gctl sync pull --since 7d         # pull remote Parquet into local DuckDB
 
 ---
 
-### 14. Execution Model Summary
+### 13. Execution Model Summary
 
 ```
 gctl OS Model

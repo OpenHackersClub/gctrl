@@ -20,6 +20,9 @@ pub enum GctlError {
     #[error("sync error: {0}")]
     Sync(String),
 
+    #[error("context error: {0}")]
+    Context(String),
+
     #[error("query error: {0}")]
     Query(String),
 

@@ -19,15 +19,13 @@ Tasks MUST NOT be synced externally. They are local planning artifacts.
 
 ## Dependency Graph (DAG)
 
-Tasks and Issues form a directed acyclic graph:
+> **Source of truth:** [`specs/formal/KernelSpec/TaskDAG.lean`](../../formal/KernelSpec/TaskDAG.lean)
+> Acyclicity via topological ordering, edge addition/removal preservation, and subgraph monotonicity are machine-checked (15 theorems).
 
-```
-Task/Issue A  ──blocks──▶  Task/Issue B
-              (A must complete before B can start)
-```
+Tasks and Issues form a directed acyclic graph: `A blocks B` means A must complete before B can start.
 
 1. Both Tasks and Issues MAY have `blockedBy` and `blocking` relationships.
-2. The dependency graph MUST be acyclic — reject edges that would create cycles.
+2. The dependency graph MUST be acyclic — `add_edge_preserves_acyclic` proves that adding edges consistent with a topological ordering preserves acyclicity.
 3. When a blocking item completes, blocked items SHOULD auto-transition to `todo`.
 
 ## Promotion: Task → Issue

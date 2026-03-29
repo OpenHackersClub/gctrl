@@ -139,6 +139,23 @@ CREATE TABLE IF NOT EXISTS alert_events (
 )
 "#;
 
+pub const CREATE_CONTEXT_ENTRIES_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS context_entries (
+    id              VARCHAR PRIMARY KEY,
+    kind            VARCHAR NOT NULL,
+    path            VARCHAR NOT NULL UNIQUE,
+    title           VARCHAR NOT NULL,
+    source_type     VARCHAR NOT NULL,
+    source_ref      VARCHAR,
+    word_count      INTEGER DEFAULT 0,
+    content_hash    VARCHAR NOT NULL,
+    tags            JSON DEFAULT '[]',
+    created_at      VARCHAR NOT NULL,
+    updated_at      VARCHAR NOT NULL,
+    synced          BOOLEAN DEFAULT FALSE
+)
+"#;
+
 pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_spans_session ON spans(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(trace_id)",
@@ -150,6 +167,10 @@ pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_tags_key ON tags(key, value)",
     "CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_aggregates(date)",
     "CREATE INDEX IF NOT EXISTS idx_session_prompts ON session_prompts(prompt_hash)",
+    "CREATE INDEX IF NOT EXISTS idx_context_kind ON context_entries(kind)",
+    "CREATE INDEX IF NOT EXISTS idx_context_source ON context_entries(source_type)",
+    "CREATE INDEX IF NOT EXISTS idx_context_path ON context_entries(path)",
+    "CREATE INDEX IF NOT EXISTS idx_context_synced ON context_entries(synced)",
 ];
 
 pub fn all_migrations() -> Vec<&'static str> {
@@ -165,6 +186,7 @@ pub fn all_migrations() -> Vec<&'static str> {
         CREATE_DAILY_AGGREGATES_TABLE,
         CREATE_ALERT_RULES_TABLE,
         CREATE_ALERT_EVENTS_TABLE,
+        CREATE_CONTEXT_ENTRIES_TABLE,
     ];
     stmts.extend(CREATE_INDEXES.iter());
     stmts

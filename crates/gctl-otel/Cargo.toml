@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 gctl-core = { path = "../gctl-core" }
 gctl-storage = { path = "../gctl-storage" }
+gctl-context = { path = "../gctl-context" }
 axum = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

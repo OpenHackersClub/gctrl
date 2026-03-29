@@ -1,6 +1,6 @@
 # Orchestration — Implementation Details
 
-Implementation details for the orchestration state machine defined in [specs/gctl/workflows/orchestration.md](../gctl/workflows/orchestration.md). This file covers formal verification (Lean 4), Rust crate structure, agent adapter wiring, and concrete configuration.
+Implementation details for the orchestration state machine defined in [specs/gctl/workflows/orchestration.md](../../gctl/workflows/orchestration.md). This file covers formal verification (Lean 4), Rust crate structure, agent adapter wiring, and concrete configuration.
 
 ## Tech Stack Rationale
 
@@ -29,17 +29,19 @@ The orchestration state machine is formally verified in Lean 4 before implementa
 ### Project Structure
 
 ```
-lean4/
-  gctl-orch/
-    Gctl/
-      Orch/
-        State.lean           -- State and transition definitions
-        RunAttempt.lean      -- Run attempt lifecycle
-        Properties.lean      -- Theorem statements and proofs
-        Concurrency.lean     -- Slot accounting invariants
-        Retry.lean           -- Backoff convergence proofs
-    lakefile.lean            -- Lean 4 build config
-    lean-toolchain           -- Lean 4 version pin
+specs/formal/
+  KernelSpec/
+    Basic.lean               -- Trace execution, reachability, terminal states
+    DomainTypes.lean         -- SpanStatus, PolicyDecision, UserKind, AgentKind
+    SessionState.lean        -- Session lifecycle (Active → terminal)
+    TaskState.lean           -- Task lifecycle (Pending → Done/Cancelled)
+    Orchestrator.lean        -- Claim states (Unclaimed → Released)
+    RunAttempt.lean          -- Dispatch pipeline (always-forward proof)
+    TaskDAG.lean             -- Dependency graph acyclicity
+    DispatchEligibility.lean -- 7-condition dispatch predicate
+  KernelSpec.lean            -- Root import file
+  lakefile.lean              -- Lean 4 build config
+  lean-toolchain             -- Lean 4 version pin
 ```
 
 ### State Machine in Lean 4

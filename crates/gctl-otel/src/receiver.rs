@@ -7,6 +7,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use gctl_context::ContextManager;
 use gctl_storage::DuckDbStore;
 use serde::Deserialize;
 
@@ -14,11 +15,16 @@ use crate::span_processor::{self, OtlpExportRequest};
 
 pub struct AppState {
     pub store: DuckDbStore,
+    pub context: Option<ContextManager>,
     pub started_at: std::time::Instant,
 }
 
 pub fn create_router(store: DuckDbStore) -> Router {
-    let state = Arc::new(AppState { store, started_at: std::time::Instant::now() });
+    create_router_with_context(store, None)
+}
+
+pub fn create_router_with_context(store: DuckDbStore, context: Option<ContextManager>) -> Router {
+    let state = Arc::new(AppState { store, context, started_at: std::time::Instant::now() });
     Router::new()
         // OTel ingestion
         .route("/v1/traces", post(ingest_traces))
@@ -42,6 +48,12 @@ pub fn create_router(store: DuckDbStore) -> Router {
         .route("/api/sessions/{session_id}/end", post(end_session))
         .route("/api/sessions/{session_id}/loops", get(detect_loops))
         .route("/api/sessions/{session_id}/cost-breakdown", get(session_cost_breakdown))
+        // Context management
+        .route("/api/context", get(context_list).post(context_upsert))
+        .route("/api/context/compact", get(context_compact))
+        .route("/api/context/stats", get(context_stats))
+        .route("/api/context/{id}", get(context_get).delete(context_delete))
+        .route("/api/context/{id}/content", get(context_content))
         // Health
         .route("/health", get(health))
         .with_state(state)
@@ -449,6 +461,150 @@ async fn ingest_traces(
             tracing::error!(error = %e, "failed to store spans");
             StatusCode::INTERNAL_SERVER_ERROR
         }
+    }
+}
+
+// --- Context Management Handlers ---
+
+#[derive(Deserialize)]
+struct ContextListParams {
+    kind: Option<String>,
+    tag: Option<String>,
+    source: Option<String>,
+    search: Option<String>,
+    #[serde(default = "default_context_limit")]
+    limit: usize,
+}
+
+fn default_context_limit() -> usize {
+    100
+}
+
+async fn context_list(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ContextListParams>,
+) -> impl IntoResponse {
+    let Some(ref ctx) = state.context else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "context manager not initialized").into_response();
+    };
+    let filter = gctl_core::context::ContextFilter {
+        kind: params.kind.as_deref().and_then(gctl_core::context::ContextKind::from_str),
+        tag: params.tag,
+        source: params.source,
+        search: params.search,
+        limit: Some(params.limit),
+    };
+    match ctx.list(&filter) {
+        Ok(entries) => Json(serde_json::to_value(&entries).unwrap()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ContextUpsertBody {
+    path: String,
+    title: String,
+    content: String,
+    #[serde(default = "default_context_kind")]
+    kind: String,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default = "default_context_source")]
+    source_type: String,
+    source_ref: Option<String>,
+}
+
+fn default_context_kind() -> String { "document".into() }
+fn default_context_source() -> String { "human".into() }
+
+async fn context_upsert(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<ContextUpsertBody>,
+) -> impl IntoResponse {
+    let Some(ref ctx) = state.context else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "context manager not initialized").into_response();
+    };
+    let kind = match gctl_core::context::ContextKind::from_str(&body.kind) {
+        Some(k) => k,
+        None => return (StatusCode::BAD_REQUEST, format!("invalid kind: {}", body.kind)).into_response(),
+    };
+    let source = gctl_core::context::ContextSource::from_parts(&body.source_type, body.source_ref.as_deref());
+    match ctx.upsert(&kind, &body.path, &body.title, &body.content, &source, &body.tags) {
+        Ok(entry) => (StatusCode::CREATED, Json(serde_json::to_value(&entry).unwrap())).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn context_get(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Some(ref ctx) = state.context else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "context manager not initialized").into_response();
+    };
+    match ctx.get(&id).or_else(|_| ctx.get_by_path(&id)) {
+        Ok(entry) => Json(serde_json::to_value(&entry).unwrap()).into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, format!("not found: {}", id)).into_response(),
+    }
+}
+
+async fn context_content(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Some(ref ctx) = state.context else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "context manager not initialized").into_response();
+    };
+    match ctx.read_content(&id).or_else(|_| ctx.read_content_by_path(&id)) {
+        Ok(content) => content.into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, format!("not found: {}", id)).into_response(),
+    }
+}
+
+async fn context_delete(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Some(ref ctx) = state.context else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "context manager not initialized").into_response();
+    };
+    match ctx.remove(&id).or_else(|_| ctx.remove_by_path(&id)) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, format!("not found: {}", id)).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ContextCompactParams {
+    kind: Option<String>,
+    tag: Option<String>,
+}
+
+async fn context_compact(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ContextCompactParams>,
+) -> impl IntoResponse {
+    let Some(ref ctx) = state.context else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "context manager not initialized").into_response();
+    };
+    let filter = gctl_core::context::ContextFilter {
+        kind: params.kind.as_deref().and_then(gctl_core::context::ContextKind::from_str),
+        tag: params.tag,
+        ..Default::default()
+    };
+    match ctx.compact(&filter) {
+        Ok(compact) => compact.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn context_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let Some(ref ctx) = state.context else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "context manager not initialized").into_response();
+    };
+    match ctx.stats() {
+        Ok(stats) => Json(serde_json::to_value(&stats).unwrap()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 

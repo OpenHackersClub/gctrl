@@ -18,7 +18,7 @@ Read these files to build your mental model of the system:
 - `specs/architecture/tracker.md` — Issue & task graph, lifecycle state machines
 - `specs/architecture/gctl-board.md` — Board application
 - `specs/prd.md` — Product requirements (skim for feature scope)
-- `specs/implementation/components.md` — Crate/package map
+- `specs/implementation/kernel/components.md` — Kernel crate map
 - `specs/implementation/repo.md` — Monorepo structure (Rust, Effect-TS, Lean 4)
 - `specs/implementation/orchestration.md` — Orchestration implementation
 - `specs/implementation/skills.md` — Skill catalog and conventions

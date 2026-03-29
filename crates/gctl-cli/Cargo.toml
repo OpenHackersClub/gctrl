@@ -14,6 +14,7 @@ gctl-otel = { path = "../gctl-otel" }
 gctl-guardrails = { path = "../gctl-guardrails" }
 gctl-query = { path = "../gctl-query" }
 gctl-net = { path = "../gctl-net" }
+gctl-context = { path = "../gctl-context" }
 
 clap = { workspace = true }
 tokio = { workspace = true }

@@ -10,6 +10,7 @@ members = [
     "crates/gctl-proxy",
     "crates/gctl-net",
     "crates/gctl-sync",
+    "crates/gctl-context",
 ]
 
 [workspace.package]

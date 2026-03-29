@@ -20,82 +20,38 @@ For implementation details (Lean 4 formal verification, Rust crate structure, ad
 
 ## 2. Orchestration States (Kernel Claim States)
 
-These are the orchestrator's **internal claim states**, distinct from the kanban lifecycle in [issue-lifecycle.md](issue-lifecycle.md). An issue's kanban status (`todo`, `in_progress`, etc.) and its orchestration claim state are independent dimensions.
+> **Source of truth:** [`specs/formal/KernelSpec/Orchestrator.lean`](../../formal/KernelSpec/Orchestrator.lean)
+> States, transitions, and all 6 required properties are machine-checked in Lean 4 (16 theorems, zero `sorry`).
 
-```mermaid
-stateDiagram-v2
-    [*] --> Unclaimed
-    Unclaimed --> Claimed : dispatch_eligible
-    Claimed --> Running : agent_launched
-    Running --> Paused : guardrail_suspend / human_pause
-    Paused --> Running : human_resume
-    Paused --> Released : reconciliation_terminal
-    Running --> RetryQueued : agent_exit_normal / agent_exit_abnormal
-    Running --> Released : reconciliation_terminal
-    RetryQueued --> Running : retry_dispatch
-    RetryQueued --> Released : no_longer_eligible / max_retries
-    Claimed --> Released : dispatch_failed
-    Released --> [*]
-    Released --> Unclaimed : re_eligible_next_tick
-```
+These are the orchestrator's **internal claim states**, distinct from the kanban lifecycle in [issue-lifecycle.md](issue-lifecycle.md). An issue's kanban status and its orchestration claim state are independent dimensions.
 
-| State | Description |
-|-------|-------------|
-| `Unclaimed` | Issue exists and is not reserved by the orchestrator. Default state for all issues. |
-| `Claimed` | Orchestrator has reserved the issue to prevent duplicate dispatch. Transient — transitions quickly to `Running` or `Released`. |
-| `Running` | An agent process is actively working on the issue. |
-| `Paused` | Session suspended by a guardrail trigger or human operator. Awaiting explicit resume. MUST NOT be re-dispatched. |
-| `RetryQueued` | Agent exited but a retry is scheduled. |
-| `Released` | Claim removed. Issue returns to the candidate pool on the next tick if still eligible. |
+States: `Unclaimed` → `Claimed` → `Running` → `Released`, with `Paused` and `RetryQueued` as intermediate states. See the Lean source for the complete `step` function.
 
 ### Important Nuances
 
 1. A successful agent exit does not mean the issue is done. The orchestrator schedules a continuation check to verify the issue is still active.
 2. After abnormal exit, the orchestrator schedules an exponential-backoff retry.
-3. `Released` is not terminal for the issue — only for the current claim cycle. If the issue remains in an active kanban state, it becomes `Unclaimed` and re-eligible on the next poll tick.
+3. `Released` is not terminal for the issue — only for the current claim cycle (`full_cycle` theorem).
 
-### Required Properties
+### Verified Properties
 
-The state machine MUST satisfy these properties (to be formally verified):
+All properties are machine-checked — see `KernelSpec/Orchestrator.lean`:
 
-1. **No duplicate dispatch.** An issue MUST NOT be in both `Claimed` and `Running` simultaneously for two different agent processes.
-2. **Reachability.** Every state MUST be reachable from `Unclaimed` via a valid sequence of transitions.
-3. **Liveness.** An issue MUST NOT remain in `Claimed` or `RetryQueued` indefinitely — all paths lead to `Running` or `Released` within bounded time.
-4. **Determinism.** For any (state, trigger) pair, there is exactly one target state.
-5. **Terminal convergence.** If the tracker marks an issue terminal, the orchestration state MUST eventually reach `Released` regardless of current state.
-6. **Pause/resume integrity.** A `Paused` session MUST NOT be re-dispatched. It MUST only return to `Running` via an explicit `human_resume` trigger.
+1. **No duplicate dispatch** — `dispatch_only_from_unclaimed`
+2. **Reachability** — `all_reachable`
+3. **Liveness** — `claimed_always_progresses`, `retryQueued_always_progresses`
+4. **Determinism** — `deterministic`
+5. **Terminal convergence** — `released_reachable_from_any`
+6. **Pause/resume integrity** — `paused_integrity`, `paused_not_dispatchable`
 
 ## 3. Run Attempt Lifecycle
 
-Each dispatch of an agent for an issue is a **run attempt** with its own lifecycle:
+> **Source of truth:** [`specs/formal/KernelSpec/RunAttempt.lean`](../../formal/KernelSpec/RunAttempt.lean)
+> Phases, transitions, and the `always_forward` termination proof are machine-checked (8 theorems).
 
-```mermaid
-stateDiagram-v2
-    [*] --> PreparingWorkspace
-    PreparingWorkspace --> BuildingPrompt
-    BuildingPrompt --> LaunchingAgent
-    LaunchingAgent --> StreamingWork
-    StreamingWork --> Finishing
-    Finishing --> Succeeded
-    Finishing --> Failed
-    StreamingWork --> TimedOut : stall_timeout
-    StreamingWork --> Canceled : reconciliation
-    LaunchingAgent --> Failed : agent_not_found
-    PreparingWorkspace --> Failed : hook_failed
-    BuildingPrompt --> Failed : template_error
-```
+Each dispatch is a linear pipeline: `PreparingWorkspace` → `BuildingPrompt` → `LaunchingAgent` → `StreamingWork` → `Finishing` → `Succeeded`|`Failed`. Every phase can fail early. `StreamingWork` can also exit to `TimedOut` or `Canceled`.
 
-| Phase | Description |
-|-------|-------------|
-| `PreparingWorkspace` | Create or reuse the per-issue workspace directory. Run creation hook if new. |
-| `BuildingPrompt` | Render the prompt template with issue context. |
-| `LaunchingAgent` | Start the agent process. Agent kind resolved from configuration. |
-| `StreamingWork` | Agent is running. Orchestrator monitors for stalls and reconciliation events. |
-| `Finishing` | Agent process exited. Collecting exit status and artifacts. |
-| `Succeeded` | Agent exited cleanly. Orchestrator schedules continuation check. |
-| `Failed` | Agent exited with error. Orchestrator schedules backoff retry. |
-| `TimedOut` | No progress detected within stall timeout. Agent killed, retry queued. |
-| `Canceled` | Reconciliation determined issue is no longer active. Agent killed, claim released. |
+The `always_forward` theorem proves every transition strictly increases phase ordering, guaranteeing termination.
 
 ## 4. Transition Triggers
 
@@ -124,16 +80,10 @@ The orchestrator MUST NOT assume a specific agent. Agent kind is resolved from c
 
 ### Dispatch Eligibility
 
-An issue is dispatch-eligible only if all conditions hold:
+> **Source of truth:** [`specs/formal/KernelSpec/DispatchEligibility.lean`](../../formal/KernelSpec/DispatchEligibility.lean)
+> 7-condition conjunction verified: satisfiable (`eligible_exists`), each condition independently necessary, terminal/paused/claimed states correctly blocked.
 
-1. It has an identifier, title, and state.
-2. Its kanban state is active (not terminal).
-3. It is not already `Claimed`, `Running`, or `Paused`.
-4. Global concurrency slots are available.
-5. Per-state concurrency slots are available.
-6. If in `todo` state, no blocker (from the dependency DAG in [task-planning.md](task-planning.md)) is non-terminal.
-7. A `user_id` can be resolved — the issue has a configured persona in WORKFLOW.md or a default persona is set.
-8. Per-user concurrency slots are available for the resolved `user_id`.
+A task is dispatch-eligible only if **all** conditions hold. See the Lean `Context` structure and `isEligible` predicate for the formal model.
 
 ### Dispatch Ordering
 

@@ -10,6 +10,12 @@ GroundCtrl (gctl) is a local-first operating system for human+agent teams. Follo
 
 The `specs/` directory is the single source of truth. Each file has a clear scope — put content in the right place.
 
+### Glossary
+
+| Document | Scope | Content that belongs here |
+|----------|-------|--------------------------|
+| `specs/glossary.md` | Term definitions | Canonical definitions for all domain terms (Task, Session, Issue, Span, User, Persona, AgentKind, Driver, etc.). When a term is used in specs, it MUST carry the meaning defined here. |
+
 ### Product & Strategy
 
 | Document | Scope | Content that belongs here |
@@ -20,7 +26,7 @@ The `specs/` directory is the single source of truth. Each file has a clear scop
 
 | Document | Scope | Content that belongs here |
 |----------|-------|--------------------------|
-| `specs/architecture/` | System structure | Unix layers (Kernel/Shell/Apps), hexagonal layout, data flow, scheduler, OS layer guide (`os.md`), gctl-board. See `specs/architecture/README.md` for index. MUST NOT dictate specific implementation patterns. |
+| `specs/architecture/` | System structure | Unix layers (Kernel/Shell/Apps), hexagonal layout, data flow, OS layer guide (`os.md`). Subdirs: `kernel/` (orchestrator, scheduler, tracker, browser), `apps/` (gctl-board), `shell/` (CLI). See `specs/architecture/README.md` for index. MUST NOT dictate specific implementation patterns. |
 | `specs/principles.md` | Design invariants | Design principles, architectural invariants, crate ownership rules, Effect-TS invariants, testing invariants, git workflow. The "constitution" — rules that MUST NOT be violated. |
 | `specs/architecture/domain-model.md` | Types & schemas | Domain types, traits, storage schema (all SQL DDL), Effect-TS schemas, entity relationships. The "data dictionary." |
 | `specs/gctl/workflows` | gctl's own workflow | Instantiation of `specs/gctl/workflows/` templates for gctl itself. See "gctl's Own Workflow" section below. |
@@ -47,16 +53,17 @@ Reusable workflow templates for any application built on gctl. gctl dogfoods the
 
 ### Implementation Details
 
-Detailed programming patterns, code examples, and how-to guides live under `specs/implementation/`. These MAY change frequently as the codebase evolves.
+Detailed programming patterns, code examples, and how-to guides live under `specs/implementation/`, organized by layer. These MAY change frequently as the codebase evolves.
 
-| Document | Scope | Content that belongs here |
-|----------|-------|--------------------------|
-| `specs/implementation/style-guide.md` | Coding patterns | Effect-TS patterns (tagged errors, services, layers, branded types), Rust patterns (clap, thiserror, trait objects), DuckDB conventions, table namespacing. Concrete code examples belong here. |
-| `specs/implementation/testing.md` | Test strategy | Test pyramid, how to run tests, crate-specific test approaches, fixture patterns, integration test setup. |
-| `specs/implementation/components.md` | Component details | Crate/package map, dependency graph, hexagonal wiring, runtime model (Rust + Effect-TS), scheduler adapters, kernel subsystem internals, gctl-net. Language/framework-specific details that architecture docs intentionally omit. |
-| `specs/implementation/repo.md` | Monorepo structure | Nx + Cargo workspace setup, directory layout, dual build system, cross-language orchestration, caching, per-project config conventions. |
-| `specs/implementation/orchestration.md` | Orchestration implementation | Lean 4 formal verification, gctl-orch Rust crate, agent adapters, retry constants, conformance testing. |
-| `specs/implementation/skills.md` | Skills implementation | Skill catalog, conventions, `gctl spec` utility, audit rule interface, transitional pattern. |
+| Directory / File | Scope | Content that belongs here |
+|-----------------|-------|--------------------------|
+| `specs/implementation/kernel/` | Kernel implementation | Rust crate map, dependency graph, subsystem details (OTel, guardrails, context, proxy, sync, net, scheduler), kernel style guide, orchestrator, tracker. |
+| `specs/implementation/shell/` | Shell implementation | CLI dispatcher, HTTP API routing, Effect-TS command packages, kernel↔shell communication patterns. |
+| `specs/implementation/apps/` | Application implementation | Effect-TS package structure, gctl-board details, app style guide, integration modes (sidecar, embedded). |
+| `specs/implementation/formal/` | Formal spec conventions | Lean 4 style: Mathlib, generic theorems, state machine file structure, proof style, naming conventions. |
+| `specs/implementation/repo.md` | Monorepo structure | Nx + Cargo workspace setup, directory layout, triple build system, cross-language orchestration. |
+| `specs/implementation/kernel/orchestrator.md` | Orchestration implementation | gctl-orch Rust crate, agent adapters, retry constants, conformance testing. |
+| `specs/formal/` | Lean 4 formal specs | **83 verified theorems, zero `sorry`.** Kernel: Session, Task, Orchestrator, RunAttempt state machines. Domain types: SpanStatus, PolicyDecision, UserKind, AgentKind, ActorKind. Dispatch eligibility (7-condition predicate). DAG acyclicity. Retry backoff bounds. Run `cd specs/formal && lake build` to re-verify. |
 
 ### Decision Records & Plans
 
@@ -75,7 +82,7 @@ Detailed programming patterns, code examples, and how-to guides live under `spec
 
 | Document | Scope | Content that belongs here |
 |----------|-------|--------------------------|
-| `specs/browser.md` | Browser control | CDP daemon spec, ref system, tab management. |
+| `specs/architecture/kernel/browser.md` | Browser control | CDP daemon spec, ref system, tab management. |
 | `Request.md` | Deferred work | Gaps and open items by phase. |
 
 ## Invariants
@@ -88,14 +95,16 @@ Detailed programming patterns, code examples, and how-to guides live under `spec
 4. Code MUST NOT access Effect-TS `._tag` directly — use combinators (`Effect.catchTag`, `Match.tag`).
 5. Every new public function MUST have at least one test.
 6. Contributors MUST use feature branches — MUST NOT push directly to main.
-7. The Kernel MUST NOT make assumptions about applications.
-8. Shell MUST mediate all external access to the kernel.
+7. All changes to main MUST go through a pull request — MUST NOT merge with `--admin` bypass.
+8. MUST NOT rebase main — use merge commits only. MUST NOT force-push to main.
+9. The Kernel MUST NOT make assumptions about applications.
+10. Shell MUST mediate all external access to the kernel.
 
 ## Quick Reference
 
 ```sh
 cargo build                  # Build all crates
-cargo test                   # 87 tests across 9 crates
+cargo test                   # 123 tests across 10 crates
 cargo run -- serve           # OTel receiver on :4318
 cargo run -- status          # Quick health check
 
@@ -128,7 +137,7 @@ Before researching on the internet, check `specs/` and crawled documentation:
 
 Specs MUST be concise and verifiable. Working code and references to real examples are preferred over lengthy prose that drifts from reality.
 
-1. **Code over prose.** When specifying an interface, type, or behavior, include the actual Rust trait, Effect-TS schema, SQL DDL, or Lean 4 definition. A 10-line code block is more precise than a paragraph of description. If the code exists in the codebase, reference the file path instead of duplicating it.
+1. **Code over prose.** When specifying an interface, type, or behavior, include the actual Rust trait, Effect-TS schema, SQL DDL, or Lean 4 definition. A 10-line code block is more precise than a paragraph of description. If the code exists in the codebase, reference the file path instead of duplicating it. **For state machines and transition rules, the Lean 4 specs in `specs/formal/` are the source of truth** — markdown files MUST reference them rather than duplicating transition diagrams.
 
 2. **Reference real examples.** When describing a pattern (e.g., "how to add a CLI command"), point to an existing file that demonstrates it (e.g., "see `crates/gctl-cli/src/commands/sessions.rs`"). A working example is the most trustworthy spec.
 

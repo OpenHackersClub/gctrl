@@ -1,0 +1,42 @@
+{
+  "targetDefaults": {
+    "build": {
+      "dependsOn": ["^build"],
+      "cache": true
+    },
+    "test": {
+      "dependsOn": ["build"],
+      "cache": true
+    },
+    "lint": {
+      "cache": true
+    }
+  },
+  "namedInputs": {
+    "rust": [
+      "{projectRoot}/**/*.rs",
+      "{projectRoot}/Cargo.toml",
+      "{workspaceRoot}/Cargo.toml",
+      "{workspaceRoot}/Cargo.lock"
+    ],
+    "typescript": [
+      "{projectRoot}/src/**/*.ts",
+      "{projectRoot}/package.json",
+      "{projectRoot}/tsconfig.json"
+    ],
+    "lean": [
+      "{projectRoot}/**/*.lean",
+      "{projectRoot}/lakefile.lean",
+      "{projectRoot}/lean-toolchain"
+    ]
+  },
+  "plugins": [
+    {
+      "plugin": "@monodon/rust",
+      "options": {
+        "buildTargetName": "build",
+        "testTargetName": "test"
+      }
+    }
+  ]
+}

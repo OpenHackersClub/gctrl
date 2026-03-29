@@ -25,14 +25,48 @@ See `specs/principles.md` for the full Unix philosophy mapping and design princi
 
 ## Architecture Index
 
+```
+specs/architecture/
+├── README.md          ← this file — system overview, Unix philosophy, data flow
+├── os.md              ← layer guide: kernel, shell, apps, utilities, external apps
+├── domain-model.md    ← domain types, storage schema (DDL), Effect-TS schemas
+│
+├── kernel/            ← kernel primitives and extensions (Tasks + Sessions only)
+│   ├── orchestrator.md    claim states, dispatch eligibility, retry/backoff
+│   ├── scheduler.md       Task lifecycle, interface trait, platform implementations
+│   └── browser.md         CDP daemon, ref system, tab management
+│
+├── shell/             ← shell layer (CLI dispatcher, HTTP API, query engine)
+│
+└── apps/              ← native applications and utilities (Issues live here)
+    ├── gctl-board.md      kanban — issues, board visualization, agent integration
+    └── tracker.md         Issue lifecycle, DAG, auto-transitions, TrackerPort
+
+specs/formal/              ← Lean 4 formal specs (source of truth for state machines & types)
+├── KernelSpec/
+│   ├── Basic.lean              trace execution, reachability, terminal states
+│   ├── DomainTypes.lean        SpanStatus, PolicyDecision, UserKind, AgentKind, ActorKind
+│   ├── SessionState.lean       Session lifecycle (Active → terminal)
+│   ├── TaskState.lean          Task lifecycle (Pending → Done/Cancelled)
+│   ├── Orchestrator.lean       Claim states (Unclaimed → Released)
+│   ├── RunAttempt.lean         Dispatch pipeline (always-forward termination proof)
+│   ├── TaskDAG.lean            Dependency graph acyclicity via topological ordering
+│   └── DispatchEligibility.lean  7-condition dispatch predicate, retry backoff bounds
+├── lakefile.lean
+└── lean-toolchain         83 theorems, zero sorry — run: cd specs/formal && lake build
+```
+
 | Document | Scope |
 |----------|-------|
 | This file | System layers, Unix philosophy, internal code architecture, data flow |
 | [domain-model.md](domain-model.md) | Domain types, traits, storage schema (DDL), Effect-TS schemas |
-| [scheduler.md](scheduler.md) | Scheduler kernel primitive — interface trait and platform implementations |
-| [gctl-board.md](gctl-board.md) | Kanban application — issues, tasks, agent integration, task graph |
-| [tracker.md](tracker.md) | Issue & task graph management — lifecycle state machines, DAG, cycle detection, auto-unblock |
-| [os.md](os.md) | Unix layers in depth — kernel, shell, applications, utilities, external apps (drivers), skills, and how to extend each |
+| [os.md](os.md) | Unix layers in depth — kernel, shell, applications, utilities, external apps (drivers), and how to extend each |
+| [kernel/orchestrator.md](kernel/orchestrator.md) | Orchestrator kernel primitive — Task claim states, dispatch eligibility, retry/backoff, concurrency control |
+| [kernel/scheduler.md](kernel/scheduler.md) | Scheduler kernel primitive — Task lifecycle, interface trait, platform implementations |
+| [kernel/browser.md](kernel/browser.md) | Browser control kernel extension — CDP daemon, ref system, tab management |
+| [apps/gctl-board.md](apps/gctl-board.md) | Kanban application — Issues, board visualization, agent integration |
+| [apps/tracker.md](apps/tracker.md) | Tracker application component — Issue lifecycle, DAG, auto-transitions, TrackerPort |
+| [../formal/](../formal/) | **Lean 4 formal specs** — source of truth for all state machines, domain types, dispatch eligibility, and DAG invariants (83 verified theorems) |
 
 ---
 
@@ -111,13 +145,13 @@ Four core primitives. Agent-agnostic and use-case-agnostic. Makes no assumptions
 | **Telemetry** | OTLP span ingestion, session tracking, cost attribution |
 | **Storage** | Embedded DuckDB with schema migrations, retention policies |
 | **Guardrails** | Policy engine (cost limits, loop detection, command gateway) |
-| **Orchestrator** | Agent-agnostic dispatch, retry, reconciliation ([details](../gctl/workflows/orchestration.md)) |
+| **Orchestrator** | Agent-agnostic dispatch, retry, reconciliation ([details](kernel/orchestrator.md)) |
 
 #### Kernel Extensions (Feature-Gated, Optional)
 
 | Extension | What It Does | When to Enable |
 |-----------|-------------|----------------|
-| **Scheduler** | Deferred and recurring task execution ([details](scheduler.md)) | Timed triggers beyond the orchestrator |
+| **Scheduler** | Deferred and recurring task execution ([details](kernel/scheduler.md)) | Timed triggers beyond the orchestrator |
 | **Network Control** | Traffic interception, domain allowlists, traffic logging | Network visibility needed |
 | **Browser Control** | Persistent browser automation, ref system, tab management | Browser automation needed |
 | **Cloud Sync** | Export, device-partitioned sync, knowledge store | Multi-device or team sync |
@@ -136,7 +170,7 @@ Mediates all access to the kernel — like Unix shells mediate access to syscall
 
 Domain-specific tools built on kernel + shell. CLI subcommands live at this layer — they are programs that *run through* the shell, not part of the shell itself.
 
-- **Applications**: [gctl-board](gctl-board.md) (kanban for agent+human issues & tasks), Observe & Eval (scoring, analytics), Capacity Engine (forecasting)
+- **Applications**: [gctl-board](apps/gctl-board.md) (kanban for agent+human issues & tasks), Observe & Eval (scoring, analytics), Capacity Engine (forecasting)
 - **Utilities**: net fetch/crawl/compact (web scraping), browser goto/snapshot/click (browser control), sessions, analytics, etc.
 
 #### External Applications (Installed on the OS)
@@ -225,4 +259,4 @@ Native apps and external apps are **not** wired via hexagonal ports. They are in
 
 ## Implementation Details
 
-For languages, frameworks, crate/package structure, dependency graphs, and code patterns, see `specs/implementation/components.md`.
+For languages, frameworks, crate/package structure, dependency graphs, and code patterns, see `specs/implementation/kernel/components.md`.

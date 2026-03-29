@@ -121,6 +121,9 @@ enum Commands {
     /// Web scraping and agent-optimized context
     #[command(subcommand)]
     Net(NetCmd),
+    /// Manage agent context (docs, configs, snapshots)
+    #[command(subcommand)]
+    Context(ContextCmd),
 }
 
 #[derive(Subcommand)]
@@ -227,6 +230,68 @@ enum NetCmd {
 }
 
 #[derive(Subcommand)]
+enum ContextCmd {
+    /// Add a file as a context entry
+    Add {
+        /// Path to local file to add
+        file: String,
+        /// Store path (e.g. runbooks/deploy.md). Defaults to filename.
+        #[arg(long, alias = "as")]
+        path: Option<String>,
+        /// Context kind: config, snapshot, document
+        #[arg(long, default_value = "document")]
+        kind: String,
+        /// Tags (comma-separated)
+        #[arg(long)]
+        tags: Option<String>,
+    },
+    /// List context entries
+    List {
+        /// Filter by kind (config, snapshot, document)
+        #[arg(long)]
+        kind: Option<String>,
+        /// Filter by tag
+        #[arg(long)]
+        tag: Option<String>,
+        /// Search title/path
+        #[arg(long)]
+        search: Option<String>,
+        /// Output format: table, json
+        #[arg(short, long, default_value = "table")]
+        format: String,
+    },
+    /// Show a context entry's content
+    Show {
+        /// Entry ID or path
+        entry: String,
+    },
+    /// Remove a context entry
+    Remove {
+        /// Entry ID or path
+        entry: String,
+    },
+    /// Compact context into a single LLM-ready document
+    Compact {
+        /// Filter by kind
+        #[arg(long)]
+        kind: Option<String>,
+        /// Filter by tag
+        #[arg(long)]
+        tag: Option<String>,
+        /// Output file (stdout if not set)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Show context store statistics
+    Stats,
+    /// Import crawled content from gctl-net as context entries
+    Import {
+        /// Domain to import (e.g. docs.example.com)
+        domain: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum AlertCmd {
     /// Create an alert rule
     Create {
@@ -301,6 +366,21 @@ async fn main() -> Result<()> {
                 commands::alert::create(&name, &condition, threshold, &action, &db_path)
             }
             AlertCmd::List => commands::alert::list(&db_path),
+        },
+        Commands::Context(cmd) => match cmd {
+            ContextCmd::Add { file, path, kind, tags } => {
+                commands::context::add(&file, path.as_deref(), &kind, tags.as_deref(), &db_path)
+            }
+            ContextCmd::List { kind, tag, search, format } => {
+                commands::context::list(kind.as_deref(), tag.as_deref(), search.as_deref(), &format, &db_path)
+            }
+            ContextCmd::Show { entry } => commands::context::show(&entry, &db_path),
+            ContextCmd::Remove { entry } => commands::context::remove(&entry, &db_path),
+            ContextCmd::Compact { kind, tag, output } => {
+                commands::context::compact(kind.as_deref(), tag.as_deref(), output.as_deref(), &db_path)
+            }
+            ContextCmd::Stats => commands::context::stats(&db_path),
+            ContextCmd::Import { domain } => commands::context::import_crawl(&domain, &db_path),
         },
         Commands::Net(cmd) => match cmd {
             NetCmd::Fetch { url, no_readability, min_words } => {
