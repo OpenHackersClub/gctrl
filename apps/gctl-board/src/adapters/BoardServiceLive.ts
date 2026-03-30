@@ -88,7 +88,7 @@ export const BoardServiceLive = Layer.effect(
           const raw = yield* client.get(`/api/board/issues/${issueId}`)
           return mapIssue(raw)
         }).pipe(
-          Effect.catchAll((e) => {
+          Effect.catchAll((e): Effect.Effect<never, BoardError | IssueNotFoundError> => {
             const msg = String(e)
             if (msg.includes("404")) return Effect.fail(new IssueNotFoundError({ issueId }))
             return Effect.fail(new BoardError({ message: msg }))
@@ -103,7 +103,7 @@ export const BoardServiceLive = Layer.effect(
           if (filter.assigneeId) params.set("assignee_id", filter.assigneeId)
           if (filter.label) params.set("label", filter.label)
           const qs = params.toString()
-          const raw = yield* client.get(`/api/board/issues${qs ? `?${qs}` : ""}`) as Effect.Effect<unknown[], Error>
+          const raw = yield* client.get(`/api/board/issues${qs ? `?${qs}` : ""}`)
           return (raw as any[]).map(mapIssue)
         }).pipe(
           Effect.catchAll((e) => Effect.fail(new BoardError({ message: String(e) })))
@@ -119,7 +119,7 @@ export const BoardServiceLive = Layer.effect(
           })
           return mapIssue(raw)
         }).pipe(
-          Effect.catchAll((e) => {
+          Effect.catchAll((e): Effect.Effect<never, BoardError | IssueNotFoundError> => {
             const msg = String(e)
             if (msg.includes("404") || msg.includes("not found")) return Effect.fail(new IssueNotFoundError({ issueId }))
             return Effect.fail(new BoardError({ message: msg }))
@@ -135,7 +135,7 @@ export const BoardServiceLive = Layer.effect(
           })
           return mapIssue(raw)
         }).pipe(
-          Effect.catchAll((e) => {
+          Effect.catchAll((e): Effect.Effect<never, BoardError | IssueNotFoundError> => {
             const msg = String(e)
             if (msg.includes("404")) return Effect.fail(new IssueNotFoundError({ issueId }))
             return Effect.fail(new BoardError({ message: msg }))
@@ -147,7 +147,7 @@ export const BoardServiceLive = Layer.effect(
           const issues: Issue[] = []
           for (const title of subTasks) {
             // Get parent to inherit project
-            const parent = yield* client.get(`/api/board/issues/${parentId}`) as any
+            const parent = (yield* client.get(`/api/board/issues/${parentId}`)) as any
             const raw = yield* client.post("/api/board/issues", {
               project_id: parent.project_id,
               title,
@@ -160,7 +160,7 @@ export const BoardServiceLive = Layer.effect(
           }
           return issues
         }).pipe(
-          Effect.catchAll((e) => {
+          Effect.catchAll((e): Effect.Effect<never, BoardError | IssueNotFoundError> => {
             const msg = String(e)
             if (msg.includes("404")) return Effect.fail(new IssueNotFoundError({ issueId: parentId }))
             return Effect.fail(new BoardError({ message: msg }))
@@ -183,7 +183,7 @@ export const BoardServiceLive = Layer.effect(
             session_id: sessionId,
           })
         }).pipe(
-          Effect.catchAll((e) => {
+          Effect.catchAll((e): Effect.Effect<never, BoardError | IssueNotFoundError> => {
             const msg = String(e)
             if (msg.includes("404")) return Effect.fail(new IssueNotFoundError({ issueId }))
             return Effect.fail(new BoardError({ message: msg }))
@@ -198,7 +198,7 @@ export const BoardServiceLive = Layer.effect(
             tokens,
           })
         }).pipe(
-          Effect.catchAll((e) => {
+          Effect.catchAll((e): Effect.Effect<never, BoardError | IssueNotFoundError> => {
             const msg = String(e)
             if (msg.includes("404")) return Effect.fail(new IssueNotFoundError({ issueId }))
             return Effect.fail(new BoardError({ message: msg }))

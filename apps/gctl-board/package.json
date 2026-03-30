@@ -5,7 +5,8 @@
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "lint": "biome lint src/"
   },
   "dependencies": {
     "effect": "^3.14.0",

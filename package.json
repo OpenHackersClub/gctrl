@@ -1,10 +1,14 @@
 {
   "name": "gctrl",
   "private": true,
-  "workspaces": ["shell/*", "apps/*"],
+  "workspaces": [
+    "shell/*",
+    "apps/*"
+  ],
   "devDependencies": {
+    "@biomejs/biome": "^2.4.9",
+    "@monodon/rust": "^2.3.0",
     "nx": "^21",
-    "@monodon/rust": "^3",
     "typescript": "^5.7"
   },
   "scripts": {
@@ -12,6 +16,7 @@
     "test": "nx run-many -t test",
     "test:rust": "cargo test",
     "test:ts": "nx run-many -t test --projects=shell/*,apps/*",
-    "lint": "nx run-many -t lint"
+    "lint": "nx run-many -t lint",
+    "lint:biome": "biome lint shell/*/src/ apps/*/src/"
   }
 }

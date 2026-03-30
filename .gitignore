@@ -7,3 +7,4 @@ dist/
 
 .obsidian
 .DS_Store
+.nx/

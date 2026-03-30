@@ -9,7 +9,8 @@
     "build": "tsup src/main.ts --format esm",
     "dev": "tsx src/main.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "lint": "biome lint src/"
   },
   "dependencies": {
     "effect": "^3.14.0",

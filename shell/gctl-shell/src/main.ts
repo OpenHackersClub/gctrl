@@ -11,11 +11,12 @@ import { Effect, Layer } from "effect"
 import { sessionsCommand } from "./commands/sessions.js"
 import { statusCommand } from "./commands/status.js"
 import { ghCommand } from "./commands/gh.js"
+import { auditCommand } from "./commands/audit.js"
 import { HttpKernelClientLive } from "./adapters/HttpKernelClient.js"
 import { CcliGitHubClientLive } from "./adapters/CcliGitHubClient.js"
 
 const command = Command.make("gctl").pipe(
-  Command.withSubcommands([sessionsCommand, statusCommand, ghCommand])
+  Command.withSubcommands([sessionsCommand, statusCommand, ghCommand, auditCommand])
 )
 
 const cli = Command.run(command, {
