@@ -1,0 +1,6 @@
+export { KernelClient } from "./services/KernelClient.js"
+export { GitHubClient } from "./services/GitHubClient.js"
+export type { GhIssue, GhPR, GhRun } from "./services/GitHubClient.js"
+export { HttpKernelClientLive } from "./adapters/HttpKernelClient.js"
+export { CcliGitHubClientLive } from "./adapters/CcliGitHubClient.js"
+export { KernelError, KernelUnavailableError, GitHubError } from "./errors.js"

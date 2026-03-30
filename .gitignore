@@ -1,0 +1,10 @@
+/target
+.tmp/
+*.duckdb
+*.duckdb.wal
+node_modules/
+dist/
+
+.obsidian
+.DS_Store
+.nx/

@@ -1,0 +1,21 @@
+{
+  "name": "gctl-board",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "biome lint src/"
+  },
+  "dependencies": {
+    "effect": "^3.14.0",
+    "@effect/schema": "^0.75.0",
+    "@effect/platform": "^0.72.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "tsup": "^8.0.0",
+    "vitest": "^3.0.0"
+  }
+}
