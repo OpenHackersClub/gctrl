@@ -54,15 +54,13 @@ pub struct Task {
     pub updated_at: DateTime<Utc>,
 }
 
-// TaskStatus — source of truth: specs/formal/KernelSpec/TaskState.lean
+// TaskStatus — see domain-model.md § Task
 //   Pending | Running | Paused | Done (terminal) | Failed (retry) | Cancelled (terminal)
-//   Verified: all_reachable, terminal_convergence, paused_integrity,
-//             failed_only_retry, blocked_integrity
 
-// AgentKind — source of truth: specs/formal/KernelSpec/DomainTypes.lean
+// AgentKind — see domain-model.md § Domain Types
 //   ClaudeCode | Codex | Aider | OpenAI | Custom
 
-// ActorKind — source of truth: specs/formal/KernelSpec/DomainTypes.lean
+// ActorKind — see domain-model.md § Domain Types
 //   Human | Agent
 ```
 
@@ -105,7 +103,7 @@ pub trait SchedulerPort: Send + Sync {
     async fn list_tasks(&self, filter: TaskFilter) -> Result<Vec<Task>, SchedulerError>;
     async fn link_session(&self, task_id: &TaskId, session_id: &SessionId) -> Result<(), SchedulerError>;
 
-    // --- Dependency graph (acyclicity verified in specs/formal/KernelSpec/TaskDAG.lean) ---
+    // --- Dependency graph (acyclicity MUST be enforced) ---
     async fn add_dependency(&self, blocker: TaskId, blocked: TaskId) -> Result<(), CyclicDependencyError>;
     async fn remove_dependency(&self, blocker: TaskId, blocked: TaskId) -> Result<(), SchedulerError>;
     async fn list_ready(&self) -> Result<Vec<Task>, SchedulerError>;

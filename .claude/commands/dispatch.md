@@ -9,7 +9,7 @@ Prepare a dispatch recommendation for agent work on an issue — gather context 
 Read these files to understand orchestration and task structure:
 
 - `specs/architecture/os.md` — Orchestrator kernel primitive (dispatch, retry, reconciliation)
-- `specs/architecture/tracker.md` — Issue and task lifecycle, dependency graph, state machines
+- `specs/architecture/apps/tracker.md` — Issue and task lifecycle, dependency graph, state machines
 - `specs/principles.md` — Design principles (especially: mechanisms not policy, observability)
 
 ### 2. Gather System State

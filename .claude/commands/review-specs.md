@@ -1,6 +1,6 @@
 Review the gctl specs to identify gaps, contradictions, and ambiguities — then ask clarifying questions.
 
-> **Transitional skill**: Claude applies review analysis directly from spec context. Once `gctl spec review` is implemented (see `specs/implementation/skills.md` § 3), this skill MUST be updated to invoke that command instead.
+> **Transitional skill**: Claude applies review analysis directly from spec context. Once `gctl spec review` is implemented, this skill MUST be updated to invoke that command instead.
 
 ## Instructions
 
@@ -15,13 +15,13 @@ Read these files to build your mental model of the system:
 - `specs/architecture/README.md` — Unix layers, hexagonal architecture, data flow
 - `specs/architecture/os.md` — Layer definitions, what belongs where, extension rules
 - `specs/architecture/domain-model.md` — Domain types, storage schema
-- `specs/architecture/tracker.md` — Issue & task graph, lifecycle state machines
-- `specs/architecture/gctl-board.md` — Board application
-- `specs/prd.md` — Product requirements (skim for feature scope)
+- `specs/architecture/apps/tracker.md` — Issue & task graph, lifecycle state machines
+- `specs/architecture/apps/gctl-board.md` — Board application
+- `specs/gctl/PRD.md` — Product requirements (skim for feature scope)
 - `specs/implementation/kernel/components.md` — Kernel crate map
 - `specs/implementation/repo.md` — Monorepo structure (Rust, Effect-TS, Lean 4)
-- `specs/implementation/orchestration.md` — Orchestration implementation
-- `specs/implementation/skills.md` — Skill catalog and conventions
+- `specs/implementation/kernel/orchestrator.md` — Orchestration implementation
+- `specs/implementation/repo.md` — Skill catalog and conventions
 
 ### 2. Analyze for Gaps
 
@@ -29,13 +29,13 @@ For every spec file under `specs/`, look for:
 
 **Missing Parts**
 - Undefined terms or concepts referenced but never specified
-- Features in prd.md without a corresponding architecture or implementation spec
+- Features in PRD.md without a corresponding architecture or implementation spec
 - Ports/traits declared but no adapter or implementation spec
 - State machines with missing transitions or unhandled edge cases
 - Storage tables referenced but missing from domain-model.md DDL
 - Error types listed but no recovery strategy defined
 - Cross-references pointing to files or sections that don't exist
-- CLI commands described in prd.md but no implementation spec
+- CLI commands described in PRD.md but no implementation spec
 
 **Contradictions**
 - Two specs defining the same concept differently (status enums, table schemas, transition rules)

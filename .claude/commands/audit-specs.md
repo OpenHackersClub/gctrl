@@ -1,6 +1,6 @@
 Audit the gctl specs for compliance with the project's principles, guidelines, and documentation standards.
 
-> **Transitional skill**: Claude applies audit rules directly from spec context. Once `gctl spec audit` is implemented (see `specs/implementation/skills.md` § 3), this skill MUST be updated to invoke that command instead.
+> **Transitional skill**: Claude applies audit rules directly from spec context. Once `gctl spec audit` is implemented, this skill MUST be updated to invoke that command instead.
 
 ## Instructions
 

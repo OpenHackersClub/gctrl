@@ -1,6 +1,6 @@
 # Orchestration — Implementation Details
 
-Implementation details for the orchestration state machine defined in [specs/gctl/workflows/orchestration.md](../../gctl/workflows/orchestration.md). This file covers formal verification (Lean 4), Rust crate structure, agent adapter wiring, and concrete configuration.
+Implementation details for the orchestration state machine defined in [specs/architecture/kernel/orchestrator.md](../../architecture/kernel/orchestrator.md). This file covers Rust crate structure, agent adapter wiring, and concrete configuration.
 
 ## Tech Stack Rationale
 
@@ -15,120 +15,14 @@ This stack keeps orchestration **local-first and single-process**, consistent wi
 
 ---
 
-## 1. Formal Verification with Lean 4
-
-The orchestration state machine is formally verified in Lean 4 before implementation in Rust. This ensures the state machine properties (§2 Required Properties in the workflow spec) hold by construction, not just by testing.
-
-### Why Lean 4
-
-1. **Dependent types** — encode state machine invariants directly in the type system (e.g., "a `Running` issue always has exactly one agent process").
-2. **Proof obligations** — each required property becomes a theorem that MUST be proved before the spec is considered complete.
-3. **Executable extraction** — Lean 4 can generate executable code, so the verified model can serve as a reference implementation.
-4. **Readable specs** — Lean 4's syntax is close enough to mathematical notation that the proofs serve as documentation.
-
-### Project Structure
-
-```
-specs/formal/
-  KernelSpec/
-    Basic.lean               -- Trace execution, reachability, terminal states
-    DomainTypes.lean         -- SpanStatus, PolicyDecision, UserKind, AgentKind
-    SessionState.lean        -- Session lifecycle (Active → terminal)
-    TaskState.lean           -- Task lifecycle (Pending → Done/Cancelled)
-    Orchestrator.lean        -- Claim states (Unclaimed → Released)
-    RunAttempt.lean          -- Dispatch pipeline (always-forward proof)
-    TaskDAG.lean             -- Dependency graph acyclicity
-    DispatchEligibility.lean -- 7-condition dispatch predicate
-  KernelSpec.lean            -- Root import file
-  lakefile.lean              -- Lean 4 build config
-  lean-toolchain             -- Lean 4 version pin
-```
-
-### State Machine in Lean 4
-
-```lean
-/-- Orchestration claim states -/
-inductive ClaimState where
-  | unclaimed
-  | claimed
-  | running
-  | retryQueued
-  | released
-  deriving DecidableEq, Repr
-
-/-- Transition triggers -/
-inductive Trigger where
-  | dispatchEligible
-  | agentLaunched
-  | agentExitNormal
-  | agentExitAbnormal
-  | reconciliationTerminal
-  | retryDispatch
-  | noLongerEligible
-  | maxRetries
-  | dispatchFailed
-  | reEligibleNextTick
-  deriving DecidableEq, Repr
-
-/-- Deterministic transition function -/
-def transition : ClaimState → Trigger → Option ClaimState
-  | .unclaimed,   .dispatchEligible       => some .claimed
-  | .claimed,     .agentLaunched          => some .running
-  | .claimed,     .dispatchFailed         => some .released
-  | .running,     .agentExitNormal        => some .retryQueued
-  | .running,     .agentExitAbnormal      => some .retryQueued
-  | .running,     .reconciliationTerminal => some .released
-  | .retryQueued, .retryDispatch          => some .running
-  | .retryQueued, .noLongerEligible       => some .released
-  | .retryQueued, .maxRetries             => some .released
-  | .released,    .reEligibleNextTick     => some .unclaimed
-  | _,            _                       => none
-```
-
-### Properties to Prove
-
-```lean
-/-- P1: Determinism — each (state, trigger) maps to at most one target -/
-theorem transition_deterministic :
-  ∀ s t, (transition s t).isSome → ∃! s', transition s t = some s' := by
-  intro s t h
-  cases s <;> cases t <;> simp [transition] at h ⊢ <;> exact ⟨_, rfl, fun _ h => h.symm⟩
-
-/-- P2: Reachability — every state is reachable from unclaimed -/
-theorem all_reachable :
-  ∀ s : ClaimState, ∃ path : List Trigger,
-    reachable .unclaimed path s := by
-  sorry  -- TODO: enumerate witness paths
-
-/-- P3: Liveness — claimed and retryQueued always reach running or released -/
-theorem claimed_progresses :
-  ∀ s, s = .claimed ∨ s = .retryQueued →
-    ∃ t, transition s t = some .running ∨ transition s t = some .released := by
-  sorry  -- TODO
-
-/-- P4: Terminal convergence — if tracker is terminal, state reaches released -/
-theorem terminal_convergence :
-  ∀ s, s = .running →
-    transition s .reconciliationTerminal = some .released := by
-  simp [transition]
-```
-
-### Workflow
-
-1. **Define** states and transitions in `State.lean`.
-2. **State** required properties as theorem signatures in `Properties.lean`.
-3. **Prove** each theorem. If a proof fails, the state machine spec has a bug — fix the spec, not the proof.
-4. **Extract** the transition function as a reference for the Rust implementation.
-5. **CI gate**: `lake build` MUST pass before the Rust crate can change state machine logic.
-
-## 2. Rust Crate: `gctl-orch`
+## 1. Rust Crate: `gctl-orch` [deferred]
 
 The Rust implementation mirrors the Lean 4 model. The transition function is a direct translation — any divergence is a bug.
 
 ### Crate Structure
 
 ```
-crates/gctl-orch/
+kernel/crates/gctl-orch/
   src/
     lib.rs                   -- Public API
     state.rs                 -- ClaimState, Trigger, transition()
@@ -352,13 +246,6 @@ gctl-orch
 3. **Reconciliation** — change issue to terminal state mid-run, verify agent killed and claim released.
 4. **Workspace lifecycle** — verify create, reuse, and cleanup across multiple run attempts.
 
-### Lean 4 ↔ Rust Conformance
+### State Machine Conformance
 
-Generate a transition truth table from Lean 4 (`State × Trigger → Option State`) and assert the Rust `transition()` function produces identical output for every combination. Run this as a CI check.
-
-```sh
-# CI pipeline
-lake build                          # Lean 4 proofs pass
-lake run export-transition-table    # generate truth table JSON
-cargo test -p gctl-orch             # Rust tests including conformance check
-```
+The Rust `transition()` function MUST be tested exhaustively — every `(State, Trigger)` combination checked against expected output.

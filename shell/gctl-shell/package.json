@@ -1,0 +1,27 @@
+{
+  "name": "gctl-shell",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "gctl": "./dist/main.js"
+  },
+  "scripts": {
+    "build": "tsup src/main.ts --format esm",
+    "dev": "tsx src/main.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "effect": "^3.14.0",
+    "@effect/cli": "^0.52.0",
+    "@effect/platform": "^0.72.0",
+    "@effect/platform-node": "^0.68.0",
+    "@effect/schema": "^0.75.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "tsup": "^8.0.0",
+    "tsx": "^4.0.0",
+    "vitest": "^3.0.0"
+  }
+}

@@ -1,4 +1,4 @@
-# Application Components (Effect-TS — `packages/`)
+# Application Components (Effect-TS — `apps/`)
 
 Applications are stateful programs that orchestrate kernel primitives through the shell.
 
@@ -12,25 +12,35 @@ Applications are stateful programs that orchestrate kernel primitives through th
 
 ```mermaid
 graph LR
-    subgraph TS["Effect-TS — Applications"]
+    subgraph Apps["Effect-TS — Applications"]
         Board["gctl-board"]
         FutureApps["Future Apps"]
     end
 
-    subgraph Rust["Rust Binary — Kernel + Shell"]
-        API["Shell: HTTP API"]
-        CLI["Shell: CLI"]
+    subgraph Shell["Effect-TS — Shell"]
+        CLI["gctl CLI (@effect/cli)"]
     end
 
-    TS -->|"Shell (HTTP / CLI)"| Rust
+    subgraph Kernel["Rust — Kernel"]
+        API["HTTP API (:4318)"]
+        Daemon["gctl serve"]
+    end
+
+    subgraph External["External Tools"]
+        GitHub["GitHub (via ccli)"]
+    end
+
+    Apps -->|"HTTP"| API
+    CLI -->|"HTTP"| API
+    CLI -->|"subprocess"| GitHub
 ```
 
-Applications communicate with the kernel via the shell (HTTP API on `:4318` or `gctl` CLI subprocess). They MUST NOT import Rust kernel crates directly.
+Applications communicate with the kernel via the HTTP API on `:4318`. The Effect-TS shell CLI is a separate package that also calls the kernel API and additionally orchestrates external tools (GitHub, Slack). Apps MUST NOT import Rust kernel crates directly.
 
 ## Package Structure
 
 ```
-packages/gctl-{app}/
+apps/gctl-{app}/
 ├── src/
 │   ├── schema/        # Domain: Schema.Class types, branded IDs
 │   ├── services/      # Ports: Context.Tag service interfaces
@@ -56,16 +66,13 @@ packages/gctl-{app}/
 - **Service ports**: `src/services/` — `BoardService`, `DependencyResolver` as `Context.Tag` services
 - **Communication**: Calls Rust kernel via shell (HTTP API or CLI subprocess)
 
-## Integration with Rust Daemon
+## Integration with Kernel
 
-Two modes:
-
-1. **Sidecar process** — TS board service runs alongside the Rust daemon. Rust CLI delegates `gctl board *` commands to the TS HTTP API. Shared DuckDB (TS writes board tables, Rust writes kernel tables).
-2. **Embedded via HTTP** — Board service runs as part of `gctl serve`. Rust daemon proxies `/api/board/*` to the TS process.
+Applications talk to the Rust kernel daemon via the HTTP API on `:4318`. The Effect-TS shell CLI (`shell/gctl-shell/`) delegates app-specific commands (e.g., `gctl board`) to the corresponding app's service layer.
 
 ## Each App Can Be Its Own Codebase
 
-Applications under `packages/` are independent npm packages. They depend on the kernel only through the shell. This means:
+Applications under `apps/` are independent npm packages. They depend on the kernel only through the HTTP API. This means:
 
 - An app can be extracted to its own repo and still work — it just talks to `gctl` over HTTP
 - Apps MUST NOT join across other apps' tables — cross-app data flows through kernel IPC

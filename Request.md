@@ -52,7 +52,7 @@ Gaps and product requirements to address in future phases.
 
 ## Phase 6: gctl-board (Effect-TS Kanban)
 
-- [ ] **Effect-TS project setup** — Initialize packages/gctl-board/ with Effect, vitest, DuckDB bindings. Decide Bun vs Node.
+- [ ] **Effect-TS project setup** — Initialize apps/gctl-board/ with Effect, vitest, DuckDB bindings. Decide Bun vs Node.
 - [ ] **Core issue CRUD** — Create, read, update, delete issues with Schema validation. Status transitions with WIP limit enforcement.
 - [ ] **Dependency resolver** — DAG-based blocking/unblocking with cycle detection. Auto-unblock when dependencies complete.
 - [ ] **Event sourcing** — Append-only event log for all issue mutations. Enables audit trail and activity feeds.

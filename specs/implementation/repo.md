@@ -1,6 +1,6 @@
 # Monorepo Structure
 
-gctl uses a **single Nx-managed monorepo** for Rust, TypeScript (Effect-TS), and Lean 4 code. Nx orchestrates builds, tests, and caching across all three runtimes. Cargo workspace handles Rust crate dependency resolution; Lake handles Lean 4 builds; Nx handles cross-language task orchestration, affected detection, and caching.
+gctl uses a **single Nx-managed monorepo** for Rust and TypeScript (Effect-TS) code. Nx orchestrates builds, tests, and caching across both runtimes. Cargo workspace handles Rust crate dependency resolution; Nx handles cross-language task orchestration, affected detection, and caching.
 
 ## Directory Layout
 
@@ -11,42 +11,43 @@ gctrl/
 ├── Cargo.toml                 # Rust workspace (crate members)
 ├── tsconfig.base.json         # Shared TS compiler options
 │
-├── crates/                    # Rust crates (Cargo workspace)
-│   ├── gctl-core/             # Domain: types, errors, config, context types
-│   │
-│   │  # --- Kernel (primitives) ---
-│   ├── gctl-storage/          # Kernel: DuckDB embedded storage
-│   ├── gctl-otel/             # Kernel: OTel receiver + HTTP API
-│   ├── gctl-guardrails/       # Kernel: policy engine
-│   ├── gctl-context/          # Kernel: context manager (DuckDB + filesystem)
-│   ├── gctl-proxy/            # Kernel: MITM proxy (stub)
-│   ├── gctl-browser/          # Kernel: CDP browser daemon
-│   ├── gctl-sync/             # Kernel: R2 cloud sync (stub)
-│   │
-│   │  # --- Shell (dispatcher + interface) ---
-│   ├── gctl-cli/              # Shell: CLI dispatcher (clap)
-│   ├── gctl-query/            # Shell: query executor
-│   │
-│   │  # --- Utilities ---
-│   └── gctl-net/              # Utility: web fetch, crawl, compaction
+├── kernel/                    # Rust kernel (Cargo workspace)
+│   └── crates/
+│       ├── gctl-core/         # Domain: types, errors, config, port traits
+│       │
+│       │  # --- Kernel primitives ---
+│       ├── gctl-storage/      # DuckDB embedded storage
+│       ├── gctl-otel/         # OTel receiver + HTTP API (:4318)
+│       ├── gctl-guardrails/   # Policy engine
+│       ├── gctl-context/      # Context manager (DuckDB + filesystem)
+│       ├── gctl-query/        # Guardrailed query executor
+│       ├── gctl-net/          # Web fetch, crawl, compaction
+│       ├── gctl-proxy/        # MITM proxy (stub)
+│       ├── gctl-browser/      # CDP browser daemon
+│       ├── gctl-sync/         # R2 cloud sync (stub)
+│       ├── gctl-scheduler/    # Scheduler port + adapters
+│       │
+│       │  # --- Daemon binary ---
+│       └── gctl-cli/          # Minimal binary: `gctl serve`
 │
-├── packages/                  # TypeScript packages (Effect-TS)
-│   │  # --- Applications ---
-│   ├── gctl-board/            # App: Effect-TS kanban (schemas, services)
-│   │  # --- Future TS packages ---
-│   └── ...
+├── shell/                     # Effect-TS CLI (user-facing)
+│   └── gctl-shell/            # @effect/cli command dispatcher
+│       ├── src/
+│       │   ├── main.ts        # CLI entry point
+│       │   ├── commands/      # Command implementations
+│       │   ├── services/      # Port interfaces (KernelClient, GitHubClient)
+│       │   └── adapters/      # Concrete adapters (HTTP, ccli subprocess)
+│       ├── test/
+│       └── package.json
+│
+├── apps/                      # Effect-TS applications
+│   ├── gctl-board/            # App: kanban (schemas, services, adapters)
+│   └── ...                    # Future: observe-eval, capacity
 │
 ├── specs/                     # Architecture, design, and formal specs
 │   ├── architecture/          # System structure (kernel/shell/apps layers)
-│   ├── implementation/        # Coding patterns, testing, repo structure
-│   ├── formal/                # Lean 4 formal verification (Lake project)
-│   │   ├── KernelSpec/        # Kernel state machine proofs (83 theorems)
-│   │   ├── KernelSpec.lean    # Root import file
-│   │   ├── lakefile.lean      # Lake build config
-│   │   └── lean-toolchain     # Lean 4 version pin
-│   └── ...
+│   └── implementation/        # Coding patterns, testing, repo structure
 │
-├── specs/                     # Architecture and design specs
 ├── AGENTS.md
 ├── CLAUDE.md
 └── Request.md
@@ -54,22 +55,24 @@ gctrl/
 
 ## Three Codebases, One Repo
 
-gctl separates concerns across three runtimes. Each has its own build system, dependency management, and can be developed independently. Nx provides the cross-language orchestration layer.
+gctl separates concerns across three codebases. Each has its own build system, dependency management, and can be developed independently. Nx provides the cross-language orchestration layer.
 
 | Codebase | Language | Directory | Build System | Responsibility |
 |----------|----------|-----------|-------------|----------------|
-| **Kernel** | Rust | `crates/` | Cargo workspace | Core primitives: storage, telemetry, guardrails, context, sync, proxy, browser. CLI dispatcher. All kernel-owned tables. Single `gctl` binary. |
-| **Specs (Formal)** | Lean 4 | `specs/formal/` | Lake | Formal verification of state machines: Session, Task, Orchestrator, RunAttempt, IssueState, TaskDAG. 83 theorems, zero `sorry`. Gates kernel state machine changes. |
-| **Applications** | TypeScript (Effect-TS) | `packages/` | npm/bun + tsup | Application-level logic: gctl-board (kanban), future apps. Each app owns its namespaced tables, domain model, and services. Communicates with kernel via shell (HTTP API or CLI subprocess). |
+| **Kernel** | Rust | `kernel/crates/` | Cargo workspace | Core primitives: storage, telemetry, guardrails, context, query, sync, proxy, browser, scheduler. HTTP API on `:4318`. Minimal daemon binary (`gctl serve`). |
+| **Shell** | TypeScript (Effect-TS) | `shell/gctl-shell/` | pnpm + tsup | User-facing CLI (`@effect/cli`). Invokes kernel via HTTP API. Communicates with external tools (GitHub, Slack) via `ccli` subprocess. |
+| **Applications** | TypeScript (Effect-TS) | `apps/` | pnpm + tsup | Application-level logic: gctl-board (kanban), future apps. Each app owns its namespaced tables, domain model, and services. Communicates with kernel via HTTP API. |
 
-**Each app can take its own codebase.** Applications under `packages/` are independent npm packages. They depend on the kernel only through the shell (HTTP API on `:4318` or `gctl` CLI subprocess). This means:
+**Kernel exposes, shell consumes.** The Rust kernel's only external interface is the HTTP API on `:4318`. The Effect-TS shell CLI calls this API to access kernel features. External tools (GitHub, Slack, AWS) are accessed from the shell via `ccli` subprocess adapters — never from the kernel.
+
+**Each app can take its own codebase.** Applications under `apps/` are independent npm packages. They depend on the kernel only through the HTTP API on `:4318`. This means:
 
 - An app can be extracted to its own repo and still work — it just talks to the `gctl` daemon over HTTP.
 - Apps MUST NOT import Rust crates directly (no FFI, no shared memory).
 - Apps MUST NOT join across other apps' tables — cross-app data flows through kernel IPC.
 - Each app declares its own `package.json`, `tsconfig.json`, and test setup.
 
-**Lean 4 specs gate Rust changes.** The formal proofs in `specs/formal/` must pass (`cd specs/formal && lake build`) before the corresponding Rust kernel crate can merge state machine changes. Nx enforces this via `dependsOn` in `project.json`.
+**Each app can be extracted.** Applications under `apps/` are independent npm packages. They depend on the kernel only through the HTTP API on `:4318`, so they can be moved to their own repo.
 
 ## Nx Configuration
 
@@ -77,7 +80,7 @@ gctl separates concerns across three runtimes. Each has its own build system, de
 
 1. **Cross-language orchestration.** Nx manages Cargo, TypeScript, and Lean 4 build/test targets from a single task graph. `nx affected` detects changes across all three runtimes.
 2. **Computation caching.** Nx caches task outputs (build artifacts, test results) locally and optionally remotely (Nx Cloud). Cargo's incremental compilation handles Rust; Lake handles Lean 4; Nx caches the TypeScript side and cross-project dependencies.
-3. **Task dependencies.** Nx's task pipeline ensures Lean 4 proofs pass before the Rust orchestration crate can change state machine logic, and Rust builds complete before TypeScript packages that depend on the CLI binary.
+3. **Task dependencies.** Nx's task pipeline ensures Rust builds complete before TypeScript packages that depend on the CLI binary.
 4. **Consistent developer experience.** One set of commands (`nx build`, `nx test`, `nx run-many`) regardless of language.
 
 ### `nx.json`
@@ -99,8 +102,7 @@ gctl separates concerns across three runtimes. Each has its own build system, de
   },
   "namedInputs": {
     "rust": ["{projectRoot}/**/*.rs", "{projectRoot}/Cargo.toml", "{workspaceRoot}/Cargo.toml", "{workspaceRoot}/Cargo.lock"],
-    "typescript": ["{projectRoot}/src/**/*.ts", "{projectRoot}/package.json", "{projectRoot}/tsconfig.json"],
-    "lean": ["{projectRoot}/**/*.lean", "{projectRoot}/lakefile.lean", "{projectRoot}/lean-toolchain"]
+    "typescript": ["{projectRoot}/src/**/*.ts", "{projectRoot}/package.json", "{projectRoot}/tsconfig.json"]
   },
   "plugins": [
     {
@@ -120,7 +122,7 @@ gctl separates concerns across three runtimes. Each has its own build system, de
 {
   "name": "gctrl",
   "private": true,
-  "workspaces": ["packages/*"],
+  "workspaces": ["shell/*", "apps/*"],
   "devDependencies": {
     "nx": "^21",
     "@monodon/rust": "^3",
@@ -130,7 +132,7 @@ gctl separates concerns across three runtimes. Each has its own build system, de
     "build": "nx run-many -t build",
     "test": "nx run-many -t test",
     "test:rust": "cargo test",
-    "test:ts": "nx run-many -t test --projects=packages/*",
+    "test:ts": "nx run-many -t test --projects=shell/*,apps/*",
     "lint": "nx run-many -t lint"
   }
 }
@@ -141,7 +143,7 @@ gctl separates concerns across three runtimes. Each has its own build system, de
 Each Rust crate MAY have a `project.json` for Nx target overrides. The `@monodon/rust` plugin auto-infers `build` and `test` targets from `Cargo.toml`, so `project.json` is only needed for custom targets.
 
 ```jsonc
-// crates/gctl-cli/project.json (example)
+// kernel/crates/gctl-cli/project.json (example)
 {
   "name": "gctl-cli",
   "targets": {
@@ -165,7 +167,23 @@ Each Rust crate MAY have a `project.json` for Nx target overrides. The `@monodon
 TypeScript packages use their `package.json` scripts. Nx infers targets from `package.json#scripts` automatically.
 
 ```jsonc
-// packages/gctl-board/package.json
+// shell/gctl-shell/package.json
+{
+  "name": "gctl-shell",
+  "scripts": {
+    "build": "tsup src/main.ts --format esm --dts",
+    "test": "vitest run"
+  },
+  "nx": {
+    "namedInputs": {
+      "default": ["typescript"]
+    }
+  }
+}
+```
+
+```jsonc
+// apps/gctl-board/package.json
 {
   "name": "gctl-board",
   "scripts": {
@@ -180,66 +198,21 @@ TypeScript packages use their `package.json` scripts. Nx infers targets from `pa
 }
 ```
 
-## Triple Build Systems
+## Build Systems
 
 | Concern | Tool | Scope |
 |---------|------|-------|
-| Rust crate resolution, compilation | Cargo | `crates/*` |
-| TypeScript compilation, bundling | tsup / tsc | `packages/*` |
-| Lean 4 compilation, proof checking | Lake | `specs/formal/` |
+| Rust crate resolution, compilation | Cargo | `kernel/crates/*` |
+| TypeScript compilation, bundling | tsup / tsc | `shell/*`, `apps/*` |
 | Task orchestration, caching, affected | Nx | Entire workspace |
 | Dependency graph, task ordering | Nx task pipeline | Cross-language |
 
-Cargo, Lake, and Nx coexist. Nx does NOT replace Cargo or Lake — it wraps their commands and adds caching, affected detection, and cross-language task ordering on top.
-
-### Per-Project Config (Lean 4)
-
-Lean 4 projects use a `project.json` with custom executor commands wrapping Lake.
-
-```jsonc
-// specs/formal/project.json
-{
-  "name": "kernel-spec-lean",
-  "targets": {
-    "build": {
-      "executor": "nx:run-commands",
-      "options": {
-        "command": "lake build",
-        "cwd": "specs/formal"
-      },
-      "inputs": ["lean"]
-    },
-    "test": {
-      "executor": "nx:run-commands",
-      "options": {
-        "command": "lake build",
-        "cwd": "specs/formal"
-      },
-      "inputs": ["lean"]
-    }
-  }
-}
-```
-
-The Rust orchestration crate MUST depend on the Lean 4 proofs passing:
-
-```jsonc
-// crates/gctl-orch/project.json (partial)
-{
-  "targets": {
-    "test": {
-      "dependsOn": ["kernel-spec-lean:build"]
-    }
-  }
-}
-```
-
-This ensures `lake build` (proof checking) passes before Rust tests can run for the orchestration crate.
+Cargo and Nx coexist. Nx does NOT replace Cargo — it wraps its commands and adds caching, affected detection, and cross-language task ordering on top.
 
 ### Running Tasks
 
 ```sh
-# Everything (Rust + TypeScript + Lean 4)
+# Everything (Rust + TypeScript)
 nx run-many -t build
 nx run-many -t test
 
@@ -247,28 +220,28 @@ nx run-many -t test
 nx affected -t test
 
 # Single project
+nx test gctl-shell
 nx test gctl-board
 nx build gctl-cli
-nx build kernel-spec-lean
 
-# Rust directly (bypasses Nx, no cross-language cache)
-cargo build
-cargo test
+# Rust kernel directly (bypasses Nx, no cross-language cache)
+cd kernel && cargo build
+cd kernel && cargo test
 
-# TypeScript directly
-cd packages/gctl-board && bun run test
+# Shell directly
+cd shell/gctl-shell && pnpm run test
 
-# Lean 4 directly (bypasses Nx)
-cd specs/formal && lake build
+# Applications directly
+cd apps/gctl-board && pnpm run test
 ```
 
 ## Conventions
 
-1. **Rust crates live in `crates/`.** Named `gctl-{name}`. Managed by Cargo workspace.
-2. **TypeScript packages live in `packages/`.** Named `gctl-{name}`. Managed by npm/bun workspaces + Nx.
-3. **Lean 4 formal specs live in `specs/formal/`.** Managed by Lake. Has its own `lakefile.lean` and pinned `lean-toolchain`. Specs are part of the `specs/` tree because they are the formal expression of the architecture — not a separate runtime codebase.
-4. **Shared nothing between runtimes at build time.** TypeScript packages communicate with Rust via the shell (HTTP API or CLI subprocess), never via FFI or shared memory. Lean 4 communicates with Rust via exported transition tables (JSON), not via FFI.
-5. **Nx is the top-level orchestrator.** Use `nx run-many -t test` for CI, not separate `cargo test && bun run test && lake build` steps.
-6. **Cache inputs MUST be explicit.** Rust targets use the `rust` named input; TypeScript targets use the `typescript` named input; Lean 4 targets use the `lean` named input. This prevents false cache hits across languages.
+1. **Rust kernel crates live in `kernel/crates/`.** Named `gctl-{name}`. Managed by Cargo workspace.
+2. **Effect-TS shell lives in `shell/gctl-shell/`.** The user-facing CLI. Managed by pnpm + Nx.
+3. **Effect-TS applications live in `apps/`.** Named `gctl-{name}`. Managed by pnpm + Nx.
+4. **Shared nothing between runtimes at build time.** TypeScript (shell + apps) communicates with Rust via the kernel HTTP API on `:4318`, never via FFI or shared memory.
+5. **Nx is the top-level orchestrator.** Use `nx run-many -t test` for CI, not separate `cargo test && pnpm run test` steps.
+6. **Cache inputs MUST be explicit.** Rust targets use the `rust` named input; TypeScript targets use the `typescript` named input. This prevents false cache hits across languages.
 7. **Feature-gated Rust crates.** Optional kernel subsystems (proxy, browser, sync) use Cargo feature flags. Nx respects these via `@monodon/rust` executor options.
-8. **Lean 4 proofs gate Rust state machine changes.** The Lean 4 `lake build` target MUST pass before the corresponding Rust crate's tests can run. This is enforced via Nx `dependsOn` in the Rust crate's `project.json`.
+8. **External tools accessed from shell only.** GitHub, Slack, AWS, and other external services are accessed via `ccli` subprocess adapters in the shell. Kernel crates MUST NOT call external tools directly.

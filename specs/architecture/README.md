@@ -41,19 +41,6 @@ specs/architecture/
 └── apps/              ← native applications and utilities (Issues live here)
     ├── gctl-board.md      kanban — issues, board visualization, agent integration
     └── tracker.md         Issue lifecycle, DAG, auto-transitions, TrackerPort
-
-specs/formal/              ← Lean 4 formal specs (source of truth for state machines & types)
-├── KernelSpec/
-│   ├── Basic.lean              trace execution, reachability, terminal states
-│   ├── DomainTypes.lean        SpanStatus, PolicyDecision, UserKind, AgentKind, ActorKind
-│   ├── SessionState.lean       Session lifecycle (Active → terminal)
-│   ├── TaskState.lean          Task lifecycle (Pending → Done/Cancelled)
-│   ├── Orchestrator.lean       Claim states (Unclaimed → Released)
-│   ├── RunAttempt.lean         Dispatch pipeline (always-forward termination proof)
-│   ├── TaskDAG.lean            Dependency graph acyclicity via topological ordering
-│   └── DispatchEligibility.lean  7-condition dispatch predicate, retry backoff bounds
-├── lakefile.lean
-└── lean-toolchain         83 theorems, zero sorry — run: cd specs/formal && lake build
 ```
 
 | Document | Scope |
@@ -66,7 +53,6 @@ specs/formal/              ← Lean 4 formal specs (source of truth for state ma
 | [kernel/browser.md](kernel/browser.md) | Browser control kernel extension — CDP daemon, ref system, tab management |
 | [apps/gctl-board.md](apps/gctl-board.md) | Kanban application — Issues, board visualization, agent integration |
 | [apps/tracker.md](apps/tracker.md) | Tracker application component — Issue lifecycle, DAG, auto-transitions, TrackerPort |
-| [../formal/](../formal/) | **Lean 4 formal specs** — source of truth for all state machines, domain types, dispatch eligibility, and DAG invariants (83 verified theorems) |
 
 ---
 

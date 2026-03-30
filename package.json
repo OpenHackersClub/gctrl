@@ -1,7 +1,7 @@
 {
   "name": "gctrl",
   "private": true,
-  "workspaces": ["packages/*"],
+  "workspaces": ["shell/*", "apps/*"],
   "devDependencies": {
     "nx": "^21",
     "@monodon/rust": "^3",
@@ -11,8 +11,7 @@
     "build": "nx run-many -t build",
     "test": "nx run-many -t test",
     "test:rust": "cargo test",
-    "test:ts": "nx run-many -t test --projects=packages/*",
-    "test:lean": "cd lean4 && lake build",
+    "test:ts": "nx run-many -t test --projects=shell/*,apps/*",
     "lint": "nx run-many -t lint"
   }
 }

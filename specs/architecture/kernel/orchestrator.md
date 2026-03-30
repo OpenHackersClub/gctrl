@@ -42,12 +42,11 @@ Applications observe orchestration state through the shell (HTTP API or CLI quer
 
 ## Orchestration States (Kernel Claim States)
 
-> **Source of truth:** [`specs/formal/KernelSpec/Orchestrator.lean`](../../formal/KernelSpec/Orchestrator.lean)
-> States, transitions, and all 6 required properties are machine-checked in Lean 4 (16 theorems, zero `sorry`).
+> States, transitions, and required properties are defined below.
 
 These are the orchestrator's **internal claim states**, distinct from the Task lifecycle managed by the Scheduler. A Task's Scheduler state (`pending`, `running`, etc.) and its orchestration claim state are independent dimensions.
 
-States: `Unclaimed` → `Claimed` → `Running` → `Released`, with `Paused` and `RetryQueued` as intermediate states. See the Lean source for the complete `step` function and all valid transitions.
+States: `Unclaimed` → `Claimed` → `Running` → `Released`, with `Paused` and `RetryQueued` as intermediate states.
 
 ### Important Nuances
 
@@ -57,7 +56,7 @@ States: `Unclaimed` → `Claimed` → `Running` → `Released`, with `Paused` an
 
 ### Verified Properties
 
-All properties below are machine-checked — see the Lean source for proof terms:
+Required properties:
 
 1. **No duplicate dispatch** — `dispatch_only_from_unclaimed`
 2. **Reachability** — `all_reachable`
@@ -70,12 +69,9 @@ All properties below are machine-checked — see the Lean source for proof terms
 
 ## Run Attempt Lifecycle
 
-> **Source of truth:** [`specs/formal/KernelSpec/RunAttempt.lean`](../../formal/KernelSpec/RunAttempt.lean)
-> Phases, transitions, terminal states, and the `always_forward` termination proof are machine-checked (8 theorems).
-
 Each dispatch of an agent for a Task is a **run attempt** — a linear pipeline from `PreparingWorkspace` through `BuildingPrompt`, `LaunchingAgent`, `StreamingWork`, `Finishing` to one of four terminal states: `Succeeded`, `Failed`, `TimedOut`, `Canceled`. Every phase can fail early to `Failed`.
 
-The `always_forward` theorem proves every transition strictly increases phase ordering, guaranteeing termination (no cycles). See the Lean source for the complete `step` function and `phaseOrd` ranking.
+Every transition strictly increases phase ordering, guaranteeing termination (no cycles).
 
 ---
 

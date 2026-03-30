@@ -482,10 +482,9 @@ A **session** is the unit of agent execution — the gctl analogue of a Unix pro
 
 #### 7.1 Task Lifecycle (as managed by the Orchestrator)
 
-> **Source of truth:** [`specs/formal/KernelSpec/TaskState.lean`](../formal/KernelSpec/TaskState.lean) (task states) and [`specs/formal/KernelSpec/Orchestrator.lean`](../formal/KernelSpec/Orchestrator.lean) (claim states)
-> All properties (reachability, terminal convergence, paused/blocked integrity) are machine-checked in Lean 4.
+> Task states are defined in [domain-model.md](domain-model.md) and detailed in [kernel/scheduler.md](kernel/scheduler.md). Claim states are defined in [kernel/orchestrator.md](kernel/orchestrator.md).
 
-The Scheduler owns 7 Task states; the Orchestrator drives transitions as it dispatches Sessions, monitors outcomes, and reconciles. See the Lean source for the complete `step` function and all verified transition rules.
+The Scheduler owns 7 Task states; the Orchestrator drives transitions as it dispatches Sessions, monitors outcomes, and reconciles.
 
 | Task State | Unix Analogy |
 |---|---|

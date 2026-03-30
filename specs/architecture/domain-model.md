@@ -48,9 +48,7 @@ pub struct Session {
 
 ### SessionStatus
 
-> **Source of truth:** [`specs/formal/KernelSpec/SessionState.lean`](../formal/KernelSpec/SessionState.lean)
 > States: `Active` (initial) → `Completed` | `Failed` | `Cancelled` (terminal).
-> Verified: reachability, terminal convergence, determinism.
 
 ### Span
 
@@ -75,9 +73,7 @@ pub struct Span {
 
 ### SpanStatus
 
-> **Source of truth:** [`specs/formal/KernelSpec/DomainTypes.lean`](../formal/KernelSpec/DomainTypes.lean)
 > States: `Ok` (success) | `Error` | `Unset` (pending).
-> Verified: trichotomy (exactly one of three states).
 
 ### Task
 
@@ -104,9 +100,9 @@ pub struct Task {
     pub updated_at: DateTime<Utc>,
 }
 
-// TaskStatus — source of truth: specs/formal/KernelSpec/TaskState.lean
-// AgentKind  — source of truth: specs/formal/KernelSpec/DomainTypes.lean
-// ActorKind  — source of truth: specs/formal/KernelSpec/DomainTypes.lean
+// TaskStatus — see domain-model.md § Task
+// AgentKind  — see domain-model.md § Domain Types
+// ActorKind  — see domain-model.md § Domain Types
 ```
 
 ### User
@@ -127,7 +123,7 @@ pub struct User {
     pub updated_at: DateTime<Utc>,
 }
 
-// UserKind — source of truth: specs/formal/KernelSpec/DomainTypes.lean
+// UserKind — see domain-model.md § Domain Types
 // States: Human | Agent | System (kernel-internal only)
 // Verified: ActorKind ↪ UserKind injective embedding, System not an actor
 ```
@@ -151,9 +147,7 @@ pub struct TrafficRecord {
 
 ### PolicyDecision
 
-> **Source of truth:** [`specs/formal/KernelSpec/DomainTypes.lean`](../formal/KernelSpec/DomainTypes.lean)
 > States: `Allow` (severity 0) | `Warn` (severity 1) | `Deny` (severity 2).
-> Verified: severity total order, Deny most severe, Allow least severe.
 
 ### BrowserRef
 
@@ -610,7 +604,7 @@ CREATE INDEX IF NOT EXISTS idx_comments_issue ON board_comments(issue_id);
 
 ## 6. gctl-board Effect-TS Schemas
 
-Source: `packages/gctl-board/src/schema/`
+Source: `apps/gctl-board/src/schema/`
 
 ### Branded Identifiers (Value Objects)
 
