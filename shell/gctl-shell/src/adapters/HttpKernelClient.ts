@@ -84,6 +84,24 @@ export const HttpKernelClientLive = (baseUrl = "http://localhost:4318") =>
         }
       }),
 
+    getText: (path) =>
+      Effect.gen(function* () {
+        const res = yield* Effect.tryPromise({
+          try: () => fetch(`${baseUrl}${path}`),
+          catch: () =>
+            new KernelUnavailableError({
+              message: `Cannot reach kernel at ${baseUrl}. Is 'gctl serve' running?`,
+            }),
+        })
+        if (!res.ok) {
+          const text = yield* Effect.promise(() => res.text())
+          return yield* Effect.fail(
+            new KernelError({ message: text, statusCode: res.status })
+          )
+        }
+        return yield* Effect.promise(() => res.text())
+      }),
+
     health: () =>
       Effect.tryPromise({
         try: async () => {

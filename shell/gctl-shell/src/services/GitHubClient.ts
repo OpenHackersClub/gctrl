@@ -1,11 +1,10 @@
 /**
  * GitHubClient — port interface for GitHub operations.
  *
- * Wraps `ccli gh` as a subprocess adapter. The shell communicates with
- * external tools via ccli — never from the kernel.
+ * Calls GitHub REST API directly via HTTP. No ccli dependency.
  */
-import { Context, Effect, Schema } from "effect"
-import type { GitHubError } from "../errors.js"
+import { Context, type Effect, Schema } from "effect"
+import type { GitHubError, GitHubAuthError } from "../errors.js"
 
 export const GhIssue = Schema.Struct({
   number: Schema.Number,
@@ -44,16 +43,36 @@ export class GitHubClient extends Context.Tag("GitHubClient")<
     readonly listIssues: (
       repo: string,
       options?: { state?: string; label?: string; limit?: number }
-    ) => Effect.Effect<ReadonlyArray<GhIssue>, GitHubError>
+    ) => Effect.Effect<ReadonlyArray<GhIssue>, GitHubError | GitHubAuthError>
+
+    readonly viewIssue: (
+      repo: string,
+      number: number
+    ) => Effect.Effect<GhIssue, GitHubError | GitHubAuthError>
+
+    readonly createIssue: (
+      repo: string,
+      input: { title: string; body?: string; labels?: string[] }
+    ) => Effect.Effect<GhIssue, GitHubError | GitHubAuthError>
 
     readonly listPRs: (
       repo: string,
       options?: { limit?: number }
-    ) => Effect.Effect<ReadonlyArray<GhPR>, GitHubError>
+    ) => Effect.Effect<ReadonlyArray<GhPR>, GitHubError | GitHubAuthError>
+
+    readonly viewPR: (
+      repo: string,
+      number: number
+    ) => Effect.Effect<GhPR, GitHubError | GitHubAuthError>
 
     readonly listRuns: (
       repo: string,
       options?: { branch?: string; limit?: number }
-    ) => Effect.Effect<ReadonlyArray<GhRun>, GitHubError>
+    ) => Effect.Effect<ReadonlyArray<GhRun>, GitHubError | GitHubAuthError>
+
+    readonly viewRun: (
+      repo: string,
+      runId: number
+    ) => Effect.Effect<GhRun, GitHubError | GitHubAuthError>
   }
 >() {}
