@@ -2,7 +2,7 @@
 
 gctl is modeled after Unix. This document covers two complementary views:
 
-1. **Layer structure** — what belongs in each architectural layer (Kernel, Shell, Apps, Utilities, Drivers) and how to extend each layer.
+1. **Layer structure** — what belongs in each architectural layer (Kernel, Shell, Apps, Utilities) and how to extend each layer. Drivers are loadable kernel modules, not a separate layer.
 2. **Execution model** — how agent work is scheduled, who runs it, and how identity works in a world where humans and agents are first-class actors.
 
 For the high-level diagram and internal code architecture, see [README.md](README.md). For implementation details (crates, packages, code patterns), see [../implementation/kernel/components.md](../implementation/kernel/components.md).
@@ -18,13 +18,13 @@ gctl uses **Unix terminology** as the primary architectural language. Some terms
 | **Kernel** | Core primitives (Telemetry, Storage, Guardrails, Orchestrator) | Linux kernel | — |
 | **Shell** | CLI dispatcher, HTTP API, Query Engine | bash / zsh | — |
 | **Native Application** | Stateful program built on gctl (gctl-board, Observe & Eval) | `vim`, `git` | — |
-| **External Application** | Third-party tool installed on gctl (Linear, Plane, Notion, Phoenix) | External app accessed via device driver | "Adapter" (which means something else) |
-| **Driver** | Kernel module connecting an external app (`driver-linear`, `driver-github`) | Device driver (`/dev/sda`) | "Adapter" in hexagonal architecture |
+| **External Application** | Third-party tool connected to gctl (Linear, Plane, Notion, Phoenix) | Hardware accessed via kernel module | "Adapter" (which means something else) |
+| **Driver** | Loadable kernel module connecting an external app (`driver-linear`, `driver-github`). Feature-gated, independently optional. Lives inside the kernel. | Loadable kernel module (LKM) — `insmod`/`modprobe` | "Adapter" in hexagonal architecture |
 | **Kernel Interface** | Trait in `gctl-core` that drivers implement (`TrackerPort`, `ObservabilityExportPort`) | Driver interface / syscall interface | "Port" as a network port |
 | **Kernel IPC** | Cross-app communication (event bus, pipes, sockets) | Unix IPC (pipes, signals, sockets) | — |
 | **Adapter** | Internal kernel implementation of a trait (DuckDB storage, OTel receiver) — used only in [implementation specs](../implementation/kernel/components.md) | — | "Driver" (which connects external apps) |
 
-**Rule:** In architecture specs and user-facing docs, use **driver** for external app connectors and **kernel interface** for the traits they implement. Reserve **adapter** for implementation-level discussion of internal kernel code only.
+**Rule:** In architecture specs and user-facing docs, use **driver** for loadable kernel modules that connect external apps, and **kernel interface** for the traits they implement. Drivers live inside the kernel (like Unix LKMs), not as a separate layer. Reserve **adapter** for implementation-level discussion of internal kernel code only.
 
 ---
 
@@ -32,7 +32,7 @@ gctl uses **Unix terminology** as the primary architectural language. Some terms
 
 ```mermaid
 flowchart TB
-  subgraph ExtApps["EXTERNAL APPLICATIONS (installed, all optional)"]
+  subgraph ExtApps["EXTERNAL APPLICATIONS (all optional)"]
     Linear["Linear"]
     Plane["Plane"]
     Notion["Notion"]
@@ -79,7 +79,17 @@ flowchart TB
     Sync["Cloud Sync"]
   end
 
-  ExtApps -.->|"drivers\n(kernel interfaces)"| IPC
+  subgraph Drivers["DRIVERS (loadable kernel modules, feature-gated)"]
+    DrvLinear["driver-linear"]
+    DrvGitHub["driver-github"]
+    DrvNotion["driver-notion"]
+    DrvPhoenix["driver-phoenix"]
+    DrvObsidian["driver-obsidian"]
+  end
+
+  ExtApps -.->|"external APIs"| Drivers
+  Drivers -->|"kernel interfaces"| Kernel
+  Drivers ---|"events"| IPC
   Apps -->|"Shell APIs"| Shell
   Apps ---|"events"| IPC
   Utils --> Shell
@@ -88,13 +98,13 @@ flowchart TB
   KernelExt --> Kernel
 ```
 
-Dependencies flow **inward** — Shell depends on Kernel, Applications and Utilities depend on Shell, Adapters implement Kernel ports. Nothing in an inner layer knows about an outer layer.
+Dependencies flow **inward** — Shell depends on Kernel, Applications and Utilities depend on Shell, Drivers and Adapters implement Kernel ports. Drivers are loadable kernel modules (feature-gated crates inside the kernel). Nothing in an inner layer knows about an outer layer.
 
 ---
 
 ## 1. Kernel — Mechanisms, Not Policy
 
-The kernel provides small, focused primitives. It is agent-agnostic, application-agnostic, and use-case-agnostic. A solo developer running `gctl serve` gets a working system with just the kernel — no applications, no adapters, no configuration.
+The kernel provides small, focused primitives. It is agent-agnostic, application-agnostic, and use-case-agnostic. A solo developer running `gctl serve` gets a working system with just the kernel — no applications, no drivers, no configuration.
 
 ### Core Primitives (always present)
 
@@ -144,12 +154,13 @@ graph LR
 4. Task payloads are serializable — they describe *what* to run, not *how*.
 5. Durable adapters persist schedules across restarts. The in-process adapter does not — applications MUST handle re-registration on startup if durability is needed.
 
-### What does NOT belong in the kernel
+### What does NOT belong in the kernel core
 
 - Business logic about what "good" looks like (that is application policy)
 - Knowledge of any specific application's tables or domain types
-- Direct references to external tools (Linear, GitHub, Obsidian)
 - UI rendering or formatting (that is the shell or application layer)
+
+> **Note:** Drivers (loadable kernel modules) *do* reference external tools (Linear, GitHub, Obsidian) — that is their purpose. But they are feature-gated and independently optional. The kernel *core* (Telemetry, Storage, Guardrails, Orchestrator) has no knowledge of any external tool.
 
 ### Extending the kernel
 
@@ -310,47 +321,54 @@ Utilities are small tools that do one thing well and compose via stdin/stdout wh
 
 ---
 
-## 5. External Applications & Drivers — Installed Apps on the OS
+## 5. Drivers — Loadable Kernel Modules
 
-Linear, Plane, Notion, Obsidian, Arize Phoenix, Langfuse, SigNoz — these are **external applications installed on gctl**, not mere connectors. Like applications on Unix, they have their own state and logic. Each connects through a **driver** — a kernel module that implements a kernel interface trait, translating between the external app's API and gctl's internal event/data model. This is the Unix device driver analogy: the kernel defines the interface; the driver implements it for a specific external system.
+Drivers are **loadable kernel modules** — they live inside the kernel, not as a separate layer. Each driver connects an external application (Linear, GitHub, Notion, Obsidian, Arize Phoenix, Langfuse, SigNoz) to gctl by implementing a kernel interface trait, translating between the external app's API and gctl's internal event/data model.
 
-> **Terminology note:** gctl uses **"driver"** (not "adapter") for external app connectors to avoid confusion with hexagonal architecture adapters, which are internal kernel implementations (DuckDB storage, OTel receiver, etc.). See [README.md § Hexagonal Architecture](README.md#hexagonal-architecture-kernel--shell-only) for the distinction.
+This is the **Unix loadable kernel module (LKM) analogy**: like `insmod`/`modprobe` loading a device driver into the kernel, gctl drivers are feature-gated crates compiled into the kernel binary. They run in kernel space, have direct access to kernel interfaces, and are independently loadable/optional.
 
-### The OS Metaphor
+> **Terminology note:** gctl uses **"driver"** (not "adapter") for these loadable kernel modules to avoid confusion with hexagonal architecture adapters, which are internal kernel implementations (DuckDB storage, OTel receiver, etc.). See [README.md § Hexagonal Architecture](README.md#hexagonal-architecture-kernel--shell-only) for the distinction.
 
-In Unix, applications do not talk to each other directly. They communicate through OS primitives: pipes, sockets, signals, shared files. gctl follows the same model:
+### The LKM Metaphor
+
+In Unix, device drivers are loadable kernel modules — they run in kernel space, implement a standard interface, and bridge between external hardware and kernel internals. gctl drivers follow the same model: they are feature-gated crates that compile into the kernel binary, implement kernel interface traits, and bridge between external app APIs and gctl's event/data model.
 
 ```mermaid
 flowchart LR
-  subgraph Installed["Installed Applications"]
-    Linear["Linear"]
-    Plane["Plane"]
+  subgraph KernelSpace["Kernel"]
+    Events["Event Bus"]
+    Sockets["HTTP API"]
+    DrvLinear["driver-linear<br/>(LKM)"]
+    DrvPhoenix["driver-phoenix<br/>(LKM)"]
+  end
+
+  subgraph UserSpace["Applications"]
     Board["gctl-board"]
     Eval["Observe & Eval"]
   end
 
-  subgraph IPC["Kernel IPC"]
-    Events["Event Bus<br/>(domain events)"]
-    Pipes["Pipes<br/>(stdin/stdout)"]
-    Sockets["Sockets<br/>(HTTP API)"]
+  subgraph External["External"]
+    Linear["Linear"]
+    Phoenix["Arize Phoenix"]
   end
 
-  Linear ---|"driver"| Events
-  Plane ---|"driver"| Events
-  Board --- Events
-  Eval --- Events
+  Linear -.->|"REST API"| DrvLinear
+  Phoenix -.->|"REST API"| DrvPhoenix
+  DrvLinear --- Events
+  DrvPhoenix --- Events
   Board --- Sockets
+  Eval --- Events
 ```
 
-Native apps (gctl-board, Observe & Eval) and external apps (Linear, Plane, Notion) are **peers** on the OS. Neither talks directly to the other — all cross-app data flows through kernel IPC.
+Drivers live in kernel space. Native apps (gctl-board, Observe & Eval) live in user space. Neither talks directly to the other — all cross-app data flows through kernel IPC.
 
 ### IPC Mechanisms
 
 | Mechanism | Unix Analogy | gctl Implementation | Example |
 |-----------|-------------|---------------------|---------|
-| **Event Bus** | Signals / named pipes | Domain events (`SessionEnded`, `IssueCreated`) | Telemetry emits `SessionEnded` → Eval auto-scores → Phoenix driver exports |
+| **Event Bus** | Signals / named pipes | Domain events (`SessionEnded`, `IssueCreated`) | Telemetry emits `SessionEnded` → Eval auto-scores → Phoenix driver (LKM) exports |
 | **Pipes** | stdin/stdout | CLI output piped between commands | `gctl sessions --format json \| gctl analytics cost` |
-| **Sockets** | Unix sockets / TCP | HTTP API endpoints | Driver polls `/api/sessions` or receives webhook callbacks |
+| **Sockets** | Unix sockets / TCP | HTTP API endpoints | Applications access kernel via HTTP API |
 
 ### Kernel Interfaces for External Apps
 
@@ -362,20 +380,21 @@ Native apps (gctl-board, Observe & Eval) and external apps (Linear, Plane, Notio
 
 ### Driver Rules
 
-1. **Implement a kernel interface**: Every driver MUST implement a trait defined in `gctl-core`
-2. **No direct table access**: Drivers MUST go through the kernel interface trait, never write to DuckDB directly
-3. **Independently optional**: Each driver is a separate feature-gated crate
-4. **Bidirectional where needed**: Pull from external API into gctl; push gctl events back to external API
-5. **Cross-app isolation**: Drivers MUST NOT import or call other drivers or native apps. All cross-app communication flows through kernel IPC (events, shell APIs, pipes)
+1. **Loadable kernel module**: Every driver is a feature-gated crate compiled into the kernel binary — like `insmod` loading a `.ko` into the Linux kernel
+2. **Implement a kernel interface**: Every driver MUST implement a trait defined in `gctl-core`
+3. **No direct table access**: Drivers MUST go through the kernel interface trait, never write to DuckDB directly
+4. **Independently optional**: Each driver is independently feature-gated — zero drivers is the default; add as needed
+5. **Bidirectional where needed**: Pull from external API into gctl; push gctl events back to external API
+6. **Cross-module isolation**: Drivers MUST NOT import or call other drivers or native apps. All cross-component communication flows through kernel IPC (events, shell APIs, pipes)
 
-### Extending with a new external application
+### Extending with a new driver (loadable kernel module)
 
 1. Define or reuse a kernel interface trait in `gctl-core` (e.g., `trait TrackerPort`)
 2. Create a feature-gated crate: `crates/gctl-driver-{name}/`
 3. Implement the interface trait with the external app's API
-4. Register the driver at startup via configuration
-5. The driver MUST NOT modify the kernel or shell — it plugs into existing kernel interfaces
-6. Cross-app data flows through kernel IPC — the driver MUST NOT couple to other apps
+4. Feature-gate it in `gctl-cli/Cargo.toml` — off by default, loaded when enabled (like `modprobe`)
+5. The driver runs in kernel space but MUST NOT modify core kernel primitives — it plugs into existing kernel interfaces
+6. Cross-component data flows through kernel IPC — the driver MUST NOT couple to other drivers or applications
 
 ---
 
@@ -389,9 +408,9 @@ When adding new functionality, use this guide to decide where it belongs:
 | Does it dispatch, route, or format I/O? | Yes | **Shell** |
 | Does it own state, have domain logic, and orchestrate multiple primitives? | Yes | **Native Application** |
 | Does it do one thing, compose via pipes, and have no domain model? | Yes | **Utility** |
-| Is it an external tool with its own state that connects via a kernel interface? | Yes | **External Application** (with driver) |
+| Is it an external tool that needs a kernel-level bridge to translate its API? | Yes | **Driver** (loadable kernel module) |
 
-When in doubt, start as a utility. Promote to an application only when the utility accumulates its own state and domain rules. External tools are always external applications — they connect through drivers and communicate via kernel IPC, never through direct coupling.
+When in doubt, start as a utility. Promote to an application only when the utility accumulates its own state and domain rules. External tools connect through drivers (loadable kernel modules) that live inside the kernel and communicate via kernel IPC, never through direct coupling.
 
 ---
 
@@ -661,7 +680,7 @@ The sync layer is a **kernel responsibility**, not an application concern. Appli
 | Process state | `/proc/<pid>/status` | Session Parquet row, OTel span |
 | Block device | `/dev/sda` | DuckDB WAL segment |
 | Network socket | `/proc/net/tcp` | HTTP API `:4318`, MITM proxy logs |
-| Config | `/etc/`, dotfiles | WORKFLOW.md, AGENTS.md, driver configs |
+| Config | `/etc/`, dotfiles | WORKFLOW.md, AGENTS.md, driver (LKM) configs |
 | Audit log | `/var/log/audit/` | `spans` table, `net_traffic` table |
 | Shared memory | `/dev/shm/` | DuckDB in-memory (`:memory:`) for tests |
 | Archive / backup | tar / dump | Parquet export under `~/.local/share/gctl/sync/` |
