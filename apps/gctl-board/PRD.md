@@ -1,8 +1,30 @@
 # gctl-board — Product Requirements Document
 
-> Agent-native project management, observability, and evaluation for human+agent teams. Track issues, understand agent behavior through traces and prompts, and close the feedback loop with eval scoring.
+> Agent-native project management, observability, and evaluation for human+agent teams. **Track issues, understand agent behavior through traces and prompts, and close the feedback loop with eval scoring.** A native application in the gctl Unix architecture — rides on the shell and kernel (not consumed as a library). Includes a **web UI** (kanban board + agent OTel dashboard) and CLI surface.
 >
 > Instantiates the [PRD template](specs/workflows/prd-template.md).
+
+## Architectural Position
+
+gctl-board is a **native application** — the Unix equivalent of `vim` or `git`. It is NOT a library consumed by the shell. It is a standalone app that:
+
+1. **Rides on the shell** — invokes kernel HTTP API (`/api/board/*`, `/api/analytics/*`, `/v1/traces`) via the shell's HTTP surface, never accesses DuckDB directly.
+2. **Has its own UI** — a web dashboard (kanban + agent OTel analytics) served from the app, not just CLI commands.
+3. **Uses kernel primitives** — Storage (namespaced `board_*` tables), Telemetry (session/span data), Scheduler (Task visualization), Kernel IPC (event subscriptions).
+4. **Is optional** — like any Unix app, it can be installed or removed without affecting kernel/shell operation.
+
+```
+┌──────────────────────────────────────────────────┐
+│  gctl-board (Native Application)                 │
+│  ├─ Web UI (kanban + OTel dashboard)             │
+│  ├─ CLI surface (gctl board ...)                 │
+│  └─ Services (BoardService, EvalService, etc.)   │
+├──────────────────────────────────────────────────┤
+│  Shell (HTTP API :4318, CLI dispatcher)          │
+├──────────────────────────────────────────────────┤
+│  Kernel (Storage, Telemetry, Scheduler, IPC)     │
+└──────────────────────────────────────────────────┘
+```
 
 ## Problem
 
@@ -16,19 +38,28 @@
 
 5. **No way to understand why an agent succeeded or failed.** The kernel captures OTel traces and prompt versions, but there's no per-issue view that shows what context the agent received, what reasoning path it took, and where it went wrong. You can see spans in isolation — you can't see the story of an issue.
 
-6. **No context quality feedback loop.** Agents may start work with insufficient or stale context (missing specs, outdated docs, no architecture guidance). There's no systematic way to audit what context was provided vs what was needed, or to score context quality after the fact.
+6. **No visual dashboard for agent work.** All interaction is CLI-only. There's no kanban board to drag issues across columns, no charts showing cost trends, no trace timeline to visualize agent execution. Humans need a visual surface to manage and observe agent work at scale.
 
-7. **No eval criteria for agent work.** You can review a PR, but there's no structured way to score agent work across dimensions (correctness, test coverage, spec adherence, cost efficiency), track scores over time, or correlate scores with prompt versions or context quality. No Langfuse-style evaluation pipeline.
+7. **No context quality feedback loop.** Agents may start work with insufficient or stale context (missing specs, outdated docs, no architecture guidance). There's no systematic way to audit what context was provided vs what was needed, or to score context quality after the fact.
+
+8. **No eval criteria for agent work.** You can review a PR, but there's no structured way to score agent work across dimensions (correctness, test coverage, spec adherence, cost efficiency), track scores over time, or correlate scores with prompt versions or context quality. No Langfuse-style evaluation pipeline.
 
 ## Our Take
+
+**gctl-board is the primary user-facing application in the gctl OS.** It is a native app — not a library, not a shell extension. Like `vim` or `git` in Unix, it rides on the kernel and shell but has its own runtime, its own web server, and its own UI.
 
 **Issues are the human-managed unit of work. Tasks are the agent-managed unit. The board shows both — and shows *how* the agent worked, not just *that* it worked.**
 
 Humans create, prioritize, and assign Issues. Agents create Tasks via the kernel Scheduler. The board visualizes Tasks read-only under their linked Issue. The kernel's telemetry automatically links sessions to issues and accumulates cost/tokens.
 
+The board has **two surfaces**:
+
+1. **Web UI** — a kanban board for issue management + an agent OTel dashboard for observability and evaluation. This is the primary interface for humans managing agent work at scale. Served by the app's own HTTP server (distinct from the kernel's `:4318`).
+2. **CLI** — `gctl board` subcommands for scripting, automation, and quick operations from the terminal.
+
 The board is also the place where humans understand and evaluate agent behavior. For every issue, you can see the full trace (what the agent did), the prompts it received (what context it had), and score the result (how well it did). This closes the harness engineering feedback loop: observe behavior → evaluate quality → improve context and prompts → observe again.
 
-The kernel owns the raw data (`sessions`, `spans`, `prompt_versions`, `eval_scores`). The board owns the per-issue view that ties them together into an actionable picture.
+The kernel owns the raw data (`sessions`, `spans`, `prompt_versions`, `eval_scores`). The board owns the per-issue **view layer** and the **web UI** that ties them together into an actionable picture.
 
 ## Principles
 
@@ -44,27 +75,30 @@ The kernel owns the raw data (`sessions`, `spans`, `prompt_versions`, `eval_scor
 
 ### Primary: Developer Dispatching and Evaluating Agent Work
 
-| Need | Solution |
-|------|----------|
-| "Create an issue for agent work" | `gctl board create BACK "Fix auth bug"` |
-| "Assign it to an agent" | `gctl board assign BACK-1 claude-code --type agent` |
-| "See what's in progress" | `gctl board list --status in_progress` |
-| "How much did this issue cost?" | `gctl board show BACK-1` (shows accumulated cost) |
-| "Move to review after PR" | Auto-transition on PR open |
-| "What did the agent actually do on this issue?" | `gctl board traces BACK-1` — per-issue trace explorer |
-| "Did the agent have the right context?" | `gctl board context-audit BACK-1` — shows prompts, docs, specs provided |
-| "Score this agent's work" | `gctl board score BACK-1 --name quality --value 0.8 --comment "Good but missed edge case"` |
+| Need | Surface | Solution |
+|------|---------|----------|
+| "Create an issue for agent work" | CLI | `gctl board create BACK "Fix auth bug"` |
+| "Assign it to an agent" | CLI | `gctl board assign BACK-1 claude-code --type agent` |
+| "See what's in progress" | Web UI | Kanban board with columns for each status |
+| "Drag issue to in_review" | Web UI | Drag-and-drop across kanban columns |
+| "How much did this issue cost?" | Web UI | Issue detail panel with accumulated cost, token breakdown |
+| "Move to review after PR" | Auto | Auto-transition on PR open event |
+| "What did the agent actually do?" | Web UI | Per-issue trace timeline — spans, tool calls, LLM interactions |
+| "See cost/latency trends" | Web UI | Agent OTel dashboard — charts for cost by model, latency p95, daily trends |
+| "Did the agent have the right context?" | Web UI | Context audit panel — prompts provided vs. referenced |
+| "Score this agent's work" | Both | Web UI scoring form or `gctl board score BACK-1 --name quality --value 0.8` |
 
 ### Secondary: Team Lead Reviewing Agent Output and Improving Harness
 
-| Need | Solution |
-|------|----------|
-| "What did agents work on this week?" | `gctl board list --assignee-type agent --format json` |
-| "Which issues are blocked?" | `gctl board list --status backlog` + check `blocked_by` |
-| "Total agent spend on this project" | `gctl board list --project BACK --format json` + sum costs |
-| "Are agents getting better over time?" | `gctl board eval-dashboard --project BACK` — score trends by dimension |
-| "Which prompt version produces the best results?" | `gctl board prompt-stats --project BACK` — scores correlated with prompt versions |
-| "Where are the context gaps?" | `gctl board context-gaps --project BACK` — issues where context was rated insufficient |
+| Need | Surface | Solution |
+|------|---------|----------|
+| "What did agents work on this week?" | Web UI | Dashboard: issues by agent, with cost and outcome |
+| "Which issues are blocked?" | Web UI | Kanban board highlights blocked issues with dependency edges |
+| "Total agent spend on this project" | Web UI | Project-level cost summary widget |
+| "Are agents getting better over time?" | Web UI | Eval dashboard — score trend charts by dimension, agent, prompt version |
+| "Which prompt version produces the best results?" | Web UI | Prompt analytics — scores correlated with prompt versions |
+| "Where are the context gaps?" | Web UI | Context gap report — issues where context was rated insufficient |
+| "Export data for scripting" | CLI | `gctl board list --project BACK --format json` |
 
 ## Use Cases
 
@@ -106,10 +140,32 @@ The kernel owns the raw data (`sessions`, `spans`, `prompt_versions`, `eval_scor
 
 ## What We're Building
 
+### Web UI — Kanban Board
+
+The primary visual surface for managing agent and human work. Served by gctl-board's own HTTP server.
+
+- **Kanban columns** — `backlog`, `todo`, `in_progress`, `in_review`, `done`, `cancelled`. Drag-and-drop to move issues.
+- **Issue cards** — title, assignee (human/agent badge), priority, labels, accumulated cost, linked PR count.
+- **Issue detail panel** — full issue view with description, comments, events, session links, cost breakdown, acceptance criteria.
+- **Dependency visualization** — blocked issues are visually marked; dependency edges shown on hover.
+- **Real-time updates** — subscribes to kernel IPC events (session linked, status changed, PR opened) to update the board live.
+
+### Web UI — Agent OTel Dashboard
+
+Per-project and per-issue observability for agent work. Reads from kernel Telemetry via shell HTTP API.
+
+- **Cost overview** — total spend by project, by agent, by model. Time-series chart of daily cost.
+- **Session timeline** — for any issue, show all linked sessions chronologically with duration, cost, token count, and outcome (success/failure/cancelled).
+- **Trace explorer** — per-issue span tree. Visualize the agent's execution path: tool calls, LLM interactions, errors, retries. Drill into individual spans.
+- **Latency distribution** — p50/p95/p99 latency by model, by agent. Identify slow operations.
+- **Cost breakdown** — per-session and per-span cost within an issue. Identify expensive spans (large prompts, many retries).
+- **Score trends** — eval scores over time by dimension (quality, tests_pass, cost_efficiency). Compare across agents and prompt versions.
+- **Alert panel** — active alert rules and recent firings (cost threshold breaches, error loops).
+
 ### Issue CRUD + Kanban Lifecycle
 
 - Projects with auto-incrementing keys (`BACK-1`, `BACK-2`)
-- Issue creation, listing, detail view
+- Issue creation, listing, detail view (both web UI and CLI)
 - Forward-only status transitions: `backlog → todo → in_progress → in_review → done` (any → `cancelled`)
 - Transition validation enforced at storage layer
 - Auto-emitted events on every status change
@@ -201,10 +257,13 @@ Data source: kernel `prompt_versions`, `session_prompts`, `eval_scores` tables.
 
 | Feature | Priority | Issue |
 |---------|----------|-------|
+| **Web UI: Kanban board** — drag-and-drop columns, issue cards, detail panel | P0 | TBD |
+| **Web UI: Agent OTel dashboard** — cost charts, session timeline, trace explorer | P0 | TBD |
+| **Web UI: App server** — gctl-board serves its own HTTP on a distinct port, reads kernel via shell HTTP API | P0 | TBD |
 | Per-issue trace explorer (`gctl board traces`) | P0 | TBD |
-| Eval scoring CLI (`gctl board score`) | P0 | TBD |
+| Eval scoring (web UI form + `gctl board score` CLI) | P0 | TBD |
 | Auto-scoring on issue completion (tests_pass, coverage_delta, cost_efficiency) | P0 | TBD |
-| Context audit (`gctl board context-audit`) | P1 | TBD |
+| Context audit (web UI panel + `gctl board context-audit` CLI) | P1 | TBD |
 | Prompt inspection (show rendered prompt per session) | P1 | TBD |
 | Eval dashboard (score trends by project, dimension, agent) | P1 | TBD |
 | Dependency resolver (DependencyResolver service) | P1 | TBD |
@@ -215,29 +274,53 @@ Data source: kernel `prompt_versions`, `session_prompts`, `eval_scores` tables.
 
 ### Backlog
 
+- Real-time kanban updates via kernel IPC / SSE
 - Prompt version comparison + score correlation
 - Context gap detection (automated)
 - Model-based eval (LLM-as-judge scoring)
-- Kanban web UI (Effect Platform + HTMX)
-- WIP limits per column
+- WIP limits per column (visual + enforced)
 - Sprint/milestone grouping
 - driver-linear
 - driver-notion
+
+## Dependency Direction (Invariant)
+
+gctl-board follows the Unix layer dependency rule:
+
+```
+App → Shell → Kernel       (allowed)
+Kernel → Shell → App       (NEVER)
+```
+
+- **gctl-board depends on the shell** (HTTP API at `:4318`) to read/write kernel data. It MUST NOT import kernel crates or access DuckDB directly.
+- **The shell depends on the kernel** (storage, telemetry, scheduler). It MUST NOT import app code.
+- **The kernel depends on nothing above it.** It MUST NOT import shell or app code. It has no knowledge of gctl-board.
+- **gctl-board's web server is separate** from the kernel's HTTP API. The app serves its own UI on its own port and proxies data requests to the shell/kernel HTTP surface.
+
+This means:
+- The kernel can run without the shell or any apps.
+- The shell can run without any apps.
+- gctl-board can be added or removed without touching kernel or shell code.
+- If the board needs new data, the kernel exposes it via HTTP API — the board never reaches into kernel internals.
 
 ## Non-Goals
 
 - **Not a full project management tool.** No Gantt charts, time tracking, or resource allocation. Use Linear/Notion for that and sync via drivers.
 - **Not a task manager for agents.** Task lifecycle is owned by the kernel Scheduler. The board reads Tasks for visualization only.
-- **Not a standalone observability platform.** The board reads kernel telemetry — it does not ingest OTel traces or store spans. The kernel owns that. The board provides the per-issue lens.
+- **Not a standalone observability platform.** The board reads kernel telemetry — it does not ingest OTel traces or store spans. The kernel owns that. The board provides the per-issue lens and the visual dashboard.
 - **Not a prompt engineering IDE.** The board shows prompt versions and correlates them with scores. It does not author, edit, or template prompts — that's the WORKFLOW.md file and the kernel's prompt_versions table.
+- **Not a library consumed by the shell.** The shell does NOT import gctl-board. The board is a standalone app with its own server and UI. The CLI surface (`gctl board`) is part of the shell's command set — it calls kernel HTTP endpoints directly, not board app code.
 
 ## Success Criteria
 
-1. `gctl board create BACK "Fix auth"` + `gctl board assign BACK-1 claude-code --type agent` works end-to-end.
-2. Agent session costs automatically accumulate on the linked issue.
-3. Invalid status transitions are rejected with a clear error.
-4. Board data accessible via both CLI and HTTP API.
-5. `gctl board traces BACK-1` shows all sessions and span trees for a completed issue within 1 second.
-6. `gctl board score BACK-1 --name quality --value 0.9` writes to `eval_scores` and is queryable in the eval dashboard.
-7. `gctl board context-audit BACK-1` shows the rendered prompt and lists context entries provided vs. referenced.
-8. Auto-scores (tests_pass, coverage_delta, cost_efficiency) are computed on every issue completion without manual action.
+1. `gctl board create BACK "Fix auth"` + `gctl board assign BACK-1 claude-code --type agent` works end-to-end via CLI.
+2. **Web UI serves a kanban board** at `http://localhost:<board-port>` with drag-and-drop columns and issue cards.
+3. **Web UI serves an agent OTel dashboard** with cost charts, session timelines, and trace explorer.
+4. Agent session costs automatically accumulate on the linked issue (visible in both web UI and CLI).
+5. Invalid status transitions are rejected with a clear error (both web UI and CLI).
+6. Board data accessible via web UI, CLI, and board's own HTTP API.
+7. `gctl board traces BACK-1` shows all sessions and span trees for a completed issue within 1 second.
+8. `gctl board score BACK-1 --name quality --value 0.9` writes to `eval_scores` and is queryable in the eval dashboard (web UI).
+9. `gctl board context-audit BACK-1` shows the rendered prompt and lists context entries provided vs. referenced.
+10. Auto-scores (tests_pass, coverage_delta, cost_efficiency) are computed on every issue completion without manual action.
+11. **The board NEVER imports kernel crates or accesses DuckDB directly.** All data flows through the shell/kernel HTTP API. Dependency direction is App → Shell → Kernel, never reversed.

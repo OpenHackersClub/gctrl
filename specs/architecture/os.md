@@ -98,7 +98,25 @@ flowchart TB
   KernelExt --> Kernel
 ```
 
-Dependencies flow **inward** — Shell depends on Kernel, Applications and Utilities depend on Shell, Drivers and Adapters implement Kernel ports. Drivers are loadable kernel modules (feature-gated crates inside the kernel). Nothing in an inner layer knows about an outer layer.
+Dependencies flow **inward only** — this is the fundamental invariant of the gctl architecture.
+
+### Dependency Direction (Invariant)
+
+```
+App → Shell → Kernel       (ALLOWED — outer depends on inner)
+Kernel → Shell → App       (NEVER — inner must not know about outer)
+```
+
+| Rule | What it means | Violation example |
+|------|--------------|-------------------|
+| **Kernel depends on nothing above it** | Kernel crates MUST NOT import shell or app code. The kernel has no knowledge of gctl-board, gctl-eval, or any application. | Kernel crate importing a board schema type |
+| **Shell depends on kernel, never on apps** | Shell consumes kernel HTTP API and crate interfaces. It MUST NOT import app code. | Shell importing `BoardService` from gctl-board |
+| **Apps depend on shell, never the reverse** | Apps invoke kernel capabilities via the shell's HTTP API surface (`:4318`). They MUST NOT access DuckDB directly or import kernel crate internals. | App opening a DuckDB connection, or importing `gctl-storage` directly |
+| **Apps are independently removable** | Any app (gctl-board, gctl-eval, etc.) can be uninstalled without breaking the kernel or shell. | Shell code that breaks if gctl-board package is removed |
+
+**Enforcement:** The monorepo workspace config (`package.json` workspaces, `Cargo.toml` workspace members) encodes these boundaries. An app's `package.json` MUST NOT list kernel crates or shell packages as dependencies. Apps consume kernel data exclusively through HTTP.
+
+> **CLI surface note:** The shell exposes `gctl board` CLI commands that call kernel HTTP endpoints directly. These are shell commands, not app code — they live in the shell package and do not import from `apps/gctl-board/`. The app's web UI is a separate process that also calls the same kernel HTTP endpoints.
 
 ---
 
@@ -108,21 +126,21 @@ The kernel provides small, focused primitives. It is agent-agnostic, application
 
 ### Core Primitives (always present)
 
-| Primitive | What It Does | Unix Analogy |
-|-----------|-------------|--------------|
-| **Telemetry** | OTLP span ingestion, session tracking, cost attribution | `/dev/log` — the system logging facility |
-| **Storage** | Embedded DuckDB, schema migrations, retention policies | Filesystem — the shared data layer |
-| **Guardrails** | Policy engine (cost limits, loop detection, command allowlists) | `ulimit` / `seccomp` — resource and security constraints |
-| **Orchestrator** | Agent dispatch, retry with backoff, reconciliation | `init` / process manager — lifecycle management |
+| Primitive | What It Does | Unix Analogy | Status |
+|-----------|-------------|--------------|--------|
+| **Telemetry** | OTLP span ingestion, session tracking, cost attribution | `/dev/log` — the system logging facility | Implemented |
+| **Storage** | Embedded DuckDB, schema migrations, retention policies | Filesystem — the shared data layer | Implemented |
+| **Guardrails** | Policy engine (cost limits, loop detection, command allowlists) | `ulimit` / `seccomp` — resource and security constraints | Implemented |
+| **Orchestrator** | Agent dispatch, retry with backoff, reconciliation | `init` / process manager — lifecycle management | **Planned** |
 
 ### Kernel Extensions (feature-gated, optional)
 
-| Extension | What It Does | Unix Analogy |
-|-----------|-------------|--------------|
-| **Scheduler** | Deferred and recurring tasks via port/adapter pattern | `cron` / `at` |
-| **Network Control** | MITM proxy, domain allowlists, traffic logging | `iptables` / packet filter |
-| **Browser Control** | CDP daemon, persistent Chromium, tab management | Device driver for a display |
-| **Cloud Sync** | R2 Parquet export, device-partitioned sync | `rsync` / NFS mount |
+| Extension | What It Does | Unix Analogy | Status |
+|-----------|-------------|--------------|--------|
+| **Scheduler** | Deferred and recurring tasks via port/adapter pattern | `cron` / `at` | **Planned** |
+| **Network Control** | MITM proxy, domain allowlists, traffic logging | `iptables` / packet filter | Implemented |
+| **Browser Control** | CDP daemon, persistent Chromium, tab management | Device driver for a display | **Planned** |
+| **Cloud Sync** | R2 Parquet export, device-partitioned sync | `rsync` / NFS mount | **Planned** |
 
 #### Scheduler — External Schedule Support
 
@@ -235,11 +253,11 @@ Applications are larger, stateful programs that orchestrate kernel primitives th
 
 ### Shipped Applications
 
-| Application | Tables Owned | Kernel Primitives Used | Runtime |
-|-------------|-------------|----------------------|---------|
-| **gctl-board** | `board_issues`, `board_events`, `board_comments` | Storage, Scheduler (reads Tasks), Telemetry (session-issue linking) | Effect-TS |
-| **Observe & Eval** | `eval_scores` | Telemetry, Storage, Query Engine | Rust (compiled into binary) |
-| **Capacity Engine** | `capacity_*` | Storage, Telemetry, Query Engine | Rust (compiled into binary) |
+| Application | Tables Owned | Kernel Primitives Used | Runtime | Status |
+|-------------|-------------|----------------------|---------|--------|
+| **gctl-board** | `board_projects`, `board_issues`, `board_events`, `board_comments` | Storage, Telemetry (session-issue linking) | Effect-TS | Implemented |
+| **Observe & Eval** | `scores` | Telemetry, Storage, Query Engine | Rust (compiled into binary) | Partial (auto-scoring implemented, no separate app boundary) |
+| **Capacity Engine** | `capacity_*` | Storage, Telemetry, Query Engine | Rust (compiled into binary) | **Planned** |
 
 > **Note:** `tasks`, `prompt_versions`, `tags`, `daily_aggregates`, `alert_rules`, `alert_events` are **kernel-owned** tables — they support kernel primitives (Scheduler, Telemetry, Guardrails) and do NOT carry application namespace prefixes. See [domain-model.md](domain-model.md) § 5.1 and § 5.3 for DDL.
 
@@ -321,7 +339,9 @@ Utilities are small tools that do one thing well and compose via stdin/stdout wh
 
 ---
 
-## 5. Drivers — Loadable Kernel Modules
+## 5. Drivers — Loadable Kernel Modules — **Planned**
+
+> **Status: Planned.** No driver crates, kernel interface traits (`TrackerPort`, `ObservabilityExportPort`, `KnowledgeSourcePort`), or event bus infrastructure exist yet. This section describes the target architecture.
 
 Drivers are **loadable kernel modules** — they live inside the kernel, not as a separate layer. Each driver connects an external application (Linear, GitHub, Notion, Obsidian, Arize Phoenix, Langfuse, SigNoz) to gctl by implementing a kernel interface trait, translating between the external app's API and gctl's internal event/data model.
 
