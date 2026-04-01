@@ -24,18 +24,19 @@ graph LR
     subgraph Kernel["Rust — Kernel"]
         API["HTTP API (:4318)"]
         Daemon["gctl serve"]
+        DrvGH["driver-github (LKM)"]
     end
 
-    subgraph External["External Tools"]
-        GitHub["GitHub (via ccli)"]
+    subgraph External["External"]
+        GitHub["GitHub REST API"]
     end
 
     Apps -->|"HTTP"| API
     CLI -->|"HTTP"| API
-    CLI -->|"subprocess"| GitHub
+    DrvGH -->|"REST"| GitHub
 ```
 
-Applications communicate with the kernel via the HTTP API on `:4318`. The Effect-TS shell CLI is a separate package that also calls the kernel API and additionally orchestrates external tools (GitHub, Slack). Apps MUST NOT import Rust kernel crates directly.
+Applications and the shell communicate with the kernel via the HTTP API on `:4318`. External services (GitHub, Linear, etc.) are accessed through kernel drivers (LKMs) — the shell and apps MUST NOT call external APIs directly. Apps MUST NOT import Rust kernel crates directly.
 
 ## Package Structure
 

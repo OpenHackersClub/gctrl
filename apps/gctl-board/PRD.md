@@ -283,26 +283,6 @@ Data source: kernel `prompt_versions`, `session_prompts`, `eval_scores` tables.
 - driver-linear
 - driver-notion
 
-## Dependency Direction (Invariant)
-
-gctl-board follows the Unix layer dependency rule:
-
-```
-App → Shell → Kernel       (allowed)
-Kernel → Shell → App       (NEVER)
-```
-
-- **gctl-board depends on the shell** (HTTP API at `:4318`) to read/write kernel data. It MUST NOT import kernel crates or access DuckDB directly.
-- **The shell depends on the kernel** (storage, telemetry, scheduler). It MUST NOT import app code.
-- **The kernel depends on nothing above it.** It MUST NOT import shell or app code. It has no knowledge of gctl-board.
-- **gctl-board's web server is separate** from the kernel's HTTP API. The app serves its own UI on its own port and proxies data requests to the shell/kernel HTTP surface.
-
-This means:
-- The kernel can run without the shell or any apps.
-- The shell can run without any apps.
-- gctl-board can be added or removed without touching kernel or shell code.
-- If the board needs new data, the kernel exposes it via HTTP API — the board never reaches into kernel internals.
-
 ## Non-Goals
 
 - **Not a full project management tool.** No Gantt charts, time tracking, or resource allocation. Use Linear/Notion for that and sync via drivers.
@@ -323,4 +303,4 @@ This means:
 8. `gctl board score BACK-1 --name quality --value 0.9` writes to `eval_scores` and is queryable in the eval dashboard (web UI).
 9. `gctl board context-audit BACK-1` shows the rendered prompt and lists context entries provided vs. referenced.
 10. Auto-scores (tests_pass, coverage_delta, cost_efficiency) are computed on every issue completion without manual action.
-11. **The board NEVER imports kernel crates or accesses DuckDB directly.** All data flows through the shell/kernel HTTP API. Dependency direction is App → Shell → Kernel, never reversed.
+11. **All data flows through the shell/kernel HTTP API.** See [specs/architecture/os.md — Dependency Direction](../../specs/architecture/os.md) for the full invariant.
