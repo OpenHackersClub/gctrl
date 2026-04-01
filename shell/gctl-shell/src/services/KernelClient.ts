@@ -4,8 +4,8 @@
  * The shell accesses the Rust kernel exclusively via HTTP on :4318.
  * This is the boundary: Effect-TS shell talks to the kernel via HTTP only.
  */
-import { Context, Effect, Schema } from "effect"
-import type { KernelError, KernelUnavailableError } from "../errors.js"
+import { Context, type Effect, type Schema } from "effect"
+import type { KernelError, KernelUnavailableError } from "../errors"
 
 export class KernelClient extends Context.Tag("KernelClient")<
   KernelClient,
@@ -24,6 +24,10 @@ export class KernelClient extends Context.Tag("KernelClient")<
     readonly delete: (
       path: string
     ) => Effect.Effect<void, KernelError | KernelUnavailableError>
+
+    readonly getText: (
+      path: string
+    ) => Effect.Effect<string, KernelError | KernelUnavailableError>
 
     readonly health: () => Effect.Effect<boolean, KernelUnavailableError>
   }

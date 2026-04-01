@@ -1,6 +1,21 @@
-# Application: gctl-board (Kanban)
+# Application: gctl-board (Kanban + Agent OTel Dashboard)
 
-gctl-board is the first shipped application — a kanban system for tracking issues and tasks planned and executed by both humans and agents. It is the primary dogfooding surface: we use gctl-board to manage gctl development itself.
+gctl-board is the first shipped **native application** — a kanban system with a web UI and agent OTel dashboard for tracking issues, understanding agent behavior through traces and prompts, and closing the feedback loop with eval scoring. It is the primary dogfooding surface: we use gctl-board to manage gctl development itself.
+
+## Architectural Position
+
+gctl-board is a **native application** in the Unix layer model (like `vim` or `git`). It is NOT a library consumed by the shell.
+
+```
+App (gctl-board) → Shell (HTTP API :4318) → Kernel (Storage, Telemetry)
+```
+
+- **Depends on the shell** — reads/writes data via kernel HTTP API (`:4318`). MUST NOT access DuckDB directly or import kernel crates.
+- **Never depended on by the shell or kernel** — the shell and kernel have no knowledge of gctl-board. Removing the app breaks nothing below it.
+- **Has its own web server** — serves the kanban board UI and agent OTel dashboard on its own port (separate from kernel `:4318`).
+- **Has a CLI surface** — `gctl board` commands live in the shell package and call kernel HTTP endpoints directly. These are shell commands, not app code.
+
+See [os.md — Dependency Direction](../os.md) for the full invariant.
 
 ## What It Tracks
 
@@ -54,14 +69,23 @@ graph LR
 
 ## Kernel Primitives Used
 
+All accessed via the shell HTTP API (`:4318`), never by direct crate import.
+
 | Primitive | How gctl-board uses it |
 |-----------|----------------------|
-| **Storage** | Namespaced tables for issues and projects (`board_*`) |
-| **Telemetry** | Session-to-Issue linking, cost/token accumulation |
+| **Storage** | Namespaced tables for issues and projects (`board_*`), accessed via `/api/board/*` HTTP endpoints |
+| **Telemetry** | Session-to-Issue linking, cost/token accumulation; OTel dashboard reads from `/api/analytics/*` and `/api/sessions/*` |
 | **Scheduler** | Source of truth for Tasks — board reads Tasks from the Scheduler for visualization; also used for recurring external sync and scheduled status reports |
 | **Cloud Sync** | Issue data synced for cross-device access |
-| **Shell (CLI)** | `gctl board` subcommands (Issues only); Tasks surfaced via `gctl board tasks --issue BACK-42` read-only |
-| **Shell (HTTP)** | `/api/board/*` routes |
+
+## Surfaces
+
+| Surface | Description |
+|---------|-------------|
+| **Web UI: Kanban** | Drag-and-drop kanban board with issue cards, detail panel, dependency visualization. Served by gctl-board's own HTTP server. |
+| **Web UI: Agent OTel Dashboard** | Cost charts, session timelines, trace explorer, latency distribution, eval score trends. Reads kernel telemetry via shell HTTP API. |
+| **Shell CLI** | `gctl board` subcommands (Issues only); Tasks surfaced via `gctl board tasks --issue BACK-42` read-only. These are shell commands, not app code. |
+| **Shell HTTP** | `/api/board/*` routes in the kernel — the data API that both the web UI and CLI consume. |
 
 ## Related Docs
 

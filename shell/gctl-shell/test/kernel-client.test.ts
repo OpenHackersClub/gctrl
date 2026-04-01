@@ -1,12 +1,8 @@
 import { describe, it, expect } from "vitest"
-import { Effect, Layer, Schema } from "effect"
-import { KernelClient } from "../src/services/KernelClient.js"
-import { KernelError, KernelUnavailableError } from "../src/errors.js"
+import { Effect, Either, Schema } from "effect"
+import { KernelClient } from "../src/services/KernelClient"
+import { createMockKernelClient } from "./helpers/mock-kernel"
 
-/**
- * Mock KernelClient layer for testing shell commands
- * without a running kernel daemon.
- */
 const mockSessions = [
   {
     id: "sess-001",
@@ -35,27 +31,11 @@ const mockAnalytics = {
   total_cost_usd: 12.5,
 }
 
-const MockKernelClientLive = Layer.succeed(KernelClient, {
-  get: (path, schema) =>
-    Effect.gen(function* () {
-      if (path.startsWith("/api/sessions")) {
-        return yield* Schema.decodeUnknown(schema)(mockSessions)
-      }
-      if (path === "/api/analytics") {
-        return yield* Schema.decodeUnknown(schema)(mockAnalytics)
-      }
-      return yield* Effect.fail(
-        new KernelError({ message: `Not found: ${path}`, statusCode: 404 })
-      )
-    }),
-
-  post: (_path, _body, schema) =>
-    Effect.fail(new KernelError({ message: "Not implemented in mock" })),
-
-  delete: (_path) =>
-    Effect.fail(new KernelError({ message: "Not implemented in mock" })),
-
-  health: () => Effect.succeed(true),
+const MockLayer = createMockKernelClient({
+  "/api/sessions": mockSessions,
+  "/api/analytics": mockAnalytics,
+}, {}, {
+  "/api/context/test-1/content": "# Hello World\nThis is test content.",
 })
 
 describe("KernelClient port", () => {
@@ -78,7 +58,7 @@ describe("KernelClient port", () => {
     })
 
     const result = await Effect.runPromise(
-      program.pipe(Effect.provide(MockKernelClientLive))
+      program.pipe(Effect.provide(MockLayer))
     )
 
     expect(result).toHaveLength(2)
@@ -94,7 +74,7 @@ describe("KernelClient port", () => {
     })
 
     const result = await Effect.runPromise(
-      program.pipe(Effect.provide(MockKernelClientLive))
+      program.pipe(Effect.provide(MockLayer))
     )
 
     expect(result).toBe(true)
@@ -114,10 +94,36 @@ describe("KernelClient port", () => {
     })
 
     const result = await Effect.runPromise(
-      program.pipe(Effect.provide(MockKernelClientLive))
+      program.pipe(Effect.provide(MockLayer))
     )
 
     expect(result.total_sessions).toBe(42)
     expect(result.total_cost_usd).toBe(12.5)
+  })
+
+  it("mock layer returns text content", async () => {
+    const program = Effect.gen(function* () {
+      const kernel = yield* KernelClient
+      return yield* kernel.getText("/api/context/test-1/content")
+    })
+
+    const result = await Effect.runPromise(
+      program.pipe(Effect.provide(MockLayer))
+    )
+
+    expect(result).toContain("Hello World")
+  })
+
+  it("mock layer returns 404 for unknown paths", async () => {
+    const program = Effect.gen(function* () {
+      const kernel = yield* KernelClient
+      return yield* kernel.get("/api/unknown", Schema.String)
+    })
+
+    const result = await Effect.runPromise(
+      Effect.either(program.pipe(Effect.provide(MockLayer)))
+    )
+
+    expect(Either.isLeft(result)).toBe(true)
   })
 })

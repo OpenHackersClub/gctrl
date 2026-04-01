@@ -4,8 +4,8 @@
  * Uses fetch to communicate with the Rust daemon on :4318.
  */
 import { Effect, Layer, Schema } from "effect"
-import { KernelClient } from "../services/KernelClient.js"
-import { KernelError, KernelUnavailableError } from "../errors.js"
+import { KernelClient } from "../services/KernelClient"
+import { KernelError, KernelUnavailableError } from "../errors"
 
 export const HttpKernelClientLive = (baseUrl = "http://localhost:4318") =>
   Layer.succeed(KernelClient, {
@@ -82,6 +82,24 @@ export const HttpKernelClientLive = (baseUrl = "http://localhost:4318") =>
             new KernelError({ message: text, statusCode: res.status })
           )
         }
+      }),
+
+    getText: (path) =>
+      Effect.gen(function* () {
+        const res = yield* Effect.tryPromise({
+          try: () => fetch(`${baseUrl}${path}`),
+          catch: () =>
+            new KernelUnavailableError({
+              message: `Cannot reach kernel at ${baseUrl}. Is 'gctl serve' running?`,
+            }),
+        })
+        if (!res.ok) {
+          const text = yield* Effect.promise(() => res.text())
+          return yield* Effect.fail(
+            new KernelError({ message: text, statusCode: res.status })
+          )
+        }
+        return yield* Effect.promise(() => res.text())
       }),
 
     health: () =>

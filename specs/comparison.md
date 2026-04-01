@@ -76,7 +76,7 @@ graph TB
 | **Cloud sync** | Cloudflare R2 (opt-in), Parquet-based | N/A | N/A | N/A (local workspaces only) |
 | **Workspace isolation** | Per-agent sessions tracked via telemetry | Per-swarm agent isolation | Per-team execution | Per-issue workspace directories with lifecycle hooks |
 | **Self-learning** | N/A | RuVector: SONA, EWC++, LoRA, 9 RL algorithms, reasoning bank | Skill learning: extracts reusable patterns from sessions | N/A |
-| **CI/CD integration** | Shell adapters via ccli (GitHub Actions) | N/A | N/A | Agent handles CI via tools; Symphony tracks proof-of-work (CI status, PR review) |
+| **CI/CD integration** | Kernel driver (driver-github) for GitHub Actions via TrackerPort | N/A | N/A | Agent handles CI via tools; Symphony tracks proof-of-work (CI status, PR review) |
 | **License** | MIT | MIT | MIT | Apache 2.0 |
 
 ---

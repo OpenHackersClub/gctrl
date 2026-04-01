@@ -35,8 +35,8 @@ gctrl/
 │       ├── src/
 │       │   ├── main.ts        # CLI entry point
 │       │   ├── commands/      # Command implementations
-│       │   ├── services/      # Port interfaces (KernelClient, GitHubClient)
-│       │   └── adapters/      # Concrete adapters (HTTP, ccli subprocess)
+│       │   ├── services/      # Port interfaces (KernelClient)
+│       │   └── adapters/      # Concrete adapters (HTTP kernel client)
 │       ├── test/
 │       └── package.json
 │
@@ -60,10 +60,10 @@ gctl separates concerns across three codebases. Each has its own build system, d
 | Codebase | Language | Directory | Build System | Responsibility |
 |----------|----------|-----------|-------------|----------------|
 | **Kernel** | Rust | `kernel/crates/` | Cargo workspace | Core primitives: storage, telemetry, guardrails, context, query, sync, proxy, browser, scheduler. HTTP API on `:4318`. Minimal daemon binary (`gctl serve`). |
-| **Shell** | TypeScript (Effect-TS) | `shell/gctl-shell/` | pnpm + tsup | User-facing CLI (`@effect/cli`). Invokes kernel via HTTP API. Communicates with external tools (GitHub, Slack) via `ccli` subprocess. |
+| **Shell** | TypeScript (Effect-TS) | `shell/gctl-shell/` | pnpm + tsup | User-facing CLI (`@effect/cli`). Invokes kernel via HTTP API. External services (GitHub, Linear) accessed through kernel drivers, never directly. |
 | **Applications** | TypeScript (Effect-TS) | `apps/` | pnpm + tsup | Application-level logic: gctl-board (kanban), future apps. Each app owns its namespaced tables, domain model, and services. Communicates with kernel via HTTP API. |
 
-**Kernel exposes, shell consumes.** The Rust kernel's only external interface is the HTTP API on `:4318`. The Effect-TS shell CLI calls this API to access kernel features. External tools (GitHub, Slack, AWS) are accessed from the shell via `ccli` subprocess adapters — never from the kernel.
+**Kernel exposes, shell consumes.** The Rust kernel's only external interface is the HTTP API on `:4318`. The Effect-TS shell CLI calls this API to access kernel features. External services (GitHub, Linear, etc.) are accessed through kernel drivers (loadable kernel modules) — the shell calls kernel HTTP routes which delegate to the appropriate driver. The shell MUST NOT call external APIs directly.
 
 **Each app can take its own codebase.** Applications under `apps/` are independent npm packages. They depend on the kernel only through the HTTP API on `:4318`. This means:
 
@@ -244,4 +244,4 @@ cd apps/gctl-board && pnpm run test
 5. **Nx is the top-level orchestrator.** Use `nx run-many -t test` for CI, not separate `cargo test && pnpm run test` steps.
 6. **Cache inputs MUST be explicit.** Rust targets use the `rust` named input; TypeScript targets use the `typescript` named input. This prevents false cache hits across languages.
 7. **Feature-gated Rust crates.** Optional kernel subsystems (proxy, browser, sync) use Cargo feature flags. Nx respects these via `@monodon/rust` executor options.
-8. **External tools accessed from shell only.** GitHub, Slack, AWS, and other external services are accessed via `ccli` subprocess adapters in the shell. Kernel crates MUST NOT call external tools directly.
+8. **External services accessed through kernel drivers.** GitHub, Linear, and other external services are accessed through kernel drivers (LKMs) exposed via the kernel HTTP API. The shell MUST NOT call external APIs directly — it calls kernel routes which delegate to the appropriate driver.

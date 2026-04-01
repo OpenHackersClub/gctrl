@@ -19,7 +19,7 @@ Canonical definitions for gctl domain terms. When terms are used in specs, they 
 | **Prompt** | The rendered instruction text given to an agent for a Task. Stored in `prompt_versions` by content hash. Tasks reference it via `prompt_hash`. | Kernel | Storage |
 | **Guardrail** | A policy that constrains Sessions — cost budgets, loop detection, command allowlists. The kernel analogue of `cgroups`/`ulimit`. | Kernel | Guardrails |
 | **Alert** | A guardrail-triggered or human-triggered interrupt that changes Session behavior — pause, terminate, warn. The kernel analogue of Unix signals. | Kernel | Guardrails |
-| **Driver** | A kernel module connecting an external application (Linear, GitHub, Notion) to gctl. Implements a kernel interface trait. The Unix device driver analogy. NOT the same as "adapter." | Kernel | Per-driver crate |
+| **Driver** | A loadable kernel module connecting an external application (Linear, GitHub, Notion) to gctl. Implements a kernel interface trait. The Unix loadable kernel module (LKM) analogy — loaded into the kernel, feature-gated, independently optional. NOT the same as "adapter." | Kernel | Per-driver crate |
 | **Adapter** | An internal kernel implementation of a trait (e.g., DuckDB storage, OTel receiver). Used only in implementation specs. NOT the same as "driver." | Kernel (impl) | Per-adapter crate |
 | **Kernel Interface** | A trait in `gctl-core` that drivers or adapters implement (e.g., `SchedulerPort`, `BrowserPort`). The syscall interface analogy. | Kernel | `gctl-core` |
 | **Kernel IPC** | Cross-component communication via domain events, pipes (stdin/stdout), or HTTP sockets. How applications observe kernel events. | Kernel | Event Bus |
@@ -47,6 +47,6 @@ Canonical definitions for gctl domain terms. When terms are used in specs, they 
 | Term | Definition | Notes |
 |------|-----------|-------|
 | **Native Application** | A stateful program built on gctl (gctl-board, Observe & Eval, Capacity Engine). Owns namespaced tables. | Like `vim`, `git` on Unix |
-| **External Application** | A third-party tool installed on gctl (Linear, Notion, Phoenix). Connected via a Driver. | Like an app accessed via device driver |
+| **External Application** | A third-party tool connected to gctl (Linear, Notion, Phoenix). Connected via a Driver (loadable kernel module). | Like hardware accessed via a kernel module |
 | **Utility** | A stateless, single-purpose tool (`net fetch`, `browser goto`). Composes via stdin/stdout. No owned tables. | Like `curl`, `grep` on Unix |
 | **Workspace** | An isolated directory for a Task. Persists across retries. Managed by the Orchestrator. | One workspace per Task |

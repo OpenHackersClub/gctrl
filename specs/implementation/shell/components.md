@@ -1,8 +1,8 @@
 # Shell Components (Effect-TS CLI — `shell/`)
 
-The shell is the user-facing CLI. It mediates all access to the kernel and external tools. It parses input, routes to handlers, formats output, and orchestrates cross-system workflows (kernel + GitHub + other tools). It contains no business logic — that lives in the kernel (Rust) or applications (Effect-TS).
+The shell is the user-facing CLI. It mediates all access to the kernel. It parses input, routes to handlers, and formats output. It contains no business logic — that lives in the kernel (Rust) or applications (Effect-TS).
 
-The shell is an Effect-TS package using `@effect/cli` for command parsing and `@effect/platform` for I/O. It communicates with the Rust kernel exclusively via the HTTP API on `:4318`.
+The shell is an Effect-TS package using `@effect/cli` for command parsing and `@effect/platform` for I/O. It communicates with the Rust kernel exclusively via the HTTP API on `:4318`. **The shell MUST NOT call external APIs directly** — external services (GitHub, Linear, etc.) are accessed through kernel drivers (loadable kernel modules) exposed via the kernel HTTP API.
 
 ## Package Map
 
@@ -18,25 +18,23 @@ graph TD
         CLI["CLI Entry Point (@effect/cli)"]
         Commands["Commands (Effect.gen)"]
         KClient["KernelClient (HTTP adapter)"]
-        GHClient["GitHubClient (ccli adapter)"]
     end
 
     subgraph Kernel["kernel/ (Rust)"]
         API["HTTP API (:4318)"]
         Daemon["gctl serve"]
+        DrvGH["driver-github (LKM)"]
     end
 
-    subgraph External["External Tools"]
-        GitHub["GitHub (via ccli)"]
-        Slack["Slack (via ccli)"]
+    subgraph External["External"]
+        GitHub["GitHub"]
     end
 
     CLI --> Commands
     Commands --> KClient
-    Commands --> GHClient
     KClient -->|"HTTP"| API
-    GHClient -->|"subprocess"| GitHub
-    GHClient -->|"subprocess"| Slack
+    DrvGH -->|"native gh CLI"| GitHub
+    API --> DrvGH
 ```
 
 ## Package Structure
@@ -52,13 +50,11 @@ shell/gctl-shell/
 │   │   ├── analytics.ts       # gctl analytics
 │   │   ├── context.ts         # gctl context
 │   │   ├── net.ts             # gctl net
-│   │   └── gh.ts              # gctl gh (GitHub integration)
+│   │   └── gh.ts              # gctl gh (GitHub via kernel driver)
 │   ├── services/              # Port interfaces (Context.Tag)
-│   │   ├── KernelClient.ts    # Kernel HTTP API port
-│   │   └── GitHubClient.ts    # GitHub operations port
+│   │   └── KernelClient.ts    # Kernel HTTP API port
 │   ├── adapters/              # Concrete implementations
-│   │   ├── HttpKernelClient.ts    # HTTP adapter for kernel API
-│   │   └── CcliGitHubClient.ts   # ccli subprocess adapter for GitHub
+│   │   └── HttpKernelClient.ts    # HTTP adapter for kernel API
 │   └── errors.ts             # Shell-level TaggedErrors
 ├── test/                      # vitest tests
 ├── package.json
@@ -83,11 +79,12 @@ graph TD
     Analytics --> KC
     Context --> KC
     Net --> KC
-    GH --> GHC["GitHubClient"]
+    GH --> KC
 
     KC -.->|"Layer"| HttpKC["HttpKernelClient"]
-    GHC -.->|"Layer"| CcliGHC["CcliGitHubClient"]
 ```
+
+All commands — including `gctl gh` — route through `KernelClient`. GitHub operations are handled by `driver-github` (a kernel LKM) behind the kernel HTTP API. The shell has no direct knowledge of the GitHub REST API.
 
 ---
 
@@ -128,7 +125,7 @@ cli(process.argv).pipe(
 | `gctl analytics` | `overview`, `cost`, `latency`, `scores`, `daily` | Analytics dashboard and queries |
 | `gctl context` | `add`, `list`, `show`, `remove`, `compact`, `stats` | Manage agent context |
 | `gctl net` | `fetch`, `crawl`, `list`, `show`, `compact` | Web scraping and agent context |
-| `gctl gh` | `issues`, `prs`, `runs` | GitHub integration (wraps ccli) |
+| `gctl gh` | `issues`, `prs`, `runs` | GitHub integration (via kernel driver) |
 
 ### Adding a New CLI Command
 
@@ -156,20 +153,16 @@ class KernelClient extends Context.Tag("KernelClient")<
 >() {}
 ```
 
-### GitHubClient (External Tool)
+### GitHub Operations (via Kernel Driver)
 
-Port interface for GitHub operations. Wraps `ccli gh` as a subprocess.
+GitHub operations (`gctl gh issues`, `gctl gh prs`, `gctl gh runs`) use the same `KernelClient` port as all other commands. The kernel exposes GitHub data through HTTP routes (`/api/github/*`) backed by `driver-github` (a loadable kernel module that delegates to the native `gh` CLI). The kernel handles **caching** (TTL-based, invalidated on writes) and **OTel instrumentation** (spans per call with latency/status). The shell has **no `GitHubClient` service** — it is not aware of the GitHub API or `gh` CLI.
 
 ```typescript
-class GitHubClient extends Context.Tag("GitHubClient")<
-  GitHubClient,
-  {
-    readonly listIssues: (repo: string, filter?: IssueFilter) => Effect.Effect<ReadonlyArray<GhIssue>, GitHubError>
-    readonly listPRs: (repo: string) => Effect.Effect<ReadonlyArray<GhPR>, GitHubError>
-    readonly listRuns: (repo: string, branch?: string) => Effect.Effect<ReadonlyArray<GhRun>, GitHubError>
-    readonly createIssue: (repo: string, input: CreateGhIssueInput) => Effect.Effect<GhIssue, GitHubError>
-  }
->() {}
+// gctl gh issues — calls kernel, which delegates to driver-github
+const listIssues = (repo: string) =>
+  KernelClient.pipe(
+    Effect.flatMap((kc) => kc.get(`/api/github/issues?repo=${repo}`, GhIssueList))
+  )
 ```
 
 ---
@@ -193,23 +186,6 @@ const HttpKernelClientLive = (baseUrl = "http://localhost:4318") =>
       ),
     // ... post, delete similarly
   })
-```
-
-### CcliGitHubClient
-
-Concrete adapter that shells out to `ccli gh` commands. Uses `@effect/platform` `Command` for subprocess execution.
-
-```typescript
-const CcliGitHubClientLive = Layer.succeed(GitHubClient, {
-  listIssues: (repo, filter) =>
-    Effect.gen(function* () {
-      const args = ["gh", "issue", "list", "--repo", repo]
-      if (filter?.state) args.push("--state", filter.state)
-      const result = yield* runCcli(args)
-      return parseIssueList(result.stdout)
-    }),
-  // ...
-})
 ```
 
 ---
@@ -252,8 +228,15 @@ The HTTP API lives in the Rust kernel (`kernel/crates/gctl-otel/src/receiver.rs`
 
 ---
 
+## Style Guide
+
+- **No `.js` in imports.** Use extensionless imports (`from "../services/KernelClient"`, not `from "../services/KernelClient.js"`). The shell uses `moduleResolution: "bundler"` which resolves `.ts` files without extensions.
+- **Single service port.** All commands use `KernelClient` — no separate service ports for external APIs.
+- **No secrets in the shell.** The shell MUST NOT read environment variables for API tokens (e.g., `GITHUB_TOKEN`). Secrets are managed by the kernel.
+
 ## Testing
 
-- Effect-TS command tests via vitest with mock `KernelClient` and `GitHubClient` layers
-- No real HTTP server needed — mock layers return canned responses
+- Effect-TS command tests via vitest with mock `KernelClient` layer
+- No real HTTP server needed — mock layer returns canned responses
 - Adapter integration tests call real kernel daemon (requires `gctl serve` running)
+- GitHub command tests use the same `KernelClient` mock — no separate GitHub mock needed

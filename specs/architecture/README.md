@@ -47,7 +47,7 @@ specs/architecture/
 |----------|-------|
 | This file | System layers, Unix philosophy, internal code architecture, data flow |
 | [domain-model.md](domain-model.md) | Domain types, traits, storage schema (DDL), Effect-TS schemas |
-| [os.md](os.md) | Unix layers in depth — kernel, shell, applications, utilities, external apps (drivers), and how to extend each |
+| [os.md](os.md) | Unix layers in depth — kernel, shell, applications, utilities, drivers (loadable kernel modules), and how to extend each |
 | [kernel/orchestrator.md](kernel/orchestrator.md) | Orchestrator kernel primitive — Task claim states, dispatch eligibility, retry/backoff, concurrency control |
 | [kernel/scheduler.md](kernel/scheduler.md) | Scheduler kernel primitive — Task lifecycle, interface trait, platform implementations |
 | [kernel/browser.md](kernel/browser.md) | Browser control kernel extension — CDP daemon, ref system, tab management |
@@ -62,7 +62,7 @@ specs/architecture/
 
 ```mermaid
 graph TB
-    subgraph ExtApps["EXTERNAL APPLICATIONS (installed, all optional)"]
+    subgraph ExtApps["EXTERNAL APPLICATIONS (all optional)"]
         Linear["Linear"]
         Plane["Plane"]
         Notion["Notion"]
@@ -105,7 +105,17 @@ graph TB
         Sync["Cloud Sync"]
     end
 
-    ExtApps -.->|"drivers<br/>(kernel interfaces)"| IPC
+    subgraph Drivers["DRIVERS (loadable kernel modules, feature-gated)"]
+        DrvLinear["driver-linear"]
+        DrvGitHub["driver-github"]
+        DrvNotion["driver-notion"]
+        DrvPhoenix["driver-phoenix"]
+        DrvObsidian["driver-obsidian"]
+    end
+
+    ExtApps -.->|"external APIs"| Drivers
+    Drivers -->|"kernel interfaces"| Kernel
+    Drivers ---|"events"| IPC
     Apps -->|"Shell APIs"| Shell
     Shell -->|"syscalls"| Kernel
     IPC --> Kernel
@@ -159,11 +169,11 @@ Domain-specific tools built on kernel + shell. CLI subcommands live at this laye
 - **Applications**: [gctl-board](apps/gctl-board.md) (kanban for agent+human issues & tasks), Observe & Eval (scoring, analytics), Capacity Engine (forecasting)
 - **Utilities**: net fetch/crawl/compact (web scraping), browser goto/snapshot/click (browser control), sessions, analytics, etc.
 
-#### External Applications (Installed on the OS)
+#### Drivers (Loadable Kernel Modules)
 
-Linear, Plane, Notion, Obsidian, Arize Phoenix, Langfuse — these are **applications installed on gctl**, not mere connectors. Like applications on Unix, they have their own state and logic but communicate through OS-level IPC primitives rather than direct coupling.
+Drivers are **loadable kernel modules** — feature-gated crates compiled into the kernel binary that bridge external applications (Linear, Plane, Notion, Obsidian, Arize Phoenix, Langfuse) to gctl's internal event/data model. Like Unix LKMs (`insmod`/`modprobe`), they run in kernel space, implement kernel interface traits, and are independently optional.
 
-Each external application connects via a **driver** — a kernel module that implements a kernel interface trait, translating between the external app's API and gctl's internal event/data model. Drivers are the Unix device driver analogy: the kernel defines the interface; the driver implements it for a specific external system. Cross-app communication — e.g., a Linear issue syncing to gctl-board, or traces exporting to Phoenix — always flows through kernel IPC, never app-to-app directly.
+External applications have their own state and logic but communicate through drivers inside the kernel, not through direct coupling. Cross-app communication — e.g., a Linear issue syncing to gctl-board, or traces exporting to Phoenix — always flows through kernel IPC, never app-to-app directly.
 
 | IPC Mechanism | Unix Analogy | gctl Implementation | Example |
 |---------------|-------------|---------------------|---------|
@@ -171,7 +181,7 @@ Each external application connects via a **driver** — a kernel module that imp
 | **Pipes** | stdin/stdout | CLI output piped between commands | `gctl sessions --format json \| gctl analytics cost` |
 | **Sockets** | Unix sockets / TCP | HTTP API endpoints | Driver polls `/api/sessions` or receives webhook callbacks |
 
-| Kernel Interface | Driver | Installed Apps |
+| Kernel Interface | Driver (LKM) | External App |
 |-----------------|--------|----------------|
 | `TrackerPort` | `driver-linear`, `driver-github`, `driver-notion` | Linear, Plane, GitHub Issues, Notion |
 | `ObservabilityExportPort` | `driver-phoenix`, `driver-langfuse`, `driver-signoz` | Arize Phoenix, Langfuse, SigNoz |
@@ -196,7 +206,7 @@ sequenceDiagram
     Kernel->>IPC: Emit SessionUpdated, SessionEnded
     IPC-->>Board: SessionUpdated → accumulate cost on issue BACK-42
     IPC-->>Eval: SessionEnded → auto-score (tests_pass, error_loops)
-    IPC-->>Linear: SessionEnded → sync status via TrackerPort driver
+    IPC-->>Linear: SessionEnded → sync status via TrackerPort driver (LKM)
 ```
 
 All cross-app communication flows through kernel IPC (event bus, shell APIs, pipes). Native apps and external apps are peers — neither talks directly to the other.
@@ -213,8 +223,10 @@ flowchart LR
     direction LR
     Shell["Shell\n(CLI, HTTP API, Query)"]
     Adapters["Kernel Adapters\n(DuckDB, OTel, Guardrails,\nProxy, Browser, Sync)"]
+    LKMs["Drivers (LKMs)\n(driver-linear, driver-github,\ndriver-phoenix, driver-obsidian)"]
     Domain["Domain\n(gctl-core: types,\ntraits, errors)"]
     Shell --> Adapters --> Domain
+    LKMs --> Domain
   end
 
   subgraph Outside["Outside the Hexagon"]
@@ -223,7 +235,7 @@ flowchart LR
   end
 
   NativeApps -->|"Kernel IPC\n(events, HTTP, pipes)"| Shell
-  ExtApps -.->|"Drivers\n(kernel interfaces)"| Adapters
+  ExtApps -.->|"External APIs"| LKMs
 ```
 
 Dependencies flow inward: Shell → Adapters → Domain, never reverse.
@@ -233,13 +245,16 @@ Dependencies flow inward: Shell → Adapters → Domain, never reverse.
 - **Adapters** (kernel crates): Concrete implementations — DuckDB storage, OTel receiver, guardrail policies, scheduler adapters, network proxy, browser daemon, cloud sync.
 - **Shell** (`gctl-cli`, `gctl-otel` HTTP routes, `gctl-query`): Dispatches to adapters — CLI routing, HTTP API routing, query execution.
 
-### What lives outside the hexagon
+### What lives inside vs. outside the hexagon
 
-Native apps and external apps are **not** wired via hexagonal ports. They are independent programs that use the OS:
+**Inside the hexagon (kernel binary):**
+1. **Kernel adapters** — internal implementations (DuckDB, OTel, Guardrails, Proxy, Browser, Sync)
+2. **Drivers (LKMs)** — loadable kernel modules (`driver-linear`, `driver-github`, `driver-phoenix`, `driver-obsidian`) that implement kernel interface traits. Feature-gated, independently optional.
+3. **Utilities** (net fetch, browser goto) — compiled into the binary, access kernel adapters directly.
 
+**Outside the hexagon:**
 1. **Native applications** (gctl-board, Observe & Eval, Capacity Engine) communicate through shell APIs (HTTP endpoints, CLI subprocess calls) and kernel IPC (domain events). They are peers of the kernel, not internals of it.
-2. **External applications** (Linear, Plane, Notion, Phoenix) connect through **drivers** that implement kernel interface traits (`TrackerPort`, `ObservabilityExportPort`). The driver crate lives inside the Rust binary; the external application lives outside it.
-3. **Utilities** (net fetch, browser goto) are compiled into the binary and access kernel adapters directly — they live on the boundary of the hexagon.
+2. **External applications** (Linear, Plane, Notion, Phoenix) live entirely outside the binary. Drivers (LKMs) inside the kernel bridge the gap.
 
 ---
 

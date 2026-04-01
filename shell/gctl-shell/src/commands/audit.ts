@@ -6,7 +6,7 @@
  */
 import { Command, Options } from "@effect/cli"
 import { Console, Effect } from "effect"
-import { execPromise, type CheckResult } from "../lib/exec.js"
+import { execPromise, type CheckResult } from "../lib/exec"
 
 const runCheck = (
   name: string,
@@ -125,7 +125,7 @@ export const auditCommand = Command.make(
       yield* Console.log("Audit PASSED — ready for PR.")
     }).pipe(
       Effect.catchAll((e) =>
-        Console.error(String(e)).pipe(Effect.flatMap(() => Effect.sync(() => process.exit(1))))
+        Console.error(String(e)).pipe(Effect.flatMap(() => Effect.fail(e)))
       )
     )
 )

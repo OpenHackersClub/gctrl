@@ -1,6 +1,6 @@
 import { Command } from "@effect/cli"
 import { Console, Effect, Schema } from "effect"
-import { KernelClient } from "../services/KernelClient.js"
+import { KernelClient } from "../services/KernelClient"
 
 const Analytics = Schema.Struct({
   total_sessions: Schema.Number,
