@@ -28,12 +28,12 @@ graph LR
     end
 
     subgraph External["External"]
-        GitHub["GitHub REST API"]
+        GitHub["GitHub"]
     end
 
     Apps -->|"HTTP"| API
     CLI -->|"HTTP"| API
-    DrvGH -->|"REST"| GitHub
+    DrvGH -->|"native gh CLI"| GitHub
 ```
 
 Applications and the shell communicate with the kernel via the HTTP API on `:4318`. External services (GitHub, Linear, etc.) are accessed through kernel drivers (LKMs) — the shell and apps MUST NOT call external APIs directly. Apps MUST NOT import Rust kernel crates directly.

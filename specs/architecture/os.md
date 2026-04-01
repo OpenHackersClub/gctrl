@@ -224,7 +224,7 @@ The shell mediates **all** access to the kernel. It is the dispatcher — it par
 - Business logic (that is the application or kernel layer)
 - Direct DuckDB queries beyond dispatching to the query engine
 - Knowledge of external tools or adapters
-- **Direct calls to external APIs** (GitHub, Linear, Notion, etc.) — external services are accessed through kernel drivers (LKMs) exposed via the kernel HTTP API. The shell MUST NOT import HTTP clients for external services or hold API tokens for them. Example: `gctl gh issues` calls the kernel's `/api/github/issues` route, which delegates to `driver-github`. The shell never calls `api.github.com` directly.
+- **Direct calls to external APIs or CLIs** (GitHub, Linear, Notion, etc.) — external services are accessed through kernel drivers (LKMs) exposed via the kernel HTTP API. The shell MUST NOT import HTTP clients for external services, hold API tokens, or shell out to native CLIs (e.g., `gh`). Drivers may delegate to native CLIs internally, but the kernel wraps those calls with caching and OTel instrumentation. Example: `gctl gh issues` calls the kernel's `/api/github/issues` route → `driver-github` invokes `gh issue list` → kernel caches the result and emits an OTel span.
 
 ### How the shell dispatches
 
@@ -374,8 +374,8 @@ flowchart LR
     Phoenix["Arize Phoenix"]
   end
 
-  Linear -.->|"REST API"| DrvLinear
-  Phoenix -.->|"REST API"| DrvPhoenix
+  Linear -.->|"API / native CLI"| DrvLinear
+  Phoenix -.->|"API / native CLI"| DrvPhoenix
   DrvLinear --- Events
   DrvPhoenix --- Events
   Board --- Sockets
@@ -408,6 +408,29 @@ Drivers live in kernel space. Native apps (gctl-board, Observe & Eval) live in u
 4. **Independently optional**: Each driver is independently feature-gated — zero drivers is the default; add as needed
 5. **Bidirectional where needed**: Pull from external API into gctl; push gctl events back to external API
 6. **Cross-module isolation**: Drivers MUST NOT import or call other drivers or native apps. All cross-component communication flows through kernel IPC (events, shell APIs, pipes)
+7. **Prefer native CLIs**: Where a mature native CLI exists (e.g., `gh` for GitHub), drivers SHOULD delegate to it via subprocess rather than reimplementing the REST API client. This reuses the CLI's authentication, pagination, and format handling. The kernel wraps the subprocess call with **caching** (response-level, TTL-based) and **OTel instrumentation** (spans for each call, cost/latency attribution)
+
+### Driver Execution Model — Kernel Responsibilities
+
+When a shell command triggers a driver (e.g., `gctl gh issues` → kernel `/api/github/issues` → `driver-github`), the kernel provides cross-cutting concerns:
+
+| Concern | Kernel handles | Driver handles |
+|---------|---------------|----------------|
+| **Caching** | Response-level TTL cache (like `ccli gh` caching). Cache key = route + query params. Invalidated on write operations. | Nothing — caching is transparent to the driver |
+| **OTel instrumentation** | Wraps each driver call in a span (`driver.github.list_issues`), records latency, status, cache hit/miss | Nothing — instrumentation is transparent |
+| **Authentication** | Delegates to the native CLI's auth (e.g., `gh auth` for GitHub) | Uses the native CLI's built-in auth flow |
+| **Error mapping** | Maps driver/subprocess errors to kernel error types | Returns raw errors from the native CLI |
+
+**Example: `driver-github` using native `gh` CLI**
+
+```
+Shell: gctl gh issues --repo org/repo
+  → KernelClient.get("/api/github/issues?repo=org/repo")
+    → Kernel: check cache → miss
+      → driver-github: subprocess `gh issue list --repo org/repo --json ...`
+      → Kernel: wrap result in OTel span, store in cache (TTL)
+    → Return cached/fresh response to shell
+```
 
 ### Extending with a new driver (loadable kernel module)
 

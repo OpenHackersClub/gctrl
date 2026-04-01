@@ -27,13 +27,13 @@ graph TD
     end
 
     subgraph External["External"]
-        GitHub["GitHub REST API"]
+        GitHub["GitHub"]
     end
 
     CLI --> Commands
     Commands --> KClient
     KClient -->|"HTTP"| API
-    DrvGH -->|"REST"| GitHub
+    DrvGH -->|"native gh CLI"| GitHub
     API --> DrvGH
 ```
 
@@ -155,7 +155,7 @@ class KernelClient extends Context.Tag("KernelClient")<
 
 ### GitHub Operations (via Kernel Driver)
 
-GitHub operations (`gctl gh issues`, `gctl gh prs`, `gctl gh runs`) use the same `KernelClient` port as all other commands. The kernel exposes GitHub data through HTTP routes (`/api/github/*`) backed by `driver-github` (a loadable kernel module). The shell has **no `GitHubClient` service** — it is not aware of the GitHub REST API.
+GitHub operations (`gctl gh issues`, `gctl gh prs`, `gctl gh runs`) use the same `KernelClient` port as all other commands. The kernel exposes GitHub data through HTTP routes (`/api/github/*`) backed by `driver-github` (a loadable kernel module that delegates to the native `gh` CLI). The kernel handles **caching** (TTL-based, invalidated on writes) and **OTel instrumentation** (spans per call with latency/status). The shell has **no `GitHubClient` service** — it is not aware of the GitHub API or `gh` CLI.
 
 ```typescript
 // gctl gh issues — calls kernel, which delegates to driver-github
