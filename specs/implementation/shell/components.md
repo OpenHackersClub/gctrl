@@ -228,6 +228,12 @@ The HTTP API lives in the Rust kernel (`kernel/crates/gctl-otel/src/receiver.rs`
 
 ---
 
+## Style Guide
+
+- **No `.js` in imports.** Use extensionless imports (`from "../services/KernelClient"`, not `from "../services/KernelClient.js"`). The shell uses `moduleResolution: "bundler"` which resolves `.ts` files without extensions.
+- **Single service port.** All commands use `KernelClient` — no separate service ports for external APIs.
+- **No secrets in the shell.** The shell MUST NOT read environment variables for API tokens (e.g., `GITHUB_TOKEN`). Secrets are managed by the kernel.
+
 ## Testing
 
 - Effect-TS command tests via vitest with mock `KernelClient` layer

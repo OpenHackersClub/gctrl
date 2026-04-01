@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { Effect, Schema } from "effect"
-import { KernelClient } from "../src/services/KernelClient.js"
-import { createMockKernelClient } from "./helpers/mock-kernel.js"
+import { KernelClient } from "../src/services/KernelClient"
+import { createMockKernelClient } from "./helpers/mock-kernel"
 
 const mockProjects = [
   { id: "proj-1", name: "GroundCtrl", key: "GCTL", counter: 42 },

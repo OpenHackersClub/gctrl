@@ -1,6 +1,6 @@
 import { Command, Options, Args } from "@effect/cli"
-import { Console, Effect, Schema } from "effect"
-import { KernelClient } from "../services/KernelClient.js"
+import { Console, Effect, Option, Schema } from "effect"
+import { KernelClient } from "../services/KernelClient"
 
 // --- schemas ---
 
@@ -107,8 +107,8 @@ const listCommand = Command.make(
       const kernel = yield* KernelClient
       const params = new URLSearchParams()
       params.set("limit", String(limit))
-      if (agent._tag === "Some") params.set("agent", agent.value)
-      if (status._tag === "Some") params.set("status", status.value)
+      if (Option.isSome(agent)) params.set("agent", agent.value)
+      if (Option.isSome(status)) params.set("status", status.value)
 
       const sessions = yield* kernel.get(
         `/api/sessions?${params.toString()}`,

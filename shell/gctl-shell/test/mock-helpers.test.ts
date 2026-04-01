@@ -1,12 +1,11 @@
 import { describe, it, expect } from "vitest"
 import { Effect, Either, Schema } from "effect"
-import { KernelClient } from "../src/services/KernelClient.js"
-import { GitHubClient } from "../src/services/GitHubClient.js"
+import { KernelClient } from "../src/services/KernelClient"
+import { KernelUnavailableError } from "../src/errors"
 import {
   createMockKernelClient,
-  createMockGitHubClient,
   createMockUnhealthyKernelClient,
-} from "./helpers/mock-kernel.js"
+} from "./helpers/mock-kernel"
 
 /**
  * Tests for the mock helper factories themselves — ensuring the routing,
@@ -182,7 +181,7 @@ describe("createMockUnhealthyKernelClient", () => {
 
     expect(Either.isLeft(result)).toBe(true)
     if (Either.isLeft(result)) {
-      expect(result.left._tag).toBe("KernelUnavailableError")
+      expect(result.left).toBeInstanceOf(KernelUnavailableError)
     }
   })
 
@@ -198,7 +197,7 @@ describe("createMockUnhealthyKernelClient", () => {
 
     expect(Either.isLeft(result)).toBe(true)
     if (Either.isLeft(result)) {
-      expect(result.left._tag).toBe("KernelUnavailableError")
+      expect(result.left).toBeInstanceOf(KernelUnavailableError)
     }
   })
 
@@ -214,96 +213,62 @@ describe("createMockUnhealthyKernelClient", () => {
 
     expect(Either.isLeft(result)).toBe(true)
     if (Either.isLeft(result)) {
-      expect(result.left._tag).toBe("KernelUnavailableError")
+      expect(result.left).toBeInstanceOf(KernelUnavailableError)
     }
   })
 })
 
-describe("createMockGitHubClient edge cases", () => {
-  it("createIssue returns fixture with input title", async () => {
-    const MockLayer = createMockGitHubClient({ issues: [] })
-
-    const program = Effect.gen(function* () {
-      const gh = yield* GitHubClient
-      return yield* gh.createIssue("org/repo", {
-        title: "My Custom Title",
-        labels: ["bug", "urgent"],
-      })
-    })
-
-    const result = await Effect.runPromise(program.pipe(Effect.provide(MockLayer)))
-    expect(result.number).toBe(999)
-    expect(result.title).toBe("My Custom Title")
-    expect(result.labels).toEqual(["bug", "urgent"])
-    expect(result.state).toBe("open")
-  })
-
-  it("createIssue with no labels returns empty array", async () => {
-    const MockLayer = createMockGitHubClient({})
-
-    const program = Effect.gen(function* () {
-      const gh = yield* GitHubClient
-      return yield* gh.createIssue("org/repo", { title: "No labels" })
-    })
-
-    const result = await Effect.runPromise(program.pipe(Effect.provide(MockLayer)))
-    expect(result.labels).toEqual([])
-  })
-
-  it("listIssues with options still returns all mock data", async () => {
-    const MockLayer = createMockGitHubClient({
-      issues: [
-        {
-          number: 1,
-          title: "Open",
-          state: "open",
-          author: "user",
-          labels: ["bug"],
-          createdAt: "2026-01-01T00:00:00Z",
-          url: "https://github.com/org/repo/issues/1",
-        },
-        {
-          number: 2,
-          title: "Closed",
-          state: "closed",
-          author: "user",
-          labels: [],
-          createdAt: "2026-01-02T00:00:00Z",
-          url: "https://github.com/org/repo/issues/2",
-        },
+describe("GitHub routes via KernelClient mock", () => {
+  const MockLayer = createMockKernelClient(
+    {
+      "/api/github/issues": [
+        { number: 1, title: "Open", state: "open", author: "user", labels: ["bug"], createdAt: "2026-01-01T00:00:00Z", url: "https://github.com/org/repo/issues/1" },
+        { number: 2, title: "Closed", state: "closed", author: "user", labels: [], createdAt: "2026-01-02T00:00:00Z", url: "https://github.com/org/repo/issues/2" },
       ],
-    })
+      "/api/github/runs": [
+        { id: 1, name: "CI", status: "completed", conclusion: "success", branch: "main", url: "https://github.com/org/repo/actions/runs/1" },
+      ],
+    },
+    {
+      "/api/github/issues": { number: 999, title: "Created", state: "open", author: "test", labels: [], createdAt: "2026-03-31T00:00:00Z", url: "https://github.com/org/repo/issues/999" },
+    }
+  )
+
+  it("GET /api/github/issues returns all mock data", async () => {
+    const GhIssueList = Schema.Array(Schema.Struct({ number: Schema.Number, title: Schema.String }))
 
     const program = Effect.gen(function* () {
-      const gh = yield* GitHubClient
-      // Options are ignored by mock — returns all
-      return yield* gh.listIssues("org/repo", { state: "open", limit: 1 })
+      const kernel = yield* KernelClient
+      return yield* kernel.get("/api/github/issues?repo=org/repo", GhIssueList)
     })
 
     const result = await Effect.runPromise(program.pipe(Effect.provide(MockLayer)))
     expect(result).toHaveLength(2)
   })
 
-  it("listRuns with branch option still returns all mock data", async () => {
-    const MockLayer = createMockGitHubClient({
-      runs: [
-        {
-          id: 1,
-          name: "CI",
-          status: "completed",
-          conclusion: "success",
-          branch: "main",
-          url: "https://github.com/org/repo/actions/runs/1",
-        },
-      ],
-    })
+  it("POST /api/github/issues returns created issue", async () => {
+    const GhIssue = Schema.Struct({ number: Schema.Number, title: Schema.String, state: Schema.String })
 
     const program = Effect.gen(function* () {
-      const gh = yield* GitHubClient
-      return yield* gh.listRuns("org/repo", { branch: "other-branch", limit: 5 })
+      const kernel = yield* KernelClient
+      return yield* kernel.post("/api/github/issues?repo=org/repo", { title: "New" }, GhIssue)
+    })
+
+    const result = await Effect.runPromise(program.pipe(Effect.provide(MockLayer)))
+    expect(result.number).toBe(999)
+    expect(result.title).toBe("Created")
+  })
+
+  it("GET /api/github/runs returns mock runs", async () => {
+    const GhRunList = Schema.Array(Schema.Struct({ id: Schema.Number, name: Schema.String }))
+
+    const program = Effect.gen(function* () {
+      const kernel = yield* KernelClient
+      return yield* kernel.get("/api/github/runs?repo=org/repo", GhRunList)
     })
 
     const result = await Effect.runPromise(program.pipe(Effect.provide(MockLayer)))
     expect(result).toHaveLength(1)
+    expect(result[0].name).toBe("CI")
   })
 })

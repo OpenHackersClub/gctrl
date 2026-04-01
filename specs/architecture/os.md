@@ -113,7 +113,7 @@ Kernel → Shell → App       (NEVER — inner must not know about outer)
 | **Shell depends on kernel, never on apps** | Shell consumes kernel HTTP API and crate interfaces. It MUST NOT import app code. | Shell importing `BoardService` from gctl-board |
 | **Apps depend on shell, never the reverse** | Apps invoke kernel capabilities via the shell's HTTP API surface (`:4318`). They MUST NOT access DuckDB directly or import kernel crate internals. | App opening a DuckDB connection, or importing `gctl-storage` directly |
 | **Apps are independently removable** | Any app (gctl-board, gctl-eval, etc.) can be uninstalled without breaking the kernel or shell. | Shell code that breaks if gctl-board package is removed |
-| **External APIs go through kernel drivers** | The shell and apps MUST NOT call external APIs (GitHub, Linear, etc.) directly. External services are accessed through kernel drivers (LKMs) exposed via the kernel HTTP API. | Shell importing an HTTP client for `api.github.com`, or holding a `GITHUB_TOKEN` |
+| **External APIs go through kernel drivers** | The shell and apps MUST NOT call external APIs (GitHub, Linear, etc.) directly, nor hold secrets (PATs, API keys). External services are accessed through kernel drivers (LKMs) exposed via the kernel HTTP API. The kernel manages all secrets and injects them into drivers. | Shell importing an HTTP client for `api.github.com`, shell reading `GITHUB_TOKEN` from env, or app holding an API key |
 
 **Enforcement:** The monorepo workspace config (`package.json` workspaces, `Cargo.toml` workspace members) encodes these boundaries. An app's `package.json` MUST NOT list kernel crates or shell packages as dependencies. Apps consume kernel data exclusively through HTTP.
 
@@ -224,7 +224,7 @@ The shell mediates **all** access to the kernel. It is the dispatcher — it par
 - Business logic (that is the application or kernel layer)
 - Direct DuckDB queries beyond dispatching to the query engine
 - Knowledge of external tools or adapters
-- **Direct calls to external APIs or CLIs** (GitHub, Linear, Notion, etc.) — external services are accessed through kernel drivers (LKMs) exposed via the kernel HTTP API. The shell MUST NOT import HTTP clients for external services, hold API tokens, or shell out to native CLIs (e.g., `gh`). Drivers may delegate to native CLIs internally, but the kernel wraps those calls with caching and OTel instrumentation. Example: `gctl gh issues` calls the kernel's `/api/github/issues` route → `driver-github` invokes `gh issue list` → kernel caches the result and emits an OTel span.
+- **Direct calls to external APIs or CLIs** (GitHub, Linear, Notion, etc.) — external services are accessed through kernel drivers (LKMs) exposed via the kernel HTTP API. The shell MUST NOT import HTTP clients for external services, hold secrets (PATs, API keys), or shell out to native CLIs (e.g., `gh`). Secrets are managed exclusively by the kernel and injected into drivers. Example: `gctl gh issues` calls the kernel's `/api/github/issues` route → `driver-github` receives the PAT from the kernel, invokes `gh issue list` → kernel caches the result and emits an OTel span.
 
 ### How the shell dispatches
 
@@ -418,7 +418,7 @@ When a shell command triggers a driver (e.g., `gctl gh issues` → kernel `/api/
 |---------|---------------|----------------|
 | **Caching** | Response-level TTL cache (like `ccli gh` caching). Cache key = route + query params. Invalidated on write operations. | Nothing — caching is transparent to the driver |
 | **OTel instrumentation** | Wraps each driver call in a span (`driver.github.list_issues`), records latency, status, cache hit/miss | Nothing — instrumentation is transparent |
-| **Authentication** | Delegates to the native CLI's auth (e.g., `gh auth` for GitHub) | Uses the native CLI's built-in auth flow |
+| **Secrets & authentication** | Resolves and injects credentials (PATs, API keys, OAuth tokens) from kernel secret store. For `driver-github`, the kernel provides the `GH_TOKEN` / PAT to the `gh` CLI subprocess via environment. The shell and apps MUST NOT hold or read secrets directly. | Receives credentials from the kernel — never reads env vars or config files for auth |
 | **Error mapping** | Maps driver/subprocess errors to kernel error types | Returns raw errors from the native CLI |
 
 **Example: `driver-github` using native `gh` CLI**

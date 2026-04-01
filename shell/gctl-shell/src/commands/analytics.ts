@@ -1,6 +1,6 @@
 import { Command, Options } from "@effect/cli"
-import { Console, Effect, Schema } from "effect"
-import { KernelClient } from "../services/KernelClient.js"
+import { Console, Effect, Option, Schema } from "effect"
+import { KernelClient } from "../services/KernelClient"
 
 // --- schemas ---
 
@@ -213,7 +213,7 @@ const createScoreCommand = Command.make(
         value,
         source: "human",
       }
-      if (comment._tag === "Some") body.comment = comment.value
+      if (Option.isSome(comment)) body.comment = comment.value
 
       const result = yield* kernel.post("/api/analytics/score", body, ScoreCreated)
       yield* Console.log(`Score created: ${result.id}`)

@@ -1,6 +1,6 @@
 import { Command, Options, Args } from "@effect/cli"
-import { Console, Effect, Schema } from "effect"
-import { KernelClient } from "../services/KernelClient.js"
+import { Console, Effect, Option, Schema } from "effect"
+import { KernelClient } from "../services/KernelClient"
 
 // --- schemas ---
 
@@ -52,9 +52,9 @@ const listCommand = Command.make(
       const kernel = yield* KernelClient
       const params = new URLSearchParams()
       params.set("limit", String(limit))
-      if (kind._tag === "Some") params.set("kind", kind.value)
-      if (tag._tag === "Some") params.set("tag", tag.value)
-      if (search._tag === "Some") params.set("search", search.value)
+      if (Option.isSome(kind)) params.set("kind", kind.value)
+      if (Option.isSome(tag)) params.set("tag", tag.value)
+      if (Option.isSome(search)) params.set("search", search.value)
 
       const entries = yield* kernel.get(`/api/context?${params.toString()}`, ContextEntryList)
 
@@ -144,8 +144,8 @@ const compactCommand = Command.make(
     Effect.gen(function* () {
       const kernel = yield* KernelClient
       const params = new URLSearchParams()
-      if (kind._tag === "Some") params.set("kind", kind.value)
-      if (tag._tag === "Some") params.set("tag", tag.value)
+      if (Option.isSome(kind)) params.set("kind", kind.value)
+      if (Option.isSome(tag)) params.set("tag", tag.value)
       const qs = params.toString()
       const text = yield* kernel.getText(`/api/context/compact${qs ? `?${qs}` : ""}`)
       yield* Console.log(text)

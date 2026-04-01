@@ -4,8 +4,8 @@
  * Uses fetch to communicate with the Rust daemon on :4318.
  */
 import { Effect, Layer, Schema } from "effect"
-import { KernelClient } from "../services/KernelClient.js"
-import { KernelError, KernelUnavailableError } from "../errors.js"
+import { KernelClient } from "../services/KernelClient"
+import { KernelError, KernelUnavailableError } from "../errors"
 
 export const HttpKernelClientLive = (baseUrl = "http://localhost:4318") =>
   Layer.succeed(KernelClient, {

@@ -1,8 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { Effect, Schema } from "effect"
-import { KernelClient } from "../src/services/KernelClient.js"
-import { GitHubClient } from "../src/services/GitHubClient.js"
-import { createMockKernelClient, createMockGitHubClient } from "./helpers/mock-kernel.js"
+import { KernelClient } from "../src/services/KernelClient"
+import { createMockKernelClient } from "./helpers/mock-kernel"
 
 /**
  * Tests that all list/collection endpoints handle empty arrays correctly.
@@ -26,8 +25,6 @@ const EmptyKernelLayer = createMockKernelClient(
   {},
   { "/api/context/compact": "" }
 )
-
-const EmptyGitHubLayer = createMockGitHubClient({})
 
 describe("Empty result handling — KernelClient paths", () => {
   it("sessions list returns empty array", async () => {
@@ -189,34 +186,49 @@ describe("Empty result handling — KernelClient paths", () => {
   })
 })
 
-describe("Empty result handling — GitHubClient paths", () => {
-  it("listIssues returns empty array", async () => {
+describe("Empty result handling — GitHub via kernel driver", () => {
+  const EmptyGitHubKernelLayer = createMockKernelClient({
+    "/api/github/issues": [],
+    "/api/github/prs": [],
+    "/api/github/runs": [],
+  })
+
+  it("github issues returns empty array via kernel", async () => {
     const program = Effect.gen(function* () {
-      const gh = yield* GitHubClient
-      return yield* gh.listIssues("org/repo")
+      const kernel = yield* KernelClient
+      return yield* kernel.get(
+        "/api/github/issues?repo=org/repo",
+        Schema.Array(Schema.Struct({ number: Schema.Number }))
+      )
     })
 
-    const result = await Effect.runPromise(program.pipe(Effect.provide(EmptyGitHubLayer)))
+    const result = await Effect.runPromise(program.pipe(Effect.provide(EmptyGitHubKernelLayer)))
     expect(result).toHaveLength(0)
   })
 
-  it("listPRs returns empty array", async () => {
+  it("github prs returns empty array via kernel", async () => {
     const program = Effect.gen(function* () {
-      const gh = yield* GitHubClient
-      return yield* gh.listPRs("org/repo")
+      const kernel = yield* KernelClient
+      return yield* kernel.get(
+        "/api/github/prs?repo=org/repo",
+        Schema.Array(Schema.Struct({ number: Schema.Number }))
+      )
     })
 
-    const result = await Effect.runPromise(program.pipe(Effect.provide(EmptyGitHubLayer)))
+    const result = await Effect.runPromise(program.pipe(Effect.provide(EmptyGitHubKernelLayer)))
     expect(result).toHaveLength(0)
   })
 
-  it("listRuns returns empty array", async () => {
+  it("github runs returns empty array via kernel", async () => {
     const program = Effect.gen(function* () {
-      const gh = yield* GitHubClient
-      return yield* gh.listRuns("org/repo")
+      const kernel = yield* KernelClient
+      return yield* kernel.get(
+        "/api/github/runs?repo=org/repo",
+        Schema.Array(Schema.Struct({ id: Schema.Number }))
+      )
     })
 
-    const result = await Effect.runPromise(program.pipe(Effect.provide(EmptyGitHubLayer)))
+    const result = await Effect.runPromise(program.pipe(Effect.provide(EmptyGitHubKernelLayer)))
     expect(result).toHaveLength(0)
   })
 })

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
-import { Effect, Schema } from "effect"
-import { KernelClient } from "../src/services/KernelClient.js"
-import { createMockKernelClient } from "./helpers/mock-kernel.js"
+import { Effect, Either, Schema } from "effect"
+import { KernelClient } from "../src/services/KernelClient"
+import { createMockKernelClient } from "./helpers/mock-kernel"
 
 const mockSessions = [
   {
@@ -124,6 +124,6 @@ describe("KernelClient port", () => {
       Effect.either(program.pipe(Effect.provide(MockLayer)))
     )
 
-    expect(result._tag).toBe("Left")
+    expect(Either.isLeft(result)).toBe(true)
   })
 })

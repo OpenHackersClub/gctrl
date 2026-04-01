@@ -1,6 +1,6 @@
 import { Command, Options, Args } from "@effect/cli"
-import { Console, Effect, Schema } from "effect"
-import { KernelClient } from "../services/KernelClient.js"
+import { Console, Effect, Option, Schema } from "effect"
+import { KernelClient } from "../services/KernelClient"
 
 // --- schemas ---
 
@@ -124,10 +124,10 @@ const listIssuesCommand = Command.make(
       const kernel = yield* KernelClient
       const params = new URLSearchParams()
       params.set("limit", String(limit))
-      if (project._tag === "Some") params.set("project_id", project.value)
-      if (status._tag === "Some") params.set("status", status.value)
-      if (assignee._tag === "Some") params.set("assignee_id", assignee.value)
-      if (label._tag === "Some") params.set("label", label.value)
+      if (Option.isSome(project)) params.set("project_id", project.value)
+      if (Option.isSome(status)) params.set("status", status.value)
+      if (Option.isSome(assignee)) params.set("assignee_id", assignee.value)
+      if (Option.isSome(label)) params.set("label", label.value)
 
       const issues = yield* kernel.get(`/api/board/issues?${params.toString()}`, BoardIssueList)
 
@@ -171,7 +171,7 @@ const createIssueCommand = Command.make(
         created_by_name: "gctl-shell",
         created_by_type: "human",
       }
-      if (description._tag === "Some") body.description = description.value
+      if (Option.isSome(description)) body.description = description.value
 
       const issue = yield* kernel.post("/api/board/issues", body, BoardIssue)
       yield* Console.log(`Issue created: ${issue.id} — ${issue.title}`)

@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest"
-import { Effect, Schema } from "effect"
-import { KernelClient } from "../src/services/KernelClient.js"
-import { createMockKernelClient, createMockUnhealthyKernelClient } from "./helpers/mock-kernel.js"
+import { Effect, Either, Schema } from "effect"
+import { KernelClient } from "../src/services/KernelClient"
+import { KernelUnavailableError } from "../src/errors"
+import { createMockKernelClient, createMockUnhealthyKernelClient } from "./helpers/mock-kernel"
 
 const mockAnalytics = {
   total_sessions: 42,
@@ -63,9 +64,9 @@ describe("Status command logic (via KernelClient)", () => {
       Effect.either(program.pipe(Effect.provide(UnhealthyLayer)))
     )
 
-    expect(result._tag).toBe("Left")
-    if (result._tag === "Left") {
-      expect(result.left._tag).toBe("KernelUnavailableError")
+    expect(Either.isLeft(result)).toBe(true)
+    if (Either.isLeft(result)) {
+      expect(result.left).toBeInstanceOf(KernelUnavailableError)
     }
   })
 

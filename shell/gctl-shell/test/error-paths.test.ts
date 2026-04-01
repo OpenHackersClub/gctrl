@@ -1,9 +1,18 @@
 import { describe, it, expect } from "vitest"
-import { Effect, Either, Schema, Layer } from "effect"
-import { KernelClient } from "../src/services/KernelClient.js"
-import { GitHubClient } from "../src/services/GitHubClient.js"
-import { KernelError, KernelUnavailableError, GitHubError, GitHubAuthError } from "../src/errors.js"
-import { createMockKernelClient, createMockGitHubClient } from "./helpers/mock-kernel.js"
+import { Effect, Either, Schema } from "effect"
+import { KernelClient } from "../src/services/KernelClient"
+import { KernelError, KernelUnavailableError } from "../src/errors"
+import { createMockKernelClient } from "./helpers/mock-kernel"
+
+/** Type-safe error assertion: checks Either is Left and error matches expected class */
+const expectLeftWith = <E>(result: Either.Either<unknown, E>, ErrorClass: new (...args: any[]) => E) => {
+  expect(Either.isLeft(result)).toBe(true)
+  if (Either.isLeft(result)) {
+    expect(result.left).toBeInstanceOf(ErrorClass)
+    return result.left
+  }
+  throw new Error("Expected Left")
+}
 
 // ---------- KernelClient error paths ----------
 
@@ -24,13 +33,9 @@ describe("KernelClient error paths", () => {
       Effect.either(program.pipe(Effect.provide(MockLayer)))
     )
 
-    expect(Either.isLeft(result)).toBe(true)
-    if (Either.isLeft(result)) {
-      const err = result.left
-      expect(err._tag).toBe("KernelError")
-      expect((err as KernelError).statusCode).toBe(404)
-      expect((err as KernelError).message).toContain("not found")
-    }
+    const err = expectLeftWith(result, KernelError)
+    expect((err as KernelError).statusCode).toBe(404)
+    expect((err as KernelError).message).toContain("not found")
   })
 
   it("POST unknown path yields KernelError with 404", async () => {
@@ -43,10 +48,7 @@ describe("KernelClient error paths", () => {
       Effect.either(program.pipe(Effect.provide(MockLayer)))
     )
 
-    expect(Either.isLeft(result)).toBe(true)
-    if (Either.isLeft(result)) {
-      expect(result.left._tag).toBe("KernelError")
-    }
+    expectLeftWith(result, KernelError)
   })
 
   it("DELETE unknown path yields KernelError with 404", async () => {
@@ -59,10 +61,7 @@ describe("KernelClient error paths", () => {
       Effect.either(program.pipe(Effect.provide(MockLayer)))
     )
 
-    expect(Either.isLeft(result)).toBe(true)
-    if (Either.isLeft(result)) {
-      expect(result.left._tag).toBe("KernelError")
-    }
+    expectLeftWith(result, KernelError)
   })
 
   it("getText unknown path yields KernelError", async () => {
@@ -75,10 +74,7 @@ describe("KernelClient error paths", () => {
       Effect.either(program.pipe(Effect.provide(MockLayer)))
     )
 
-    expect(Either.isLeft(result)).toBe(true)
-    if (Either.isLeft(result)) {
-      expect(result.left._tag).toBe("KernelError")
-    }
+    expectLeftWith(result, KernelError)
   })
 
   it("schema mismatch yields a decode error (wrong type)", async () => {
@@ -100,14 +96,14 @@ describe("KernelClient error paths", () => {
 
   it("KernelError is tagged correctly", () => {
     const err = new KernelError({ message: "test error", statusCode: 500 })
-    expect(err._tag).toBe("KernelError")
+    expect(err).toBeInstanceOf(KernelError)
     expect(err.message).toBe("test error")
     expect(err.statusCode).toBe(500)
   })
 
   it("KernelUnavailableError is tagged correctly", () => {
     const err = new KernelUnavailableError({ message: "offline" })
-    expect(err._tag).toBe("KernelUnavailableError")
+    expect(err).toBeInstanceOf(KernelUnavailableError)
     expect(err.message).toBe("offline")
   })
 
@@ -129,11 +125,11 @@ describe("KernelClient error paths", () => {
   })
 })
 
-// ---------- GitHubClient error paths ----------
+// ---------- GitHub error paths (via KernelClient /api/github/*) ----------
 
-describe("GitHubClient error paths", () => {
-  const MockLayer = createMockGitHubClient({
-    issues: [
+describe("GitHub error paths (via kernel driver)", () => {
+  const MockLayer = createMockKernelClient({
+    "/api/github/issues": [
       {
         number: 1,
         title: "Test",
@@ -144,7 +140,7 @@ describe("GitHubClient error paths", () => {
         url: "https://github.com/org/repo/issues/1",
       },
     ],
-    prs: [
+    "/api/github/prs": [
       {
         number: 10,
         title: "PR",
@@ -154,7 +150,7 @@ describe("GitHubClient error paths", () => {
         url: "https://github.com/org/repo/pull/10",
       },
     ],
-    runs: [
+    "/api/github/runs": [
       {
         id: 100,
         name: "CI",
@@ -166,76 +162,52 @@ describe("GitHubClient error paths", () => {
     ],
   })
 
-  it("viewIssue with nonexistent number yields GitHubError", async () => {
+  it("GET /api/github/issues returns issues via kernel", async () => {
+    const GhIssueList = Schema.Array(
+      Schema.Struct({
+        number: Schema.Number,
+        title: Schema.String,
+        state: Schema.String,
+        author: Schema.String,
+        labels: Schema.Array(Schema.String),
+        createdAt: Schema.String,
+        url: Schema.String,
+      })
+    )
+
     const program = Effect.gen(function* () {
-      const gh = yield* GitHubClient
-      return yield* gh.viewIssue("org/repo", 999)
+      const kernel = yield* KernelClient
+      return yield* kernel.get("/api/github/issues?repo=org/repo", GhIssueList)
+    })
+
+    const result = await Effect.runPromise(
+      program.pipe(Effect.provide(MockLayer))
+    )
+
+    expect(result).toHaveLength(1)
+    expect(result[0].number).toBe(1)
+  })
+
+  it("GET unknown github path yields KernelError", async () => {
+    const program = Effect.gen(function* () {
+      const kernel = yield* KernelClient
+      return yield* kernel.get("/api/github/nonexistent", Schema.String)
     })
 
     const result = await Effect.runPromise(
       Effect.either(program.pipe(Effect.provide(MockLayer)))
     )
 
-    expect(Either.isLeft(result)).toBe(true)
-    if (Either.isLeft(result)) {
-      expect(result.left._tag).toBe("GitHubError")
-      expect((result.left as GitHubError).message).toContain("999")
-    }
+    expectLeftWith(result, KernelError)
   })
 
-  it("viewPR with nonexistent number yields GitHubError", async () => {
+  it("catchTag KernelError works for GitHub paths", async () => {
     const program = Effect.gen(function* () {
-      const gh = yield* GitHubClient
-      return yield* gh.viewPR("org/repo", 999)
-    })
-
-    const result = await Effect.runPromise(
-      Effect.either(program.pipe(Effect.provide(MockLayer)))
-    )
-
-    expect(Either.isLeft(result)).toBe(true)
-    if (Either.isLeft(result)) {
-      expect(result.left._tag).toBe("GitHubError")
-      expect((result.left as GitHubError).message).toContain("999")
-    }
-  })
-
-  it("viewRun with nonexistent ID yields GitHubError", async () => {
-    const program = Effect.gen(function* () {
-      const gh = yield* GitHubClient
-      return yield* gh.viewRun("org/repo", 99999)
-    })
-
-    const result = await Effect.runPromise(
-      Effect.either(program.pipe(Effect.provide(MockLayer)))
-    )
-
-    expect(Either.isLeft(result)).toBe(true)
-    if (Either.isLeft(result)) {
-      expect(result.left._tag).toBe("GitHubError")
-      expect((result.left as GitHubError).message).toContain("99999")
-    }
-  })
-
-  it("GitHubError is tagged correctly", () => {
-    const err = new GitHubError({ message: "API failure" })
-    expect(err._tag).toBe("GitHubError")
-    expect(err.message).toBe("API failure")
-  })
-
-  it("GitHubAuthError is tagged correctly", () => {
-    const err = new GitHubAuthError({ message: "no token" })
-    expect(err._tag).toBe("GitHubAuthError")
-    expect(err.message).toBe("no token")
-  })
-
-  it("catchTag GitHubError works in Effect pipeline", async () => {
-    const program = Effect.gen(function* () {
-      const gh = yield* GitHubClient
-      return yield* gh.viewIssue("org/repo", 404)
+      const kernel = yield* KernelClient
+      return yield* kernel.get("/api/github/nonexistent", Schema.String)
     }).pipe(
-      Effect.catchTag("GitHubError", (e) =>
-        Effect.succeed(`caught: ${e.message}`)
+      Effect.catchTag("KernelError", (e) =>
+        Effect.succeed(`caught: ${e.statusCode}`)
       )
     )
 
@@ -243,26 +215,6 @@ describe("GitHubClient error paths", () => {
       program.pipe(Effect.provide(MockLayer))
     )
 
-    expect(result).toContain("caught:")
-  })
-
-  it("empty mock returns empty arrays", async () => {
-    const EmptyLayer = createMockGitHubClient({})
-
-    const program = Effect.gen(function* () {
-      const gh = yield* GitHubClient
-      const issues = yield* gh.listIssues("org/repo")
-      const prs = yield* gh.listPRs("org/repo")
-      const runs = yield* gh.listRuns("org/repo")
-      return { issues, prs, runs }
-    })
-
-    const result = await Effect.runPromise(
-      program.pipe(Effect.provide(EmptyLayer))
-    )
-
-    expect(result.issues).toHaveLength(0)
-    expect(result.prs).toHaveLength(0)
-    expect(result.runs).toHaveLength(0)
+    expect(result).toBe("caught: 404")
   })
 })

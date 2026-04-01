@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest"
 import { Effect } from "effect"
-import { execPromise } from "../src/lib/exec.js"
+import { execPromise } from "../src/lib/exec"
 
 /**
  * Net commands delegate to the gctl Rust binary.

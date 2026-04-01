@@ -1,6 +1,50 @@
+/**
+ * gctl gh — GitHub integration via kernel driver-github.
+ *
+ * All GitHub operations route through the kernel HTTP API (/api/github/*),
+ * which delegates to driver-github (a kernel LKM using native gh CLI).
+ * The shell has no direct knowledge of the GitHub API or gh CLI.
+ */
 import { Command, Options, Args } from "@effect/cli"
-import { Console, Effect } from "effect"
-import { GitHubClient } from "../services/GitHubClient.js"
+import { Console, Effect, Option, Schema } from "effect"
+import { KernelClient } from "../services/KernelClient"
+
+// --- Schemas for kernel GitHub API responses ---
+
+export const GhIssue = Schema.Struct({
+  number: Schema.Number,
+  title: Schema.String,
+  state: Schema.String,
+  author: Schema.String,
+  labels: Schema.Array(Schema.String),
+  createdAt: Schema.String,
+  url: Schema.String,
+})
+export type GhIssue = typeof GhIssue.Type
+
+export const GhPR = Schema.Struct({
+  number: Schema.Number,
+  title: Schema.String,
+  state: Schema.String,
+  author: Schema.String,
+  branch: Schema.String,
+  url: Schema.String,
+})
+export type GhPR = typeof GhPR.Type
+
+export const GhRun = Schema.Struct({
+  id: Schema.Number,
+  name: Schema.String,
+  status: Schema.String,
+  conclusion: Schema.NullOr(Schema.String),
+  branch: Schema.String,
+  url: Schema.String,
+})
+export type GhRun = typeof GhRun.Type
+
+const GhIssueList = Schema.Array(GhIssue)
+const GhPRList = Schema.Array(GhPR)
+const GhRunList = Schema.Array(GhRun)
 
 const repo = Options.text("repo").pipe(
   Options.withAlias("r"),
@@ -15,8 +59,11 @@ const issuesListCommand = Command.make(
   { repo, limit },
   ({ repo, limit }) =>
     Effect.gen(function* () {
-      const gh = yield* GitHubClient
-      const issues = yield* gh.listIssues(repo, { limit })
+      const kernel = yield* KernelClient
+      const issues = yield* kernel.get(
+        `/api/github/issues?repo=${encodeURIComponent(repo)}&limit=${limit}`,
+        GhIssueList
+      )
 
       if (issues.length === 0) {
         yield* Console.log("No issues found.")
@@ -40,8 +87,11 @@ const issuesViewCommand = Command.make(
   { repo, number: issueNumber },
   ({ repo, number }) =>
     Effect.gen(function* () {
-      const gh = yield* GitHubClient
-      const issue = yield* gh.viewIssue(repo, number)
+      const kernel = yield* KernelClient
+      const issue = yield* kernel.get(
+        `/api/github/issues/${number}?repo=${encodeURIComponent(repo)}`,
+        GhIssue
+      )
 
       yield* Console.log(`#${issue.number} ${issue.title}`)
       yield* Console.log(`State:   ${issue.state}`)
@@ -69,12 +119,16 @@ const issuesCreateCommand = Command.make(
   { repo, title: issueTitle, body: issueBody, labels: issueLabels },
   ({ repo, title, body, labels }) =>
     Effect.gen(function* () {
-      const gh = yield* GitHubClient
-      const issue = yield* gh.createIssue(repo, {
-        title,
-        body: body._tag === "Some" ? body.value : undefined,
-        labels: labels.length > 0 ? [...labels] : undefined,
-      })
+      const kernel = yield* KernelClient
+      const issue = yield* kernel.post(
+        `/api/github/issues?repo=${encodeURIComponent(repo)}`,
+        {
+          title,
+          body: Option.getOrUndefined(body),
+          labels: labels.length > 0 ? [...labels] : undefined,
+        },
+        GhIssue
+      )
       yield* Console.log(`Created issue #${issue.number}: ${issue.title}`)
       yield* Console.log(`URL: ${issue.url}`)
     })
@@ -91,8 +145,11 @@ const prsListCommand = Command.make(
   { repo, limit },
   ({ repo, limit }) =>
     Effect.gen(function* () {
-      const gh = yield* GitHubClient
-      const prs = yield* gh.listPRs(repo, { limit })
+      const kernel = yield* KernelClient
+      const prs = yield* kernel.get(
+        `/api/github/prs?repo=${encodeURIComponent(repo)}&limit=${limit}`,
+        GhPRList
+      )
 
       if (prs.length === 0) {
         yield* Console.log("No pull requests found.")
@@ -116,8 +173,11 @@ const prsViewCommand = Command.make(
   { repo, number: prNumber },
   ({ repo, number }) =>
     Effect.gen(function* () {
-      const gh = yield* GitHubClient
-      const pr = yield* gh.viewPR(repo, number)
+      const kernel = yield* KernelClient
+      const pr = yield* kernel.get(
+        `/api/github/prs/${number}?repo=${encodeURIComponent(repo)}`,
+        GhPR
+      )
 
       yield* Console.log(`#${pr.number} ${pr.title}`)
       yield* Console.log(`State:  ${pr.state}`)
@@ -144,11 +204,11 @@ const runsListCommand = Command.make(
   { repo, limit, branch },
   ({ repo, limit, branch }) =>
     Effect.gen(function* () {
-      const gh = yield* GitHubClient
-      const runs = yield* gh.listRuns(repo, {
-        limit,
-        branch: branch._tag === "Some" ? branch.value : undefined,
-      })
+      const kernel = yield* KernelClient
+      const branchParam = Option.getOrUndefined(branch)
+      let path = `/api/github/runs?repo=${encodeURIComponent(repo)}&limit=${limit}`
+      if (branchParam) path += `&branch=${encodeURIComponent(branchParam)}`
+      const runs = yield* kernel.get(path, GhRunList)
 
       if (runs.length === 0) {
         yield* Console.log("No workflow runs found.")
@@ -172,8 +232,11 @@ const runsViewCommand = Command.make(
   { repo, runId },
   ({ repo, runId }) =>
     Effect.gen(function* () {
-      const gh = yield* GitHubClient
-      const run = yield* gh.viewRun(repo, runId)
+      const kernel = yield* KernelClient
+      const run = yield* kernel.get(
+        `/api/github/runs/${runId}?repo=${encodeURIComponent(repo)}`,
+        GhRun
+      )
 
       yield* Console.log(`Run #${run.id}: ${run.name}`)
       yield* Console.log(`Status:     ${run.status}`)

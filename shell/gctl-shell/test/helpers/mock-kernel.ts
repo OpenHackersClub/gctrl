@@ -1,15 +1,15 @@
 /**
- * Shared mock factories for KernelClient and GitHubClient.
+ * Shared mock factory for KernelClient.
  *
  * Allows test files to declare only the mock data they need:
  *   createMockKernelClient({ "/api/sessions": [...], "/api/analytics": {...} })
+ *
+ * GitHub commands also route through KernelClient (via /api/github/* kernel routes),
+ * so GitHub mocks are just additional route entries in the same mock.
  */
 import { Effect, Layer, Schema } from "effect"
-import { KernelClient } from "../../src/services/KernelClient.js"
-import { GitHubClient } from "../../src/services/GitHubClient.js"
-import type { GhIssue, GhPR, GhRun } from "../../src/services/GitHubClient.js"
-import { KernelError, KernelUnavailableError } from "../../src/errors.js"
-import { GitHubError } from "../../src/errors.js"
+import { KernelClient } from "../../src/services/KernelClient"
+import { KernelError, KernelUnavailableError } from "../../src/errors"
 
 type RouteMap = Record<string, unknown>
 
@@ -111,49 +111,4 @@ export const createMockUnhealthyKernelClient = () =>
       Effect.fail(new KernelUnavailableError({ message: "Kernel offline" })),
     health: () =>
       Effect.fail(new KernelUnavailableError({ message: "Kernel offline" })),
-  })
-
-/**
- * Create a mock GitHubClient Layer with canned data.
- */
-export const createMockGitHubClient = (data: {
-  issues?: ReadonlyArray<GhIssue>
-  prs?: ReadonlyArray<GhPR>
-  runs?: ReadonlyArray<GhRun>
-}) =>
-  Layer.succeed(GitHubClient, {
-    listIssues: (_repo, _options) =>
-      Effect.succeed(data.issues ?? []),
-    viewIssue: (_repo, number) => {
-      const issue = (data.issues ?? []).find((i) => i.number === number)
-      return issue
-        ? Effect.succeed(issue)
-        : Effect.fail(new GitHubError({ message: `Issue #${number} not found` }))
-    },
-    createIssue: (_repo, input) =>
-      Effect.succeed({
-        number: 999,
-        title: input.title,
-        state: "open",
-        author: "test",
-        labels: input.labels ?? [],
-        createdAt: "2026-03-31T00:00:00Z",
-        url: "https://github.com/org/repo/issues/999",
-      }),
-    listPRs: (_repo, _options) =>
-      Effect.succeed(data.prs ?? []),
-    viewPR: (_repo, number) => {
-      const pr = (data.prs ?? []).find((p) => p.number === number)
-      return pr
-        ? Effect.succeed(pr)
-        : Effect.fail(new GitHubError({ message: `PR #${number} not found` }))
-    },
-    listRuns: (_repo, _options) =>
-      Effect.succeed(data.runs ?? []),
-    viewRun: (_repo, runId) => {
-      const run = (data.runs ?? []).find((r) => r.id === runId)
-      return run
-        ? Effect.succeed(run)
-        : Effect.fail(new GitHubError({ message: `Run #${runId} not found` }))
-    },
   })
