@@ -1385,6 +1385,7 @@ async fn inbox_list_messages(
         urgency: params.urgency,
         kind: params.kind,
         project: params.project,
+        thread_id: None,
         requires_action: params.requires_action,
         limit: Some(params.limit),
     };
@@ -1398,11 +1399,26 @@ async fn inbox_get_thread(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match state.store.get_inbox_thread(&id) {
-        Ok(Some(thread)) => Json(serde_json::to_value(&thread).unwrap()).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, format!("thread not found: {}", id)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
+    let thread = match state.store.get_inbox_thread(&id) {
+        Ok(Some(t)) => t,
+        Ok(None) => return (StatusCode::NOT_FOUND, format!("thread not found: {}", id)).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    // Include messages for the thread (shell expects InboxThreadWithMessages)
+    let filter = gctl_core::InboxMessageFilter {
+        thread_id: Some(id),
+        ..Default::default()
+    };
+    let messages = match state.store.list_inbox_messages(&filter) {
+        Ok(m) => m,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let mut value = serde_json::to_value(&thread).unwrap();
+    value.as_object_mut().unwrap().insert(
+        "messages".to_string(),
+        serde_json::to_value(&messages).unwrap(),
+    );
+    Json(value).into_response()
 }
 
 #[derive(Deserialize)]

@@ -535,6 +535,7 @@ pub struct InboxMessageFilter {
     pub urgency: Option<String>,
     pub kind: Option<String>,
     pub project: Option<String>,
+    pub thread_id: Option<String>,
     pub requires_action: Option<bool>,
     pub limit: Option<usize>,
 }

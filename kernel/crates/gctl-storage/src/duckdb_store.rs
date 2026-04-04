@@ -1391,70 +1391,54 @@ impl DuckDbStore {
 
     pub fn list_inbox_messages(&self, filter: &InboxMessageFilter) -> Result<Vec<InboxMessage>> {
         let conn = self.conn.lock().unwrap();
-        let mut sql = String::from(
+        let needs_join = filter.project.is_some();
+        let col = |name: &str| -> String {
+            if needs_join { format!("m.{}", name) } else { name.to_string() }
+        };
+
+        let base = if needs_join {
+            "SELECT m.id, m.thread_id, m.source, m.kind, m.urgency, m.title, m.body, m.context, m.status, m.requires_action, m.payload, m.duplicate_count, m.snoozed_until, m.expires_at, m.created_at, m.updated_at
+             FROM inbox_messages m JOIN inbox_threads t ON m.thread_id = t.id WHERE 1=1".to_string()
+        } else {
             "SELECT id, thread_id, source, kind, urgency, title, body, context, status, requires_action, payload, duplicate_count, snoozed_until, expires_at, created_at, updated_at
-             FROM inbox_messages WHERE 1=1"
-        );
+             FROM inbox_messages WHERE 1=1".to_string()
+        };
+
+        let mut sql = base;
         let mut params_vec: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
         let mut idx = 1;
 
+        if let Some(ref project) = filter.project {
+            sql.push_str(&format!(" AND t.project_key = ?{}", idx));
+            params_vec.push(Box::new(project.clone()));
+            idx += 1;
+        }
+        if let Some(ref thread_id) = filter.thread_id {
+            sql.push_str(&format!(" AND {} = ?{}", col("thread_id"), idx));
+            params_vec.push(Box::new(thread_id.clone()));
+            idx += 1;
+        }
         if let Some(ref status) = filter.status {
-            sql.push_str(&format!(" AND status = ?{}", idx));
+            sql.push_str(&format!(" AND {} = ?{}", col("status"), idx));
             params_vec.push(Box::new(status.clone()));
             idx += 1;
         }
         if let Some(ref urgency) = filter.urgency {
-            sql.push_str(&format!(" AND urgency = ?{}", idx));
+            sql.push_str(&format!(" AND {} = ?{}", col("urgency"), idx));
             params_vec.push(Box::new(urgency.clone()));
             idx += 1;
         }
         if let Some(ref kind) = filter.kind {
-            sql.push_str(&format!(" AND kind = ?{}", idx));
+            sql.push_str(&format!(" AND {} = ?{}", col("kind"), idx));
             params_vec.push(Box::new(kind.clone()));
             idx += 1;
         }
-        if let Some(ref project) = filter.project {
-            // Filter by thread's project_key via join
-            sql = format!(
-                "SELECT m.id, m.thread_id, m.source, m.kind, m.urgency, m.title, m.body, m.context, m.status, m.requires_action, m.payload, m.duplicate_count, m.snoozed_until, m.expires_at, m.created_at, m.updated_at
-                 FROM inbox_messages m JOIN inbox_threads t ON m.thread_id = t.id WHERE t.project_key = ?{} {}",
-                idx,
-                // Re-add previous filters
-                if filter.status.is_some() || filter.urgency.is_some() || filter.kind.is_some() {
-                    let mut extra = String::new();
-                    let mut fidx = 1;
-                    if filter.status.is_some() {
-                        extra.push_str(&format!(" AND m.status = ?{}", fidx));
-                        fidx += 1;
-                    }
-                    if filter.urgency.is_some() {
-                        extra.push_str(&format!(" AND m.urgency = ?{}", fidx));
-                        fidx += 1;
-                    }
-                    if filter.kind.is_some() {
-                        extra.push_str(&format!(" AND m.kind = ?{}", fidx));
-                        // fidx not needed after last use
-                    }
-                    extra
-                } else {
-                    String::new()
-                }
-            );
-            // Rebuild params: project first, then existing ones
-            let mut new_params: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
-            new_params.push(Box::new(project.clone()));
-            new_params.extend(params_vec);
-            params_vec = new_params;
-            idx += 1;
-        }
         if let Some(requires_action) = filter.requires_action {
-            let col = if filter.project.is_some() { "m.requires_action" } else { "requires_action" };
-            sql.push_str(&format!(" AND {} = ?{}", col, idx));
+            sql.push_str(&format!(" AND {} = ?{}", col("requires_action"), idx));
             params_vec.push(Box::new(requires_action));
             idx += 1;
         }
-        let order_col = if filter.project.is_some() { "m.created_at" } else { "created_at" };
-        sql.push_str(&format!(" ORDER BY {} DESC", order_col));
+        sql.push_str(&format!(" ORDER BY {} DESC", col("created_at")));
         if let Some(limit) = filter.limit {
             sql.push_str(&format!(" LIMIT ?{}", idx));
             params_vec.push(Box::new(limit as i64));
