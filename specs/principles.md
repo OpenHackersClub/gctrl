@@ -73,10 +73,30 @@ When modifying code, respect crate boundaries:
 
 ## Testing Invariants
 
-1. Every new public function MUST have at least one test.
-2. Storage tests MUST use `:memory:` DuckDB — no file I/O in tests.
-3. OTel tests MUST use `axum::test` with `tower::ServiceExt::oneshot`.
-4. Contributors MUST run `cargo test` before committing.
+**Test-Driven Development (TDD) is the default workflow.** New features MUST follow the red-green-refactor cycle:
+
+1. **Write a failing test first** — define the expected behavior before writing production code. The test MUST fail for the right reason (not a compile error).
+2. **Make it pass** — write the minimal production code to make the test green.
+3. **Refactor** — clean up both production code and tests while keeping all tests green.
+
+This applies to all layers:
+- **Kernel (Rust):** Write the `DuckDbStore` test (`:memory:`) before the CRUD method. Write the axum `oneshot` test before the HTTP handler.
+- **Shell (Effect-TS):** Write the mock `KernelClient` test before the command implementation.
+- **Applications:** Write the `vitest` test before the service/adapter.
+
+### Test layer requirements
+
+4. Every new public function MUST have at least one test.
+5. Storage tests MUST use `:memory:` DuckDB — no file I/O in tests.
+6. OTel HTTP tests MUST use `axum::test` with `tower::ServiceExt::oneshot`.
+7. Shell tests MUST use mock `KernelClient` layer — no real HTTP in unit tests.
+8. Contributors MUST run `cargo test && pnpm test` before committing.
+
+### Test coverage expectations
+
+9. **Storage layer:** CRUD + filters + edge cases (idempotency, not-found, invalid state transitions).
+10. **HTTP layer:** Happy path + validation errors (400) + not found (404) + conflict (409) for every route.
+11. **Shell layer:** Schema parsing + command output for every subcommand, including empty results.
 
 ## Git Workflow
 
