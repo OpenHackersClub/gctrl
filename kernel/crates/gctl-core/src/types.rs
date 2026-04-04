@@ -297,6 +297,7 @@ pub struct BoardProject {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum IssueStatus {
     Backlog,
     Todo,
@@ -350,6 +351,33 @@ impl IssueStatus {
     pub fn can_transition_to(&self, target: &IssueStatus) -> bool {
         self.valid_transitions().contains(target)
     }
+
+    /// The canonical forward pipeline order.
+    const FORWARD_ORDER: &'static [IssueStatus] = &[
+        IssueStatus::Backlog,
+        IssueStatus::Todo,
+        IssueStatus::InProgress,
+        IssueStatus::InReview,
+        IssueStatus::Done,
+    ];
+
+    /// Returns the chain of intermediate statuses to reach `target` via forward
+    /// transitions, **including** `target` itself. Returns `None` if `target` is
+    /// not reachable forward from `self` (same status, backward, or terminal).
+    ///
+    /// Example: `Backlog.forward_path_to(InProgress)` → `Some([Todo, InProgress])`
+    pub fn forward_path_to(&self, target: &IssueStatus) -> Option<Vec<IssueStatus>> {
+        if *target == IssueStatus::Cancelled {
+            return Some(vec![IssueStatus::Cancelled]);
+        }
+        let order = Self::FORWARD_ORDER;
+        let from_idx = order.iter().position(|s| s == self)?;
+        let to_idx = order.iter().position(|s| s == target)?;
+        if to_idx <= from_idx {
+            return None;
+        }
+        Some(order[from_idx + 1..=to_idx].to_vec())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -376,6 +404,12 @@ pub struct BoardIssue {
     pub total_cost_usd: f64,
     pub total_tokens: u64,
     pub pr_numbers: Vec<u32>,
+    /// SHA-256 hash of markdown body for bidirectional sync change detection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+    /// Filesystem path for markdown-based issue files.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -409,6 +443,42 @@ pub struct BoardComment {
     pub body: String,
     pub created_at: DateTime<Utc>,
     pub session_id: Option<String>,
+}
+
+// --- Persona (Kernel Extension) ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonaDefinition {
+    pub id: String,
+    pub name: String,
+    pub focus: String,
+    pub prompt_prefix: String,
+    pub owns: String,
+    pub review_focus: String,
+    pub pushes_back: String,
+    pub tools: Vec<String>,
+    pub key_specs: Vec<String>,
+    pub source_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonaReviewRule {
+    pub id: String,
+    pub pr_type: String,
+    pub persona_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeamRecommendation {
+    pub personas: Vec<PersonaDefinition>,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenderedPersonaPrompt {
+    pub persona_id: String,
+    pub name: String,
+    pub prompt: String,
 }
 
 #[cfg(test)]
@@ -487,5 +557,25 @@ mod tests {
         let parsed: Span = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.span_id, span.span_id);
         assert_eq!(parsed.model, span.model);
+    }
+
+    #[test]
+    fn persona_definition_serialization() {
+        let persona = PersonaDefinition {
+            id: "engineer".into(),
+            name: "Principal Fullstack Engineer".into(),
+            focus: "Architecture, code quality".into(),
+            prompt_prefix: "You are a Principal Fullstack Engineer.".into(),
+            owns: "Kernel crates, shell implementation".into(),
+            review_focus: "Hexagonal boundaries, dependency direction".into(),
+            pushes_back: "Adapters depend on each other".into(),
+            tools: vec!["cargo build".into(), "cargo test".into()],
+            key_specs: vec!["specs/architecture/".into()],
+            source_hash: Some("abc123".into()),
+        };
+        let json = serde_json::to_string(&persona).unwrap();
+        let parsed: PersonaDefinition = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.id, "engineer");
+        assert_eq!(parsed.tools.len(), 2);
     }
 }

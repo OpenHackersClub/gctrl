@@ -190,7 +190,9 @@ CREATE TABLE IF NOT EXISTS board_issues (
     session_ids     JSON DEFAULT '[]',
     total_cost_usd  DOUBLE DEFAULT 0.0,
     total_tokens    BIGINT DEFAULT 0,
-    pr_numbers      JSON DEFAULT '[]'
+    pr_numbers      JSON DEFAULT '[]',
+    content_hash    VARCHAR,
+    source_path     VARCHAR
 )
 "#;
 
@@ -220,6 +222,34 @@ CREATE TABLE IF NOT EXISTS board_comments (
 )
 "#;
 
+// --- Persona Tables (kernel extension, persona_* prefix) ---
+
+pub const CREATE_PERSONA_DEFINITIONS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS persona_definitions (
+    id              VARCHAR PRIMARY KEY,
+    name            VARCHAR NOT NULL,
+    focus           VARCHAR NOT NULL,
+    prompt_prefix   VARCHAR NOT NULL,
+    owns            VARCHAR NOT NULL,
+    review_focus    VARCHAR NOT NULL,
+    pushes_back     VARCHAR NOT NULL,
+    tools           JSON DEFAULT '[]',
+    key_specs       JSON DEFAULT '[]',
+    created_at      VARCHAR NOT NULL,
+    updated_at      VARCHAR NOT NULL,
+    source_hash     VARCHAR
+)
+"#;
+
+pub const CREATE_PERSONA_REVIEW_RULES_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS persona_review_rules (
+    id              VARCHAR PRIMARY KEY,
+    pr_type         VARCHAR NOT NULL UNIQUE,
+    persona_ids     JSON NOT NULL,
+    created_at      VARCHAR NOT NULL
+)
+"#;
+
 pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_spans_session ON spans(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(trace_id)",
@@ -242,6 +272,9 @@ pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_board_issues_parent ON board_issues(parent_id)",
     "CREATE INDEX IF NOT EXISTS idx_board_events_issue ON board_events(issue_id)",
     "CREATE INDEX IF NOT EXISTS idx_board_comments_issue ON board_comments(issue_id)",
+    // Persona indexes
+    "CREATE INDEX IF NOT EXISTS idx_persona_definitions_name ON persona_definitions(name)",
+    "CREATE INDEX IF NOT EXISTS idx_persona_review_rules_type ON persona_review_rules(pr_type)",
 ];
 
 pub fn all_migrations() -> Vec<&'static str> {
@@ -262,6 +295,8 @@ pub fn all_migrations() -> Vec<&'static str> {
         CREATE_BOARD_ISSUES_TABLE,
         CREATE_BOARD_EVENTS_TABLE,
         CREATE_BOARD_COMMENTS_TABLE,
+        CREATE_PERSONA_DEFINITIONS_TABLE,
+        CREATE_PERSONA_REVIEW_RULES_TABLE,
     ];
     stmts.extend(CREATE_INDEXES.iter());
     stmts

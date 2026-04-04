@@ -16,6 +16,8 @@ import { analyticsCommand } from "./commands/analytics"
 import { contextCommand } from "./commands/context"
 import { boardCommand } from "./commands/board"
 import { netCommand } from "./commands/net"
+import { personaCommand } from "./commands/persona"
+import { teamCommand } from "./commands/team"
 import { HttpKernelClientLive } from "./adapters/HttpKernelClient"
 
 const command = Command.make("gctl").pipe(
@@ -28,6 +30,8 @@ const command = Command.make("gctl").pipe(
     contextCommand,
     boardCommand,
     netCommand,
+    personaCommand,
+    teamCommand,
   ])
 )
 

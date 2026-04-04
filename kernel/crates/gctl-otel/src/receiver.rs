@@ -64,6 +64,16 @@ pub fn create_router_with_context(store: DuckDbStore, context: Option<ContextMan
         .route("/api/board/issues/{id}/events", get(board_list_events))
         .route("/api/board/issues/{id}/comments", get(board_list_comments))
         .route("/api/board/issues/{id}/link-session", post(board_link_session))
+        .route("/api/board/import", post(board_import_markdown))
+        .route("/api/board/export", post(board_export_markdown))
+        // Persona management (kernel extension)
+        .route("/api/personas", get(persona_list).post(persona_upsert))
+        .route("/api/personas/seed", post(persona_seed))
+        .route("/api/personas/review-rules", get(persona_review_rules_list).post(persona_review_rules_upsert))
+        .route("/api/personas/{id}", get(persona_get).delete(persona_delete))
+        // Team composition
+        .route("/api/team/recommend", post(team_recommend))
+        .route("/api/team/render", post(team_render))
         // Health
         .route("/health", get(health))
         .with_state(state)
@@ -638,7 +648,14 @@ async fn board_create_project(
     };
     match state.store.create_board_project(&project) {
         Ok(()) => (StatusCode::CREATED, Json(serde_json::to_value(&project).unwrap())).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("Duplicate key") || msg.contains("Constraint Error") {
+                (StatusCode::CONFLICT, format!("project with key '{}' already exists", project.key)).into_response()
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
+            }
+        }
     }
 }
 
@@ -708,6 +725,8 @@ async fn board_create_issue(
         total_cost_usd: 0.0,
         total_tokens: 0,
         pr_numbers: vec![],
+        content_hash: None,
+        source_path: None,
     };
 
     match state.store.insert_board_issue(&issue) {
@@ -884,6 +903,355 @@ async fn board_link_session(
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+}
+
+#[derive(Deserialize)]
+struct BoardImportBody {
+    path: String,
+}
+
+async fn board_import_markdown(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<BoardImportBody>,
+) -> impl IntoResponse {
+    let dir = std::path::Path::new(&body.path);
+    if !dir.is_dir() {
+        return (StatusCode::BAD_REQUEST, format!("not a directory: {}", body.path)).into_response();
+    }
+
+    let projects = match state.store.list_board_projects() {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let parsed = match gctl_storage::import_markdown_dir(dir, &projects) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    };
+
+    let mut imported = 0;
+    let mut skipped = 0;
+    for (issue, _id) in &parsed {
+        match state.store.upsert_board_issue(issue) {
+            Ok(true) => imported += 1,
+            Ok(false) => skipped += 1,
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        }
+    }
+
+    let result = serde_json::json!({
+        "imported": imported,
+        "skipped": skipped,
+        "total": parsed.len(),
+    });
+    (StatusCode::OK, Json(result)).into_response()
+}
+
+#[derive(Deserialize)]
+struct BoardExportBody {
+    path: String,
+    #[serde(default)]
+    project_id: Option<String>,
+}
+
+async fn board_export_markdown(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<BoardExportBody>,
+) -> impl IntoResponse {
+    let filter = gctl_core::BoardIssueFilter {
+        project_id: body.project_id,
+        ..Default::default()
+    };
+
+    let issues = match state.store.list_board_issues(&filter) {
+        Ok(i) => i,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let projects = match state.store.list_board_projects() {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let dir = std::path::Path::new(&body.path);
+    match gctl_storage::export_markdown_dir(dir, &issues, &projects) {
+        Ok(written) => {
+            let result = serde_json::json!({
+                "exported": written.len(),
+                "files": written,
+            });
+            (StatusCode::OK, Json(result)).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+// --- Persona Handlers ---
+
+async fn persona_list(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match state.store.list_personas() {
+        Ok(personas) => Json(serde_json::to_value(&personas).unwrap()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn persona_get(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.store.get_persona(&id) {
+        Ok(Some(persona)) => Json(serde_json::to_value(&persona).unwrap()).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, format!("persona '{}' not found", id)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct PersonaUpsertBody {
+    id: String,
+    name: String,
+    focus: String,
+    prompt_prefix: String,
+    #[serde(default)]
+    owns: String,
+    #[serde(default)]
+    review_focus: String,
+    #[serde(default)]
+    pushes_back: String,
+    #[serde(default)]
+    tools: Vec<String>,
+    #[serde(default)]
+    key_specs: Vec<String>,
+    #[serde(default)]
+    source_hash: Option<String>,
+}
+
+async fn persona_upsert(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<PersonaUpsertBody>,
+) -> impl IntoResponse {
+    let persona = gctl_core::PersonaDefinition {
+        id: body.id,
+        name: body.name,
+        focus: body.focus,
+        prompt_prefix: body.prompt_prefix,
+        owns: body.owns,
+        review_focus: body.review_focus,
+        pushes_back: body.pushes_back,
+        tools: body.tools,
+        key_specs: body.key_specs,
+        source_hash: body.source_hash,
+    };
+    match state.store.upsert_persona(&persona) {
+        Ok(true) => (StatusCode::CREATED, Json(serde_json::to_value(&persona).unwrap())).into_response(),
+        Ok(false) => Json(serde_json::to_value(&persona).unwrap()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct PersonaSeedBody {
+    personas: Vec<PersonaUpsertBody>,
+    #[serde(default)]
+    review_rules: Vec<ReviewRuleBody>,
+}
+
+async fn persona_seed(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<PersonaSeedBody>,
+) -> impl IntoResponse {
+    let mut created = 0u32;
+    let mut updated = 0u32;
+    for p in body.personas {
+        let persona = gctl_core::PersonaDefinition {
+            id: p.id,
+            name: p.name,
+            focus: p.focus,
+            prompt_prefix: p.prompt_prefix,
+            owns: p.owns,
+            review_focus: p.review_focus,
+            pushes_back: p.pushes_back,
+            tools: p.tools,
+            key_specs: p.key_specs,
+            source_hash: p.source_hash,
+        };
+        match state.store.upsert_persona(&persona) {
+            Ok(true) => created += 1,
+            Ok(false) => updated += 1,
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        }
+    }
+    for r in body.review_rules {
+        let rule = gctl_core::PersonaReviewRule {
+            id: r.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            pr_type: r.pr_type,
+            persona_ids: r.persona_ids,
+        };
+        if let Err(e) = state.store.upsert_review_rule(&rule) {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    }
+    Json(serde_json::json!({ "created": created, "updated": updated })).into_response()
+}
+
+async fn persona_delete(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.store.delete_persona(&id) {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, format!("persona '{}' not found", id)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ReviewRuleBody {
+    #[serde(default)]
+    id: Option<String>,
+    pr_type: String,
+    persona_ids: Vec<String>,
+}
+
+async fn persona_review_rules_list(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match state.store.list_review_rules() {
+        Ok(rules) => Json(serde_json::to_value(&rules).unwrap()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn persona_review_rules_upsert(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<ReviewRuleBody>,
+) -> impl IntoResponse {
+    let rule = gctl_core::PersonaReviewRule {
+        id: body.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+        pr_type: body.pr_type,
+        persona_ids: body.persona_ids,
+    };
+    match state.store.upsert_review_rule(&rule) {
+        Ok(_) => (StatusCode::CREATED, Json(serde_json::to_value(&rule).unwrap())).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+// --- Team Handlers ---
+
+#[derive(Deserialize)]
+struct TeamRecommendBody {
+    #[serde(default)]
+    labels: Vec<String>,
+    #[serde(default)]
+    pr_type: Option<String>,
+}
+
+async fn team_recommend(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<TeamRecommendBody>,
+) -> impl IntoResponse {
+    // 1. If pr_type matches a review rule, return that rule's persona set
+    if let Some(ref pr_type) = body.pr_type {
+        if let Ok(Some(rule)) = state.store.get_review_rule_by_type(pr_type) {
+            let mut personas = Vec::new();
+            for pid in &rule.persona_ids {
+                if let Ok(Some(p)) = state.store.get_persona(pid) {
+                    personas.push(p);
+                }
+            }
+            let result = gctl_core::TeamRecommendation {
+                personas,
+                rationale: format!("Matched review rule '{}'", pr_type),
+            };
+            return Json(serde_json::to_value(&result).unwrap()).into_response();
+        }
+    }
+
+    // 2. Match labels against persona owns/focus text
+    let all_personas = match state.store.list_personas() {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let mut matched: Vec<gctl_core::PersonaDefinition> = Vec::new();
+    let labels_lower: Vec<String> = body.labels.iter().map(|l| l.to_lowercase()).collect();
+
+    for persona in &all_personas {
+        let text = format!("{} {} {}", persona.owns, persona.focus, persona.id).to_lowercase();
+        if labels_lower.iter().any(|l| text.contains(l.as_str())) {
+            matched.push(persona.clone());
+        }
+    }
+
+    // Always include engineer as baseline if not already present
+    if !matched.iter().any(|p| p.id == "engineer") {
+        if let Some(eng) = all_personas.iter().find(|p| p.id == "engineer") {
+            matched.insert(0, eng.clone());
+        }
+    }
+
+    let rationale = if matched.is_empty() {
+        "No personas matched the given labels".to_string()
+    } else {
+        let names: Vec<&str> = matched.iter().map(|p| p.name.as_str()).collect();
+        format!("Matched by labels {:?}: {}", body.labels, names.join(", "))
+    };
+
+    let result = gctl_core::TeamRecommendation {
+        personas: matched,
+        rationale,
+    };
+    Json(serde_json::to_value(&result).unwrap()).into_response()
+}
+
+#[derive(Deserialize)]
+struct TeamRenderBody {
+    persona_ids: Vec<String>,
+    #[serde(default)]
+    context: Option<serde_json::Value>,
+}
+
+async fn team_render(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<TeamRenderBody>,
+) -> impl IntoResponse {
+    let mut agents = Vec::new();
+    let context_str = body.context
+        .as_ref()
+        .map(|c| serde_json::to_string_pretty(c).unwrap_or_default())
+        .unwrap_or_default();
+
+    for pid in &body.persona_ids {
+        match state.store.get_persona(pid) {
+            Ok(Some(persona)) => {
+                let mut prompt = persona.prompt_prefix.clone();
+                if !context_str.is_empty() {
+                    prompt.push_str(&format!("\n\n## Task Context\n{}", context_str));
+                }
+                if !persona.key_specs.is_empty() {
+                    prompt.push_str("\n\n## Key Specs to Reference\n");
+                    for spec in &persona.key_specs {
+                        prompt.push_str(&format!("- {}\n", spec));
+                    }
+                }
+                if !persona.review_focus.is_empty() {
+                    prompt.push_str(&format!("\n## Your Review Focus\n{}\n", persona.review_focus));
+                }
+                agents.push(gctl_core::RenderedPersonaPrompt {
+                    persona_id: persona.id,
+                    name: persona.name,
+                    prompt,
+                });
+            }
+            Ok(None) => {
+                return (StatusCode::NOT_FOUND, format!("persona '{}' not found", pid)).into_response();
+            }
+            Err(e) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+            }
+        }
+    }
+
+    Json(serde_json::json!({ "agents": agents })).into_response()
 }
 
 #[cfg(test)]

@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use duckdb::{params, Connection};
 use gctl_core::{
     AgentAnalytics, AlertEvent, AlertRule, Analytics, DailyAggregate, GctlError, ModelAnalytics,
+    PersonaDefinition, PersonaReviewRule,
     PromptVersion, Result, Score, Session, SessionId, SessionStatus, Span, SpanStatus, SpanType, Tag,
     TrafficFilter, TrafficRecord, TrafficStats,
 };
@@ -866,8 +867,8 @@ impl DuckDbStore {
     pub fn insert_board_issue(&self, issue: &gctl_core::BoardIssue) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO board_issues (id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO board_issues (id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 issue.id,
                 issue.project_id,
@@ -891,15 +892,56 @@ impl DuckDbStore {
                 issue.total_cost_usd,
                 issue.total_tokens as i64,
                 serde_json::to_string(&issue.pr_numbers).unwrap_or_else(|_| "[]".into()),
+                issue.content_hash,
+                issue.source_path,
             ],
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
     }
 
+    /// Upsert a board issue — insert or update if content_hash changed.
+    /// Used by markdown import. Preserves session_ids, cost, and tokens from existing record.
+    pub fn upsert_board_issue(&self, issue: &gctl_core::BoardIssue) -> Result<bool> {
+        // Check if exists and if content changed
+        if let Some(existing) = self.get_board_issue(&issue.id)? {
+            if existing.content_hash == issue.content_hash {
+                return Ok(false); // No change
+            }
+            // Update mutable fields from markdown, preserve kernel-managed fields
+            let conn = self.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE board_issues SET title = ?1, description = ?2, status = ?3, priority = ?4,
+                 assignee_id = ?5, assignee_name = ?6, assignee_type = ?7,
+                 labels = ?8, parent_id = ?9, updated_at = ?10,
+                 content_hash = ?11, source_path = ?12
+                 WHERE id = ?13",
+                params![
+                    issue.title,
+                    issue.description,
+                    issue.status.as_str(),
+                    issue.priority,
+                    issue.assignee_id,
+                    issue.assignee_name,
+                    issue.assignee_type,
+                    serde_json::to_string(&issue.labels).unwrap_or_else(|_| "[]".into()),
+                    issue.parent_id,
+                    chrono::Utc::now().to_rfc3339(),
+                    issue.content_hash,
+                    issue.source_path,
+                    issue.id,
+                ],
+            ).map_err(|e| GctlError::Storage(e.to_string()))?;
+            Ok(true)
+        } else {
+            self.insert_board_issue(issue)?;
+            Ok(true)
+        }
+    }
+
     pub fn get_board_issue(&self, id: &str) -> Result<Option<gctl_core::BoardIssue>> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers FROM board_issues WHERE id = ?1",
+            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path FROM board_issues WHERE id = ?1",
             [id],
             row_to_board_issue,
         ).ok().map(Ok).transpose()
@@ -908,7 +950,7 @@ impl DuckDbStore {
     pub fn list_board_issues(&self, filter: &gctl_core::BoardIssueFilter) -> Result<Vec<gctl_core::BoardIssue>> {
         let conn = self.conn.lock().unwrap();
         let mut sql = String::from(
-            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers FROM board_issues WHERE 1=1"
+            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path FROM board_issues WHERE 1=1"
         );
         let mut params_vec: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
         let mut idx = 1;
@@ -945,7 +987,7 @@ impl DuckDbStore {
         let target = gctl_core::IssueStatus::from_str(status)
             .ok_or_else(|| GctlError::Storage(format!("invalid status: {}", status)))?;
 
-        // Get current status and validate transition
+        // Get current status
         let conn = self.conn.lock().unwrap();
         let current_str: String = conn.query_row(
             "SELECT status FROM board_issues WHERE id = ?1",
@@ -956,31 +998,41 @@ impl DuckDbStore {
         let current = gctl_core::IssueStatus::from_str(&current_str)
             .unwrap_or(gctl_core::IssueStatus::Backlog);
 
-        if !current.can_transition_to(&target) {
+        // Compute transition path: direct if valid, otherwise auto-transit forward
+        let path = if current.can_transition_to(&target) {
+            vec![target]
+        } else if let Some(fwd) = current.forward_path_to(&target) {
+            fwd
+        } else {
             return Err(GctlError::Storage(format!(
                 "invalid transition: {} → {} (allowed: {})",
                 current.as_str(),
                 target.as_str(),
                 current.valid_transitions().iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
             )));
+        };
+
+        // Apply each step, emitting an event for every intermediate transition
+        let mut prev_str = current_str;
+        for step in &path {
+            let now = chrono::Utc::now();
+            let step_str = step.as_str();
+            conn.execute(
+                "UPDATE board_issues SET status = ?1, updated_at = ?2 WHERE id = ?3",
+                params![step_str, now.to_rfc3339(), id],
+            ).map_err(|e| GctlError::Storage(e.to_string()))?;
+
+            let event_id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO board_events (id, issue_id, type, actor_id, actor_name, actor_type, timestamp, data)
+                 VALUES (?, ?, 'status_changed', ?, ?, ?, ?, ?)",
+                params![
+                    event_id, id, actor_id, actor_name, actor_type, now.to_rfc3339(),
+                    serde_json::to_string(&serde_json::json!({"from": prev_str, "to": step_str})).unwrap(),
+                ],
+            ).map_err(|e| GctlError::Storage(e.to_string()))?;
+            prev_str = step_str.to_string();
         }
-
-        let now = chrono::Utc::now();
-        conn.execute(
-            "UPDATE board_issues SET status = ?1, updated_at = ?2 WHERE id = ?3",
-            params![status, now.to_rfc3339(), id],
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
-
-        // Auto-emit status_changed event
-        let event_id = uuid::Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT INTO board_events (id, issue_id, type, actor_id, actor_name, actor_type, timestamp, data)
-             VALUES (?, ?, 'status_changed', ?, ?, ?, ?, ?)",
-            params![
-                event_id, id, actor_id, actor_name, actor_type, now.to_rfc3339(),
-                serde_json::to_string(&serde_json::json!({"from": current_str, "to": status})).unwrap(),
-            ],
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
 
         Ok(())
     }
@@ -1099,6 +1151,156 @@ impl DuckDbStore {
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Persona CRUD
+    // ═══════════════════════════════════════════════════════════════
+
+    pub fn upsert_persona(&self, persona: &PersonaDefinition) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        let tools_json = serde_json::to_string(&persona.tools).unwrap_or_else(|_| "[]".into());
+        let specs_json = serde_json::to_string(&persona.key_specs).unwrap_or_else(|_| "[]".into());
+
+        // Check if exists
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM persona_definitions WHERE id = ?1",
+            [&persona.id],
+            |row| row.get(0),
+        ).unwrap_or(false);
+
+        if exists {
+            conn.execute(
+                "UPDATE persona_definitions SET name = ?1, focus = ?2, prompt_prefix = ?3, owns = ?4, review_focus = ?5, pushes_back = ?6, tools = ?7, key_specs = ?8, updated_at = ?9, source_hash = ?10 WHERE id = ?11",
+                params![persona.name, persona.focus, persona.prompt_prefix, persona.owns, persona.review_focus, persona.pushes_back, tools_json, specs_json, now, persona.source_hash, persona.id],
+            ).map_err(|e| GctlError::Storage(e.to_string()))?;
+            Ok(false) // updated
+        } else {
+            conn.execute(
+                "INSERT INTO persona_definitions (id, name, focus, prompt_prefix, owns, review_focus, pushes_back, tools, key_specs, created_at, updated_at, source_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![persona.id, persona.name, persona.focus, persona.prompt_prefix, persona.owns, persona.review_focus, persona.pushes_back, tools_json, specs_json, now, now, persona.source_hash],
+            ).map_err(|e| GctlError::Storage(e.to_string()))?;
+            Ok(true) // created
+        }
+    }
+
+    pub fn get_persona(&self, id: &str) -> Result<Option<PersonaDefinition>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, name, focus, prompt_prefix, owns, review_focus, pushes_back, tools, key_specs, source_hash FROM persona_definitions WHERE id = ?1",
+            [id],
+            |row| {
+                let tools_str: String = row.get(7)?;
+                let specs_str: String = row.get(8)?;
+                Ok(PersonaDefinition {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    focus: row.get(2)?,
+                    prompt_prefix: row.get(3)?,
+                    owns: row.get(4)?,
+                    review_focus: row.get(5)?,
+                    pushes_back: row.get(6)?,
+                    tools: serde_json::from_str(&tools_str).unwrap_or_default(),
+                    key_specs: serde_json::from_str(&specs_str).unwrap_or_default(),
+                    source_hash: row.get(9)?,
+                })
+            },
+        ).ok().map(Ok).transpose()
+    }
+
+    pub fn list_personas(&self) -> Result<Vec<PersonaDefinition>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, focus, prompt_prefix, owns, review_focus, pushes_back, tools, key_specs, source_hash FROM persona_definitions ORDER BY name"
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut personas = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            let tools_str: String = row.get(7).unwrap_or_default();
+            let specs_str: String = row.get(8).unwrap_or_default();
+            personas.push(PersonaDefinition {
+                id: row.get(0).unwrap_or_default(),
+                name: row.get(1).unwrap_or_default(),
+                focus: row.get(2).unwrap_or_default(),
+                prompt_prefix: row.get(3).unwrap_or_default(),
+                owns: row.get(4).unwrap_or_default(),
+                review_focus: row.get(5).unwrap_or_default(),
+                pushes_back: row.get(6).unwrap_or_default(),
+                tools: serde_json::from_str(&tools_str).unwrap_or_default(),
+                key_specs: serde_json::from_str(&specs_str).unwrap_or_default(),
+                source_hash: row.get(9).ok(),
+            });
+        }
+        Ok(personas)
+    }
+
+    pub fn delete_persona(&self, id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let affected = conn.execute("DELETE FROM persona_definitions WHERE id = ?1", [id])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
+    pub fn upsert_review_rule(&self, rule: &PersonaReviewRule) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        let ids_json = serde_json::to_string(&rule.persona_ids).unwrap_or_else(|_| "[]".into());
+
+        // Check if exists by id
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM persona_review_rules WHERE id = ?1",
+            [&rule.id],
+            |row| row.get(0),
+        ).unwrap_or(false);
+
+        if exists {
+            conn.execute(
+                "UPDATE persona_review_rules SET pr_type = ?1, persona_ids = ?2, created_at = ?3 WHERE id = ?4",
+                params![rule.pr_type, ids_json, now, rule.id],
+            ).map_err(|e| GctlError::Storage(e.to_string()))?;
+            Ok(false) // updated
+        } else {
+            conn.execute(
+                "INSERT INTO persona_review_rules (id, pr_type, persona_ids, created_at) VALUES (?1, ?2, ?3, ?4)",
+                params![rule.id, rule.pr_type, ids_json, now],
+            ).map_err(|e| GctlError::Storage(e.to_string()))?;
+            Ok(true) // created
+        }
+    }
+
+    pub fn list_review_rules(&self) -> Result<Vec<PersonaReviewRule>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, pr_type, persona_ids FROM persona_review_rules ORDER BY pr_type"
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rules = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            let ids_str: String = row.get(2).unwrap_or_default();
+            rules.push(PersonaReviewRule {
+                id: row.get(0).unwrap_or_default(),
+                pr_type: row.get(1).unwrap_or_default(),
+                persona_ids: serde_json::from_str(&ids_str).unwrap_or_default(),
+            });
+        }
+        Ok(rules)
+    }
+
+    pub fn get_review_rule_by_type(&self, pr_type: &str) -> Result<Option<PersonaReviewRule>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, pr_type, persona_ids FROM persona_review_rules WHERE pr_type = ?1",
+            [pr_type],
+            |row| {
+                let ids_str: String = row.get(2)?;
+                Ok(PersonaReviewRule {
+                    id: row.get(0)?,
+                    pr_type: row.get(1)?,
+                    persona_ids: serde_json::from_str(&ids_str).unwrap_or_default(),
+                })
+            },
+        ).ok().map(Ok).transpose()
+    }
 }
 
 fn row_to_board_issue(row: &duckdb::Row<'_>) -> duckdb::Result<gctl_core::BoardIssue> {
@@ -1138,6 +1340,8 @@ fn row_to_board_issue(row: &duckdb::Row<'_>) -> duckdb::Result<gctl_core::BoardI
         total_cost_usd: row.get(19)?,
         total_tokens: { let v: i64 = row.get(20)?; v as u64 },
         pr_numbers: serde_json::from_str(&pr_numbers_str).unwrap_or_default(),
+        content_hash: row.get(22)?,
+        source_path: row.get(23)?,
     })
 }
 
@@ -1841,6 +2045,8 @@ mod tests {
             total_cost_usd: 0.0,
             total_tokens: 0,
             pr_numbers: vec![],
+            content_hash: None,
+            source_path: None,
         }
     }
 
@@ -1926,20 +2132,47 @@ mod tests {
     }
 
     #[test]
-    fn test_board_invalid_transition_rejected() {
+    fn test_board_auto_transit_forward() {
         let store = test_store();
         store.create_board_project(&make_project("p1", "BACK")).unwrap();
         store.insert_board_issue(&make_issue("i1", "p1")).unwrap();
 
-        // backlog → done (invalid — must go through todo→in_progress→in_review first)
-        let result = store.update_board_issue_status("i1", "done", "u1", "Alice", "human");
+        // backlog → in_progress auto-transits through todo
+        store.update_board_issue_status("i1", "in_progress", "u1", "Alice", "human").unwrap();
+        let fetched = store.get_board_issue("i1").unwrap().unwrap();
+        assert_eq!(fetched.status, gctl_core::IssueStatus::InProgress);
+
+        // Two events emitted: backlog→todo, todo→in_progress
+        let events = store.list_board_events("i1").unwrap();
+        assert_eq!(events.len(), 2);
+
+        // backlog → done auto-transits through all intermediate steps
+        store.insert_board_issue(&make_issue("i2", "p1")).unwrap();
+        store.update_board_issue_status("i2", "done", "u1", "Alice", "human").unwrap();
+        let fetched = store.get_board_issue("i2").unwrap().unwrap();
+        assert_eq!(fetched.status, gctl_core::IssueStatus::Done);
+        let events = store.list_board_events("i2").unwrap();
+        assert_eq!(events.len(), 4); // backlog→todo→in_progress→in_review→done
+    }
+
+    #[test]
+    fn test_board_backward_transition_rejected() {
+        let store = test_store();
+        store.create_board_project(&make_project("p1", "BACK")).unwrap();
+        store.insert_board_issue(&make_issue("i1", "p1")).unwrap();
+
+        // Move to in_progress
+        store.update_board_issue_status("i1", "in_progress", "u1", "Alice", "human").unwrap();
+
+        // in_progress → backlog is backward (not a direct valid transition, not forward)
+        let result = store.update_board_issue_status("i1", "backlog", "u1", "Alice", "human");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("invalid transition"));
 
         // Status unchanged
         let fetched = store.get_board_issue("i1").unwrap().unwrap();
-        assert_eq!(fetched.status, gctl_core::IssueStatus::Backlog);
+        assert_eq!(fetched.status, gctl_core::IssueStatus::InProgress);
     }
 
     #[test]
@@ -2050,5 +2283,78 @@ mod tests {
         assert!((fetched.total_cost_usd - 2.25).abs() < 0.01);
         assert_eq!(fetched.total_tokens, 7500);
         assert_eq!(fetched.session_ids.len(), 2);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Persona tests
+    // ═══════════════════════════════════════════════════════════════
+
+    fn test_persona() -> PersonaDefinition {
+        PersonaDefinition {
+            id: "engineer".into(),
+            name: "Principal Fullstack Engineer".into(),
+            focus: "Architecture, code quality".into(),
+            prompt_prefix: "You are a Principal Fullstack Engineer.".into(),
+            owns: "Kernel crates, shell".into(),
+            review_focus: "Hexagonal boundaries".into(),
+            pushes_back: "Shortcuts bypass the shell".into(),
+            tools: vec!["cargo build".into(), "cargo test".into()],
+            key_specs: vec!["specs/architecture/".into()],
+            source_hash: Some("hash123".into()),
+        }
+    }
+
+    #[test]
+    fn test_persona_crud() {
+        let store = test_store();
+
+        // Create
+        let created = store.upsert_persona(&test_persona()).unwrap();
+        assert!(created);
+
+        // Read
+        let persona = store.get_persona("engineer").unwrap().unwrap();
+        assert_eq!(persona.name, "Principal Fullstack Engineer");
+        assert_eq!(persona.tools.len(), 2);
+
+        // Update (upsert existing)
+        let mut updated = test_persona();
+        updated.name = "Senior Engineer".into();
+        let was_created = store.upsert_persona(&updated).unwrap();
+        assert!(!was_created); // updated, not created
+
+        let persona = store.get_persona("engineer").unwrap().unwrap();
+        assert_eq!(persona.name, "Senior Engineer");
+
+        // List
+        let all = store.list_personas().unwrap();
+        assert_eq!(all.len(), 1);
+
+        // Delete
+        let deleted = store.delete_persona("engineer").unwrap();
+        assert!(deleted);
+        assert!(store.get_persona("engineer").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_review_rule_crud() {
+        let store = test_store();
+
+        let rule = PersonaReviewRule {
+            id: "rule-1".into(),
+            pr_type: "new_kernel_primitive".into(),
+            persona_ids: vec!["engineer".into(), "security".into(), "tech-lead".into()],
+        };
+
+        store.upsert_review_rule(&rule).unwrap();
+
+        let rules = store.list_review_rules().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].persona_ids.len(), 3);
+
+        let found = store.get_review_rule_by_type("new_kernel_primitive").unwrap().unwrap();
+        assert_eq!(found.persona_ids, vec!["engineer", "security", "tech-lead"]);
+
+        assert!(store.get_review_rule_by_type("nonexistent").unwrap().is_none());
     }
 }
