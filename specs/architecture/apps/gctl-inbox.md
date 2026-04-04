@@ -14,7 +14,8 @@ App (gctl-inbox) → Shell (HTTP API :4318) → Kernel (Storage, Guardrails, Orc
 
 - **Depends on the shell** — reads/writes data via kernel HTTP API (`:4318`). MUST NOT access DuckDB directly or import kernel crates.
 - **Never depended on by the shell or kernel** — removing the app breaks nothing below it.
-- **Has its own web server** — serves the inbox feed and thread views on its own port (separate from kernel `:4318` and gctl-board).
+- **Storage tables registered on kernel** — `inbox_*` DuckDB tables are registered in the kernel's `schema.rs` and `all_migrations()`, same pattern as `board_*` tables. HTTP routes (`/api/inbox/*`) are registered on the kernel's axum router at `:4318`. This follows the established gctl-board pattern where the kernel hosts app storage and API routes while apps provide the domain logic via shell commands and web UIs.
+- **Web UI served separately** — the inbox web UI (feed, thread views, batch action bar) is served by its own HTTP server on a separate port, distinct from the kernel `:4318` API.
 - **Has a CLI surface** — `gctl inbox` commands live in the shell package and call kernel HTTP endpoints directly.
 - **Companion to gctl-board** — inbox handles time-sensitive requests ("what needs my attention now"); board handles strategic planning ("what's the plan"). They share issue context but are independently optional.
 
@@ -97,22 +98,34 @@ All cross-app data flows through **kernel IPC events**. gctl-inbox and gctl-boar
 
 ## Kernel Integration
 
-The kernel MUST NOT create inbox messages directly (per Invariant #4). The kernel emits domain events; the inbox subscribes and creates its own messages.
+### M0 Bootstrap (No IPC — Direct HTTP Routes)
 
-> **Note:** Kernel IPC (event bus) is [planned]. Until implemented, inbox uses webhook callback registration or HTTP polling. See PRD Open Question #6.
+Kernel IPC (event bus) is [planned] but not yet implemented. For M0, gctl-inbox follows the same integration pattern as gctl-board:
 
-### Inbound (Kernel Events → Inbox Subscribes)
+1. **Storage tables** (`inbox_*`) are registered in the kernel's `schema.rs` and created by `all_migrations()`
+2. **HTTP routes** (`/api/inbox/*`) are registered on the kernel's axum router at `:4318`
+3. **Handlers** in the kernel call `DuckDbStore` methods for inbox CRUD
+4. **Shell commands** (`gctl inbox`) call kernel HTTP API via `KernelClient`
+5. **Message creation** is triggered by shell commands or kernel-side handlers — not by an event subscription model
 
-1. **`GuardrailDenied`** — inbox creates `permission_request` message
-2. **`BudgetThreshold` / `BudgetExceeded`** — inbox creates `budget_warning` or `budget_exceeded` message
-3. **`SessionPaused`** with reason `needs_input` — inbox creates `agent_question` message
-4. **Alert rules** can target inbox as delivery channel
+This means for M0, the guardrail→inbox flow is:
+- Guardrail handler in receiver.rs checks `POST /v1/traces` spans
+- When a guardrail denies with human-review flag, the handler directly calls `store.create_inbox_message()`
+- This is a kernel-internal call (same process), not a cross-app event
 
-### Outbound (Inbox Emits → Kernel Events)
+### Future: Event-Driven Model
 
-1. **`PermissionGranted`** — emitted via kernel IPC when human approves; orchestrator subscribes and resumes session
-2. **`PermissionDenied`** — emitted via kernel IPC when human denies; orchestrator subscribes and terminates/adjusts session
-3. **`ClarificationProvided`** — human reply delivered to agent context via kernel IPC
+When kernel IPC (event bus) lands, the integration migrates to event subscriptions:
+
+**Inbound (Kernel Events → Inbox Subscribes):**
+1. `GuardrailDenied` → inbox creates `permission_request` message
+2. `BudgetThreshold` / `BudgetExceeded` → inbox creates `budget_warning` or `budget_exceeded` message
+3. `SessionPaused` with reason `needs_input` → inbox creates `agent_question` message
+
+**Outbound (Inbox Emits → Kernel Events):**
+1. `PermissionGranted` → orchestrator resumes session
+2. `PermissionDenied` → orchestrator terminates/adjusts session
+3. `ClarificationProvided` → agent context updated
 
 ## Runtime
 
