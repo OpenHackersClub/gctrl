@@ -35,7 +35,7 @@ export function DispatchDialog({ issue, onDispatch, onSkip, onClose }: Props) {
     }
     recommend()
     return () => { cancelled = true }
-  }, [issue.labels])
+  }, [issue.id]) // stable scalar — avoids re-fetch on array reference change
 
   const togglePersona = (id: string) => {
     setSelected((prev) => {

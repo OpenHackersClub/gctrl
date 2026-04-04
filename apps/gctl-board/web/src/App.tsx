@@ -29,6 +29,8 @@ export function App() {
   const [dispatchIssue, setDispatchIssue] = useState<Issue | null>(null)
   const [toasts, setToasts] = useState<Toast[]>([])
   const pendingMoveRef = useRef<{ issueId: string; newStatus: string } | null>(null)
+  const issuesRef = useRef(issues)
+  issuesRef.current = issues
 
   const addToast = useCallback((message: string, type: "error" | "success" = "error") => {
     const id = crypto.randomUUID()
@@ -52,11 +54,11 @@ export function App() {
     async (issueId: string, newStatus: string) => {
       // Intercept drag to in_progress — show dispatch dialog
       if (newStatus === "in_progress") {
-        const issue = issues.find((i) => i.id === issueId)
+        const issue = issuesRef.current.find((i) => i.id === issueId)
         if (issue && issue.status !== "in_progress") {
           pendingMoveRef.current = { issueId, newStatus }
           setDispatchIssue(issue)
-          return issue // optimistic — actual move happens after dispatch decision
+          return issue // actual move deferred until dispatch decision
         }
       }
       try {
@@ -66,7 +68,7 @@ export function App() {
         throw e
       }
     },
-    [moveIssue, addToast, issues]
+    [moveIssue, addToast]
   )
 
   const handleDispatch = useCallback(
