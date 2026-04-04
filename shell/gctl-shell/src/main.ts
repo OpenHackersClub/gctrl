@@ -18,6 +18,7 @@ import { boardCommand } from "./commands/board"
 import { netCommand } from "./commands/net"
 import { personaCommand } from "./commands/persona"
 import { teamCommand } from "./commands/team"
+import { inboxCommand } from "./commands/inbox"
 import { HttpKernelClientLive } from "./adapters/HttpKernelClient"
 
 const command = Command.make("gctl").pipe(
@@ -32,6 +33,7 @@ const command = Command.make("gctl").pipe(
     netCommand,
     personaCommand,
     teamCommand,
+    inboxCommand,
   ])
 )
 

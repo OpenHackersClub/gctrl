@@ -481,6 +481,72 @@ pub struct RenderedPersonaPrompt {
     pub prompt: String,
 }
 
+// --- Inbox (Application) ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InboxMessage {
+    pub id: String,
+    pub thread_id: String,
+    pub source: String,
+    pub kind: String,
+    pub urgency: String,
+    pub title: String,
+    pub body: Option<String>,
+    pub context: serde_json::Value,
+    pub status: String,
+    pub requires_action: bool,
+    pub payload: Option<serde_json::Value>,
+    pub duplicate_count: u32,
+    pub snoozed_until: Option<String>,
+    pub expires_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InboxThread {
+    pub id: String,
+    pub context_type: String,
+    pub context_ref: String,
+    pub title: String,
+    pub project_key: Option<String>,
+    pub pending_count: i64,
+    pub latest_urgency: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InboxAction {
+    pub id: String,
+    pub message_id: String,
+    pub thread_id: String,
+    pub actor_id: String,
+    pub actor_name: String,
+    pub action_type: String,
+    pub reason: Option<String>,
+    pub metadata: Option<serde_json::Value>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct InboxMessageFilter {
+    pub status: Option<String>,
+    pub urgency: Option<String>,
+    pub kind: Option<String>,
+    pub project: Option<String>,
+    pub requires_action: Option<bool>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct InboxActionFilter {
+    pub actor_id: Option<String>,
+    pub since: Option<String>,
+    pub thread_id: Option<String>,
+    pub limit: Option<usize>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -577,5 +643,72 @@ mod tests {
         let parsed: PersonaDefinition = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.id, "engineer");
         assert_eq!(parsed.tools.len(), 2);
+    }
+
+    #[test]
+    fn inbox_message_serialization_roundtrip() {
+        let msg = InboxMessage {
+            id: "msg-1".into(),
+            thread_id: "thr-1".into(),
+            source: "guardrail".into(),
+            kind: "permission_request".into(),
+            urgency: "high".into(),
+            title: "Force-push blocked".into(),
+            body: Some("Agent wants to force-push".into()),
+            context: serde_json::json!({"session_id": "sess-1", "issue_key": "BACK-42"}),
+            status: "pending".into(),
+            requires_action: true,
+            payload: Some(serde_json::json!({"command": "git push --force"})),
+            duplicate_count: 0,
+            snoozed_until: None,
+            expires_at: None,
+            created_at: "2026-04-03T00:00:00Z".into(),
+            updated_at: "2026-04-03T00:00:00Z".into(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: InboxMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.id, "msg-1");
+        assert_eq!(parsed.kind, "permission_request");
+        assert!(parsed.requires_action);
+        assert_eq!(parsed.context["issue_key"], "BACK-42");
+    }
+
+    #[test]
+    fn inbox_thread_serialization_roundtrip() {
+        let thread = InboxThread {
+            id: "thr-1".into(),
+            context_type: "issue".into(),
+            context_ref: "BACK-42".into(),
+            title: "BACK-42: Fix auth middleware".into(),
+            project_key: Some("BACK".into()),
+            pending_count: 3,
+            latest_urgency: "high".into(),
+            created_at: "2026-04-03T00:00:00Z".into(),
+            updated_at: "2026-04-03T00:00:00Z".into(),
+        };
+        let json = serde_json::to_string(&thread).unwrap();
+        let parsed: InboxThread = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.id, "thr-1");
+        assert_eq!(parsed.pending_count, 3);
+    }
+
+    #[test]
+    fn inbox_action_serialization_roundtrip() {
+        let action = InboxAction {
+            id: "act-1".into(),
+            message_id: "msg-1".into(),
+            thread_id: "thr-1".into(),
+            actor_id: "user-1".into(),
+            actor_name: "Alice".into(),
+            action_type: "approve".into(),
+            reason: Some("Looks safe".into()),
+            metadata: None,
+            created_at: "2026-04-03T00:00:00Z".into(),
+        };
+        let json = serde_json::to_string(&action).unwrap();
+        let parsed: InboxAction = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.id, "act-1");
+        assert_eq!(parsed.action_type, "approve");
+        assert_eq!(parsed.reason, Some("Looks safe".into()));
     }
 }

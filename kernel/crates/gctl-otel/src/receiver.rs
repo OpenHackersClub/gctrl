@@ -74,6 +74,14 @@ pub fn create_router_with_context(store: DuckDbStore, context: Option<ContextMan
         // Team composition
         .route("/api/team/recommend", post(team_recommend))
         .route("/api/team/render", post(team_render))
+        // Inbox application
+        .route("/api/inbox/messages", get(inbox_list_messages).post(inbox_create_message))
+        .route("/api/inbox/messages/{id}", get(inbox_get_message))
+        .route("/api/inbox/threads", get(inbox_list_threads))
+        .route("/api/inbox/threads/{id}", get(inbox_get_thread))
+        .route("/api/inbox/actions", get(inbox_list_actions).post(inbox_create_action))
+        .route("/api/inbox/batch-action", post(inbox_batch_action))
+        .route("/api/inbox/stats", get(inbox_stats))
         // Health
         .route("/health", get(health))
         .with_state(state)
@@ -1252,6 +1260,355 @@ async fn team_render(
     }
 
     Json(serde_json::json!({ "agents": agents })).into_response()
+}
+
+// --- Inbox Handlers ---
+
+#[derive(Deserialize)]
+struct InboxCreateMessageBody {
+    #[serde(default)]
+    thread_id: Option<String>,
+    source: String,
+    kind: String,
+    #[serde(default = "default_inbox_urgency")]
+    urgency: String,
+    title: String,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default = "default_inbox_context")]
+    context: serde_json::Value,
+    #[serde(default)]
+    requires_action: bool,
+    #[serde(default)]
+    payload: Option<serde_json::Value>,
+    #[serde(default)]
+    expires_at: Option<String>,
+    // Thread auto-grouping fields
+    #[serde(default)]
+    context_type: Option<String>,
+    #[serde(default)]
+    context_ref: Option<String>,
+    #[serde(default)]
+    thread_title: Option<String>,
+    #[serde(default)]
+    project_key: Option<String>,
+}
+
+fn default_inbox_urgency() -> String { "medium".into() }
+fn default_inbox_context() -> serde_json::Value { serde_json::json!({}) }
+
+async fn inbox_create_message(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<InboxCreateMessageBody>,
+) -> impl IntoResponse {
+    // Validate enum fields
+    const VALID_KINDS: &[&str] = &["permission_request", "budget_warning", "budget_exceeded", "agent_question", "clarification", "review_request", "eval_request", "status_update", "custom"];
+    const VALID_URGENCIES: &[&str] = &["critical", "high", "medium", "low", "info"];
+
+    if !VALID_KINDS.contains(&body.kind.as_str()) {
+        return (StatusCode::BAD_REQUEST, format!("invalid kind: {}", body.kind)).into_response();
+    }
+    if !VALID_URGENCIES.contains(&body.urgency.as_str()) {
+        return (StatusCode::BAD_REQUEST, format!("invalid urgency: {}", body.urgency)).into_response();
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+
+    // Resolve or create thread
+    let thread_id = if let Some(tid) = body.thread_id {
+        tid
+    } else if let (Some(ct), Some(cr)) = (body.context_type.as_deref(), body.context_ref.as_deref()) {
+        let title = body.thread_title.as_deref().unwrap_or(cr);
+        match state.store.get_or_create_inbox_thread(ct, cr, title, body.project_key.as_deref()) {
+            Ok(t) => t.id,
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        }
+    } else {
+        return (StatusCode::BAD_REQUEST, "either thread_id or (context_type + context_ref) required".to_string()).into_response();
+    };
+
+    let msg = gctl_core::InboxMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        thread_id,
+        source: body.source,
+        kind: body.kind,
+        urgency: body.urgency,
+        title: body.title,
+        body: body.body,
+        context: body.context,
+        status: "pending".into(),
+        requires_action: body.requires_action,
+        payload: body.payload,
+        duplicate_count: 0,
+        snoozed_until: None,
+        expires_at: body.expires_at,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    match state.store.create_inbox_message(&msg) {
+        Ok(()) => (StatusCode::CREATED, Json(serde_json::to_value(&msg).unwrap())).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn inbox_get_message(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.store.get_inbox_message(&id) {
+        Ok(Some(msg)) => Json(serde_json::to_value(&msg).unwrap()).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, format!("message not found: {}", id)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct InboxMessageListParams {
+    status: Option<String>,
+    urgency: Option<String>,
+    kind: Option<String>,
+    project: Option<String>,
+    requires_action: Option<bool>,
+    #[serde(default = "default_inbox_limit")]
+    limit: usize,
+}
+
+fn default_inbox_limit() -> usize { 50 }
+
+async fn inbox_list_messages(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<InboxMessageListParams>,
+) -> impl IntoResponse {
+    let filter = gctl_core::InboxMessageFilter {
+        status: params.status,
+        urgency: params.urgency,
+        kind: params.kind,
+        project: params.project,
+        requires_action: params.requires_action,
+        limit: Some(params.limit),
+    };
+    match state.store.list_inbox_messages(&filter) {
+        Ok(msgs) => Json(serde_json::to_value(&msgs).unwrap()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn inbox_get_thread(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.store.get_inbox_thread(&id) {
+        Ok(Some(thread)) => Json(serde_json::to_value(&thread).unwrap()).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, format!("thread not found: {}", id)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct InboxThreadListParams {
+    project: Option<String>,
+    has_pending: Option<bool>,
+    #[serde(default = "default_inbox_limit")]
+    limit: usize,
+}
+
+async fn inbox_list_threads(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<InboxThreadListParams>,
+) -> impl IntoResponse {
+    match state.store.list_inbox_threads(params.project.as_deref(), params.has_pending, Some(params.limit)) {
+        Ok(threads) => Json(serde_json::to_value(&threads).unwrap()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct InboxCreateActionBody {
+    message_id: String,
+    action_type: String,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
+    #[serde(default = "default_inbox_actor_id")]
+    actor_id: String,
+    #[serde(default = "default_inbox_actor_name")]
+    actor_name: String,
+}
+
+fn default_inbox_actor_id() -> String { "default".into() }
+fn default_inbox_actor_name() -> String { "human".into() }
+
+async fn inbox_create_action(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<InboxCreateActionBody>,
+) -> impl IntoResponse {
+    const VALID_ACTIONS: &[&str] = &["approve", "deny", "acknowledge", "defer", "delegate", "escalate", "reply"];
+    if !VALID_ACTIONS.contains(&body.action_type.as_str()) {
+        return (StatusCode::BAD_REQUEST, format!("invalid action_type: {}", body.action_type)).into_response();
+    }
+    if let Some(ref reason) = body.reason {
+        if reason.len() > 2000 {
+            return (StatusCode::BAD_REQUEST, "reason exceeds 2000 character limit").into_response();
+        }
+    }
+
+    // Look up message to get thread_id
+    let msg = match state.store.get_inbox_message(&body.message_id) {
+        Ok(Some(m)) => m,
+        Ok(None) => return (StatusCode::NOT_FOUND, format!("message not found: {}", body.message_id)).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let action = gctl_core::InboxAction {
+        id: uuid::Uuid::new_v4().to_string(),
+        message_id: body.message_id,
+        thread_id: msg.thread_id,
+        actor_id: body.actor_id,
+        actor_name: body.actor_name,
+        action_type: body.action_type,
+        reason: body.reason,
+        metadata: body.metadata,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+
+    match state.store.create_inbox_action(&action) {
+        Ok(()) => (StatusCode::CREATED, Json(serde_json::to_value(&action).unwrap())).into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("expected 'pending'") {
+                (StatusCode::CONFLICT, msg).into_response()
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
+            }
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct InboxBatchActionBody {
+    message_ids: Vec<String>,
+    action_type: String,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default = "default_inbox_actor_id")]
+    actor_id: String,
+    #[serde(default = "default_inbox_actor_name")]
+    actor_name: String,
+}
+
+async fn inbox_batch_action(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<InboxBatchActionBody>,
+) -> impl IntoResponse {
+    if body.message_ids.len() > 100 {
+        return (StatusCode::BAD_REQUEST, "batch size exceeds limit of 100").into_response();
+    }
+    const VALID_ACTIONS: &[&str] = &["approve", "deny", "acknowledge", "defer", "delegate", "escalate", "reply"];
+    if !VALID_ACTIONS.contains(&body.action_type.as_str()) {
+        return (StatusCode::BAD_REQUEST, format!("invalid action_type: {}", body.action_type)).into_response();
+    }
+    if let Some(ref reason) = body.reason {
+        if reason.len() > 2000 {
+            return (StatusCode::BAD_REQUEST, "reason exceeds 2000 character limit").into_response();
+        }
+    }
+
+    let mut results = Vec::new();
+
+    for mid in &body.message_ids {
+        let msg = match state.store.get_inbox_message(mid) {
+            Ok(Some(m)) => m,
+            Ok(None) => {
+                results.push(serde_json::json!({
+                    "message_id": mid,
+                    "result": "skipped",
+                    "skip_reason": "message not found"
+                }));
+                continue;
+            }
+            Err(e) => {
+                results.push(serde_json::json!({
+                    "message_id": mid,
+                    "result": "skipped",
+                    "skip_reason": e.to_string()
+                }));
+                continue;
+            }
+        };
+
+        if msg.status != "pending" {
+            results.push(serde_json::json!({
+                "message_id": mid,
+                "result": "skipped",
+                "skip_reason": format!("status is '{}', not 'pending'", msg.status)
+            }));
+            continue;
+        }
+
+        let action = gctl_core::InboxAction {
+            id: uuid::Uuid::new_v4().to_string(),
+            message_id: mid.clone(),
+            thread_id: msg.thread_id,
+            actor_id: body.actor_id.clone(),
+            actor_name: body.actor_name.clone(),
+            action_type: body.action_type.clone(),
+            reason: body.reason.clone(),
+            metadata: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+
+        match state.store.create_inbox_action(&action) {
+            Ok(()) => {
+                results.push(serde_json::json!({
+                    "message_id": mid,
+                    "result": "success"
+                }));
+            }
+            Err(e) => {
+                results.push(serde_json::json!({
+                    "message_id": mid,
+                    "result": "skipped",
+                    "skip_reason": e.to_string()
+                }));
+            }
+        }
+    }
+
+    Json(serde_json::json!({ "results": results })).into_response()
+}
+
+#[derive(Deserialize)]
+struct InboxActionListParams {
+    actor: Option<String>,
+    since: Option<String>,
+    thread_id: Option<String>,
+    #[serde(default = "default_inbox_limit")]
+    limit: usize,
+}
+
+async fn inbox_list_actions(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<InboxActionListParams>,
+) -> impl IntoResponse {
+    let filter = gctl_core::InboxActionFilter {
+        actor_id: params.actor,
+        since: params.since,
+        thread_id: params.thread_id,
+        limit: Some(params.limit),
+    };
+    match state.store.list_inbox_actions(&filter) {
+        Ok(actions) => Json(serde_json::to_value(&actions).unwrap()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn inbox_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match state.store.get_inbox_stats() {
+        Ok(stats) => Json(stats).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 #[cfg(test)]
