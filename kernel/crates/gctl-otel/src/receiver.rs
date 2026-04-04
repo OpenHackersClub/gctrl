@@ -1919,4 +1919,427 @@ mod tests {
         assert_eq!(json["session_id"], "s1");
         assert!(json["breakdown"].is_array());
     }
+
+    // --- Persona endpoint tests ---
+
+    #[tokio::test]
+    async fn test_persona_list_empty() {
+        let app = test_app();
+        let req = Request::builder()
+            .uri("/api/personas")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_persona_seed_and_list() {
+        let app = test_app();
+
+        // POST /api/personas/seed with 2 personas
+        let seed_body = serde_json::json!({
+            "personas": [
+                {
+                    "id": "engineer",
+                    "name": "Engineer",
+                    "focus": "code quality",
+                    "prompt_prefix": "You are an engineer."
+                },
+                {
+                    "id": "architect",
+                    "name": "Architect",
+                    "focus": "system design",
+                    "prompt_prefix": "You are an architect."
+                }
+            ]
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/personas/seed")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&seed_body).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["created"], 2);
+
+        // GET /api/personas
+        let req = Request::builder()
+            .uri("/api/personas")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_persona_get_not_found() {
+        let app = test_app();
+        let req = Request::builder()
+            .uri("/api/personas/nonexistent")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_team_recommend_empty() {
+        let app = test_app();
+        let body = serde_json::json!({
+            "labels": ["backend", "api"]
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/team/recommend")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["personas"].as_array().unwrap().is_empty());
+    }
+
+    // --- Inbox endpoint tests ---
+
+    /// Helper to create an inbox message and return its ID.
+    async fn create_test_message(app: &Router, title: &str) -> String {
+        let msg_body = serde_json::json!({
+            "source": "test-agent",
+            "kind": "permission_request",
+            "urgency": "high",
+            "title": title,
+            "body": "Please approve this action",
+            "context_type": "session",
+            "context_ref": "sess-001",
+            "thread_title": "Test thread"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/inbox/messages")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&msg_body).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        json["id"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn test_inbox_list_messages_empty() {
+        let app = test_app();
+        let req = Request::builder()
+            .uri("/api/inbox/messages")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_inbox_create_message_and_get() {
+        let app = test_app();
+
+        // Create message
+        let msg_id = create_test_message(&app, "Approve deploy").await;
+
+        // GET /api/inbox/messages/{id}
+        let req = Request::builder()
+            .uri(format!("/api/inbox/messages/{}", msg_id))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["id"], msg_id);
+        assert_eq!(json["title"], "Approve deploy");
+        assert_eq!(json["status"], "pending");
+        // Verify thread was auto-created
+        assert!(json["thread_id"].as_str().is_some());
+        let thread_id = json["thread_id"].as_str().unwrap();
+        assert!(!thread_id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_inbox_create_message_invalid_kind() {
+        let app = test_app();
+        let msg_body = serde_json::json!({
+            "source": "test-agent",
+            "kind": "invalid",
+            "title": "Bad kind",
+            "context_type": "session",
+            "context_ref": "sess-001"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/inbox/messages")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&msg_body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_inbox_create_message_invalid_urgency() {
+        let app = test_app();
+        let msg_body = serde_json::json!({
+            "source": "test-agent",
+            "kind": "permission_request",
+            "urgency": "invalid",
+            "title": "Bad urgency",
+            "context_type": "session",
+            "context_ref": "sess-001"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/inbox/messages")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&msg_body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_inbox_create_action_on_pending() {
+        let app = test_app();
+
+        // Create a pending message
+        let msg_id = create_test_message(&app, "Approve action").await;
+
+        // POST /api/inbox/actions to approve
+        let action_body = serde_json::json!({
+            "message_id": msg_id,
+            "action_type": "approve",
+            "reason": "Looks good"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/inbox/actions")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&action_body).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["action_type"], "approve");
+        assert_eq!(json["message_id"], msg_id);
+
+        // Verify message status changed to "acted"
+        let req = Request::builder()
+            .uri(format!("/api/inbox/messages/{}", msg_id))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "acted");
+    }
+
+    #[tokio::test]
+    async fn test_inbox_create_action_on_acted_returns_conflict() {
+        let app = test_app();
+
+        // Create and approve a message
+        let msg_id = create_test_message(&app, "Approve once").await;
+
+        let action_body = serde_json::json!({
+            "message_id": msg_id,
+            "action_type": "approve"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/inbox/actions")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&action_body).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // Try to approve again → 409
+        let action_body = serde_json::json!({
+            "message_id": msg_id,
+            "action_type": "approve"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/inbox/actions")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&action_body).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn test_inbox_create_action_invalid_type() {
+        let app = test_app();
+
+        let action_body = serde_json::json!({
+            "message_id": "some-id",
+            "action_type": "invalid"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/inbox/actions")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&action_body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_inbox_batch_action() {
+        let app = test_app();
+
+        // Create 3 messages
+        let id1 = create_test_message(&app, "Msg 1").await;
+        let id2 = create_test_message(&app, "Msg 2").await;
+        let _id3 = create_test_message(&app, "Msg 3").await;
+
+        // Batch-approve 2
+        let batch_body = serde_json::json!({
+            "message_ids": [id1, id2],
+            "action_type": "approve",
+            "reason": "Batch approved"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/inbox/batch-action")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&batch_body).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let results = json["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0]["result"], "success");
+        assert_eq!(results[1]["result"], "success");
+    }
+
+    #[tokio::test]
+    async fn test_inbox_batch_action_size_limit() {
+        let app = test_app();
+
+        // Build 101 IDs
+        let ids: Vec<String> = (0..101).map(|i| format!("msg-{}", i)).collect();
+        let batch_body = serde_json::json!({
+            "message_ids": ids,
+            "action_type": "approve"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/inbox/batch-action")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&batch_body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_inbox_stats_empty() {
+        let app = test_app();
+        let req = Request::builder()
+            .uri("/api/inbox/stats")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["total"], 0);
+        assert_eq!(json["pending"], 0);
+        assert_eq!(json["acted"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_inbox_get_thread_with_messages() {
+        let app = test_app();
+
+        // Create two messages in the same thread (same context_type + context_ref)
+        let msg_body1 = serde_json::json!({
+            "source": "agent-a",
+            "kind": "permission_request",
+            "urgency": "high",
+            "title": "First message",
+            "context_type": "session",
+            "context_ref": "shared-session",
+            "thread_title": "Shared thread"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/inbox/messages")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&msg_body1).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let msg1: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let thread_id = msg1["thread_id"].as_str().unwrap().to_string();
+
+        let msg_body2 = serde_json::json!({
+            "source": "agent-b",
+            "kind": "status_update",
+            "urgency": "low",
+            "title": "Second message",
+            "context_type": "session",
+            "context_ref": "shared-session",
+            "thread_title": "Shared thread"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/inbox/messages")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&msg_body2).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // GET /api/inbox/threads/{id}
+        let req = Request::builder()
+            .uri(format!("/api/inbox/threads/{}", thread_id))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["id"], thread_id);
+        assert!(json["messages"].is_array());
+        assert_eq!(json["messages"].as_array().unwrap().len(), 2);
+    }
 }
