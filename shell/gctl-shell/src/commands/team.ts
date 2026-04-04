@@ -1,5 +1,5 @@
 import { Command, Options } from "@effect/cli"
-import { Console, Effect, Schema } from "effect"
+import { Console, Effect, Option, Schema } from "effect"
 import { KernelClient } from "../services/KernelClient"
 
 // --- schemas ---
@@ -48,10 +48,10 @@ const recommendCommand = Command.make(
       const kernel = yield* KernelClient
 
       const body: Record<string, unknown> = {}
-      if (labels._tag === "Some") {
+      if (Option.isSome(labels)) {
         body.labels = labels.value.split(",").map((l: string) => l.trim())
       }
-      if (prType._tag === "Some") {
+      if (Option.isSome(prType)) {
         body.pr_type = prType.value
       }
 
@@ -89,7 +89,7 @@ const renderCommand = Command.make(
       const ids = personaIds.split(",").map((id: string) => id.trim())
       const body: Record<string, unknown> = { persona_ids: ids }
 
-      if (issue._tag === "Some") {
+      if (Option.isSome(issue)) {
         body.context = { issue_key: issue.value }
       }
 

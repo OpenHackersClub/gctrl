@@ -1,5 +1,5 @@
 import { Command, Options, Args } from "@effect/cli"
-import { Console, Effect, Schema } from "effect"
+import { Console, Effect, Option, Schema } from "effect"
 import { KernelClient } from "../services/KernelClient"
 
 // --- schemas ---
@@ -89,10 +89,10 @@ const seedFile = Options.file("file").pipe(Options.optional)
 const seedCommand = Command.make("seed", { file: seedFile }, ({ file }) =>
   Effect.gen(function* () {
     const kernel = yield* KernelClient
-    const filePath = file._tag === "Some" ? file.value : "specs/team/personas.md"
+    const filePath = Option.getOrElse(file, () => "specs/team/personas.md")
 
     // Read and parse the markdown file
-    const { readFileSync } = yield* Effect.sync(() => require("fs"))
+    const { readFileSync } = yield* Effect.sync(() => require("node:fs"))
     let content: string
     try {
       content = readFileSync(filePath, "utf-8")
