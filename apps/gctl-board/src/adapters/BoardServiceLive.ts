@@ -16,6 +16,7 @@ import type { Issue, IssueId, IssueStatus, IssueFilter, CreateIssueInput, Assign
  * Map kernel API JSON response to the Effect-TS Issue type.
  * The kernel uses snake_case; the TS schema uses camelCase.
  */
+// biome-ignore lint/suspicious/noExplicitAny: untyped JSON from kernel HTTP API
 const mapIssue = (raw: any): Issue => ({
   id: raw.id as IssueId,
   projectId: raw.project_id,
@@ -44,6 +45,7 @@ const mapIssue = (raw: any): Issue => ({
   acceptanceCriteria: raw.acceptance_criteria ?? [],
 })
 
+// biome-ignore lint/suspicious/noExplicitAny: untyped JSON from kernel HTTP API
 const mapProject = (raw: any): Project => ({
   id: raw.id,
   name: raw.name,
@@ -104,6 +106,7 @@ export const BoardServiceLive = Layer.effect(
           if (filter.label) params.set("label", filter.label)
           const qs = params.toString()
           const raw = yield* client.get(`/api/board/issues${qs ? `?${qs}` : ""}`)
+          // biome-ignore lint/suspicious/noExplicitAny: untyped JSON array from kernel HTTP API
           return (raw as any[]).map(mapIssue)
         }).pipe(
           Effect.catchAll((e) => Effect.fail(new BoardError({ message: String(e) })))
@@ -147,6 +150,7 @@ export const BoardServiceLive = Layer.effect(
           const issues: Issue[] = []
           for (const title of subTasks) {
             // Get parent to inherit project
+            // biome-ignore lint/suspicious/noExplicitAny: untyped JSON from kernel HTTP API
             const parent = (yield* client.get(`/api/board/issues/${parentId}`)) as any
             const raw = yield* client.post("/api/board/issues", {
               project_id: parent.project_id,

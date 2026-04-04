@@ -7,7 +7,7 @@
  */
 import { Command } from "@effect/cli"
 import { NodeContext, NodeRuntime } from "@effect/platform-node"
-import { Effect, Layer } from "effect"
+import { Effect } from "effect"
 import { sessionsCommand } from "./commands/sessions"
 import { statusCommand } from "./commands/status"
 import { ghCommand } from "./commands/gh"
@@ -16,6 +16,9 @@ import { analyticsCommand } from "./commands/analytics"
 import { contextCommand } from "./commands/context"
 import { boardCommand } from "./commands/board"
 import { netCommand } from "./commands/net"
+import { personaCommand } from "./commands/persona"
+import { teamCommand } from "./commands/team"
+import { inboxCommand } from "./commands/inbox"
 import { HttpKernelClientLive } from "./adapters/HttpKernelClient"
 
 const command = Command.make("gctl").pipe(
@@ -28,6 +31,9 @@ const command = Command.make("gctl").pipe(
     contextCommand,
     boardCommand,
     netCommand,
+    personaCommand,
+    teamCommand,
+    inboxCommand,
   ])
 )
 

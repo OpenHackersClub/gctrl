@@ -2,7 +2,7 @@
 
 ## Overview
 
-GroundCtrl (gctl) is a local-first operating system for human+agent teams. Follows the **Unix layered model**: a **Kernel** (Rust — telemetry, storage, guardrails, query, network, browser, sync; exposes HTTP API on `:4318`), a **Shell** (Effect-TS CLI — invokes kernel via HTTP, communicates with external tools like GitHub via `ccli`), **Native Applications & Utilities** (Effect-TS — board, eval, capacity), and **External Applications** (Linear, Plane, Notion, Phoenix — connected via drivers). DuckDB storage. Unix philosophy throughout; DDD for domain modeling.
+GroundCtrl (gctl) is a local-first operating system for human+agent teams. Follows the **Unix layered model**: a **Kernel** (Rust — telemetry, storage, guardrails, query, network, browser, sync; exposes HTTP API on `:4318`), a **Shell** (Effect-TS CLI — invokes kernel via HTTP, communicates with external tools like GitHub via direct REST API), **Native Applications & Utilities** (Effect-TS — board, eval, capacity), and **External Applications** (Linear, Plane, Notion, Phoenix — connected via drivers). DuckDB storage. Unix philosophy throughout; DDD for domain modeling.
 
 **Dogfooding:** We use gctl to build gctl. gctl's own issue tracking, agent dispatch, and PR workflow are defined in `specs/gctl/`. Opinionated product workflows (issue lifecycle, sprint cycle, PR review, PRD template) live in `apps/gctl-board/specs/workflows/`. Kernel-level orchestration and dispatch format are defined in `specs/architecture/kernel/`. The telemetry, task tracking, guardrails, and CLI tools are exercised daily during development. If a feature isn't useful for building gctl itself, question whether it belongs. Bugs found during dogfooding are the highest-priority fixes.
 
@@ -119,33 +119,72 @@ Detailed programming patterns, code examples, and how-to guides live under `spec
 
 1. Dependencies MUST flow inward: Shell → Kernel → Domain, never reverse.
 2. DuckDB is single-writer: the daemon MUST hold the lock; shell and apps MUST use the HTTP API.
-3. Application tables MUST use namespaced prefixes (`board_*`, `eval_*`, `capacity_*`).
+3. Application tables MUST use namespaced prefixes (`board_*`, `eval_*`, `capacity_*`, `inbox_*`).
 4. Code MUST NOT access Effect-TS `._tag` directly — use combinators (`Effect.catchTag`, `Match.tag`).
-5. Every new public function MUST have at least one test.
-6. Contributors MUST use feature branches — MUST NOT push directly to main.
-7. All changes to main MUST go through a pull request — MUST NOT merge with `--admin` bypass.
-8. MUST NOT rebase main — use merge commits only. MUST NOT force-push to main.
-9. The Kernel MUST NOT make assumptions about applications.
-10. Shell (Effect-TS CLI) MUST mediate all user-facing access to the kernel via HTTP API.
-11. External tools (GitHub, Slack, AWS) MUST be accessed from the shell via `ccli` adapters — never from the kernel.
-12. Every application MUST have its own `apps/{app-name}/` directory with `PRD.md` and `WORKFLOW.md`.
+5. **TDD is the default.** Write a failing test first, then make it pass, then refactor. No production code without a pre-existing test.
+6. Every new public function MUST have at least one test. Coverage: storage CRUD + HTTP routes (happy + error) + shell commands.
+7. Contributors MUST use feature branches — MUST NOT push directly to main.
+8. All changes to main MUST go through a pull request — MUST NOT merge with `--admin` bypass.
+9. MUST NOT rebase main — use merge commits only. MUST NOT force-push to main.
+10. The Kernel MUST NOT make assumptions about applications.
+11. Shell (Effect-TS CLI) MUST mediate all user-facing access to the kernel via HTTP API.
+12. External tools (GitHub, Slack, AWS) MUST be accessed from the shell via direct REST API adapters — never from the kernel.
+13. Every application MUST have its own `apps/{app-name}/` directory with `PRD.md` and `WORKFLOW.md`.
+
+## TDD Workflow
+
+All new features MUST follow the red-green-refactor cycle. Write the test BEFORE the implementation.
+
+### Adding a new kernel feature (Rust)
+
+```
+1. Write failing storage test     → cargo test -p gctl-storage (RED)
+2. Add types + DDL + CRUD method  → cargo test -p gctl-storage (GREEN)
+3. Write failing HTTP test        → cargo test -p gctl-otel    (RED)
+4. Add route + handler            → cargo test -p gctl-otel    (GREEN)
+5. Write failing shell test       → pnpm test                  (RED)
+6. Add shell command              → pnpm test                  (GREEN)
+7. Refactor                       → cargo test && pnpm test    (GREEN)
+```
+
+### Adding a new shell command (Effect-TS)
+
+```
+1. Write mock KernelClient test   → pnpm test                  (RED)
+2. Add command + register         → pnpm test                  (GREEN)
+3. Refactor                       → pnpm test                  (GREEN)
+```
+
+### Test patterns by layer
+
+| Layer | Pattern | Example |
+|-------|---------|---------|
+| **Storage** | `DuckDbStore::open(":memory:")` | `test/duckdb_store.rs::test_inbox_message_crud` |
+| **HTTP** | `test_app()` + `oneshot(req)` | `test/receiver.rs::test_inbox_create_message_and_get` |
+| **Shell** | `createMockKernelClient()` + `Effect.runPromise` | `test/inbox.test.ts` |
+| **App** | `vitest` + mock Layer | `test/board-service.test.ts` |
 
 ## Quick Reference
 
 ```sh
 # Kernel (Rust)
-cd kernel && cargo build             # Build all kernel crates
-cd kernel && cargo test              # Tests across kernel crates
-cd kernel && cargo run -- serve      # Start daemon on :4318
+cargo build                          # Build all kernel crates
+cargo test                           # Tests across kernel crates
+cargo test -p gctl-storage           # Storage tests only
+cargo test -p gctl-otel              # HTTP endpoint tests only
+cargo run -- serve                   # Start daemon on :4318
 
 # Shell (Effect-TS CLI)
 cd shell/gctl-shell
 pnpm install && pnpm run build       # Build CLI
-pnpm run test                        # Shell tests
+pnpm run test                        # Shell tests (112 tests)
 
 # Applications (Effect-TS)
 cd apps/gctl-board
 pnpm install && pnpm run test        # Board tests (schema + services)
+
+# Full verification
+cargo test && cd shell/gctl-shell && pnpm test && cd ../.. && npx biome lint shell/gctl-shell/src/ apps/gctl-board/src/
 ```
 
 ## Local Documentation

@@ -190,7 +190,9 @@ CREATE TABLE IF NOT EXISTS board_issues (
     session_ids     JSON DEFAULT '[]',
     total_cost_usd  DOUBLE DEFAULT 0.0,
     total_tokens    BIGINT DEFAULT 0,
-    pr_numbers      JSON DEFAULT '[]'
+    pr_numbers      JSON DEFAULT '[]',
+    content_hash    VARCHAR,
+    source_path     VARCHAR
 )
 "#;
 
@@ -220,6 +222,96 @@ CREATE TABLE IF NOT EXISTS board_comments (
 )
 "#;
 
+// --- Persona Tables (kernel extension, persona_* prefix) ---
+
+pub const CREATE_PERSONA_DEFINITIONS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS persona_definitions (
+    id              VARCHAR PRIMARY KEY,
+    name            VARCHAR NOT NULL,
+    focus           VARCHAR NOT NULL,
+    prompt_prefix   VARCHAR NOT NULL,
+    owns            VARCHAR NOT NULL,
+    review_focus    VARCHAR NOT NULL,
+    pushes_back     VARCHAR NOT NULL,
+    tools           JSON DEFAULT '[]',
+    key_specs       JSON DEFAULT '[]',
+    created_at      VARCHAR NOT NULL,
+    updated_at      VARCHAR NOT NULL,
+    source_hash     VARCHAR
+)
+"#;
+
+pub const CREATE_PERSONA_REVIEW_RULES_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS persona_review_rules (
+    id              VARCHAR PRIMARY KEY,
+    pr_type         VARCHAR NOT NULL UNIQUE,
+    persona_ids     JSON NOT NULL,
+    created_at      VARCHAR NOT NULL
+)
+"#;
+
+// --- Inbox Application Tables (namespaced: inbox_*) ---
+
+pub const CREATE_INBOX_MESSAGES_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS inbox_messages (
+    id              VARCHAR PRIMARY KEY,
+    thread_id       VARCHAR NOT NULL,
+    source          VARCHAR NOT NULL,
+    kind            VARCHAR NOT NULL,
+    urgency         VARCHAR NOT NULL DEFAULT 'medium',
+    title           VARCHAR NOT NULL,
+    body            VARCHAR,
+    context         JSON NOT NULL DEFAULT '{}',
+    status          VARCHAR NOT NULL DEFAULT 'pending',
+    requires_action BOOLEAN NOT NULL DEFAULT false,
+    payload         JSON,
+    duplicate_count INTEGER DEFAULT 0,
+    snoozed_until   VARCHAR,
+    expires_at      VARCHAR,
+    created_at      VARCHAR NOT NULL,
+    updated_at      VARCHAR NOT NULL
+)
+"#;
+
+pub const CREATE_INBOX_THREADS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS inbox_threads (
+    id              VARCHAR PRIMARY KEY,
+    context_type    VARCHAR NOT NULL,
+    context_ref     VARCHAR NOT NULL,
+    title           VARCHAR NOT NULL,
+    project_key     VARCHAR,
+    pending_count   INTEGER DEFAULT 0,
+    latest_urgency  VARCHAR DEFAULT 'info',
+    created_at      VARCHAR NOT NULL,
+    updated_at      VARCHAR NOT NULL
+)
+"#;
+
+pub const CREATE_INBOX_ACTIONS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS inbox_actions (
+    id              VARCHAR PRIMARY KEY,
+    message_id      VARCHAR NOT NULL,
+    thread_id       VARCHAR NOT NULL,
+    actor_id        VARCHAR NOT NULL,
+    actor_name      VARCHAR NOT NULL,
+    action_type     VARCHAR NOT NULL,
+    reason          VARCHAR,
+    metadata        JSON,
+    created_at      VARCHAR NOT NULL
+)
+"#;
+
+pub const CREATE_INBOX_SUBSCRIPTIONS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS inbox_subscriptions (
+    id              VARCHAR PRIMARY KEY,
+    user_id         VARCHAR NOT NULL,
+    filter_type     VARCHAR NOT NULL,
+    filter_value    VARCHAR NOT NULL,
+    enabled         BOOLEAN DEFAULT true,
+    created_at      VARCHAR NOT NULL
+)
+"#;
+
 pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_spans_session ON spans(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(trace_id)",
@@ -242,6 +334,19 @@ pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_board_issues_parent ON board_issues(parent_id)",
     "CREATE INDEX IF NOT EXISTS idx_board_events_issue ON board_events(issue_id)",
     "CREATE INDEX IF NOT EXISTS idx_board_comments_issue ON board_comments(issue_id)",
+    // Persona indexes
+    "CREATE INDEX IF NOT EXISTS idx_persona_definitions_name ON persona_definitions(name)",
+    "CREATE INDEX IF NOT EXISTS idx_persona_review_rules_type ON persona_review_rules(pr_type)",
+    // Inbox indexes
+    "CREATE INDEX IF NOT EXISTS idx_inbox_messages_thread ON inbox_messages(thread_id)",
+    "CREATE INDEX IF NOT EXISTS idx_inbox_messages_status ON inbox_messages(status)",
+    "CREATE INDEX IF NOT EXISTS idx_inbox_messages_urgency ON inbox_messages(urgency)",
+    "CREATE INDEX IF NOT EXISTS idx_inbox_messages_kind ON inbox_messages(kind)",
+    "CREATE INDEX IF NOT EXISTS idx_inbox_threads_context ON inbox_threads(context_type, context_ref)",
+    "CREATE INDEX IF NOT EXISTS idx_inbox_threads_project ON inbox_threads(project_key)",
+    "CREATE INDEX IF NOT EXISTS idx_inbox_actions_message ON inbox_actions(message_id)",
+    "CREATE INDEX IF NOT EXISTS idx_inbox_actions_actor ON inbox_actions(actor_id)",
+    "CREATE INDEX IF NOT EXISTS idx_inbox_subscriptions_user ON inbox_subscriptions(user_id)",
 ];
 
 pub fn all_migrations() -> Vec<&'static str> {
@@ -262,6 +367,12 @@ pub fn all_migrations() -> Vec<&'static str> {
         CREATE_BOARD_ISSUES_TABLE,
         CREATE_BOARD_EVENTS_TABLE,
         CREATE_BOARD_COMMENTS_TABLE,
+        CREATE_PERSONA_DEFINITIONS_TABLE,
+        CREATE_PERSONA_REVIEW_RULES_TABLE,
+        CREATE_INBOX_MESSAGES_TABLE,
+        CREATE_INBOX_THREADS_TABLE,
+        CREATE_INBOX_ACTIONS_TABLE,
+        CREATE_INBOX_SUBSCRIPTIONS_TABLE,
     ];
     stmts.extend(CREATE_INDEXES.iter());
     stmts
