@@ -1,4 +1,4 @@
-import { Context, Effect } from "effect"
+import { Context, type Effect } from "effect"
 import type { IssueId } from "../schema/index.js"
 import type { CyclicDependencyError, BoardError } from "./errors.js"
 

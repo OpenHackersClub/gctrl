@@ -1,5 +1,4 @@
 import { Schema } from "effect"
-import type { IssueId } from "./Issue.js"
 import { Assignee } from "./Issue.js"
 
 export const IssueEventType = Schema.Literal(

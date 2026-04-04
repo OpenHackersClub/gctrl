@@ -7,7 +7,7 @@
  */
 import { Command } from "@effect/cli"
 import { NodeContext, NodeRuntime } from "@effect/platform-node"
-import { Effect, Layer } from "effect"
+import { Effect } from "effect"
 import { sessionsCommand } from "./commands/sessions"
 import { statusCommand } from "./commands/status"
 import { ghCommand } from "./commands/gh"

@@ -132,7 +132,7 @@ fn strip_frontmatter(content: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{PageEntry, SiteStore};
+    use crate::storage::SiteStore;
     use crate::PageContent;
     use tempfile::TempDir;
 
