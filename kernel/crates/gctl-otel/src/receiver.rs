@@ -686,7 +686,7 @@ async fn board_create_project(
         Ok(()) => (StatusCode::CREATED, Json(serde_json::to_value(&project).unwrap())).into_response(),
         Err(e) => {
             let msg = e.to_string();
-            if msg.contains("Duplicate key") || msg.contains("Constraint Error") {
+            if msg.contains("Duplicate key") || msg.contains("Constraint Error") || msg.contains("UNIQUE constraint failed") {
                 (StatusCode::CONFLICT, format!("project with key '{}' already exists", project.key)).into_response()
             } else {
                 (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
