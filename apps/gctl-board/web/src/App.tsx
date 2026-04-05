@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef } from "react"
 import { useProjects, useIssues } from "./hooks/useBoard"
+import { useProjectRoute } from "./hooks/useProjectRoute"
 import { KanbanBoard } from "./components/KanbanBoard"
 import { IssueDetailPanel } from "./components/IssueDetailPanel"
 import { CreateIssueDialog } from "./components/CreateIssueDialog"
@@ -16,7 +17,7 @@ interface Toast {
 
 export function App() {
   const { projects, loading: projectsLoading, create: createProject } = useProjects()
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
+  const { selectedProjectId, selectProject: setSelectedProjectId } = useProjectRoute(projects)
   const {
     issues,
     loading: issuesLoading,
