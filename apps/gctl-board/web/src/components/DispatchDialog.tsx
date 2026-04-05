@@ -122,6 +122,15 @@ export function DispatchDialog({ issue, onDispatch, onSkip, onClose }: Props) {
                 <div className="text-xs text-zinc-500 italic">{rationale}</div>
 
                 {/* Persona list */}
+                {personas.length === 0 ? (
+                  <div className="py-6 text-center space-y-2">
+                    <div className="text-sm text-zinc-500 font-mono">No personas recommended</div>
+                    <div className="text-xs text-zinc-600">
+                      Use "Skip" to move the issue without agent dispatch,
+                      or add labels to improve persona matching.
+                    </div>
+                  </div>
+                ) : (
                 <div className="space-y-2">
                   <label className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider">
                     Select Personas
@@ -152,6 +161,7 @@ export function DispatchDialog({ issue, onDispatch, onSkip, onClose }: Props) {
                     </button>
                   ))}
                 </div>
+                )}
               </>
             )}
           </div>

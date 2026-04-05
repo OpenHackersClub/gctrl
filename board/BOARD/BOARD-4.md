@@ -3,20 +3,18 @@ id: BOARD-4
 project: BOARD
 status: backlog
 priority: high
-labels: [github-sync, driver]
+labels: [github-sync, driver, config]
 created_by: debuggingfuture
 ---
 
-# GitHub bidirectional sync via driver-github
+# GitHub sync — project binding and config
 
-Bidirectional sync between gctl-board issues and GitHub Issues using the kernel's driver-github LKM. Per-project binding to a GitHub repo.
+Configure per-project binding between gctl-board projects and GitHub repos via driver-github LKM.
 
 ## Acceptance Criteria
 
 - CLI: `gctl board projects bind-github --project BOARD --repo debuggingfuture/gctrl`
-- Creating a board issue optionally creates a GitHub issue
-- GitHub issue status changes (close, reopen) sync back to board
-- PR open/merge events auto-transition board issues
-- Comments sync bidirectionally
-- Conflict resolution: last-write-wins with event timestamps
-- Sync within 30s of external event (webhook or polling)
+- Binding stored in board_projects table (github_repo column)
+- Binding visible in `gctl board projects list` and web UI ProjectSelector
+- `gctl board projects unbind-github --project BOARD` removes binding
+- HTTP: `POST /api/board/projects/{id}/bind-github`, `DELETE /api/board/projects/{id}/bind-github`
