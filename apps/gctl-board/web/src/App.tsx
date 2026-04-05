@@ -1,12 +1,15 @@
-import { useState, useCallback, useRef } from "react"
+import { useState, useCallback, useRef, useEffect } from "react"
 import { useProjects, useIssues } from "./hooks/useBoard"
 import { useProjectRoute } from "./hooks/useProjectRoute"
+import { useRoute } from "./hooks/useRoute"
 import { KanbanBoard } from "./components/KanbanBoard"
 import { IssueDetailPanel } from "./components/IssueDetailPanel"
 import { CreateIssueDialog } from "./components/CreateIssueDialog"
 import { ProjectSelector } from "./components/ProjectSelector"
+import { NavSidebar } from "./components/NavSidebar"
+import { InboxPage } from "./pages/InboxPage"
 import { api } from "./api/client"
-import type { Issue } from "./types"
+import type { Issue, InboxStats } from "./types"
 
 interface Toast {
   id: string
@@ -15,6 +18,7 @@ interface Toast {
 }
 
 export function App() {
+  const { route, navigate } = useRoute()
   const { projects, loading: projectsLoading, create: createProject } = useProjects()
   const { selectedProjectId, selectProject: setSelectedProjectId } = useProjectRoute(projects)
   const {
@@ -27,8 +31,24 @@ export function App() {
   const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [toasts, setToasts] = useState<Toast[]>([])
+  const [inboxStats, setInboxStats] = useState<InboxStats | null>(null)
   const issuesRef = useRef(issues)
   issuesRef.current = issues
+
+  // Fetch inbox unread count periodically
+  useEffect(() => {
+    let cancelled = false
+    const fetchStats = () => {
+      api.inbox.stats().then((stats) => {
+        if (!cancelled) setInboxStats(stats)
+      }).catch(() => {
+        // Inbox API may not be available yet — silently ignore
+      })
+    }
+    fetchStats()
+    const interval = setInterval(fetchStats, 30_000)
+    return () => { cancelled = true; clearInterval(interval) }
+  }, [])
 
   const addToast = useCallback((message: string, type: "error" | "success" = "error") => {
     const id = crypto.randomUUID()
@@ -202,70 +222,95 @@ export function App() {
 
   const selectedProject = projects.find((p) => p.id === selectedProjectId)
 
-  return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-200 font-body grid-bg">
-      {/* ── Header ── */}
-      <header className="h-14 border-b border-zinc-800/80 flex items-center justify-between px-5 bg-zinc-950/90 backdrop-blur-sm sticky top-0 z-30">
-        <div className="flex items-center gap-4">
-          <h1 className="font-display font-semibold text-[15px] tracking-wider text-zinc-100 uppercase select-none">
-            gctl<span className="text-emerald-400">.</span>board
-          </h1>
-          <div className="w-px h-5 bg-zinc-800" />
-          <ProjectSelector
-            projects={projects}
-            selectedId={selectedProjectId}
-            onSelect={setSelectedProjectId}
-            onCreate={handleCreateProject}
-            loading={projectsLoading}
-          />
-        </div>
-        <div className="flex items-center gap-4">
-          {selectedProject && (
-            <span className="text-xs font-mono text-zinc-500 tracking-wide">
-              {selectedProject.key} / {issues.length} issues
-            </span>
-          )}
-          <button
-            onClick={() => setShowCreateDialog(true)}
-            disabled={!selectedProjectId}
-            className="px-3 py-1.5 text-[13px] font-display font-medium tracking-wide
-              bg-emerald-500/10 text-emerald-400 border border-emerald-500/25
-              hover:bg-emerald-500/20 hover:border-emerald-500/40
-              disabled:opacity-25 disabled:cursor-not-allowed
-              transition-all duration-150 cursor-pointer"
-          >
-            + NEW ISSUE
-          </button>
-        </div>
-      </header>
+  const pageTitle = route.page === "inbox" ? "inbox" : "board"
 
-      {/* ── Board ── */}
-      <KanbanBoard
-        issues={issues}
-        loading={issuesLoading}
-        hasProject={!!selectedProjectId}
-        onMoveIssue={handleMoveIssue}
-        onSelectIssue={setSelectedIssue}
+  return (
+    <div className="min-h-screen bg-zinc-950 text-zinc-200 font-body grid-bg flex">
+      {/* ── Nav Sidebar ── */}
+      <NavSidebar
+        route={route}
+        navigate={navigate}
+        unreadCount={inboxStats?.unread ?? 0}
       />
 
-      {/* ── Detail Panel ── */}
-      {selectedIssue && (
-        <IssueDetailPanel
-          issue={selectedIssue}
-          onClose={() => setSelectedIssue(null)}
-          onUpdate={refresh}
-        />
-      )}
+      {/* ── Main Content ── */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* ── Header ── */}
+        <header className="h-14 border-b border-zinc-800/80 flex items-center justify-between px-5 bg-zinc-950/90 backdrop-blur-sm sticky top-0 z-30">
+          <div className="flex items-center gap-4">
+            <h1 className="font-display font-semibold text-[15px] tracking-wider text-zinc-100 uppercase select-none">
+              gctl<span className="text-emerald-400">.</span>{pageTitle}
+            </h1>
+            {route.page === "board" && (
+              <>
+                <div className="w-px h-5 bg-zinc-800" />
+                <ProjectSelector
+                  projects={projects}
+                  selectedId={selectedProjectId}
+                  onSelect={setSelectedProjectId}
+                  onCreate={handleCreateProject}
+                  loading={projectsLoading}
+                />
+              </>
+            )}
+          </div>
+          <div className="flex items-center gap-4">
+            {route.page === "board" && selectedProject && (
+              <span className="text-xs font-mono text-zinc-500 tracking-wide">
+                {selectedProject.key} / {issues.length} issues
+              </span>
+            )}
+            {route.page === "board" && (
+              <button
+                onClick={() => setShowCreateDialog(true)}
+                disabled={!selectedProjectId}
+                className="px-3 py-1.5 text-[13px] font-display font-medium tracking-wide
+                  bg-emerald-500/10 text-emerald-400 border border-emerald-500/25
+                  hover:bg-emerald-500/20 hover:border-emerald-500/40
+                  disabled:opacity-25 disabled:cursor-not-allowed
+                  transition-all duration-150 cursor-pointer"
+              >
+                + NEW ISSUE
+              </button>
+            )}
+          </div>
+        </header>
 
-      {/* ── Create Dialog ── */}
-      {showCreateDialog && (
-        <CreateIssueDialog
-          onSubmit={handleCreateIssue}
-          onClose={() => setShowCreateDialog(false)}
-        />
-      )}
+        {/* ── Page Content ── */}
+        {route.page === "board" ? (
+          <>
+            {/* ── Board ── */}
+            <KanbanBoard
+              issues={issues}
+              loading={issuesLoading}
+              hasProject={!!selectedProjectId}
+              onMoveIssue={handleMoveIssue}
+              onSelectIssue={setSelectedIssue}
+            />
 
-      {/* Dispatch is now automatic — no dialog needed */}
+            {/* ── Detail Panel ── */}
+            {selectedIssue && (
+              <IssueDetailPanel
+                issue={selectedIssue}
+                onClose={() => setSelectedIssue(null)}
+                onUpdate={refresh}
+              />
+            )}
+
+            {/* ── Create Dialog ── */}
+            {showCreateDialog && (
+              <CreateIssueDialog
+                onSubmit={handleCreateIssue}
+                onClose={() => setShowCreateDialog(false)}
+              />
+            )}
+
+            {/* Dispatch is now automatic — no dialog needed */}
+          </>
+        ) : (
+          <InboxPage />
+        )}
+      </div>
 
       {/* ── Toasts ── */}
       <div className="fixed top-16 right-4 z-50 flex flex-col gap-2 pointer-events-none">

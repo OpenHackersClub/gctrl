@@ -1,4 +1,15 @@
-import type { Issue, Project, Comment, IssueEvent, TeamRecommendation, TeamRenderResult } from "../types"
+import type {
+  Issue,
+  Project,
+  Comment,
+  IssueEvent,
+  TeamRecommendation,
+  TeamRenderResult,
+  InboxMessage,
+  InboxThread,
+  InboxAction,
+  InboxStats,
+} from "../types"
 
 const BASE = "/api/board"
 
@@ -128,5 +139,68 @@ export const api = {
         body: JSON.stringify(body),
       })
     },
+  },
+
+  inbox: {
+    messages: (params?: {
+      status?: string
+      urgency?: string
+      kind?: string
+      project?: string
+      requires_action?: boolean
+      limit?: number
+    }) => {
+      const qs = new URLSearchParams()
+      if (params?.status) qs.set("status", params.status)
+      if (params?.urgency) qs.set("urgency", params.urgency)
+      if (params?.kind) qs.set("kind", params.kind)
+      if (params?.project) qs.set("project", params.project)
+      if (params?.requires_action !== undefined)
+        qs.set("requires_action", String(params.requires_action))
+      if (params?.limit !== undefined) qs.set("limit", String(params.limit))
+      const q = qs.toString()
+      return request<InboxMessage[]>(`/api/inbox/messages${q ? `?${q}` : ""}`)
+    },
+
+    getMessage: (id: string) => request<InboxMessage>(`/api/inbox/messages/${id}`),
+
+    threads: (params?: {
+      project?: string
+      has_pending?: boolean
+      limit?: number
+    }) => {
+      const qs = new URLSearchParams()
+      if (params?.project) qs.set("project", params.project)
+      if (params?.has_pending !== undefined)
+        qs.set("has_pending", String(params.has_pending))
+      if (params?.limit !== undefined) qs.set("limit", String(params.limit))
+      const q = qs.toString()
+      return request<InboxThread[]>(`/api/inbox/threads${q ? `?${q}` : ""}`)
+    },
+
+    getThread: (id: string) =>
+      request<InboxThread & { messages: InboxMessage[] }>(`/api/inbox/threads/${id}`),
+
+    createAction: (body: {
+      message_id: string
+      action_type: string
+      reason?: string
+    }) =>
+      request<InboxAction>("/api/inbox/actions", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+
+    batchAction: (body: {
+      message_ids: string[]
+      action_type: string
+      reason?: string
+    }) =>
+      request<InboxAction[]>("/api/inbox/actions/batch", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+
+    stats: () => request<InboxStats>("/api/inbox/stats"),
   },
 }
