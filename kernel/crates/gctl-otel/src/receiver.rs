@@ -8,13 +8,14 @@ use axum::{
     Json, Router,
 };
 use gctl_context::ContextManager;
-use gctl_storage::DuckDbStore;
+use gctl_storage::{DuckDbStore, SqliteStore};
 use serde::Deserialize;
 
 use crate::span_processor::{self, OtlpExportRequest};
 
 pub struct AppState {
     pub store: Arc<DuckDbStore>,
+    pub sqlite: Arc<SqliteStore>,
     pub context: Option<ContextManager>,
     pub started_at: std::time::Instant,
 }
@@ -25,12 +26,20 @@ pub fn create_router(store: DuckDbStore) -> Router {
 
 /// Create router from a pre-shared Arc<DuckDbStore> (used when store is shared with other tasks).
 pub fn create_router_from_arc(store: Arc<DuckDbStore>) -> Router {
-    let state = Arc::new(AppState { store: Arc::clone(&store), context: None, started_at: std::time::Instant::now() });
+    let sqlite = Arc::new(SqliteStore::open(":memory:").expect("sqlite open"));
+    let state = Arc::new(AppState { store: Arc::clone(&store), sqlite, context: None, started_at: std::time::Instant::now() });
+    build_router(state)
+}
+
+/// Create router with both DuckDB (OTel) and SQLite (board/inbox/persona) stores.
+pub fn create_router_dual(store: Arc<DuckDbStore>, sqlite: Arc<SqliteStore>) -> Router {
+    let state = Arc::new(AppState { store, sqlite, context: None, started_at: std::time::Instant::now() });
     build_router(state)
 }
 
 pub fn create_router_with_context(store: DuckDbStore, context: Option<ContextManager>) -> Router {
-    let state = Arc::new(AppState { store: Arc::new(store), context, started_at: std::time::Instant::now() });
+    let sqlite = Arc::new(SqliteStore::open(":memory:").expect("sqlite open"));
+    let state = Arc::new(AppState { store: Arc::new(store), sqlite, context, started_at: std::time::Instant::now() });
     build_router(state)
 }
 
@@ -673,7 +682,7 @@ async fn board_create_project(
         counter: 0,
         github_repo: None,
     };
-    match state.store.create_board_project(&project) {
+    match state.sqlite.create_board_project(&project) {
         Ok(()) => (StatusCode::CREATED, Json(serde_json::to_value(&project).unwrap())).into_response(),
         Err(e) => {
             let msg = e.to_string();
@@ -687,7 +696,7 @@ async fn board_create_project(
 }
 
 async fn board_list_projects(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.store.list_board_projects() {
+    match state.sqlite.list_board_projects() {
         Ok(projects) => Json(serde_json::to_value(&projects).unwrap()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -703,9 +712,9 @@ async fn board_link_github(
     Path(id): Path<String>,
     Json(body): Json<BoardLinkGithubBody>,
 ) -> impl IntoResponse {
-    match state.store.update_board_project_github_repo(&id, &body.github_repo) {
+    match state.sqlite.update_board_project_github_repo(&id, &body.github_repo) {
         Ok(()) => {
-            match state.store.get_board_project(&id) {
+            match state.sqlite.get_board_project(&id) {
                 Ok(Some(project)) => Json(serde_json::to_value(&project).unwrap()).into_response(),
                 _ => (StatusCode::NOT_FOUND, "project not found".to_string()).into_response(),
             }
@@ -744,11 +753,11 @@ async fn board_create_issue(
     Json(body): Json<BoardCreateIssueBody>,
 ) -> impl IntoResponse {
     // Auto-generate ID from project key + counter
-    let counter = match state.store.increment_project_counter(&body.project_id) {
+    let counter = match state.sqlite.increment_project_counter(&body.project_id) {
         Ok(c) => c,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("project not found: {}", e)).into_response(),
     };
-    let project = match state.store.get_board_project(&body.project_id) {
+    let project = match state.sqlite.get_board_project(&body.project_id) {
         Ok(Some(p)) => p,
         _ => return (StatusCode::BAD_REQUEST, "project not found".to_string()).into_response(),
     };
@@ -783,7 +792,7 @@ async fn board_create_issue(
         github_url: body.github_url,
     };
 
-    match state.store.insert_board_issue(&issue) {
+    match state.sqlite.insert_board_issue(&issue) {
         Ok(()) => (StatusCode::CREATED, Json(serde_json::to_value(&issue).unwrap())).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -812,7 +821,7 @@ async fn board_list_issues(
         label: params.label,
         limit: Some(params.limit),
     };
-    match state.store.list_board_issues(&filter) {
+    match state.sqlite.list_board_issues(&filter) {
         Ok(issues) => Json(serde_json::to_value(&issues).unwrap()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -822,7 +831,7 @@ async fn board_get_issue(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match state.store.get_board_issue(&id) {
+    match state.sqlite.get_board_issue(&id) {
         Ok(Some(issue)) => Json(serde_json::to_value(&issue).unwrap()).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, format!("issue not found: {}", id)).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -843,9 +852,9 @@ async fn board_move_issue(
     Path(id): Path<String>,
     Json(body): Json<BoardMoveBody>,
 ) -> impl IntoResponse {
-    match state.store.update_board_issue_status(&id, &body.status, &body.actor_id, &body.actor_name, &body.actor_type) {
+    match state.sqlite.update_board_issue_status(&id, &body.status, &body.actor_id, &body.actor_name, &body.actor_type) {
         Ok(()) => {
-            match state.store.get_board_issue(&id) {
+            match state.sqlite.get_board_issue(&id) {
                 Ok(Some(issue)) => Json(serde_json::to_value(&issue).unwrap()).into_response(),
                 _ => StatusCode::OK.into_response(),
             }
@@ -876,9 +885,9 @@ async fn board_assign_issue(
     Path(id): Path<String>,
     Json(body): Json<BoardAssignBody>,
 ) -> impl IntoResponse {
-    match state.store.assign_board_issue(&id, &body.assignee_id, &body.assignee_name, &body.assignee_type) {
+    match state.sqlite.assign_board_issue(&id, &body.assignee_id, &body.assignee_name, &body.assignee_type) {
         Ok(()) => {
-            match state.store.get_board_issue(&id) {
+            match state.sqlite.get_board_issue(&id) {
                 Ok(Some(issue)) => Json(serde_json::to_value(&issue).unwrap()).into_response(),
                 _ => StatusCode::OK.into_response(),
             }
@@ -913,7 +922,7 @@ async fn board_add_comment(
         created_at: chrono::Utc::now(),
         session_id: body.session_id,
     };
-    match state.store.insert_board_comment(&comment) {
+    match state.sqlite.insert_board_comment(&comment) {
         Ok(()) => (StatusCode::CREATED, Json(serde_json::to_value(&comment).unwrap())).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -923,7 +932,7 @@ async fn board_list_events(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match state.store.list_board_events(&id) {
+    match state.sqlite.list_board_events(&id) {
         Ok(events) => Json(serde_json::to_value(&events).unwrap()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -933,7 +942,7 @@ async fn board_list_comments(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match state.store.list_board_comments(&id) {
+    match state.sqlite.list_board_comments(&id) {
         Ok(comments) => Json(serde_json::to_value(&comments).unwrap()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -953,7 +962,7 @@ async fn board_link_session(
     Path(id): Path<String>,
     Json(body): Json<BoardLinkSessionBody>,
 ) -> impl IntoResponse {
-    match state.store.link_session_to_issue(&id, &body.session_id, body.cost_usd, body.tokens) {
+    match state.sqlite.link_session_to_issue(&id, &body.session_id, body.cost_usd, body.tokens) {
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -973,7 +982,7 @@ async fn board_import_markdown(
         return (StatusCode::BAD_REQUEST, format!("not a directory: {}", body.path)).into_response();
     }
 
-    let projects = match state.store.list_board_projects() {
+    let projects = match state.sqlite.list_board_projects() {
         Ok(p) => p,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
@@ -986,7 +995,7 @@ async fn board_import_markdown(
     let mut imported = 0;
     let mut skipped = 0;
     for (issue, _id) in &parsed {
-        match state.store.upsert_board_issue(issue) {
+        match state.sqlite.upsert_board_issue(issue) {
             Ok(true) => imported += 1,
             Ok(false) => skipped += 1,
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -1017,12 +1026,12 @@ async fn board_export_markdown(
         ..Default::default()
     };
 
-    let issues = match state.store.list_board_issues(&filter) {
+    let issues = match state.sqlite.list_board_issues(&filter) {
         Ok(i) => i,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
 
-    let projects = match state.store.list_board_projects() {
+    let projects = match state.sqlite.list_board_projects() {
         Ok(p) => p,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
@@ -1328,7 +1337,7 @@ fn normalize_gh_run(mut v: serde_json::Value) -> serde_json::Value {
 // --- Persona Handlers ---
 
 async fn persona_list(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.store.list_personas() {
+    match state.sqlite.list_personas() {
         Ok(personas) => Json(serde_json::to_value(&personas).unwrap()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -1338,7 +1347,7 @@ async fn persona_get(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match state.store.get_persona(&id) {
+    match state.sqlite.get_persona(&id) {
         Ok(Some(persona)) => Json(serde_json::to_value(&persona).unwrap()).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, format!("persona '{}' not found", id)).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -1381,7 +1390,7 @@ async fn persona_upsert(
         key_specs: body.key_specs,
         source_hash: body.source_hash,
     };
-    match state.store.upsert_persona(&persona) {
+    match state.sqlite.upsert_persona(&persona) {
         Ok(true) => (StatusCode::CREATED, Json(serde_json::to_value(&persona).unwrap())).into_response(),
         Ok(false) => Json(serde_json::to_value(&persona).unwrap()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -1414,7 +1423,7 @@ async fn persona_seed(
             key_specs: p.key_specs,
             source_hash: p.source_hash,
         };
-        match state.store.upsert_persona(&persona) {
+        match state.sqlite.upsert_persona(&persona) {
             Ok(true) => created += 1,
             Ok(false) => updated += 1,
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -1426,7 +1435,7 @@ async fn persona_seed(
             pr_type: r.pr_type,
             persona_ids: r.persona_ids,
         };
-        if let Err(e) = state.store.upsert_review_rule(&rule) {
+        if let Err(e) = state.sqlite.upsert_review_rule(&rule) {
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
     }
@@ -1437,7 +1446,7 @@ async fn persona_delete(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match state.store.delete_persona(&id) {
+    match state.sqlite.delete_persona(&id) {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => (StatusCode::NOT_FOUND, format!("persona '{}' not found", id)).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -1453,7 +1462,7 @@ struct ReviewRuleBody {
 }
 
 async fn persona_review_rules_list(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.store.list_review_rules() {
+    match state.sqlite.list_review_rules() {
         Ok(rules) => Json(serde_json::to_value(&rules).unwrap()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -1468,7 +1477,7 @@ async fn persona_review_rules_upsert(
         pr_type: body.pr_type,
         persona_ids: body.persona_ids,
     };
-    match state.store.upsert_review_rule(&rule) {
+    match state.sqlite.upsert_review_rule(&rule) {
         Ok(_) => (StatusCode::CREATED, Json(serde_json::to_value(&rule).unwrap())).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -1490,10 +1499,10 @@ async fn team_recommend(
 ) -> impl IntoResponse {
     // 1. If pr_type matches a review rule, return that rule's persona set
     if let Some(ref pr_type) = body.pr_type {
-        if let Ok(Some(rule)) = state.store.get_review_rule_by_type(pr_type) {
+        if let Ok(Some(rule)) = state.sqlite.get_review_rule_by_type(pr_type) {
             let mut personas = Vec::new();
             for pid in &rule.persona_ids {
-                if let Ok(Some(p)) = state.store.get_persona(pid) {
+                if let Ok(Some(p)) = state.sqlite.get_persona(pid) {
                     personas.push(p);
                 }
             }
@@ -1506,7 +1515,7 @@ async fn team_recommend(
     }
 
     // 2. Match labels against persona owns/focus text
-    let all_personas = match state.store.list_personas() {
+    let all_personas = match state.sqlite.list_personas() {
         Ok(p) => p,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
@@ -1560,7 +1569,7 @@ async fn team_render(
         .unwrap_or_default();
 
     for pid in &body.persona_ids {
-        match state.store.get_persona(pid) {
+        match state.sqlite.get_persona(pid) {
             Ok(Some(persona)) => {
                 let mut prompt = persona.prompt_prefix.clone();
                 if !context_str.is_empty() {
@@ -1650,7 +1659,7 @@ async fn inbox_create_message(
         tid
     } else if let (Some(ct), Some(cr)) = (body.context_type.as_deref(), body.context_ref.as_deref()) {
         let title = body.thread_title.as_deref().unwrap_or(cr);
-        match state.store.get_or_create_inbox_thread(ct, cr, title, body.project_key.as_deref()) {
+        match state.sqlite.get_or_create_inbox_thread(ct, cr, title, body.project_key.as_deref()) {
             Ok(t) => t.id,
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
@@ -1677,7 +1686,7 @@ async fn inbox_create_message(
         updated_at: now,
     };
 
-    match state.store.create_inbox_message(&msg) {
+    match state.sqlite.create_inbox_message(&msg) {
         Ok(()) => (StatusCode::CREATED, Json(serde_json::to_value(&msg).unwrap())).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -1687,7 +1696,7 @@ async fn inbox_get_message(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match state.store.get_inbox_message(&id) {
+    match state.sqlite.get_inbox_message(&id) {
         Ok(Some(msg)) => Json(serde_json::to_value(&msg).unwrap()).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, format!("message not found: {}", id)).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -1720,7 +1729,7 @@ async fn inbox_list_messages(
         requires_action: params.requires_action,
         limit: Some(params.limit),
     };
-    match state.store.list_inbox_messages(&filter) {
+    match state.sqlite.list_inbox_messages(&filter) {
         Ok(msgs) => Json(serde_json::to_value(&msgs).unwrap()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -1730,7 +1739,7 @@ async fn inbox_get_thread(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let thread = match state.store.get_inbox_thread(&id) {
+    let thread = match state.sqlite.get_inbox_thread(&id) {
         Ok(Some(t)) => t,
         Ok(None) => return (StatusCode::NOT_FOUND, format!("thread not found: {}", id)).into_response(),
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -1740,7 +1749,7 @@ async fn inbox_get_thread(
         thread_id: Some(id),
         ..Default::default()
     };
-    let messages = match state.store.list_inbox_messages(&filter) {
+    let messages = match state.sqlite.list_inbox_messages(&filter) {
         Ok(m) => m,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
@@ -1764,7 +1773,7 @@ async fn inbox_list_threads(
     State(state): State<Arc<AppState>>,
     Query(params): Query<InboxThreadListParams>,
 ) -> impl IntoResponse {
-    match state.store.list_inbox_threads(params.project.as_deref(), params.has_pending, Some(params.limit)) {
+    match state.sqlite.list_inbox_threads(params.project.as_deref(), params.has_pending, Some(params.limit)) {
         Ok(threads) => Json(serde_json::to_value(&threads).unwrap()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -1802,7 +1811,7 @@ async fn inbox_create_action(
     }
 
     // Look up message to get thread_id
-    let msg = match state.store.get_inbox_message(&body.message_id) {
+    let msg = match state.sqlite.get_inbox_message(&body.message_id) {
         Ok(Some(m)) => m,
         Ok(None) => return (StatusCode::NOT_FOUND, format!("message not found: {}", body.message_id)).into_response(),
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -1820,7 +1829,7 @@ async fn inbox_create_action(
         created_at: chrono::Utc::now().to_rfc3339(),
     };
 
-    match state.store.create_inbox_action(&action) {
+    match state.sqlite.create_inbox_action(&action) {
         Ok(()) => (StatusCode::CREATED, Json(serde_json::to_value(&action).unwrap())).into_response(),
         Err(e) => {
             let msg = e.to_string();
@@ -1865,7 +1874,7 @@ async fn inbox_batch_action(
     let mut results = Vec::new();
 
     for mid in &body.message_ids {
-        let msg = match state.store.get_inbox_message(mid) {
+        let msg = match state.sqlite.get_inbox_message(mid) {
             Ok(Some(m)) => m,
             Ok(None) => {
                 results.push(serde_json::json!({
@@ -1906,7 +1915,7 @@ async fn inbox_batch_action(
             created_at: chrono::Utc::now().to_rfc3339(),
         };
 
-        match state.store.create_inbox_action(&action) {
+        match state.sqlite.create_inbox_action(&action) {
             Ok(()) => {
                 results.push(serde_json::json!({
                     "message_id": mid,
@@ -1945,14 +1954,14 @@ async fn inbox_list_actions(
         thread_id: params.thread_id,
         limit: Some(params.limit),
     };
-    match state.store.list_inbox_actions(&filter) {
+    match state.sqlite.list_inbox_actions(&filter) {
         Ok(actions) => Json(serde_json::to_value(&actions).unwrap()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
 async fn inbox_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.store.get_inbox_stats() {
+    match state.sqlite.get_inbox_stats() {
         Ok(stats) => Json(stats).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
