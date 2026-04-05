@@ -72,19 +72,25 @@ export function App() {
     [moveIssue, addToast]
   )
 
-  /** Auto-dispatch: recommend personas → render prompts → assign → post prompt as comment */
+  /** Auto-dispatch: gather context → recommend → render → assign → post prompt */
   const autoDispatch = useCallback(
     async (issue: Issue) => {
       try {
-        // 1. Recommend personas based on labels
+        // 1. Gather prior work context to avoid duplicate effort
+        const [comments, events] = await Promise.all([
+          api.issues.comments(issue.id).catch(() => []),
+          api.issues.events(issue.id).catch(() => []),
+        ])
+
+        // 2. Recommend personas based on labels
         const rec = await api.team.recommend(issue.labels)
         if (rec.personas.length === 0) return
 
-        // 2. Render agent prompts with issue context
+        // 3. Render agent prompts with issue context
         const personaIds = rec.personas.map((p) => p.id)
         const rendered = await api.team.render(personaIds, issue.id)
 
-        // 3. Assign lead persona
+        // 4. Assign lead persona
         const lead = rec.personas[0]
         await api.issues.assign(issue.id, {
           assignee_id: lead.id,
@@ -92,18 +98,68 @@ export function App() {
           assignee_type: "agent",
         })
 
-        // 4. Post rendered prompt as comment for agent pickup
+        // 5. Build dispatch comment with prior work context
+        const sections: string[] = []
+
+        // Prior work guard
+        sections.push(
+          "## IMPORTANT: Check current implementation first\n\n" +
+          "Before starting work, you MUST:\n" +
+          "1. Run `git log --oneline -20` to see recent commits\n" +
+          "2. Run `git diff main..HEAD --stat` to see what's already changed\n" +
+          "3. Read any linked PRs or sessions listed below\n" +
+          "4. Check the issue comments below for prior work notes\n" +
+          "5. Do NOT redo work that is already done — build on it\n"
+        )
+
+        // Prior comments
+        if (comments.length > 0) {
+          const commentSummary = comments
+            .map((c) => `- **${c.author_name}** (${new Date(c.created_at).toLocaleDateString()}): ${c.body.slice(0, 200)}`)
+            .join("\n")
+          sections.push(`## Prior Comments\n\n${commentSummary}`)
+        }
+
+        // Linked sessions
+        if (issue.session_ids.length > 0) {
+          sections.push(
+            `## Linked Sessions\n\n` +
+            issue.session_ids.map((s) => `- \`${s}\``).join("\n") +
+            `\n\nTotal cost: $${issue.total_cost_usd.toFixed(2)} / ${issue.total_tokens.toLocaleString()} tokens`
+          )
+        }
+
+        // Linked PRs
+        if (issue.pr_numbers.length > 0) {
+          sections.push(
+            `## Linked PRs\n\n` +
+            issue.pr_numbers.map((n) => `- PR #${n}`).join("\n")
+          )
+        }
+
+        // Event history summary
+        const statusChanges = events.filter((e) => e.event_type === "status_changed")
+        if (statusChanges.length > 0) {
+          sections.push(
+            `## Status History\n\n` +
+            statusChanges.map((e) => `- ${e.actor_name} changed status (${new Date(e.timestamp).toLocaleDateString()})`).join("\n")
+          )
+        }
+
+        // Agent prompts
         if (rendered.agents.length > 0) {
           const promptBody = rendered.agents
-            .map((a) => `## ${a.name}\n\n${a.prompt}`)
+            .map((a) => `## Agent: ${a.name}\n\n${a.prompt}`)
             .join("\n\n---\n\n")
-          await api.issues.addComment(issue.id, {
-            author_id: "gctl-dispatch",
-            author_name: "gctl-dispatch",
-            author_type: "agent",
-            body: `🤖 Auto-dispatch: ${rec.personas.length} agent(s) assigned\n\n${promptBody}`,
-          })
+          sections.push(promptBody)
         }
+
+        await api.issues.addComment(issue.id, {
+          author_id: "gctl-dispatch",
+          author_name: "gctl-dispatch",
+          author_type: "agent",
+          body: sections.join("\n\n---\n\n"),
+        })
 
         addToast(`Auto-dispatched ${rec.personas.length} agent(s) on ${issue.id}`, "success")
         refresh()
