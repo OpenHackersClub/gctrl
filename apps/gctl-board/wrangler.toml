@@ -1,9 +1,11 @@
 name = "gctl-board"
-compatibility_date = "2024-12-01"
+compatibility_date = "2025-04-01"
+main = "src/worker.ts"
 
 # Workers Static Assets — serves the Vite SPA build output
 [assets]
 directory = "dist-web"
+binding = "ASSETS"
 
 # SPA routing: serve index.html for all unmatched paths
 # so client-side routing (e.g. /projects/*) works correctly
