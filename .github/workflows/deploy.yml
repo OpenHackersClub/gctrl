@@ -1,0 +1,58 @@
+name: Deploy Board
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-board
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Cloudflare Workers
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Only deploy when CI passes on main
+    # (push to main triggers both ci.yml and deploy.yml;
+    #  we gate deploy on the CI workflow completing successfully)
+    permissions:
+      contents: read
+      deployments: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: |
+            package-lock.json
+            apps/gctl-board/pnpm-lock.yaml
+
+      - name: Install dependencies (root)
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Install dependencies (board)
+        run: pnpm install --no-frozen-lockfile
+        working-directory: apps/gctl-board
+
+      - name: Build board web assets
+        run: pnpm build:web
+        working-directory: apps/gctl-board
+
+      - name: Deploy to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/gctl-board
+          command: deploy

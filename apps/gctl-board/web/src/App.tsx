@@ -1,12 +1,12 @@
 import { useState, useCallback, useRef } from "react"
 import { useProjects, useIssues } from "./hooks/useBoard"
+import { useProjectRoute } from "./hooks/useProjectRoute"
 import { KanbanBoard } from "./components/KanbanBoard"
 import { IssueDetailPanel } from "./components/IssueDetailPanel"
 import { CreateIssueDialog } from "./components/CreateIssueDialog"
-import { DispatchDialog } from "./components/DispatchDialog"
 import { ProjectSelector } from "./components/ProjectSelector"
 import { api } from "./api/client"
-import type { Issue, PersonaDefinition } from "./types"
+import type { Issue } from "./types"
 
 interface Toast {
   id: string
@@ -16,7 +16,7 @@ interface Toast {
 
 export function App() {
   const { projects, loading: projectsLoading, create: createProject } = useProjects()
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
+  const { selectedProjectId, selectProject: setSelectedProjectId } = useProjectRoute(projects)
   const {
     issues,
     loading: issuesLoading,
@@ -26,9 +26,7 @@ export function App() {
   } = useIssues(selectedProjectId)
   const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
-  const [dispatchIssue, setDispatchIssue] = useState<Issue | null>(null)
   const [toasts, setToasts] = useState<Toast[]>([])
-  const pendingMoveRef = useRef<{ issueId: string; newStatus: string } | null>(null)
   const issuesRef = useRef(issues)
   issuesRef.current = issues
 
@@ -52,17 +50,20 @@ export function App() {
 
   const handleMoveIssue = useCallback(
     async (issueId: string, newStatus: string) => {
-      // Intercept drag to in_progress — show dispatch dialog
-      if (newStatus === "in_progress") {
-        const issue = issuesRef.current.find((i) => i.id === issueId)
-        if (issue && issue.status !== "in_progress") {
-          pendingMoveRef.current = { issueId, newStatus }
-          setDispatchIssue(issue)
-          return issue // actual move deferred until dispatch decision
-        }
-      }
       try {
-        return await moveIssue(issueId, newStatus)
+        const result = await moveIssue(issueId, newStatus)
+
+        // Auto-dispatch: when moved to in_progress, recommend + assign + post prompt
+        if (newStatus === "in_progress") {
+          const issue = issuesRef.current.find((i) => i.id === issueId)
+          if (issue) {
+            autoDispatch(issue).catch(() => {
+              // non-blocking — issue already moved, dispatch is best-effort
+            })
+          }
+        }
+
+        return result
       } catch (e) {
         addToast(e instanceof Error ? e.message : "Failed to move issue")
         throw e
@@ -71,47 +72,115 @@ export function App() {
     [moveIssue, addToast]
   )
 
-  const handleDispatch = useCallback(
-    async (issue: Issue, personas: PersonaDefinition[]) => {
-      const pending = pendingMoveRef.current
-      if (!pending) return
+  /** Auto-dispatch: gather context → recommend → render → assign → post prompt.
+   *  Each step is independently resilient — if persona recommendation fails,
+   *  still posts the prior-work context comment for agent pickup. */
+  const autoDispatch = useCallback(
+    async (issue: Issue) => {
       try {
-        // 1. Move the issue to in_progress
-        await moveIssue(pending.issueId, pending.newStatus)
-        // 2. Render agent prompts with issue context
-        const personaIds = personas.map((p) => p.id)
-        await api.team.render(personaIds, issue.id)
-        // 3. Assign to first persona as the lead agent
-        const lead = personas[0]
-        await api.issues.assign(issue.id, {
-          assignee_id: lead.id,
-          assignee_name: lead.name,
-          assignee_type: "agent",
+        // 1. Gather prior work context (best-effort)
+        const [comments, events] = await Promise.all([
+          api.issues.comments(issue.id).catch(() => []),
+          api.issues.events(issue.id).catch(() => []),
+        ])
+
+        // 2. Try persona recommendation + rendering (optional — may not be seeded)
+        let agentPrompts: string | null = null
+        let assignedPersona: string | null = null
+        try {
+          const rec = await api.team.recommend(issue.labels)
+          if (rec.personas.length > 0) {
+            const personaIds = rec.personas.map((p) => p.id)
+            const rendered = await api.team.render(personaIds, issue.id)
+
+            const lead = rec.personas[0]
+            await api.issues.assign(issue.id, {
+              assignee_id: lead.id,
+              assignee_name: lead.name,
+              assignee_type: "agent",
+            })
+            assignedPersona = lead.name
+
+            if (rendered.agents.length > 0) {
+              agentPrompts = rendered.agents
+                .map((a) => `## Agent: ${a.name}\n\n${a.prompt}`)
+                .join("\n\n---\n\n")
+            }
+          }
+        } catch {
+          // Persona recommendation unavailable — dispatch continues without it
+        }
+
+        // 3. Build dispatch comment with prior work context
+        const sections: string[] = []
+
+        sections.push(
+          "## IMPORTANT: Check current implementation first\n\n" +
+          "Before starting work, you MUST:\n" +
+          "1. Run `git log --oneline -20` to see recent commits\n" +
+          "2. Run `git diff main..HEAD --stat` to see what's already changed\n" +
+          "3. Read any linked PRs or sessions listed below\n" +
+          "4. Check the issue comments below for prior work notes\n" +
+          "5. Do NOT redo work that is already done — build on it\n"
+        )
+
+        if (issue.description) {
+          sections.push(`## Description\n\n${issue.description}`)
+        }
+
+        if (comments.length > 0) {
+          const commentSummary = comments
+            .map((c) => `- **${c.author_name}** (${new Date(c.created_at).toLocaleDateString()}): ${c.body.slice(0, 200)}`)
+            .join("\n")
+          sections.push(`## Prior Comments\n\n${commentSummary}`)
+        }
+
+        if (issue.session_ids.length > 0) {
+          sections.push(
+            `## Linked Sessions\n\n` +
+            issue.session_ids.map((s) => `- \`${s}\``).join("\n") +
+            `\n\nTotal cost: $${issue.total_cost_usd.toFixed(2)} / ${issue.total_tokens.toLocaleString()} tokens`
+          )
+        }
+
+        if (issue.pr_numbers.length > 0) {
+          sections.push(
+            `## Linked PRs\n\n` +
+            issue.pr_numbers.map((n) => `- PR #${n}`).join("\n")
+          )
+        }
+
+        const statusChanges = events.filter((e) => e.event_type === "status_changed")
+        if (statusChanges.length > 0) {
+          sections.push(
+            `## Status History\n\n` +
+            statusChanges.map((e) => `- ${e.actor_name} changed status (${new Date(e.timestamp).toLocaleDateString()})`).join("\n")
+          )
+        }
+
+        if (agentPrompts) {
+          sections.push(agentPrompts)
+        }
+
+        // 4. Post dispatch comment — this is the agent's pickup signal
+        await api.issues.addComment(issue.id, {
+          author_id: "gctl-dispatch",
+          author_name: "gctl-dispatch",
+          author_type: "agent",
+          body: sections.join("\n\n---\n\n"),
         })
-        addToast(`Dispatched ${personas.length} agent(s) on ${issue.id}`, "success")
-        refresh()
+
+        const msg = assignedPersona
+          ? `Dispatched ${assignedPersona} on ${issue.id}`
+          : `Dispatch context posted on ${issue.id}`
+        addToast(msg, "success")
       } catch (e) {
-        addToast(e instanceof Error ? e.message : "Dispatch failed")
-      } finally {
-        pendingMoveRef.current = null
-        setDispatchIssue(null)
+        // Even the comment post failed — still not critical, issue is already in_progress
+        addToast(`Dispatch note failed for ${issue.id} — issue still moved`, "error")
       }
     },
-    [moveIssue, addToast, refresh]
+    [addToast]
   )
-
-  const handleDispatchSkip = useCallback(async () => {
-    const pending = pendingMoveRef.current
-    if (!pending) return
-    try {
-      await moveIssue(pending.issueId, pending.newStatus)
-    } catch (e) {
-      addToast(e instanceof Error ? e.message : "Failed to move issue")
-    } finally {
-      pendingMoveRef.current = null
-      setDispatchIssue(null)
-    }
-  }, [moveIssue, addToast])
 
   const handleCreateIssue = useCallback(
     async (input: {
@@ -196,18 +265,7 @@ export function App() {
         />
       )}
 
-      {/* ── Dispatch Dialog ── */}
-      {dispatchIssue && (
-        <DispatchDialog
-          issue={dispatchIssue}
-          onDispatch={handleDispatch}
-          onSkip={handleDispatchSkip}
-          onClose={() => {
-            pendingMoveRef.current = null
-            setDispatchIssue(null)
-          }}
-        />
-      )}
+      {/* Dispatch is now automatic — no dialog needed */}
 
       {/* ── Toasts ── */}
       <div className="fixed top-16 right-4 z-50 flex flex-col gap-2 pointer-events-none">
