@@ -174,13 +174,12 @@ export function App() {
           ? `Dispatched ${assignedPersona} on ${issue.id}`
           : `Dispatch context posted on ${issue.id}`
         addToast(msg, "success")
-        refresh(true)
       } catch (e) {
         // Even the comment post failed — still not critical, issue is already in_progress
         addToast(`Dispatch note failed for ${issue.id} — issue still moved`, "error")
       }
     },
-    [addToast, refresh]
+    [addToast]
   )
 
   const handleCreateIssue = useCallback(
