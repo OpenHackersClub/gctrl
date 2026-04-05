@@ -59,6 +59,7 @@ apps/gctl-{app}/
 - **`Context.Tag`** for service ports (testable via `Layer` substitution)
 - **`Layer.provide`** for dependency injection — wire at the edge, test with in-memory adapters
 - **`Effect.gen`** for all effectful operations
+- **Prefer `@effect/platform` HttpClient over raw `fetch()`** — HTTP adapters use `HttpClient`, `HttpClientResponse`, `HttpBody` from `@effect/platform`. Provide `FetchHttpClient.layer` at the edge.
 - App tables MUST use namespaced prefixes (`board_*`, `eval_*`)
 
 ## gctl-board

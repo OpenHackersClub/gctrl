@@ -814,8 +814,8 @@ impl DuckDbStore {
     pub fn create_board_project(&self, project: &gctl_core::BoardProject) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO board_projects (id, name, key, counter) VALUES (?, ?, ?, ?)",
-            params![project.id, project.name, project.key, project.counter],
+            "INSERT INTO board_projects (id, name, key, counter, github_repo) VALUES (?, ?, ?, ?, ?)",
+            params![project.id, project.name, project.key, project.counter, project.github_repo],
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
     }
@@ -823,7 +823,7 @@ impl DuckDbStore {
     pub fn get_board_project(&self, id: &str) -> Result<Option<gctl_core::BoardProject>> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT id, name, key, counter FROM board_projects WHERE id = ?1",
+            "SELECT id, name, key, counter, github_repo FROM board_projects WHERE id = ?1",
             [id],
             |row| {
                 Ok(gctl_core::BoardProject {
@@ -831,6 +831,7 @@ impl DuckDbStore {
                     name: row.get(1)?,
                     key: row.get(2)?,
                     counter: row.get(3)?,
+                    github_repo: row.get(4)?,
                 })
             },
         ).ok().map(Ok).transpose()
@@ -838,7 +839,7 @@ impl DuckDbStore {
 
     pub fn list_board_projects(&self) -> Result<Vec<gctl_core::BoardProject>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, name, key, counter FROM board_projects ORDER BY name")
+        let mut stmt = conn.prepare("SELECT id, name, key, counter, github_repo FROM board_projects ORDER BY name")
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         let rows = stmt.query_map([], |row| {
             Ok(gctl_core::BoardProject {
@@ -846,9 +847,19 @@ impl DuckDbStore {
                 name: row.get(1)?,
                 key: row.get(2)?,
                 counter: row.get(3)?,
+                github_repo: row.get(4)?,
             })
         }).map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn update_board_project_github_repo(&self, id: &str, github_repo: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE board_projects SET github_repo = ?1 WHERE id = ?2",
+            params![github_repo, id],
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
     }
 
     pub fn increment_project_counter(&self, project_id: &str) -> Result<i32> {
@@ -868,8 +879,8 @@ impl DuckDbStore {
     pub fn insert_board_issue(&self, issue: &gctl_core::BoardIssue) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO board_issues (id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO board_issues (id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 issue.id,
                 issue.project_id,
@@ -895,6 +906,8 @@ impl DuckDbStore {
                 serde_json::to_string(&issue.pr_numbers).unwrap_or_else(|_| "[]".into()),
                 issue.content_hash,
                 issue.source_path,
+                issue.github_issue_number.map(|n| n as i32),
+                issue.github_url,
             ],
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
@@ -942,7 +955,7 @@ impl DuckDbStore {
     pub fn get_board_issue(&self, id: &str) -> Result<Option<gctl_core::BoardIssue>> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path FROM board_issues WHERE id = ?1",
+            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url FROM board_issues WHERE id = ?1",
             [id],
             row_to_board_issue,
         ).ok().map(Ok).transpose()
@@ -951,7 +964,7 @@ impl DuckDbStore {
     pub fn list_board_issues(&self, filter: &gctl_core::BoardIssueFilter) -> Result<Vec<gctl_core::BoardIssue>> {
         let conn = self.conn.lock().unwrap();
         let mut sql = String::from(
-            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path FROM board_issues WHERE 1=1"
+            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url FROM board_issues WHERE 1=1"
         );
         let mut params_vec: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
         let mut idx = 1;
@@ -1720,6 +1733,8 @@ fn row_to_board_issue(row: &duckdb::Row<'_>) -> duckdb::Result<gctl_core::BoardI
         pr_numbers: serde_json::from_str(&pr_numbers_str).unwrap_or_default(),
         content_hash: row.get(22)?,
         source_path: row.get(23)?,
+        github_issue_number: { let v: Option<i32> = row.get(24)?; v.map(|n| n as u32) },
+        github_url: row.get(25)?,
     })
 }
 
@@ -2448,6 +2463,7 @@ mod tests {
             name: format!("Project {}", key),
             key: key.into(),
             counter: 0,
+            github_repo: None,
         }
     }
 
@@ -2477,6 +2493,8 @@ mod tests {
             pr_numbers: vec![],
             content_hash: None,
             source_path: None,
+            github_issue_number: None,
+            github_url: None,
         }
     }
 

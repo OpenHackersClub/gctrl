@@ -1,6 +1,7 @@
 import { Command, Options, Args } from "@effect/cli"
 import { Console, Effect, Option, Schema } from "effect"
 import { KernelClient } from "../services/KernelClient"
+import { GhIssue } from "./gh"
 
 // --- schemas ---
 
@@ -9,6 +10,7 @@ const BoardProject = Schema.Struct({
   name: Schema.String,
   key: Schema.String,
   counter: Schema.Number,
+  github_repo: Schema.optional(Schema.String),
 })
 const BoardProjectList = Schema.Array(BoardProject)
 
@@ -24,6 +26,11 @@ const BoardIssue = Schema.Struct({
   labels: Schema.Array(Schema.String),
   created_at: Schema.String,
   updated_at: Schema.String,
+  created_by_id: Schema.optional(Schema.String),
+  created_by_name: Schema.optional(Schema.String),
+  created_by_type: Schema.optional(Schema.String),
+  github_issue_number: Schema.optional(Schema.Number),
+  github_url: Schema.optional(Schema.String),
 })
 const BoardIssueList = Schema.Array(BoardIssue)
 
@@ -49,6 +56,17 @@ const BoardEvent = Schema.Struct({
 const BoardEventList = Schema.Array(BoardEvent)
 
 const VoidResponse = Schema.Struct({})
+
+const ImportResult = Schema.Struct({
+  imported: Schema.Number,
+  skipped: Schema.Number,
+  total: Schema.Number,
+})
+
+const ExportResult = Schema.Struct({
+  exported: Schema.Number,
+  files: Schema.Array(Schema.String),
+})
 
 // --- shared options ---
 
@@ -325,8 +343,209 @@ const issuesParent = Command.make("issues").pipe(
   ])
 )
 
+// --- import / export ---
+
+const importPath = Args.text({ name: "path" }).pipe(
+  Args.withDescription("Directory containing .md issue files")
+)
+
+const importCommand = Command.make(
+  "import",
+  { path: importPath },
+  ({ path }) =>
+    Effect.gen(function* () {
+      const kernel = yield* KernelClient
+      const result = yield* kernel.post(
+        "/api/board/import",
+        { path },
+        ImportResult
+      )
+      yield* Console.log(
+        `Imported ${result.imported}, skipped ${result.skipped} (${result.total} total)`
+      )
+    })
+)
+
+const exportPath = Args.text({ name: "path" }).pipe(
+  Args.withDescription("Directory to write .md issue files")
+)
+const exportProjectId = Options.text("project").pipe(
+  Options.optional,
+  Options.withDescription("Export only issues from this project ID")
+)
+
+const exportCommand = Command.make(
+  "export",
+  { path: exportPath, projectId: exportProjectId },
+  ({ path, projectId }) =>
+    Effect.gen(function* () {
+      const kernel = yield* KernelClient
+      const body: Record<string, unknown> = { path }
+      if (Option.isSome(projectId)) {
+        body.project_id = projectId.value
+      }
+      const result = yield* kernel.post(
+        "/api/board/export",
+        body,
+        ExportResult
+      )
+      yield* Console.log(`Exported ${result.exported} issues:`)
+      for (const f of result.files) {
+        yield* Console.log(`  ${f}`)
+      }
+    })
+)
+
+// --- link-github ---
+
+const linkGhRepo = Options.text("repo").pipe(
+  Options.withDescription("GitHub repo (owner/repo)")
+)
+const linkGhProjectId = Args.text({ name: "project-id" }).pipe(
+  Args.withDescription("Board project ID")
+)
+
+const linkGithubCommand = Command.make(
+  "link-github",
+  { projectId: linkGhProjectId, repo: linkGhRepo },
+  ({ projectId, repo }) =>
+    Effect.gen(function* () {
+      const kernel = yield* KernelClient
+      const project = yield* kernel.post(
+        `/api/board/projects/${projectId}/github`,
+        { github_repo: repo },
+        BoardProject
+      )
+      yield* Console.log(`Linked project ${project.key} → ${repo}`)
+    })
+)
+
+// --- sync helpers ---
+
+const GhIssueList = Schema.Array(GhIssue)
+
+/** Resolve a project by key and verify it has a linked GitHub repo. */
+const resolveLinkedProject = (projectKey: string) =>
+  Effect.gen(function* () {
+    const kernel = yield* KernelClient
+    const projects = yield* kernel.get("/api/board/projects", BoardProjectList)
+    const proj = projects.find((p) => p.key === projectKey)
+    if (!proj) return yield* Effect.fail({ _tag: "NotFound" as const, message: `Project "${projectKey}" not found.` })
+    if (!proj.github_repo) return yield* Effect.fail({ _tag: "NotLinked" as const, message: `Project "${projectKey}" has no linked GitHub repo. Use: gctl board link-github <project-id> --repo owner/repo` })
+    return { ...proj, github_repo: proj.github_repo }
+  })
+
+const syncProject = Options.text("project").pipe(
+  Options.withDescription("Project key (e.g. GCTL)")
+)
+
+// --- sync subcommands ---
+
+const syncPullCommand = Command.make(
+  "pull",
+  { project: syncProject },
+  ({ project }) =>
+    Effect.gen(function* () {
+      const kernel = yield* KernelClient
+      const proj = yield* resolveLinkedProject(project)
+
+      const [ghIssues, boardIssues] = yield* Effect.all([
+        kernel.get(`/api/github/issues?repo=${encodeURIComponent(proj.github_repo)}&limit=100`, GhIssueList),
+        kernel.get(`/api/board/issues?project_id=${proj.id}`, BoardIssueList),
+      ])
+
+      const existingGhNumbers = new Set(
+        boardIssues
+          .filter((i) => i.github_issue_number !== undefined)
+          .map((i) => i.github_issue_number)
+      )
+      const newFromGh = ghIssues.filter((gi) => !existingGhNumbers.has(gi.number))
+
+      yield* Effect.forEach(newFromGh, (gi) =>
+        Effect.gen(function* () {
+          yield* kernel.post("/api/board/issues", {
+            project_id: proj.id,
+            title: gi.title,
+            description: gi.body ?? undefined,
+            labels: gi.labels,
+            github_issue_number: gi.number,
+            github_url: gi.url,
+            created_by_id: gi.author,
+            created_by_name: gi.author,
+            created_by_type: "human",
+          }, BoardIssue)
+          yield* Console.log(`  ← #${gi.number} ${gi.title}`)
+        }), { concurrency: 1 })
+
+      yield* Console.log(`Sync pull: ${newFromGh.length} new issue(s) from ${proj.github_repo}`)
+    }).pipe(
+      Effect.catchTag("NotFound", (e) => Console.log(e.message)),
+      Effect.catchTag("NotLinked", (e) => Console.log(e.message)),
+    )
+)
+
+const syncPushCommand = Command.make(
+  "push",
+  { project: syncProject },
+  ({ project }) =>
+    Effect.gen(function* () {
+      const kernel = yield* KernelClient
+      const proj = yield* resolveLinkedProject(project)
+
+      const boardIssues = yield* kernel.get(`/api/board/issues?project_id=${proj.id}`, BoardIssueList)
+      const unsynced = boardIssues.filter(
+        (i) => i.github_issue_number === undefined || i.github_issue_number === null
+      )
+
+      yield* Effect.forEach(unsynced, (bi) =>
+        Effect.gen(function* () {
+          const created = yield* kernel.post(
+            `/api/github/issues?repo=${encodeURIComponent(proj.github_repo)}`,
+            { title: bi.title, body: bi.description, labels: bi.labels },
+            GhIssue
+          )
+          yield* Console.log(`  → #${created.number} ${bi.title}`)
+        }), { concurrency: 1 })
+
+      yield* Console.log(`Sync push: ${unsynced.length} issue(s) to ${proj.github_repo}`)
+    }).pipe(
+      Effect.catchTag("NotFound", (e) => Console.log(e.message)),
+      Effect.catchTag("NotLinked", (e) => Console.log(e.message)),
+    )
+)
+
+const syncStatusCommand = Command.make(
+  "status",
+  { project: syncProject },
+  ({ project }) =>
+    Effect.gen(function* () {
+      const kernel = yield* KernelClient
+      const projects = yield* kernel.get("/api/board/projects", BoardProjectList)
+      const proj = projects.find((p) => p.key === project)
+      if (!proj) {
+        yield* Console.log(`Project "${project}" not found.`)
+        return
+      }
+
+      yield* Console.log(`Project: ${proj.key} — ${proj.name}`)
+      yield* Console.log(`GitHub:  ${proj.github_repo ?? "(not linked)"}`)
+
+      if (proj.github_repo) {
+        const boardIssues = yield* kernel.get(`/api/board/issues?project_id=${proj.id}`, BoardIssueList)
+        const synced = boardIssues.filter((i) => i.github_issue_number !== undefined)
+        const unsynced = boardIssues.filter((i) => i.github_issue_number === undefined || i.github_issue_number === null)
+        yield* Console.log(`Synced:   ${synced.length} issues`)
+        yield* Console.log(`Unsynced: ${unsynced.length} board-only issues`)
+      }
+    })
+)
+
+const syncCommand = Command.make("sync").pipe(
+  Command.withSubcommands([syncPullCommand, syncPushCommand, syncStatusCommand])
+)
+
 // --- board (parent) ---
 
 export const boardCommand = Command.make("board").pipe(
-  Command.withSubcommands([projectsCommand, issuesParent])
+  Command.withSubcommands([projectsCommand, issuesParent, importCommand, exportCommand, linkGithubCommand, syncCommand])
 )

@@ -163,7 +163,8 @@ CREATE TABLE IF NOT EXISTS board_projects (
     id          VARCHAR PRIMARY KEY,
     name        VARCHAR NOT NULL,
     key         VARCHAR NOT NULL UNIQUE,
-    counter     INTEGER DEFAULT 0
+    counter     INTEGER DEFAULT 0,
+    github_repo VARCHAR
 )
 "#;
 
@@ -192,7 +193,9 @@ CREATE TABLE IF NOT EXISTS board_issues (
     total_tokens    BIGINT DEFAULT 0,
     pr_numbers      JSON DEFAULT '[]',
     content_hash    VARCHAR,
-    source_path     VARCHAR
+    source_path     VARCHAR,
+    github_issue_number INTEGER,
+    github_url      VARCHAR
 )
 "#;
 

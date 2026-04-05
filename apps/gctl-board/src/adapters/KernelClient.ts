@@ -2,50 +2,85 @@
  * KernelClient — HTTP adapter for calling the gctl kernel API.
  *
  * All board operations go through the Rust daemon's HTTP API on :4318.
- * This is the shell boundary: Effect-TS apps talk to the kernel via HTTP only.
+ * This is the app boundary: Effect-TS apps talk to the kernel via HTTP only.
+ *
+ * Uses @effect/platform HttpClient with typed TaggedErrors and Effect.catchTags.
  */
 import { Context, Effect, Layer } from "effect"
+import { HttpClient, HttpClientResponse, HttpBody } from "@effect/platform"
+import { KernelError, KernelUnavailableError } from "../services/errors.js"
 
 export class KernelClient extends Context.Tag("KernelClient")<
   KernelClient,
   {
-    readonly get: (path: string) => Effect.Effect<unknown, Error>
-    readonly post: (path: string, body: unknown) => Effect.Effect<unknown, Error>
+    readonly get: (path: string) => Effect.Effect<unknown, KernelError | KernelUnavailableError>
+    readonly post: (path: string, body: unknown) => Effect.Effect<unknown, KernelError | KernelUnavailableError>
   }
 >() {}
 
 /**
- * Live adapter that calls the gctl daemon HTTP API.
+ * Live adapter that calls the gctl daemon HTTP API via @effect/platform HttpClient.
+ * Maps HttpClientError tags to KernelError / KernelUnavailableError.
  */
 export const KernelClientLive = (baseUrl = "http://localhost:4318") =>
-  Layer.succeed(KernelClient, {
-    get: (path) =>
-      Effect.tryPromise({
-        try: async () => {
-          const res = await fetch(`${baseUrl}${path}`)
-          if (!res.ok) {
-            const text = await res.text()
-            throw new Error(`${res.status}: ${text}`)
-          }
-          return res.json()
-        },
-        catch: (e) => new Error(String(e)),
-      }),
-    post: (path, body) =>
-      Effect.tryPromise({
-        try: async () => {
-          const res = await fetch(`${baseUrl}${path}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          })
-          if (!res.ok) {
-            const text = await res.text()
-            throw new Error(`${res.status}: ${text}`)
-          }
-          if (res.status === 204) return null
-          return res.json()
-        },
-        catch: (e) => new Error(String(e)),
-      }),
-  })
+  Layer.effect(
+    KernelClient,
+    Effect.gen(function* () {
+      const client = yield* HttpClient.HttpClient
+
+      return {
+        get: (path: string) =>
+          client.get(`${baseUrl}${path}`).pipe(
+            Effect.flatMap((res) => {
+              if (res.status < 200 || res.status >= 300) {
+                return Effect.flatMap(res.text, (text) =>
+                  Effect.fail(new KernelError({ message: `${res.status}: ${text}`, statusCode: res.status }))
+                )
+              }
+              return res.json
+            }),
+            Effect.scoped,
+            Effect.catchTag("RequestError", () =>
+              Effect.fail(
+                new KernelUnavailableError({
+                  message: `Cannot reach kernel at ${baseUrl}. Is 'gctl serve' running?`,
+                })
+              )
+            ),
+            Effect.catchTag("ResponseError", (e) =>
+              Effect.fail(
+                new KernelError({ message: e.message, statusCode: e.response.status })
+              )
+            ),
+          ),
+
+        post: (path: string, body: unknown) =>
+          client
+            .post(`${baseUrl}${path}`, { body: HttpBody.unsafeJson(body) })
+            .pipe(
+              Effect.flatMap((res) => {
+                if (res.status < 200 || res.status >= 300) {
+                  return Effect.flatMap(res.text, (text) =>
+                    Effect.fail(new KernelError({ message: `${res.status}: ${text}`, statusCode: res.status }))
+                  )
+                }
+                if (res.status === 204) return Effect.succeed(null)
+                return res.json
+              }),
+              Effect.scoped,
+              Effect.catchTag("RequestError", () =>
+                Effect.fail(
+                  new KernelUnavailableError({
+                    message: `Cannot reach kernel at ${baseUrl}. Is 'gctl serve' running?`,
+                  })
+                )
+              ),
+              Effect.catchTag("ResponseError", (e) =>
+                Effect.fail(
+                  new KernelError({ message: e.message, statusCode: e.response.status })
+                )
+              ),
+            ),
+      }
+    })
+  )
