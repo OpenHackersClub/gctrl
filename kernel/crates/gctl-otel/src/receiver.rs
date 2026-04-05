@@ -66,6 +66,14 @@ pub fn create_router_with_context(store: DuckDbStore, context: Option<ContextMan
         .route("/api/board/issues/{id}/link-session", post(board_link_session))
         .route("/api/board/import", post(board_import_markdown))
         .route("/api/board/export", post(board_export_markdown))
+        .route("/api/board/projects/{id}/github", post(board_link_github))
+        // GitHub driver (LKM — delegates to native `gh` CLI)
+        .route("/api/github/issues", get(gh_list_issues).post(gh_create_issue))
+        .route("/api/github/issues/{number}", get(gh_get_issue))
+        .route("/api/github/prs", get(gh_list_prs))
+        .route("/api/github/prs/{number}", get(gh_get_pr))
+        .route("/api/github/runs", get(gh_list_runs))
+        .route("/api/github/runs/{run_id}", get(gh_get_run))
         // Persona management (kernel extension)
         .route("/api/personas", get(persona_list).post(persona_upsert))
         .route("/api/personas/seed", post(persona_seed))
@@ -653,6 +661,7 @@ async fn board_create_project(
         name: body.name,
         key: body.key,
         counter: 0,
+        github_repo: None,
     };
     match state.store.create_board_project(&project) {
         Ok(()) => (StatusCode::CREATED, Json(serde_json::to_value(&project).unwrap())).into_response(),
@@ -675,6 +684,27 @@ async fn board_list_projects(State(state): State<Arc<AppState>>) -> impl IntoRes
 }
 
 #[derive(Deserialize)]
+struct BoardLinkGithubBody {
+    github_repo: String,
+}
+
+async fn board_link_github(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<BoardLinkGithubBody>,
+) -> impl IntoResponse {
+    match state.store.update_board_project_github_repo(&id, &body.github_repo) {
+        Ok(()) => {
+            match state.store.get_board_project(&id) {
+                Ok(Some(project)) => Json(serde_json::to_value(&project).unwrap()).into_response(),
+                _ => (StatusCode::NOT_FOUND, "project not found".to_string()).into_response(),
+            }
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
 struct BoardCreateIssueBody {
     project_id: String,
     title: String,
@@ -690,6 +720,10 @@ struct BoardCreateIssueBody {
     created_by_name: String,
     #[serde(default = "default_human")]
     created_by_type: String,
+    #[serde(default)]
+    github_issue_number: Option<u32>,
+    #[serde(default)]
+    github_url: Option<String>,
 }
 
 fn default_priority() -> String { "none".into() }
@@ -735,6 +769,8 @@ async fn board_create_issue(
         pr_numbers: vec![],
         content_hash: None,
         source_path: None,
+        github_issue_number: body.github_issue_number,
+        github_url: body.github_url,
     };
 
     match state.store.insert_board_issue(&issue) {
@@ -992,6 +1028,291 @@ async fn board_export_markdown(
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+}
+
+// --- GitHub Driver Handlers (LKM — delegates to native `gh` CLI) ---
+
+#[derive(Deserialize)]
+struct GhRepoQuery {
+    repo: String,
+    #[serde(default = "default_gh_limit")]
+    limit: usize,
+    #[serde(default)]
+    branch: Option<String>,
+}
+
+fn default_gh_limit() -> usize { 10 }
+
+/// Run `gh` CLI and return stdout as JSON Value.
+async fn gh_exec(args: &[&str]) -> Result<serde_json::Value, (StatusCode, String)> {
+    let output = tokio::process::Command::new("gh")
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, format!("gh CLI not available: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err((StatusCode::BAD_GATEWAY, format!("gh CLI error: {stderr}")));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(&stdout)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("gh JSON parse error: {e}")))
+}
+
+async fn gh_list_issues(Query(q): Query<GhRepoQuery>) -> impl IntoResponse {
+    let limit_str = q.limit.to_string();
+    match gh_exec(&[
+        "issue", "list",
+        "--repo", &q.repo,
+        "--limit", &limit_str,
+        "--json", "number,title,state,author,labels,createdAt,url,body",
+    ]).await {
+        Ok(val) => {
+            // gh returns labels as [{name:"x"}], flatten to ["x"]
+            let issues = normalize_gh_issues(val);
+            Json(issues).into_response()
+        }
+        Err((status, msg)) => (status, msg).into_response(),
+    }
+}
+
+async fn gh_get_issue(
+    Path(number): Path<u64>,
+    Query(q): Query<GhRepoQuery>,
+) -> impl IntoResponse {
+    let num_str = number.to_string();
+    match gh_exec(&[
+        "issue", "view", &num_str,
+        "--repo", &q.repo,
+        "--json", "number,title,state,author,labels,createdAt,url,body",
+    ]).await {
+        Ok(val) => {
+            let issue = normalize_gh_issue(val);
+            Json(issue).into_response()
+        }
+        Err((status, msg)) => (status, msg).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct GhCreateIssueBody {
+    title: String,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    labels: Option<Vec<String>>,
+}
+
+async fn gh_create_issue(
+    Query(q): Query<GhRepoQuery>,
+    Json(input): Json<GhCreateIssueBody>,
+) -> impl IntoResponse {
+    let mut args = vec![
+        "issue".to_string(), "create".to_string(),
+        "--repo".to_string(), q.repo.clone(),
+        "--title".to_string(), input.title.clone(),
+    ];
+    if let Some(ref body) = input.body {
+        args.push("--body".to_string());
+        args.push(body.clone());
+    }
+    if let Some(ref labels) = input.labels {
+        for l in labels {
+            args.push("--label".to_string());
+            args.push(l.clone());
+        }
+    }
+    // gh issue create doesn't output JSON by default, use --json hack
+    // Actually: we need to capture the created issue. Use `gh issue create` then parse.
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+
+    let output = tokio::process::Command::new("gh")
+        .args(&arg_refs)
+        .output()
+        .await;
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            // gh issue create prints the URL on success, parse issue number from it
+            let url = stdout.trim().to_string();
+            let number = url.rsplit('/').next()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
+
+            let issue = serde_json::json!({
+                "number": number,
+                "title": input.title,
+                "state": "open",
+                "author": "gctl-sync",
+                "labels": input.labels.unwrap_or_default(),
+                "createdAt": chrono::Utc::now().to_rfc3339(),
+                "url": url,
+            });
+            (StatusCode::CREATED, Json(issue)).into_response()
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            (StatusCode::BAD_GATEWAY, format!("gh issue create failed: {stderr}")).into_response()
+        }
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, format!("gh CLI not available: {e}")).into_response(),
+    }
+}
+
+async fn gh_list_prs(Query(q): Query<GhRepoQuery>) -> impl IntoResponse {
+    let limit_str = q.limit.to_string();
+    match gh_exec(&[
+        "pr", "list",
+        "--repo", &q.repo,
+        "--limit", &limit_str,
+        "--json", "number,title,state,author,headRefName,url",
+    ]).await {
+        Ok(val) => {
+            let prs = normalize_gh_prs(val);
+            Json(prs).into_response()
+        }
+        Err((status, msg)) => (status, msg).into_response(),
+    }
+}
+
+async fn gh_get_pr(
+    Path(number): Path<u64>,
+    Query(q): Query<GhRepoQuery>,
+) -> impl IntoResponse {
+    let num_str = number.to_string();
+    match gh_exec(&[
+        "pr", "view", &num_str,
+        "--repo", &q.repo,
+        "--json", "number,title,state,author,headRefName,url",
+    ]).await {
+        Ok(val) => {
+            let pr = normalize_gh_pr(val);
+            Json(pr).into_response()
+        }
+        Err((status, msg)) => (status, msg).into_response(),
+    }
+}
+
+async fn gh_list_runs(Query(q): Query<GhRepoQuery>) -> impl IntoResponse {
+    let limit_str = q.limit.to_string();
+    let mut args = vec![
+        "run", "list",
+        "--repo", &q.repo,
+        "--limit", &limit_str,
+        "--json", "databaseId,name,status,conclusion,headBranch,url",
+    ];
+    let branch_val;
+    if let Some(ref b) = q.branch {
+        branch_val = b.clone();
+        args.push("--branch");
+        args.push(&branch_val);
+    }
+    match gh_exec(&args).await {
+        Ok(val) => {
+            let runs = normalize_gh_runs(val);
+            Json(runs).into_response()
+        }
+        Err((status, msg)) => (status, msg).into_response(),
+    }
+}
+
+async fn gh_get_run(
+    Path(run_id): Path<u64>,
+    Query(q): Query<GhRepoQuery>,
+) -> impl IntoResponse {
+    let id_str = run_id.to_string();
+    match gh_exec(&[
+        "run", "view", &id_str,
+        "--repo", &q.repo,
+        "--json", "databaseId,name,status,conclusion,headBranch,url",
+    ]).await {
+        Ok(val) => {
+            let run = normalize_gh_run(val);
+            Json(run).into_response()
+        }
+        Err((status, msg)) => (status, msg).into_response(),
+    }
+}
+
+/// Normalize `gh issue list` JSON: flatten author.login, labels[].name
+fn normalize_gh_issues(val: serde_json::Value) -> serde_json::Value {
+    match val {
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.into_iter().map(normalize_gh_issue).collect())
+        }
+        other => other,
+    }
+}
+
+fn normalize_gh_issue(mut v: serde_json::Value) -> serde_json::Value {
+    if let Some(obj) = v.as_object_mut() {
+        // author: {login: "x"} → "x"
+        if let Some(author) = obj.get("author").cloned() {
+            if let Some(login) = author.get("login").and_then(|l| l.as_str()) {
+                obj.insert("author".into(), serde_json::Value::String(login.into()));
+            }
+        }
+        // labels: [{name: "x"}] → ["x"]
+        if let Some(labels) = obj.get("labels").cloned() {
+            if let Some(arr) = labels.as_array() {
+                let flat: Vec<serde_json::Value> = arr.iter()
+                    .filter_map(|l| l.get("name").and_then(|n| n.as_str()).map(|s| serde_json::Value::String(s.into())))
+                    .collect();
+                obj.insert("labels".into(), serde_json::Value::Array(flat));
+            }
+        }
+    }
+    v
+}
+
+fn normalize_gh_prs(val: serde_json::Value) -> serde_json::Value {
+    match val {
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.into_iter().map(normalize_gh_pr).collect())
+        }
+        other => other,
+    }
+}
+
+fn normalize_gh_pr(mut v: serde_json::Value) -> serde_json::Value {
+    if let Some(obj) = v.as_object_mut() {
+        // author: {login: "x"} → "x"
+        if let Some(author) = obj.get("author").cloned() {
+            if let Some(login) = author.get("login").and_then(|l| l.as_str()) {
+                obj.insert("author".into(), serde_json::Value::String(login.into()));
+            }
+        }
+        // headRefName → branch
+        if let Some(head) = obj.remove("headRefName") {
+            obj.insert("branch".into(), head);
+        }
+    }
+    v
+}
+
+fn normalize_gh_runs(val: serde_json::Value) -> serde_json::Value {
+    match val {
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.into_iter().map(normalize_gh_run).collect())
+        }
+        other => other,
+    }
+}
+
+fn normalize_gh_run(mut v: serde_json::Value) -> serde_json::Value {
+    if let Some(obj) = v.as_object_mut() {
+        // databaseId → id
+        if let Some(db_id) = obj.remove("databaseId") {
+            obj.insert("id".into(), db_id);
+        }
+        // headBranch → branch
+        if let Some(head) = obj.remove("headBranch") {
+            obj.insert("branch".into(), head);
+        }
+    }
+    v
 }
 
 // --- Persona Handlers ---

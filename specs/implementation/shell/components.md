@@ -174,18 +174,32 @@ const listIssues = (repo: string) =>
 Concrete adapter that calls the kernel HTTP API on `:4318`. Uses `@effect/platform` `HttpClient`.
 
 ```typescript
+import { HttpClient, HttpClientResponse, HttpBody, FetchHttpClient } from "@effect/platform"
+
 const HttpKernelClientLive = (baseUrl = "http://localhost:4318") =>
-  Layer.succeed(KernelClient, {
-    get: (path, schema) =>
-      Effect.gen(function* () {
-        const client = yield* HttpClient.HttpClient
-        const res = yield* client.get(`${baseUrl}${path}`)
-        return yield* HttpClientResponse.schemaBodyJson(schema)(res)
-      }).pipe(
-        Effect.catchAll((e) => Effect.fail(new KernelError({ message: String(e) })))
-      ),
-    // ... post, delete similarly
-  })
+  Layer.effect(KernelClient,
+    Effect.gen(function* () {
+      const client = yield* HttpClient.HttpClient
+      return {
+        get: (path, schema) =>
+          client.get(`${baseUrl}${path}`).pipe(
+            Effect.flatMap((res) =>
+              res.status < 200 || res.status >= 300
+                ? Effect.flatMap(res.text, (text) =>
+                    Effect.fail(new KernelError({ message: text, statusCode: res.status })))
+                : HttpClientResponse.schemaBodyJson(schema)(res).pipe(
+                    Effect.catchTag("ParseError", (e) =>
+                      Effect.fail(new KernelError({ message: `Schema decode: ${e}` }))))
+            ),
+            Effect.scoped,
+            Effect.catchTag("RequestError", () =>
+              Effect.fail(new KernelUnavailableError({ message: "..." }))),
+          ),
+        // ... post (with HttpBody.unsafeJson), delete, getText similarly
+      }
+    })
+  )
+```
 ```
 
 ---
@@ -233,6 +247,7 @@ The HTTP API lives in the Rust kernel (`kernel/crates/gctl-otel/src/receiver.rs`
 - **No `.js` in imports.** Use extensionless imports (`from "../services/KernelClient"`, not `from "../services/KernelClient.js"`). The shell uses `moduleResolution: "bundler"` which resolves `.ts` files without extensions.
 - **Single service port.** All commands use `KernelClient` — no separate service ports for external APIs.
 - **No secrets in the shell.** The shell MUST NOT read environment variables for API tokens (e.g., `GITHUB_TOKEN`). Secrets are managed by the kernel.
+- **Prefer `@effect/platform` HttpClient over raw `fetch()`.** HTTP adapters MUST use `HttpClient`, `HttpClientResponse`, and `HttpBody` from `@effect/platform` instead of the global `fetch()` API. This keeps HTTP in the Effect ecosystem (typed errors, scoped resources, layer-based DI). Use `FetchHttpClient.layer` at the entry point to provide the concrete implementation. Map `RequestError` → `KernelUnavailableError`, `ResponseError` → `KernelError`, `ParseError` → `KernelError`.
 
 ## Testing
 

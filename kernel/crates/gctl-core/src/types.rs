@@ -294,6 +294,9 @@ pub struct BoardProject {
     pub name: String,
     pub key: String,
     pub counter: i32,
+    /// GitHub repo (owner/repo) linked to this project for 2-way issue sync.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub github_repo: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -410,6 +413,12 @@ pub struct BoardIssue {
     /// Filesystem path for markdown-based issue files.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_path: Option<String>,
+    /// GitHub issue number for 2-way sync. Set when synced with a GitHub issue.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub github_issue_number: Option<u32>,
+    /// GitHub issue URL for 2-way sync.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub github_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

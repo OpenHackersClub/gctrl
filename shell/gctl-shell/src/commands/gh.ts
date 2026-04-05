@@ -19,6 +19,7 @@ export const GhIssue = Schema.Struct({
   labels: Schema.Array(Schema.String),
   createdAt: Schema.String,
   url: Schema.String,
+  body: Schema.optional(Schema.NullOr(Schema.String)),
 })
 export type GhIssue = typeof GhIssue.Type
 

@@ -15,6 +15,7 @@ pub fn create_project(name: &str, key: &str, db_path: &str) -> Result<()> {
         name: name.to_string(),
         key: key.to_uppercase(),
         counter: 0,
+        github_repo: None,
     };
     store.create_board_project(&project)?;
     println!("Created project: {} ({})", project.name, project.key);
@@ -92,6 +93,10 @@ pub fn create_issue(
         total_cost_usd: 0.0,
         total_tokens: 0,
         pr_numbers: vec![],
+        content_hash: None,
+        source_path: None,
+        github_issue_number: None,
+        github_url: None,
     };
 
     store.insert_board_issue(&issue)?;

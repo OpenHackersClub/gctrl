@@ -6,8 +6,9 @@
  * External services (GitHub, Linear) are accessed via kernel drivers.
  */
 import { Command } from "@effect/cli"
+import { FetchHttpClient } from "@effect/platform"
 import { NodeContext, NodeRuntime } from "@effect/platform-node"
-import { Effect } from "effect"
+import { Effect, Layer } from "effect"
 import { sessionsCommand } from "./commands/sessions"
 import { statusCommand } from "./commands/status"
 import { ghCommand } from "./commands/gh"
@@ -42,7 +43,7 @@ const cli = Command.run(command, {
   version: "0.1.0",
 })
 
-const ShellLive = HttpKernelClientLive()
+const ShellLive = HttpKernelClientLive().pipe(Layer.provide(FetchHttpClient.layer))
 
 cli(process.argv).pipe(
   Effect.provide(ShellLive),

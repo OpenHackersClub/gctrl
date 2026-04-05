@@ -3,11 +3,14 @@ import { Effect, Layer } from "effect"
 import { BoardService } from "../src/services/BoardService.js"
 import { BoardServiceLive } from "../src/adapters/BoardServiceLive.js"
 import { KernelClient } from "../src/adapters/KernelClient.js"
+import { KernelError } from "../src/services/errors.js"
 import type { IssueId, ProjectId } from "../src/schema/index.js"
+
+const fail404 = (msg: string) => Effect.fail(new KernelError({ message: msg, statusCode: 404 }))
 
 /**
  * In-memory mock kernel that simulates the /api/board/* HTTP API.
- * No real HTTP server needed — tests run entirely in-process.
+ * Uses Effect.fail with KernelError for typed error propagation.
  */
 const createMockKernel = () => {
   const projects: Record<string, any> = {}
@@ -17,14 +20,14 @@ const createMockKernel = () => {
 
   return Layer.succeed(KernelClient, {
     get: (path: string) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         if (path.startsWith("/api/board/projects")) {
           return Object.values(projects)
         }
         const issueMatch = path.match(/\/api\/board\/issues\/([^/?]+)$/)
         if (issueMatch) {
           const issue = issues[issueMatch[1]]
-          if (!issue) throw new Error("404: not found")
+          if (!issue) return yield* fail404("not found")
           return issue
         }
         const commentsMatch = path.match(/\/api\/board\/issues\/([^/]+)\/comments/)
@@ -34,10 +37,10 @@ const createMockKernel = () => {
         if (path.startsWith("/api/board/issues")) {
           return Object.values(issues)
         }
-        throw new Error(`404: unknown path ${path}`)
+        return yield* fail404(`unknown path ${path}`)
       }),
     post: (path: string, body: unknown) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         const b = body as any
         if (path === "/api/board/projects") {
           const project = { id: `p-${++counter}`, name: b.name, key: b.key, counter: 0 }
@@ -47,7 +50,7 @@ const createMockKernel = () => {
         if (path === "/api/board/issues") {
           const projId = b.project_id
           const project = Object.values(projects).find((p: any) => p.id === projId) as any
-          if (!project) throw new Error("404: project not found")
+          if (!project) return yield* fail404("project not found")
           project.counter = (project.counter ?? 0) + 1
           const issue = {
             id: `${project.key}-${project.counter}`,
@@ -79,7 +82,7 @@ const createMockKernel = () => {
         const moveMatch = path.match(/\/api\/board\/issues\/([^/]+)\/move/)
         if (moveMatch) {
           const issue = issues[moveMatch[1]]
-          if (!issue) throw new Error("404: not found")
+          if (!issue) return yield* fail404("not found")
           issue.status = b.status
           issue.updated_at = new Date().toISOString()
           return issue
@@ -87,7 +90,7 @@ const createMockKernel = () => {
         const assignMatch = path.match(/\/api\/board\/issues\/([^/]+)\/assign/)
         if (assignMatch) {
           const issue = issues[assignMatch[1]]
-          if (!issue) throw new Error("404: not found")
+          if (!issue) return yield* fail404("not found")
           issue.assignee_id = b.assignee_id
           issue.assignee_name = b.assignee_name
           issue.assignee_type = b.assignee_type
@@ -96,7 +99,7 @@ const createMockKernel = () => {
         const commentMatch = path.match(/\/api\/board\/issues\/([^/]+)\/comment/)
         if (commentMatch) {
           const id = commentMatch[1]
-          if (!issues[id]) throw new Error("404: not found")
+          if (!issues[id]) return yield* fail404("not found")
           if (!comments[id]) comments[id] = []
           comments[id].push({ ...b, id: `c-${++counter}`, issue_id: id, created_at: new Date().toISOString() })
           return comments[id][comments[id].length - 1]
@@ -104,13 +107,13 @@ const createMockKernel = () => {
         const linkMatch = path.match(/\/api\/board\/issues\/([^/]+)\/link-session/)
         if (linkMatch) {
           const issue = issues[linkMatch[1]]
-          if (!issue) throw new Error("404: not found")
+          if (!issue) return yield* fail404("not found")
           issue.session_ids.push(b.session_id)
           issue.total_cost_usd += b.cost_usd
           issue.total_tokens += b.tokens
           return null
         }
-        throw new Error(`404: unknown POST ${path}`)
+        return yield* fail404(`unknown POST ${path}`)
       }),
   })
 }

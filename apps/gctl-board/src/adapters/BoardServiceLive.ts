@@ -8,6 +8,8 @@ import { BoardService } from "../services/BoardService.js"
 import {
   BoardError,
   IssueNotFoundError,
+  KernelError,
+  KernelUnavailableError,
 } from "../services/errors.js"
 import { KernelClient } from "./KernelClient.js"
 import type { Issue, IssueId, IssueStatus, IssueFilter, CreateIssueInput, Assignee, Project } from "../schema/index.js"
@@ -64,7 +66,10 @@ export const BoardServiceLive = Layer.effect(
           const raw = yield* client.post("/api/board/projects", { name, key })
           return mapProject(raw)
         }).pipe(
-          Effect.catchAll((e) => Effect.fail(new BoardError({ message: String(e) })))
+          Effect.catchTags({
+            KernelError: (e) => Effect.fail(new BoardError({ message: e.message })),
+            KernelUnavailableError: (e) => Effect.fail(new BoardError({ message: e.message })),
+          })
         ),
 
       createIssue: (input: CreateIssueInput) =>
@@ -82,7 +87,10 @@ export const BoardServiceLive = Layer.effect(
           })
           return mapIssue(raw)
         }).pipe(
-          Effect.catchAll((e) => Effect.fail(new BoardError({ message: String(e) })))
+          Effect.catchTags({
+            KernelError: (e) => Effect.fail(new BoardError({ message: e.message })),
+            KernelUnavailableError: (e) => Effect.fail(new BoardError({ message: e.message })),
+          })
         ),
 
       getIssue: (issueId: IssueId) =>
@@ -90,10 +98,12 @@ export const BoardServiceLive = Layer.effect(
           const raw = yield* client.get(`/api/board/issues/${issueId}`)
           return mapIssue(raw)
         }).pipe(
-          Effect.catchAll((e): Effect.Effect<never, BoardError | IssueNotFoundError> => {
-            const msg = String(e)
-            if (msg.includes("404")) return Effect.fail(new IssueNotFoundError({ issueId }))
-            return Effect.fail(new BoardError({ message: msg }))
+          Effect.catchTags({
+            KernelError: (e): Effect.Effect<never, BoardError | IssueNotFoundError> =>
+              e.statusCode === 404
+                ? Effect.fail(new IssueNotFoundError({ issueId }))
+                : Effect.fail(new BoardError({ message: e.message })),
+            KernelUnavailableError: (e) => Effect.fail(new BoardError({ message: e.message })),
           })
         ),
 
@@ -109,7 +119,10 @@ export const BoardServiceLive = Layer.effect(
           // biome-ignore lint/suspicious/noExplicitAny: untyped JSON array from kernel HTTP API
           return (raw as any[]).map(mapIssue)
         }).pipe(
-          Effect.catchAll((e) => Effect.fail(new BoardError({ message: String(e) })))
+          Effect.catchTags({
+            KernelError: (e) => Effect.fail(new BoardError({ message: e.message })),
+            KernelUnavailableError: (e) => Effect.fail(new BoardError({ message: e.message })),
+          })
         ),
 
       moveIssue: (issueId: IssueId, newStatus: IssueStatus, _note?: string) =>
@@ -122,10 +135,12 @@ export const BoardServiceLive = Layer.effect(
           })
           return mapIssue(raw)
         }).pipe(
-          Effect.catchAll((e): Effect.Effect<never, BoardError | IssueNotFoundError> => {
-            const msg = String(e)
-            if (msg.includes("404") || msg.includes("not found")) return Effect.fail(new IssueNotFoundError({ issueId }))
-            return Effect.fail(new BoardError({ message: msg }))
+          Effect.catchTags({
+            KernelError: (e): Effect.Effect<never, BoardError | IssueNotFoundError> =>
+              e.statusCode === 404
+                ? Effect.fail(new IssueNotFoundError({ issueId }))
+                : Effect.fail(new BoardError({ message: e.message })),
+            KernelUnavailableError: (e) => Effect.fail(new BoardError({ message: e.message })),
           })
         ),
 
@@ -138,10 +153,12 @@ export const BoardServiceLive = Layer.effect(
           })
           return mapIssue(raw)
         }).pipe(
-          Effect.catchAll((e): Effect.Effect<never, BoardError | IssueNotFoundError> => {
-            const msg = String(e)
-            if (msg.includes("404")) return Effect.fail(new IssueNotFoundError({ issueId }))
-            return Effect.fail(new BoardError({ message: msg }))
+          Effect.catchTags({
+            KernelError: (e): Effect.Effect<never, BoardError | IssueNotFoundError> =>
+              e.statusCode === 404
+                ? Effect.fail(new IssueNotFoundError({ issueId }))
+                : Effect.fail(new BoardError({ message: e.message })),
+            KernelUnavailableError: (e) => Effect.fail(new BoardError({ message: e.message })),
           })
         ),
 
@@ -164,10 +181,12 @@ export const BoardServiceLive = Layer.effect(
           }
           return issues
         }).pipe(
-          Effect.catchAll((e): Effect.Effect<never, BoardError | IssueNotFoundError> => {
-            const msg = String(e)
-            if (msg.includes("404")) return Effect.fail(new IssueNotFoundError({ issueId: parentId }))
-            return Effect.fail(new BoardError({ message: msg }))
+          Effect.catchTags({
+            KernelError: (e): Effect.Effect<never, BoardError | IssueNotFoundError> =>
+              e.statusCode === 404
+                ? Effect.fail(new IssueNotFoundError({ issueId: parentId }))
+                : Effect.fail(new BoardError({ message: e.message })),
+            KernelUnavailableError: (e) => Effect.fail(new BoardError({ message: e.message })),
           })
         ),
 
@@ -187,10 +206,12 @@ export const BoardServiceLive = Layer.effect(
             session_id: sessionId,
           })
         }).pipe(
-          Effect.catchAll((e): Effect.Effect<never, BoardError | IssueNotFoundError> => {
-            const msg = String(e)
-            if (msg.includes("404")) return Effect.fail(new IssueNotFoundError({ issueId }))
-            return Effect.fail(new BoardError({ message: msg }))
+          Effect.catchTags({
+            KernelError: (e): Effect.Effect<never, BoardError | IssueNotFoundError> =>
+              e.statusCode === 404
+                ? Effect.fail(new IssueNotFoundError({ issueId }))
+                : Effect.fail(new BoardError({ message: e.message })),
+            KernelUnavailableError: (e) => Effect.fail(new BoardError({ message: e.message })),
           })
         ),
 
@@ -202,10 +223,12 @@ export const BoardServiceLive = Layer.effect(
             tokens,
           })
         }).pipe(
-          Effect.catchAll((e): Effect.Effect<never, BoardError | IssueNotFoundError> => {
-            const msg = String(e)
-            if (msg.includes("404")) return Effect.fail(new IssueNotFoundError({ issueId }))
-            return Effect.fail(new BoardError({ message: msg }))
+          Effect.catchTags({
+            KernelError: (e): Effect.Effect<never, BoardError | IssueNotFoundError> =>
+              e.statusCode === 404
+                ? Effect.fail(new IssueNotFoundError({ issueId }))
+                : Effect.fail(new BoardError({ message: e.message })),
+            KernelUnavailableError: (e) => Effect.fail(new BoardError({ message: e.message })),
           })
         ),
     }
