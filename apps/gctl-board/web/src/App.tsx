@@ -72,36 +72,48 @@ export function App() {
     [moveIssue, addToast]
   )
 
-  /** Auto-dispatch: gather context → recommend → render → assign → post prompt */
+  /** Auto-dispatch: gather context → recommend → render → assign → post prompt.
+   *  Each step is independently resilient — if persona recommendation fails,
+   *  still posts the prior-work context comment for agent pickup. */
   const autoDispatch = useCallback(
     async (issue: Issue) => {
       try {
-        // 1. Gather prior work context to avoid duplicate effort
+        // 1. Gather prior work context (best-effort)
         const [comments, events] = await Promise.all([
           api.issues.comments(issue.id).catch(() => []),
           api.issues.events(issue.id).catch(() => []),
         ])
 
-        // 2. Recommend personas based on labels
-        const rec = await api.team.recommend(issue.labels)
-        if (rec.personas.length === 0) return
+        // 2. Try persona recommendation + rendering (optional — may not be seeded)
+        let agentPrompts: string | null = null
+        let assignedPersona: string | null = null
+        try {
+          const rec = await api.team.recommend(issue.labels)
+          if (rec.personas.length > 0) {
+            const personaIds = rec.personas.map((p) => p.id)
+            const rendered = await api.team.render(personaIds, issue.id)
 
-        // 3. Render agent prompts with issue context
-        const personaIds = rec.personas.map((p) => p.id)
-        const rendered = await api.team.render(personaIds, issue.id)
+            const lead = rec.personas[0]
+            await api.issues.assign(issue.id, {
+              assignee_id: lead.id,
+              assignee_name: lead.name,
+              assignee_type: "agent",
+            })
+            assignedPersona = lead.name
 
-        // 4. Assign lead persona
-        const lead = rec.personas[0]
-        await api.issues.assign(issue.id, {
-          assignee_id: lead.id,
-          assignee_name: lead.name,
-          assignee_type: "agent",
-        })
+            if (rendered.agents.length > 0) {
+              agentPrompts = rendered.agents
+                .map((a) => `## Agent: ${a.name}\n\n${a.prompt}`)
+                .join("\n\n---\n\n")
+            }
+          }
+        } catch {
+          // Persona recommendation unavailable — dispatch continues without it
+        }
 
-        // 5. Build dispatch comment with prior work context
+        // 3. Build dispatch comment with prior work context
         const sections: string[] = []
 
-        // Prior work guard
         sections.push(
           "## IMPORTANT: Check current implementation first\n\n" +
           "Before starting work, you MUST:\n" +
@@ -112,7 +124,10 @@ export function App() {
           "5. Do NOT redo work that is already done — build on it\n"
         )
 
-        // Prior comments
+        if (issue.description) {
+          sections.push(`## Description\n\n${issue.description}`)
+        }
+
         if (comments.length > 0) {
           const commentSummary = comments
             .map((c) => `- **${c.author_name}** (${new Date(c.created_at).toLocaleDateString()}): ${c.body.slice(0, 200)}`)
@@ -120,7 +135,6 @@ export function App() {
           sections.push(`## Prior Comments\n\n${commentSummary}`)
         }
 
-        // Linked sessions
         if (issue.session_ids.length > 0) {
           sections.push(
             `## Linked Sessions\n\n` +
@@ -129,7 +143,6 @@ export function App() {
           )
         }
 
-        // Linked PRs
         if (issue.pr_numbers.length > 0) {
           sections.push(
             `## Linked PRs\n\n` +
@@ -137,7 +150,6 @@ export function App() {
           )
         }
 
-        // Event history summary
         const statusChanges = events.filter((e) => e.event_type === "status_changed")
         if (statusChanges.length > 0) {
           sections.push(
@@ -146,14 +158,11 @@ export function App() {
           )
         }
 
-        // Agent prompts
-        if (rendered.agents.length > 0) {
-          const promptBody = rendered.agents
-            .map((a) => `## Agent: ${a.name}\n\n${a.prompt}`)
-            .join("\n\n---\n\n")
-          sections.push(promptBody)
+        if (agentPrompts) {
+          sections.push(agentPrompts)
         }
 
+        // 4. Post dispatch comment — this is the agent's pickup signal
         await api.issues.addComment(issue.id, {
           author_id: "gctl-dispatch",
           author_name: "gctl-dispatch",
@@ -161,10 +170,14 @@ export function App() {
           body: sections.join("\n\n---\n\n"),
         })
 
-        addToast(`Auto-dispatched ${rec.personas.length} agent(s) on ${issue.id}`, "success")
+        const msg = assignedPersona
+          ? `Dispatched ${assignedPersona} on ${issue.id}`
+          : `Dispatch context posted on ${issue.id}`
+        addToast(msg, "success")
         refresh()
       } catch (e) {
-        addToast(`Dispatch failed for ${issue.id}: ${e instanceof Error ? e.message : "unknown"}`)
+        // Even the comment post failed — still not critical, issue is already in_progress
+        addToast(`Dispatch note failed for ${issue.id} — issue still moved`, "error")
       }
     },
     [addToast, refresh]
