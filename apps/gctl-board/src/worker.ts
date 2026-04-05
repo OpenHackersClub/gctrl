@@ -12,6 +12,22 @@ interface Env {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    return env.ASSETS.fetch(request)
+    const url = new URL(request.url)
+
+    // Try serving static assets first
+    const assetResponse = await env.ASSETS.fetch(request)
+
+    // If asset found, return it
+    if (assetResponse.status !== 404) {
+      return assetResponse
+    }
+
+    // SPA fallback: for non-asset paths, serve index.html
+    // (skip for /api/* which should return 404 until backend is wired)
+    if (!url.pathname.startsWith("/api/")) {
+      return env.ASSETS.fetch(new Request(new URL("/", request.url), request))
+    }
+
+    return assetResponse
   },
 } satisfies ExportedHandler<Env>
