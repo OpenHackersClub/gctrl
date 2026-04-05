@@ -1,0 +1,172 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # ──────────────────────────────────────────────
+  # Rust kernel — build & test
+  # ──────────────────────────────────────────────
+  rust:
+    name: Rust (build + test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            rust-${{ runner.os }}-
+
+      - name: Build workspace
+        run: cargo build --workspace
+
+      - name: Run tests
+        run: cargo test --workspace
+
+      # Upload the built kernel binary for the Playwright job
+      - name: Upload kernel binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: gctl-kernel
+          path: target/debug/gctl
+          retention-days: 1
+
+  # ──────────────────────────────────────────────
+  # TypeScript — install, lint, test, build
+  # ──────────────────────────────────────────────
+  typescript:
+    name: TypeScript (lint + test + build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: |
+            package-lock.json
+            apps/gctl-board/pnpm-lock.yaml
+
+      - name: Install dependencies (root)
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Install dependencies (board)
+        run: pnpm install --no-frozen-lockfile
+        working-directory: apps/gctl-board
+
+      - name: Install dependencies (shell)
+        run: pnpm install --no-frozen-lockfile
+        working-directory: shell/gctl-shell
+
+      - name: Biome lint
+        run: pnpm exec biome lint shell/*/src/ apps/*/src/
+
+      - name: Test — shell
+        run: pnpm test
+        working-directory: shell/gctl-shell
+
+      - name: Test — board
+        run: pnpm test
+        working-directory: apps/gctl-board
+
+      - name: Build — board web
+        run: pnpm build:web
+        working-directory: apps/gctl-board
+
+      # Upload web assets for deploy and Playwright jobs
+      - name: Upload board web assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: board-web-dist
+          path: apps/gctl-board/dist-web/
+          retention-days: 1
+
+  # ──────────────────────────────────────────────
+  # Playwright acceptance tests
+  # ──────────────────────────────────────────────
+  playwright:
+    name: Playwright acceptance tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [rust, typescript]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: |
+            package-lock.json
+            apps/gctl-board/pnpm-lock.yaml
+
+      - name: Install dependencies (board)
+        run: pnpm install --no-frozen-lockfile
+        working-directory: apps/gctl-board
+
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install --with-deps chromium
+        working-directory: apps/gctl-board
+
+      - name: Download kernel binary
+        uses: actions/download-artifact@v4
+        with:
+          name: gctl-kernel
+          path: target/debug/
+
+      - name: Make kernel binary executable
+        run: chmod +x target/debug/gctl
+
+      - name: Run Playwright tests
+        run: pnpm exec playwright test
+        working-directory: apps/gctl-board
+        env:
+          CI: "true"
+          GCTL_KERNEL_PORT: "14318"
+          GCTL_VITE_PORT: "14200"
+          GCTL_KERNEL_BIN: ${{ github.workspace }}/target/debug/gctl
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report
+          path: apps/gctl-board/playwright-report/
+          retention-days: 7

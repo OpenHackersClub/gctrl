@@ -14,7 +14,7 @@ use serde::Deserialize;
 use crate::span_processor::{self, OtlpExportRequest};
 
 pub struct AppState {
-    pub store: DuckDbStore,
+    pub store: Arc<DuckDbStore>,
     pub context: Option<ContextManager>,
     pub started_at: std::time::Instant,
 }
@@ -23,8 +23,18 @@ pub fn create_router(store: DuckDbStore) -> Router {
     create_router_with_context(store, None)
 }
 
+/// Create router from a pre-shared Arc<DuckDbStore> (used when store is shared with other tasks).
+pub fn create_router_from_arc(store: Arc<DuckDbStore>) -> Router {
+    let state = Arc::new(AppState { store: Arc::clone(&store), context: None, started_at: std::time::Instant::now() });
+    build_router(state)
+}
+
 pub fn create_router_with_context(store: DuckDbStore, context: Option<ContextManager>) -> Router {
-    let state = Arc::new(AppState { store, context, started_at: std::time::Instant::now() });
+    let state = Arc::new(AppState { store: Arc::new(store), context, started_at: std::time::Instant::now() });
+    build_router(state)
+}
+
+fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         // OTel ingestion
         .route("/v1/traces", post(ingest_traces))

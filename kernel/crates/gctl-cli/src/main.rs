@@ -24,6 +24,12 @@ enum Commands {
         /// Host to bind to
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
+        /// Board markdown directory to watch for auto-import (e.g. board/)
+        #[arg(long)]
+        board_dir: Option<String>,
+        /// Disable board directory file watcher
+        #[arg(long, default_value = "false")]
+        no_watch: bool,
     },
     /// List recent sessions
     Sessions {
@@ -423,7 +429,21 @@ async fn main() -> Result<()> {
     let db_path = resolve_db_path(&cli.db);
 
     match cli.command {
-        Commands::Serve { port, host } => commands::serve::run(host, port, &db_path).await,
+        Commands::Serve { port, host, board_dir, no_watch } => {
+            let dir = if no_watch {
+                None
+            } else {
+                board_dir
+                    .map(std::path::PathBuf::from)
+                    .or_else(|| {
+                        // Auto-detect: if ./board/ exists, watch it
+                        let default = std::path::PathBuf::from("board");
+                        if default.is_dir() { Some(default) } else { None }
+                    })
+                    .and_then(|p| p.canonicalize().ok())
+            };
+            commands::serve::run(host, port, &db_path, dir).await
+        }
         Commands::Sessions { limit, format, agent, status } => commands::sessions::run(limit, &format, agent.as_deref(), status.as_deref(), &db_path),
         Commands::Spans { session_id, format } => commands::spans::run(&session_id, &format, &db_path),
         Commands::Analytics(cmd) => match cmd {

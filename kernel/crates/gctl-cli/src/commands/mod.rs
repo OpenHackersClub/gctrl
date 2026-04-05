@@ -20,3 +20,4 @@ pub mod spans;
 pub mod status;
 pub mod tag;
 pub mod trace_tree;
+pub mod watch;
