@@ -122,3 +122,56 @@ export interface RenderedPrompt {
 export interface TeamRenderResult {
   agents: RenderedPrompt[]
 }
+
+/* ── Inbox types ── */
+
+export interface InboxMessage {
+  id: string
+  thread_id: string
+  source: string
+  kind: string
+  urgency: string
+  title: string
+  body?: string
+  context: Record<string, unknown>
+  status: string
+  requires_action: boolean
+  payload?: Record<string, unknown>
+  duplicate_count: number
+  snoozed_until?: string
+  expires_at?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface InboxThread {
+  id: string
+  context_type: string
+  context_ref: string
+  title: string
+  project_key?: string
+  pending_count: number
+  latest_urgency: string
+  created_at: string
+  updated_at: string
+}
+
+export interface InboxAction {
+  id: string
+  message_id: string
+  thread_id: string
+  actor_id: string
+  actor_name: string
+  action_type: string
+  reason?: string
+  metadata?: Record<string, unknown>
+  created_at: string
+}
+
+export interface InboxStats {
+  total: number
+  unread: number
+  requires_action: number
+  by_urgency: Record<string, number>
+  by_kind: Record<string, number>
+}
