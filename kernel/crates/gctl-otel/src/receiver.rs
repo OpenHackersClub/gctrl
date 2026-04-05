@@ -67,6 +67,7 @@ pub fn create_router_with_context(store: DuckDbStore, context: Option<ContextMan
         .route("/api/board/import", post(board_import_markdown))
         .route("/api/board/export", post(board_export_markdown))
         .route("/api/board/projects/{id}/github", post(board_link_github))
+        .route("/api/board/reconcile", post(board_reconcile))
         // GitHub driver (LKM — delegates to native `gh` CLI)
         .route("/api/github/issues", get(gh_list_issues).post(gh_create_issue))
         .route("/api/github/issues/{number}", get(gh_get_issue))
@@ -1026,6 +1027,15 @@ async fn board_export_markdown(
             });
             (StatusCode::OK, Json(result)).into_response()
         }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn board_reconcile(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    match state.store.reconcile_stale_in_progress() {
+        Ok(count) => Json(serde_json::json!({ "reconciled": count })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

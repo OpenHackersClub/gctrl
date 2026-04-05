@@ -1051,6 +1051,43 @@ impl DuckDbStore {
         Ok(())
     }
 
+    /// Find in_progress issues with no assignee and move them back to todo.
+    /// Returns the number of issues reconciled.
+    pub fn reconcile_stale_in_progress(&self) -> Result<u32> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // Find stale issues: in_progress with no assignee
+        let mut stmt = conn.prepare(
+            "SELECT id FROM board_issues WHERE status = 'in_progress' AND assignee_id IS NULL"
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+
+        let ids: Vec<String> = stmt.query_map([], |row| row.get(0))
+            .map_err(|e| GctlError::Storage(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let count = ids.len() as u32;
+        for id in &ids {
+            conn.execute(
+                "UPDATE board_issues SET status = 'todo', updated_at = ?1 WHERE id = ?2",
+                params![now, id],
+            ).map_err(|e| GctlError::Storage(e.to_string()))?;
+
+            let event_id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO board_events (id, issue_id, type, actor_id, actor_name, actor_type, timestamp, data)
+                 VALUES (?, ?, 'status_changed', 'gctl-reconcile', 'gctl-reconcile', 'system', ?, ?)",
+                params![
+                    event_id, id, now,
+                    serde_json::to_string(&serde_json::json!({"from": "in_progress", "to": "todo", "reason": "no assignee"})).unwrap(),
+                ],
+            ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        }
+
+        Ok(count)
+    }
+
     pub fn assign_board_issue(&self, id: &str, assignee_id: &str, assignee_name: &str, assignee_type: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let now = chrono::Utc::now().to_rfc3339();
@@ -2731,6 +2768,40 @@ mod tests {
         assert!((fetched.total_cost_usd - 2.25).abs() < 0.01);
         assert_eq!(fetched.total_tokens, 7500);
         assert_eq!(fetched.session_ids.len(), 2);
+    }
+
+    #[test]
+    fn test_board_reconcile_stale_in_progress() {
+        let store = test_store();
+        store.create_board_project(&make_project("p1", "BACK")).unwrap();
+
+        // Issue with assignee — should NOT be moved back
+        let mut assigned = make_issue("i1", "p1");
+        assigned.status = gctl_core::IssueStatus::InProgress;
+        assigned.assignee_id = Some("agent-1".into());
+        assigned.assignee_name = Some("engineer".into());
+        store.insert_board_issue(&assigned).unwrap();
+
+        // Issue without assignee — SHOULD be moved back to todo
+        let mut unassigned = make_issue("i2", "p1");
+        unassigned.status = gctl_core::IssueStatus::InProgress;
+        store.insert_board_issue(&unassigned).unwrap();
+
+        // Issue in backlog — should NOT be touched
+        let backlog = make_issue("i3", "p1");
+        store.insert_board_issue(&backlog).unwrap();
+
+        let moved = store.reconcile_stale_in_progress().unwrap();
+        assert_eq!(moved, 1);
+
+        let i1 = store.get_board_issue("i1").unwrap().unwrap();
+        assert_eq!(i1.status.as_str(), "in_progress"); // assigned — kept
+
+        let i2 = store.get_board_issue("i2").unwrap().unwrap();
+        assert_eq!(i2.status.as_str(), "todo"); // unassigned — moved back
+
+        let i3 = store.get_board_issue("i3").unwrap().unwrap();
+        assert_eq!(i3.status.as_str(), "backlog"); // untouched
     }
 
     // ═══════════════════════════════════════════════════════════════

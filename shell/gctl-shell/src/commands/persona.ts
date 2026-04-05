@@ -92,10 +92,10 @@ const seedCommand = Command.make("seed", { file: seedFile }, ({ file }) =>
     const filePath = Option.getOrElse(file, () => "specs/team/personas.md")
 
     // Read and parse the markdown file
-    const { readFileSync } = yield* Effect.sync(() => require("node:fs"))
+    const fs = yield* Effect.promise(() => import("node:fs"))
     let content: string
     try {
-      content = readFileSync(filePath, "utf-8")
+      content = fs.readFileSync(filePath, "utf-8")
     } catch {
       yield* Console.error(`Cannot read file: ${filePath}`)
       return

@@ -6,6 +6,15 @@ GroundCtrl (gctl) is a local-first operating system for human+agent teams. Follo
 
 **Dogfooding:** We use gctl to build gctl. gctl's own issue tracking, agent dispatch, and PR workflow are defined in `specs/gctl/`. Opinionated product workflows (issue lifecycle, sprint cycle, PR review, PRD template) live in `apps/gctl-board/specs/workflows/`. Kernel-level orchestration and dispatch format are defined in `specs/architecture/kernel/`. The telemetry, task tracking, guardrails, and CLI tools are exercised daily during development. If a feature isn't useful for building gctl itself, question whether it belongs. Bugs found during dogfooding are the highest-priority fixes.
 
+**Issue creation workflow:** When asked to "create an issue", ALWAYS create it on **gctl-board first** (via `gctl board issues create` or the web UI), NOT directly on GitHub. The board is the source of truth for issue tracking. Issues sync to GitHub via the 2-way sync (`gctl board sync push`). The flow is:
+
+```
+1. gctl board issues create --project <KEY> --title "..." --description "..."
+2. gctl board sync push --project <KEY>    # pushes to linked GitHub repo
+```
+
+Or via web UI: create issue → drag to column → auto-dispatch agent. NEVER use `gh issue create` or `ccli gh issue create` for project work — those bypass gctl-board tracking, agent dispatch, and cost attribution.
+
 ## Specs Table of Contents
 
 The `specs/` directory is the single source of truth. Each file has a clear scope — put content in the right place.
@@ -128,7 +137,7 @@ Detailed programming patterns, code examples, and how-to guides live under `spec
 9. MUST NOT rebase main — use merge commits only. MUST NOT force-push to main.
 10. The Kernel MUST NOT make assumptions about applications.
 11. Shell (Effect-TS CLI) MUST mediate all user-facing access to the kernel via HTTP API.
-12. External tools (GitHub, Slack, AWS) MUST be accessed from the shell via direct REST API adapters — never from the kernel.
+12. External tools (GitHub, Slack, AWS) MUST be accessed through kernel driver routes (`/api/github/*`, etc.) — the shell MUST NOT call external APIs directly. The kernel handles caching, OTel instrumentation, and secret injection for all driver calls.
 13. Every application MUST have its own `apps/{app-name}/` directory with `PRD.md` and `WORKFLOW.md`.
 
 ## TDD Workflow

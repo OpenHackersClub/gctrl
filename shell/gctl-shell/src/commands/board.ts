@@ -544,8 +544,24 @@ const syncCommand = Command.make("sync").pipe(
   Command.withSubcommands([syncPullCommand, syncPushCommand, syncStatusCommand])
 )
 
+// --- reconcile ---
+
+const ReconcileResult = Schema.Struct({ reconciled: Schema.Number })
+
+const reconcileCommand = Command.make("reconcile", {}, () =>
+  Effect.gen(function* () {
+    const kernel = yield* KernelClient
+    const result = yield* kernel.post("/api/board/reconcile", {}, ReconcileResult)
+    if (result.reconciled === 0) {
+      yield* Console.log("No stale issues found.")
+    } else {
+      yield* Console.log(`Reconciled ${result.reconciled} issue(s): in_progress with no assignee → todo`)
+    }
+  })
+)
+
 // --- board (parent) ---
 
 export const boardCommand = Command.make("board").pipe(
-  Command.withSubcommands([projectsCommand, issuesParent, importCommand, exportCommand, linkGithubCommand, syncCommand])
+  Command.withSubcommands([projectsCommand, issuesParent, importCommand, exportCommand, linkGithubCommand, syncCommand, reconcileCommand])
 )

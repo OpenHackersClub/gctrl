@@ -79,6 +79,21 @@ The Tracker MUST subscribe to kernel IPC events and apply auto-transitions:
 | GitHub driver | PR opened referencing issue key | Move to `in_review` |
 | GitHub driver | PR merged | Move to `done` |
 | DAG | All blockers resolved | Move from effectively-blocked issue to `todo` |
+| Reconciliation | `in_progress` with no assignee | Move back to `todo` (dispatch failed or agent never claimed) |
+
+### Reconciliation (Stale Issue Recovery)
+
+Issues in `in_progress` with no assignee indicate a failed dispatch — the issue was moved but no agent was assigned. The app MUST invoke `POST /api/board/reconcile` to detect and recover these:
+
+1. Find all issues where `status = 'in_progress' AND assignee_id IS NULL`
+2. Move each back to `todo`
+3. Record a `status_changed` event with `reason: "no assignee"` and `actor: "gctl-reconcile"`
+
+The reconciliation is **idempotent** — running it multiple times produces the same result. It MUST NOT affect issues that have an assignee.
+
+**CLI:** `gctl board reconcile`
+
+**Formal proof:** See `specs/implementation/formal/IssueStateMachine.lean` — theorems `reconcile_sound`, `reconcile_preserves_assigned`, `reconcile_targets`, `reconcile_idempotent`, `reconcile_valid_transition`.
 
 ## Tasks (Read-Only View from Scheduler)
 

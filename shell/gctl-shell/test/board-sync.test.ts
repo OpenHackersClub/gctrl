@@ -356,4 +356,20 @@ describe("Board GitHub Sync", () => {
     expect(mapStatusToGhState("done")).toBe("closed")
     expect(mapStatusToGhState("cancelled")).toBe("closed")
   })
+
+  it("reconcile: calls kernel endpoint and returns count", async () => {
+    const ReconcileResult = Schema.Struct({ reconciled: Schema.Number })
+    const reconcileMock = createMockKernelClient(
+      {},
+      { "/api/board/reconcile": { reconciled: 2 } }
+    )
+
+    const program = Effect.gen(function* () {
+      const kernel = yield* KernelClient
+      return yield* kernel.post("/api/board/reconcile", {}, ReconcileResult)
+    })
+
+    const result = await Effect.runPromise(program.pipe(Effect.provide(reconcileMock)))
+    expect(result.reconciled).toBe(2)
+  })
 })
