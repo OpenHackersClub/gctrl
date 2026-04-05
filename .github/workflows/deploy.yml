@@ -2,7 +2,7 @@ name: Deploy Board
 
 on:
   push:
-    branches: [main, feat/cicd-cloudflare-workers]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
