@@ -4,10 +4,9 @@ import { useProjectRoute } from "./hooks/useProjectRoute"
 import { KanbanBoard } from "./components/KanbanBoard"
 import { IssueDetailPanel } from "./components/IssueDetailPanel"
 import { CreateIssueDialog } from "./components/CreateIssueDialog"
-import { DispatchDialog } from "./components/DispatchDialog"
 import { ProjectSelector } from "./components/ProjectSelector"
 import { api } from "./api/client"
-import type { Issue, PersonaDefinition } from "./types"
+import type { Issue } from "./types"
 
 interface Toast {
   id: string
@@ -27,9 +26,7 @@ export function App() {
   } = useIssues(selectedProjectId)
   const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
-  const [dispatchIssue, setDispatchIssue] = useState<Issue | null>(null)
   const [toasts, setToasts] = useState<Toast[]>([])
-  const pendingMoveRef = useRef<{ issueId: string; newStatus: string } | null>(null)
   const issuesRef = useRef(issues)
   issuesRef.current = issues
 
@@ -53,17 +50,20 @@ export function App() {
 
   const handleMoveIssue = useCallback(
     async (issueId: string, newStatus: string) => {
-      // Intercept drag to in_progress — show dispatch dialog
-      if (newStatus === "in_progress") {
-        const issue = issuesRef.current.find((i) => i.id === issueId)
-        if (issue && issue.status !== "in_progress") {
-          pendingMoveRef.current = { issueId, newStatus }
-          setDispatchIssue(issue)
-          return issue // actual move deferred until dispatch decision
-        }
-      }
       try {
-        return await moveIssue(issueId, newStatus)
+        const result = await moveIssue(issueId, newStatus)
+
+        // Auto-dispatch: when moved to in_progress, recommend + assign + post prompt
+        if (newStatus === "in_progress") {
+          const issue = issuesRef.current.find((i) => i.id === issueId)
+          if (issue) {
+            autoDispatch(issue).catch(() => {
+              // non-blocking — issue already moved, dispatch is best-effort
+            })
+          }
+        }
+
+        return result
       } catch (e) {
         addToast(e instanceof Error ? e.message : "Failed to move issue")
         throw e
@@ -72,47 +72,47 @@ export function App() {
     [moveIssue, addToast]
   )
 
-  const handleDispatch = useCallback(
-    async (issue: Issue, personas: PersonaDefinition[]) => {
-      const pending = pendingMoveRef.current
-      if (!pending) return
+  /** Auto-dispatch: recommend personas → render prompts → assign → post prompt as comment */
+  const autoDispatch = useCallback(
+    async (issue: Issue) => {
       try {
-        // 1. Move the issue to in_progress
-        await moveIssue(pending.issueId, pending.newStatus)
+        // 1. Recommend personas based on labels
+        const rec = await api.team.recommend(issue.labels)
+        if (rec.personas.length === 0) return
+
         // 2. Render agent prompts with issue context
-        const personaIds = personas.map((p) => p.id)
-        await api.team.render(personaIds, issue.id)
-        // 3. Assign to first persona as the lead agent
-        const lead = personas[0]
+        const personaIds = rec.personas.map((p) => p.id)
+        const rendered = await api.team.render(personaIds, issue.id)
+
+        // 3. Assign lead persona
+        const lead = rec.personas[0]
         await api.issues.assign(issue.id, {
           assignee_id: lead.id,
           assignee_name: lead.name,
           assignee_type: "agent",
         })
-        addToast(`Dispatched ${personas.length} agent(s) on ${issue.id}`, "success")
+
+        // 4. Post rendered prompt as comment for agent pickup
+        if (rendered.agents.length > 0) {
+          const promptBody = rendered.agents
+            .map((a) => `## ${a.name}\n\n${a.prompt}`)
+            .join("\n\n---\n\n")
+          await api.issues.addComment(issue.id, {
+            author_id: "gctl-dispatch",
+            author_name: "gctl-dispatch",
+            author_type: "agent",
+            body: `🤖 Auto-dispatch: ${rec.personas.length} agent(s) assigned\n\n${promptBody}`,
+          })
+        }
+
+        addToast(`Auto-dispatched ${rec.personas.length} agent(s) on ${issue.id}`, "success")
         refresh()
       } catch (e) {
-        addToast(e instanceof Error ? e.message : "Dispatch failed")
-      } finally {
-        pendingMoveRef.current = null
-        setDispatchIssue(null)
+        addToast(`Dispatch failed for ${issue.id}: ${e instanceof Error ? e.message : "unknown"}`)
       }
     },
-    [moveIssue, addToast, refresh]
+    [addToast, refresh]
   )
-
-  const handleDispatchSkip = useCallback(async () => {
-    const pending = pendingMoveRef.current
-    if (!pending) return
-    try {
-      await moveIssue(pending.issueId, pending.newStatus)
-    } catch (e) {
-      addToast(e instanceof Error ? e.message : "Failed to move issue")
-    } finally {
-      pendingMoveRef.current = null
-      setDispatchIssue(null)
-    }
-  }, [moveIssue, addToast])
 
   const handleCreateIssue = useCallback(
     async (input: {
@@ -197,18 +197,7 @@ export function App() {
         />
       )}
 
-      {/* ── Dispatch Dialog ── */}
-      {dispatchIssue && (
-        <DispatchDialog
-          issue={dispatchIssue}
-          onDispatch={handleDispatch}
-          onSkip={handleDispatchSkip}
-          onClose={() => {
-            pendingMoveRef.current = null
-            setDispatchIssue(null)
-          }}
-        />
-      )}
+      {/* Dispatch is now automatic — no dialog needed */}
 
       {/* ── Toasts ── */}
       <div className="fixed top-16 right-4 z-50 flex flex-col gap-2 pointer-events-none">
