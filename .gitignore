@@ -4,6 +4,11 @@
 *.duckdb.wal
 node_modules/
 dist/
+dist-web/
+
+# Test artifacts
+playwright-report/
+test-results/
 
 .obsidian
 .DS_Store
