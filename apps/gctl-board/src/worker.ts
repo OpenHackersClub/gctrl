@@ -22,9 +22,9 @@ export default {
       return assetResponse
     }
 
-    // SPA fallback: for non-asset paths, serve index.html
-    // (skip for /api/* which should return 404 until backend is wired)
-    if (!url.pathname.startsWith("/api/")) {
+    // SPA fallback: for non-asset, non-API paths, serve index.html
+    // Real asset requests (/assets/*) and API routes (/api/*) should 404 naturally
+    if (!url.pathname.startsWith("/api/") && !url.pathname.startsWith("/assets/")) {
       return env.ASSETS.fetch(new Request(new URL("/", request.url), request))
     }
 
