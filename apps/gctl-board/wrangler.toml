@@ -1,5 +1,6 @@
 name = "gctl-board"
 compatibility_date = "2025-04-01"
+compatibility_flags = ["nodejs_compat"]
 main = "src/worker.ts"
 
 # Workers Static Assets — serves the Vite SPA build output

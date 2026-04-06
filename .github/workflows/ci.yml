@@ -64,30 +64,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: pnpm
-          cache-dependency-path: |
-            package-lock.json
-            apps/gctl-board/pnpm-lock.yaml
-
-      - name: Install dependencies (root)
-        run: pnpm install --no-frozen-lockfile
-
-      - name: Install dependencies (board)
-        run: pnpm install --no-frozen-lockfile
-        working-directory: apps/gctl-board
-
-      - name: Install dependencies (shell)
-        run: pnpm install --no-frozen-lockfile
-        working-directory: shell/gctl-shell
+      - name: Setup Node.js + pnpm
+        uses: ./.github/actions/setup-node
 
       - name: Biome lint
         run: pnpm exec biome lint shell/*/src/ apps/*/src/
@@ -123,23 +101,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: pnpm
-          cache-dependency-path: |
-            package-lock.json
-            apps/gctl-board/pnpm-lock.yaml
-
-      - name: Install dependencies (board)
-        run: pnpm install --no-frozen-lockfile
-        working-directory: apps/gctl-board
+      - name: Setup Node.js + pnpm
+        uses: ./.github/actions/setup-node
 
       - name: Install Playwright browsers
         run: pnpm exec playwright install --with-deps chromium
