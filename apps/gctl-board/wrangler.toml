@@ -11,3 +11,10 @@ binding = "ASSETS"
 # so client-side routing (e.g. /projects/*) works correctly
 [assets.serving]
 not_found_handling = "single-page-application"
+
+# D1 database for board state (projects, issues, comments, events)
+[[d1_databases]]
+binding = "DB"
+database_name = "gctl-board-db"
+database_id = "2173a9e0-f901-4d76-9f26-71f532b0eda7"
+migrations_dir = "migrations"
