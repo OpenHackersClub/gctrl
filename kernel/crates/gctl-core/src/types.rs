@@ -220,6 +220,72 @@ impl PolicyDecision {
     }
 }
 
+// --- Sync ---
+
+/// Summary of a single push or pull operation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SyncResult {
+    /// Number of rows exported/imported per table.
+    pub tables: Vec<SyncTableResult>,
+    /// Total rows across all tables.
+    pub total_rows: u64,
+    /// Parquet files written or downloaded.
+    pub files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncTableResult {
+    pub table: String,
+    pub row_count: u64,
+    pub parquet_path: String,
+}
+
+/// Current sync state for the `gctl sync status` command.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SyncStatus {
+    pub enabled: bool,
+    pub device_id: String,
+    pub pending_rows: SyncPendingRows,
+    pub last_push: Option<SyncEvent>,
+    pub last_pull: Option<SyncEvent>,
+    pub r2_reachable: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SyncPendingRows {
+    pub sessions: u64,
+    pub spans: u64,
+    pub traffic: u64,
+    pub tasks: u64,
+    pub context: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncEvent {
+    pub timestamp: DateTime<Utc>,
+    pub push_id: String,
+    pub total_rows: u64,
+}
+
+/// A single entry in the sync manifest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncManifestEntry {
+    pub push_id: String,
+    pub device_id: String,
+    pub timestamp: DateTime<Utc>,
+    pub tables: Vec<SyncTableResult>,
+}
+
+/// The full sync manifest (local + R2).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SyncManifest {
+    pub workspace_id: String,
+    pub device_id: String,
+    pub pushes: Vec<SyncManifestEntry>,
+    pub last_pull: Option<SyncEvent>,
+    pub context_hashes: Vec<String>,
+}
+
 // --- Scores ---
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Score {
