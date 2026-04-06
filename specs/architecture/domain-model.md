@@ -223,6 +223,8 @@ Built-in policies:
 
 ### SyncEngine
 
+> Full design: [kernel/sync.md](kernel/sync.md) — manifest format, R2 paths, conflict resolution, context sync.
+
 ```rust
 #[async_trait]
 pub trait SyncEngine: Send + Sync {

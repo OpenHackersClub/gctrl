@@ -700,6 +700,8 @@ gctl session kill --group <session_id>   # kill the whole group
 
 Unix's most powerful abstraction is that every resource — devices, sockets, pipes, proc state — is a file. gctl applies this principle to its storage model: **everything the kernel persists is a file**, owned and managed by the kernel, not by individual applications.
 
+> **Full sync spec:** See [kernel/sync.md](kernel/sync.md) for the authoritative design — manifest format, R2 path layout, conflict resolution, context sync, and scheduler integration. This section is a summary.
+
 #### 12.1 DuckDB → Parquet → R2
 
 DuckDB is gctl's filesystem. But DuckDB files are local, mutable, and single-writer. To cross device and team boundaries, the kernel serializes state as **Parquet** — the universal, columnar, open format that both DuckDB and Cloudflare Workers can read natively.

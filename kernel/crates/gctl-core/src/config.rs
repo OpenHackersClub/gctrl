@@ -80,7 +80,12 @@ pub struct SyncConfig {
     pub enabled: bool,
     pub r2_bucket: String,
     pub r2_endpoint: String,
+    pub r2_access_key_id: String,
+    pub r2_secret_access_key: String,
     pub interval_seconds: u64,
+    pub device_id: String,
+    #[serde(default)]
+    pub auto_pull: bool,
 }
 
 impl Default for SyncConfig {
@@ -89,7 +94,11 @@ impl Default for SyncConfig {
             enabled: false,
             r2_bucket: String::new(),
             r2_endpoint: String::new(),
+            r2_access_key_id: String::new(),
+            r2_secret_access_key: String::new(),
             interval_seconds: 300,
+            device_id: String::new(),
+            auto_pull: false,
         }
     }
 }

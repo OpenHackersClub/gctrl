@@ -13,4 +13,4 @@ test-results/
 .obsidian
 .DS_Store
 .nx/
-.wrangler/
+**/.wrangler/
