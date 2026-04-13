@@ -9,6 +9,8 @@
     "build": "tsup src/index.ts --format esm --dts",
     "dev": "vite --config web/vite.config.ts",
     "build:web": "vite build --config web/vite.config.ts",
+    "deploy": "wrangler deploy",
+    "deploy:preview": "wrangler deploy --env preview",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "biome lint src/"
