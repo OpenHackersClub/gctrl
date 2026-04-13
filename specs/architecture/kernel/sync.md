@@ -6,27 +6,47 @@
 
 ## 1. Design Principles
 
-1. **Local-first, cloud-optional.** The kernel MUST work fully offline. Sync is opt-in (`sync.enabled = true` in config). No feature degrades when R2 is unreachable.
-2. **Kernel owns all I/O.** Applications write rows through DuckDB. The kernel handles serialization, partitioning, upload, and conflict resolution — apps never touch Parquet or R2.
+1. **Local-first, cloud-optional.** The kernel MUST work fully offline. Sync is opt-in (`sync.enabled = true` in config). No feature degrades when R2/D1 is unreachable.
+2. **Kernel owns all I/O.** Applications write rows through DuckDB or SQLite. The kernel handles serialization, partitioning, upload, and conflict resolution — apps never touch Parquet, R2, or D1 directly.
 3. **Device-partitioned, conflict-free.** Each device writes to its own partition in R2. No concurrent writes to the same partition → no row-level merge needed.
 4. **Append-friendly data model.** Spans and events are immutable after creation. Sessions and tasks are mutable but scoped to one device at a time.
+5. **Dual local storage.** DuckDB for analytical/OLAP workloads (telemetry, spans, sessions). SQLite for transactional/OLTP workloads (board, tasks, app state). Both are file-based and sync to the cloud.
 
 ## 2. Data Flow
 
 ```mermaid
 flowchart TD
-    DuckDB["DuckDB (local, single-writer)"]
-    Staging["Parquet files (~/.local/share/gctl/sync/)"]
+    DuckDB["DuckDB (local, OLAP)"]
+    SQLite["SQLite (local, OLTP)"]
+    StagingParquet["Parquet files (~/.local/share/gctl/sync/)"]
+    StagingSQL["SQL dumps (~/.local/share/gctl/sync/sqlite/)"]
     R2["R2 bucket (Cloudflare)"]
+    D1["D1 database (Cloudflare)"]
     Consumers["Remote consumers (Workers, dashboards, other devices)"]
 
-    DuckDB -->|"COPY … TO … FORMAT PARQUET"| Staging
-    Staging -->|"PUT (S3-compatible API)"| R2
+    DuckDB -->|"COPY … TO … FORMAT PARQUET"| StagingParquet
+    StagingParquet -->|"PUT (S3-compatible API)"| R2
     R2 -->|"GET → INSERT INTO"| DuckDB
+
+    SQLite -->|"Change tracking / dump"| StagingSQL
+    StagingSQL -->|"D1 HTTP API"| D1
+    D1 -->|"Query → INSERT OR REPLACE"| SQLite
+
     R2 -->|"Workers / Analytics Engine"| Consumers
+    D1 -->|"Workers / API routes"| Consumers
 ```
 
-### 2.1 Push (Local → R2)
+### Storage Mapping
+
+| Local store | Cloud target | Format | Use case |
+|-------------|-------------|--------|----------|
+| **DuckDB** | **R2** | Parquet files | Telemetry, spans, sessions, analytics (OLAP) |
+| **SQLite** | **D1** | SQL (row-level) | Board, tasks, app state (OLTP) |
+| **Filesystem** (context markdown) | **R2** | Markdown files | Knowledge base, crawl results |
+
+### 2.1 Push (Local → Cloud)
+
+#### DuckDB → R2 (Parquet)
 
 1. Query unsynced rows: `SELECT * FROM {table} WHERE synced = FALSE`
 2. Export to Parquet: `COPY (...) TO '{staging_path}' (FORMAT PARQUET)`
@@ -34,11 +54,28 @@ flowchart TD
 4. On success, mark rows: `UPDATE {table} SET synced = TRUE WHERE id IN (...)`
 5. Write manifest entry to `sync_manifest.json`
 
-### 2.2 Pull (R2 → Local)
+#### SQLite → D1 (Row-level)
+
+1. Query unsynced rows: `SELECT * FROM {table} WHERE synced = 0`
+2. Serialize as batch SQL statements (INSERT OR REPLACE)
+3. Submit to D1 via Cloudflare HTTP API (`POST /client/v4/accounts/{account}/d1/database/{db}/query`)
+4. On success, mark rows: `UPDATE {table} SET synced = 1 WHERE id IN (...)`
+5. Write manifest entry with row counts and timestamps
+
+### 2.2 Pull (Cloud → Local)
+
+#### R2 → DuckDB (Parquet)
 
 1. Read remote manifest to discover new Parquet files since last pull
 2. Download Parquet files to staging directory
 3. Insert into DuckDB: `INSERT OR IGNORE INTO {table} SELECT * FROM read_parquet('{path}')`
+4. Update local manifest with pull watermark
+
+#### D1 → SQLite (Row-level)
+
+1. Query D1 for rows with `updated_at > {last_pull_watermark}` from other devices
+2. Batch-fetch changed rows via D1 HTTP API
+3. Insert into SQLite: `INSERT OR REPLACE INTO {table} ...`
 4. Update local manifest with pull watermark
 
 ### 2.3 Context Sync (Filesystem)
@@ -49,7 +86,9 @@ Context entries have hybrid storage: DuckDB metadata + filesystem markdown conte
 - **Pull**: download new/changed files by comparing remote manifest hashes against local `content_hash` values. Write to local filesystem + upsert DuckDB metadata.
 - **Dedup**: content-addressable by SHA-256 hash — identical content is never re-uploaded.
 
-## 3. R2 Path Layout
+## 3. Cloud Layout
+
+### 3.1 R2 Path Layout (DuckDB + Filesystem data)
 
 ```
 {bucket}/
@@ -64,9 +103,6 @@ Context entries have hybrid storage: DuckDB metadata + filesystem markdown conte
       traffic/
         {YYYY-MM-DD}/
           {push_id}.parquet
-      tasks/
-        {YYYY-MM-DD}/
-          {push_id}.parquet
     knowledge/
       context/
         {content_hash}.md           # content-addressable markdown
@@ -79,6 +115,22 @@ Context entries have hybrid storage: DuckDB metadata + filesystem markdown conte
 - **`push_id`**: UUID generated per push operation, ensuring unique filenames.
 - **Date partitioning**: by the date of the push, not the row timestamp. Simplifies cleanup and retention.
 - **`knowledge/`**: shared across devices (not device-partitioned) since content is content-addressable.
+
+### 3.2 D1 Schema Layout (SQLite data)
+
+D1 mirrors the local SQLite schema. Tables include a `device_id` column and `updated_at` timestamp for multi-device sync.
+
+```
+D1 database: gctl_{workspace_id}
+  board_projects       # kanban projects
+  board_issues         # kanban issues / cards
+  board_labels         # issue labels
+  tasks                # task tracking
+  sync_manifest        # per-device pull watermarks
+```
+
+- D1 is the **shared merge point** for SQLite data — all devices push to and pull from the same D1 database.
+- Workers and API routes (e.g. `gctl-board` Cloudflare Worker) read/write D1 directly for the remote UI.
 
 ## 4. Sync Manifest
 
@@ -109,40 +161,56 @@ The manifest tracks what has been pushed and pulled. Stored both locally (`~/.lo
 
 ## 5. Conflict Resolution
 
-| Data type | Strategy | Rationale |
-|-----------|----------|-----------|
-| **Spans** | Append-only, `INSERT OR IGNORE` | Immutable after creation. Duplicate span_id = same span, skip. |
-| **Sessions** | Last-write-wins by `ended_at` / `updated_at` | A session runs on one device at a time. If same ID appears from two devices, latest timestamp wins. |
-| **Tasks** | Last-write-wins by `updated_at` | Same as sessions — a task is actively worked by one agent on one device. |
-| **Traffic** | Append-only, `INSERT OR IGNORE` | Immutable log entries. |
-| **Context** | Content-addressable (SHA-256) | Same hash = same content, skip. Different hash for same path = latest `updated_at` wins. |
+| Data type | Store | Strategy | Rationale |
+|-----------|-------|----------|-----------|
+| **Spans** | DuckDB→R2 | Append-only, `INSERT OR IGNORE` | Immutable after creation. Duplicate span_id = same span, skip. |
+| **Sessions** | DuckDB→R2 | Last-write-wins by `ended_at` / `updated_at` | A session runs on one device at a time. If same ID appears from two devices, latest timestamp wins. |
+| **Traffic** | DuckDB→R2 | Append-only, `INSERT OR IGNORE` | Immutable log entries. |
+| **Context** | Filesystem→R2 | Content-addressable (SHA-256) | Same hash = same content, skip. Different hash for same path = latest `updated_at` wins. |
+| **Board projects** | SQLite→D1 | Last-write-wins by `updated_at` | Single-owner edits. |
+| **Board issues** | SQLite→D1 | Last-write-wins by `updated_at` | Same — an issue is edited on one device at a time. |
+| **Tasks** | SQLite→D1 | Last-write-wins by `updated_at` | A task is actively worked by one agent on one device. |
 
 **Tie-breaking**: if two rows have identical `updated_at`, the device with the lexicographically greater `device_id` wins. This is deterministic and rare (sub-second concurrent edits across devices).
 
 ## 6. Syncable Tables
 
-Tables with `synced BOOLEAN DEFAULT FALSE`:
+All syncable tables include a `synced` flag (`BOOLEAN DEFAULT FALSE` in DuckDB, `INTEGER DEFAULT 0` in SQLite).
+
+### DuckDB → R2 (Parquet)
 
 | Table | Key | Mutable | Sync strategy |
 |-------|-----|---------|---------------|
 | `sessions` | `id` (VARCHAR) | Yes (status, cost, tokens) | Last-write-wins |
 | `spans` | `span_id` (VARCHAR) | No | Append-only |
 | `traffic` | `id` (VARCHAR) | No | Append-only |
-| `tasks` | `id` (VARCHAR) | Yes (status, result) | Last-write-wins |
 | `context_entries` | `id` (VARCHAR) | Yes (content, tags) | Content-addressable |
+
+### SQLite → D1 (Row-level)
+
+| Table | Key | Mutable | Sync strategy |
+|-------|-----|---------|---------------|
+| `board_projects` | `id` (TEXT) | Yes (name, status) | Last-write-wins |
+| `board_issues` | `id` (TEXT) | Yes (title, status, assignee) | Last-write-wins |
+| `board_labels` | `id` (TEXT) | Yes (name, color) | Last-write-wins |
+| `tasks` | `id` (TEXT) | Yes (status, result) | Last-write-wins |
 
 ## 7. SyncEngine Port
 
 ```rust
 #[async_trait]
 pub trait SyncEngine: Send + Sync {
-    /// Export unsynced rows to Parquet, upload to R2, mark synced.
+    /// Push unsynced rows to the cloud.
+    /// - DuckDB tables: export to Parquet → upload to R2
+    /// - SQLite tables: batch INSERT OR REPLACE → D1 HTTP API
     async fn push(&self, tables: &[&str]) -> Result<SyncResult>;
 
-    /// Download new Parquet files from R2, insert into local DuckDB.
+    /// Pull new data from the cloud into local stores.
+    /// - R2 → DuckDB: download Parquet → INSERT OR IGNORE
+    /// - D1 → SQLite: query changed rows → INSERT OR REPLACE
     async fn pull(&self, tables: &[&str]) -> Result<SyncResult>;
 
-    /// Show sync state: pending rows, last push/pull, R2 connectivity.
+    /// Show sync state: pending rows per store, last push/pull, R2+D1 connectivity.
     async fn status(&self) -> Result<SyncStatus>;
 }
 ```
@@ -152,16 +220,23 @@ pub trait SyncEngine: Send + Sync {
 ```rust
 pub struct SyncConfig {
     pub enabled: bool,              // default: false
+    pub interval_seconds: u64,      // default: 300 (5 min)
+    pub device_id: String,          // unique per device, auto-generated on first run
+
+    // R2 (DuckDB sync target)
     pub r2_bucket: String,          // R2 bucket name
     pub r2_endpoint: String,        // S3-compatible endpoint URL
     pub r2_access_key_id: String,   // R2 API token (read from env or config)
     pub r2_secret_access_key: String,
-    pub interval_seconds: u64,      // default: 300 (5 min)
-    pub device_id: String,          // unique per device, auto-generated on first run
+
+    // D1 (SQLite sync target)
+    pub d1_database_id: String,     // D1 database UUID
+    pub d1_account_id: String,      // Cloudflare account ID
+    pub d1_api_token: String,       // Cloudflare API token with D1 permissions
 }
 ```
 
-Credentials priority: CLI flags > env vars (`GCTL_R2_ACCESS_KEY_ID`, `GCTL_R2_SECRET_ACCESS_KEY`) > config file.
+Credentials priority: CLI flags > env vars (`GCTL_R2_ACCESS_KEY_ID`, `GCTL_R2_SECRET_ACCESS_KEY`, `GCTL_D1_DATABASE_ID`, `GCTL_D1_ACCOUNT_ID`, `GCTL_D1_API_TOKEN`) > config file.
 
 ## 9. CLI Commands
 
@@ -183,9 +258,11 @@ When `sync.enabled = true` and `sync.interval_seconds > 0`:
 
 ## 11. Error Handling
 
-- **Network failure**: push/pull retries 3 times with exponential backoff (1s, 4s, 16s). On exhaustion, logs warning and leaves rows as `synced = FALSE` for next attempt.
-- **Partial push**: if upload succeeds but marking synced fails (unlikely — local DB), the next push re-exports those rows. Duplicate Parquet files in R2 are harmless (append-only consumers use `INSERT OR IGNORE`).
+- **Network failure**: push/pull retries 3 times with exponential backoff (1s, 4s, 16s). On exhaustion, logs warning and leaves rows as `synced = FALSE` for next attempt. Applies to both R2 and D1 calls.
+- **Partial push (R2)**: if upload succeeds but marking synced fails (unlikely — local DB), the next push re-exports those rows. Duplicate Parquet files in R2 are harmless (append-only consumers use `INSERT OR IGNORE`).
+- **Partial push (D1)**: D1 batch API is atomic per request. If the batch succeeds but local mark fails, re-push produces `INSERT OR REPLACE` which is idempotent.
 - **Corrupt Parquet**: pull validates Parquet metadata before inserting. Corrupt files are skipped and logged.
+- **D1 rate limits**: Cloudflare D1 HTTP API has rate limits. The sync engine respects 429 responses with retry-after headers.
 
 ## 12. Security
 
