@@ -7,6 +7,7 @@ import { defineWorkersConfig } from "@cloudflare/vitest-pool-workers/config"
  */
 export default defineWorkersConfig({
   test: {
+    setupFiles: ["tests/worker/apply-migrations.ts"],
     include: ["tests/worker/**/*.test.ts"],
     poolOptions: {
       workers: {
