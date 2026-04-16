@@ -24,8 +24,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const KERNEL_PORT = Number(process.env.GCTL_KERNEL_PORT ?? 14318)
 const VITE_PORT = Number(process.env.GCTL_VITE_PORT ?? 14200)
 
-// Remote CDP mode: Cloudflare Browser Rendering via CDP_ENDPOINT
-const isRemoteCDP = !!process.env.CDP_ENDPOINT
+// Remote mode: drive a (deployed) Worker at PREVIEW_URL. Browser is either
+// local Chromium (default, reliable) or Cloudflare Browser Rendering CDP
+// (opt-in via CDP_ENDPOINT — rate-limited on free tier).
+const isRemote = !!process.env.PREVIEW_URL
+const isRemoteCDP = isRemote && !!process.env.CDP_ENDPOINT
 
 // In CI, use the pre-built kernel binary to avoid needing cargo/Rust toolchain.
 // Set GCTL_KERNEL_BIN to the absolute path of the gctl binary.
@@ -35,19 +38,13 @@ const kernelCommand = process.env.GCTL_KERNEL_BIN
 
 export default defineConfig({
   testDir: "./tests/acceptance",
-  // In remote CDP mode: skip kernel-only tests, and cap the suite to a smoke
-  // subset. Cloudflare Browser Rendering enforces a per-account session-
-  // creation rate limit (429) that makes the full 34-test suite unreliable;
-  // the smoke subset validates the deployed Worker's golden path under one
-  // CDP session.
-  ...(isRemoteCDP
+  // In remote mode (preview deploy), skip tests that need kernel-only
+  // endpoints (filesystem, OTLP ingest) not served by the Worker.
+  ...(isRemote
     ? {
         testIgnore: [
           "**/agent-integration.spec.ts",
           "**/markdown-sync.spec.ts",
-          "**/cdp-observability.spec.ts",
-          "**/issue-detail-panel.spec.ts",
-          "**/issue-lifecycle.spec.ts",
         ],
       }
     : {}),
@@ -61,7 +58,7 @@ export default defineConfig({
   timeout: isRemoteCDP ? 60_000 : 30_000,
 
   use: {
-    baseURL: isRemoteCDP
+    baseURL: isRemote
       ? process.env.PREVIEW_URL
       : `http://localhost:${VITE_PORT}`,
     trace: "on-first-retry",
@@ -71,7 +68,7 @@ export default defineConfig({
 
   projects: [
     {
-      name: isRemoteCDP ? "cloudflare-cdp" : "chromium",
+      name: isRemoteCDP ? "cloudflare-cdp" : isRemote ? "remote" : "chromium",
       use: {
         ...devices["Desktop Chrome"],
         // Local mode: enable CDP on a random port
@@ -87,7 +84,7 @@ export default defineConfig({
   ],
 
   // Only start local servers in local mode
-  ...(isRemoteCDP
+  ...(isRemote
     ? {}
     : {
         webServer: [

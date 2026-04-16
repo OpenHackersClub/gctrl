@@ -87,12 +87,13 @@ jobs:
               });
             }
 
-  # ── Acceptance via Cloudflare Browser Rendering (CDP) ──
-  # Runs against the preview Worker deployed above. Uses Cloudflare Browser
-  # Rendering (CDP over WSS) — no local browser install needed.
-  # Future: shift this job to run entirely on Cloudflare (Worker-triggered).
-  acceptance-cdp:
-    name: Acceptance (Cloudflare CDP)
+  # ── Acceptance tests against preview Worker ──
+  # Runs Playwright locally (Depot runner + local Chromium) but targets the
+  # deployed preview Worker via PREVIEW_URL. This avoids Cloudflare Browser
+  # Rendering's per-account session-creation rate limit (429) on the free
+  # tier. Opt into CDP mode by setting CDP_ENDPOINT + CF_API_TOKEN.
+  acceptance:
+    name: Acceptance (preview Worker)
     runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     needs: [preview]
@@ -105,6 +106,10 @@ jobs:
 
       - name: Setup Node.js + pnpm
         uses: ./.github/actions/setup-node
+
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install --with-deps chromium
+        working-directory: apps/gctl-board
 
       - name: Health check preview deploy
         run: |
@@ -135,20 +140,18 @@ jobs:
           pnpm exec wrangler d1 execute gctl-board-preview-db --env preview --remote \
             --command "DELETE FROM issue_events; DELETE FROM comments; DELETE FROM issues; DELETE FROM projects;"
 
-      - name: Run acceptance tests (Cloudflare Browser Rendering)
+      - name: Run acceptance tests against preview
         run: pnpm exec playwright test
         working-directory: apps/gctl-board
         env:
           CI: "true"
-          CDP_ENDPOINT: "wss://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/browser-rendering/devtools/browser?keep_alive=600000"
-          CF_API_TOKEN: ${{ secrets.CF_BROWSER_RENDERING_TOKEN }}
           PREVIEW_URL: ${{ needs.preview.outputs.deployment-url }}
 
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
-          name: playwright-report-cdp
+          name: playwright-report-preview
           path: apps/gctl-board/playwright-report/
           retention-days: 7
 

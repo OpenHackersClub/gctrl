@@ -10,6 +10,11 @@
  */
 
 import { test as base, expect, chromium } from "@playwright/test"
+
+// Module-level short-circuit: if the first connectOverCDP attempt fails
+// (even after backoff), fail subsequent tests immediately instead of
+// retrying the whole backoff sequence per worker restart.
+let cdpSessionFailure: Error | undefined
 import {
   KernelTestClient,
   uniqueProjectKey,
@@ -44,13 +49,17 @@ export const test = base.extend<BoardFixtures>({
     async ({}, use) => {
       const cdpEndpoint = process.env.CDP_ENDPOINT
       if (cdpEndpoint) {
-        // Cloudflare Browser Rendering caps concurrent sessions per account.
-        // Retry with exponential backoff on 429 so suite-wide session churn
-        // doesn't fail tests on the first hot seat.
-        const maxAttempts = 6
-        let attempt = 0
+        // Short-circuit: once the session creation has failed for this
+        // process, don't re-run the whole backoff sequence for each
+        // subsequent worker restart — fail fast.
+        if (cdpSessionFailure) throw cdpSessionFailure
+        // Cloudflare Browser Rendering rate-limits per-account session
+        // creation (HTTP 429). Retry with bounded exponential backoff so a
+        // transient hot seat doesn't fail the suite, but keep the total
+        // under the fixture timeout (set to 5m below).
+        const delaysMs = [1_000, 3_000, 8_000, 20_000, 40_000, 60_000]
         let lastErr: unknown
-        while (attempt < maxAttempts) {
+        for (let i = 0; i <= delaysMs.length; i++) {
           try {
             const browser = await chromium.connectOverCDP(cdpEndpoint, {
               headers: {
@@ -63,12 +72,15 @@ export const test = base.extend<BoardFixtures>({
           } catch (err) {
             lastErr = err
             const msg = err instanceof Error ? err.message : String(err)
-            if (!msg.includes("429") && !/rate limit/i.test(msg)) throw err
-            attempt++
-            const delay = Math.min(2000 * 2 ** attempt, 30_000)
-            await new Promise((r) => setTimeout(r, delay))
+            if (!msg.includes("429") && !/rate limit/i.test(msg)) {
+              cdpSessionFailure = err as Error
+              throw err
+            }
+            if (i === delaysMs.length) break
+            await new Promise((r) => setTimeout(r, delaysMs[i]))
           }
         }
+        cdpSessionFailure = lastErr as Error
         throw lastErr
       } else {
         const browser = await chromium.launch({
@@ -78,7 +90,7 @@ export const test = base.extend<BoardFixtures>({
         await browser.close()
       }
     },
-    { scope: "worker" },
+    { scope: "worker", timeout: 300_000 },
   ],
 
   kernel: async ({}, use) => {
