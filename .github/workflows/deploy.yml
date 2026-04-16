@@ -29,6 +29,8 @@ jobs:
       contents: read
       deployments: write
       pull-requests: write
+    outputs:
+      deployment-url: ${{ steps.deploy.outputs.deployment-url }}
 
     steps:
       - uses: actions/checkout@v4
@@ -39,13 +41,6 @@ jobs:
       - name: Build board web assets
         run: pnpm build:web
         working-directory: apps/gctl-board
-
-      - name: Ensure preview D1 database exists
-        working-directory: apps/gctl-board
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: node scripts/ensure-preview-d1.mjs
 
       - name: Run D1 migrations on preview
         working-directory: apps/gctl-board
@@ -91,6 +86,71 @@ jobs:
                 body,
               });
             }
+
+  # ── Acceptance via Cloudflare Browser Rendering (CDP) ──
+  # Runs against the preview Worker deployed above. Uses Cloudflare Browser
+  # Rendering (CDP over WSS) — no local browser install needed.
+  # Future: shift this job to run entirely on Cloudflare (Worker-triggered).
+  acceptance-cdp:
+    name: Acceptance (Cloudflare CDP)
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 20
+    needs: [preview]
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js + pnpm
+        uses: ./.github/actions/setup-node
+
+      - name: Health check preview deploy
+        run: |
+          DEPLOY_URL="${{ needs.preview.outputs.deployment-url }}"
+          if [ -z "$DEPLOY_URL" ]; then
+            echo "::error::No deployment URL from preview job"
+            exit 1
+          fi
+          echo "Checking $DEPLOY_URL ..."
+          for i in 1 2 3 4 5; do
+            STATUS=$(curl -s -o /dev/null -w '%{http_code}' "$DEPLOY_URL/api/board/projects" --max-time 10 || true)
+            if [ "$STATUS" = "200" ]; then
+              echo "Health check passed (HTTP $STATUS)"
+              exit 0
+            fi
+            echo "Attempt $i: HTTP $STATUS, retrying in 5s..."
+            sleep 5
+          done
+          echo "::error::Health check failed after 5 attempts (last HTTP $STATUS)"
+          exit 1
+
+      - name: Clean D1 test data
+        working-directory: apps/gctl-board
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          pnpm exec wrangler d1 execute gctl-board-preview-db --env preview --remote \
+            --command "DELETE FROM issue_events; DELETE FROM comments; DELETE FROM issues; DELETE FROM projects;"
+
+      - name: Run acceptance tests (Cloudflare Browser Rendering)
+        run: pnpm exec playwright test
+        working-directory: apps/gctl-board
+        env:
+          CI: "true"
+          CDP_ENDPOINT: "wss://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/browser-rendering/devtools/browser?keep_alive=600000"
+          CF_API_TOKEN: ${{ secrets.CF_BROWSER_RENDERING_TOKEN }}
+          PREVIEW_URL: ${{ needs.preview.outputs.deployment-url }}
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report-cdp
+          path: apps/gctl-board/playwright-report/
+          retention-days: 7
 
   # ── Production deploy (main) ──
   deploy:
