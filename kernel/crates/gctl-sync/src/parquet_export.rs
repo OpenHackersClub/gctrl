@@ -9,8 +9,9 @@ use tracing::debug;
 
 use crate::SyncError;
 
-/// The set of tables that support sync (have a `synced` column).
-pub const SYNCABLE_TABLES: &[&str] = &["sessions", "spans", "traffic", "tasks"];
+/// DuckDB tables synced to R2 via Parquet (OLAP: telemetry).
+/// Note: `tasks` moved to SQLite→D1 per spec/sync-sqlite-d1.
+pub const SYNCABLE_TABLES: &[&str] = &["sessions", "spans", "traffic"];
 
 /// Export unsynced rows from a table to a Parquet file using DuckDB's COPY.
 ///
@@ -116,7 +117,8 @@ mod tests {
         assert!(validate_table_name("sessions").is_ok());
         assert!(validate_table_name("spans").is_ok());
         assert!(validate_table_name("traffic").is_ok());
-        assert!(validate_table_name("tasks").is_ok());
+        // tasks moved to SQLite→D1, no longer in DuckDB SYNCABLE_TABLES
+        assert!(validate_table_name("tasks").is_err());
         assert!(validate_table_name("users").is_err());
         assert!(validate_table_name("'; DROP TABLE sessions; --").is_err());
     }

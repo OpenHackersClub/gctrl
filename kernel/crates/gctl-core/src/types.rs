@@ -248,7 +248,11 @@ pub struct SyncStatus {
     pub pending_rows: SyncPendingRows,
     pub last_push: Option<SyncEvent>,
     pub last_pull: Option<SyncEvent>,
+    /// R2 reachability (DuckDB→R2 path). None if sync is disabled.
     pub r2_reachable: Option<bool>,
+    /// D1 reachability (SQLite→D1 path). None if D1 not configured.
+    #[serde(default)]
+    pub d1_reachable: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
