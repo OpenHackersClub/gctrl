@@ -22,7 +22,7 @@ jobs:
   # ── Preview deploy (PR) ──
   preview:
     name: Deploy preview
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 15
     if: github.event_name == 'pull_request'
     permissions:
@@ -81,7 +81,7 @@ jobs:
   # ── Production deploy (main) ──
   deploy:
     name: Deploy to Cloudflare Workers
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 15
     # Skip deploy if CI failed (workflow_run triggers on both success and failure)
     if: >-
