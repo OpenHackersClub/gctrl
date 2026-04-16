@@ -121,3 +121,54 @@ jobs:
           name: playwright-report
           path: apps/gctl-board/playwright-report/
           retention-days: 7
+
+  # ──────────────────────────────────────────────
+  # Acceptance via Cloudflare Browser Rendering (CDP)
+  # ──────────────────────────────────────────────
+  acceptance-cdp:
+    name: Acceptance (Cloudflare CDP)
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 20
+    needs: [typescript]
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      deployments: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js + pnpm
+        uses: ./.github/actions/setup-node
+
+      - name: Download board web assets
+        uses: actions/download-artifact@v4
+        with:
+          name: board-web-dist
+          path: apps/gctl-board/dist-web/
+
+      - name: Deploy preview to Cloudflare Workers
+        id: deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/gctl-board
+          command: deploy --env preview
+
+      - name: Run acceptance tests (Cloudflare Browser Rendering)
+        run: pnpm exec playwright test
+        working-directory: apps/gctl-board
+        env:
+          CI: "true"
+          CDP_ENDPOINT: "wss://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/browser-rendering/devtools/browser?keep_alive=600000"
+          CF_API_TOKEN: ${{ secrets.CF_BROWSER_RENDERING_TOKEN }}
+          PREVIEW_URL: ${{ steps.deploy.outputs.deployment-url }}
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report-cdp
+          path: apps/gctl-board/playwright-report/
+          retention-days: 7

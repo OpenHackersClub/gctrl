@@ -9,7 +9,7 @@
  *  - seedBoard   — factory: project + N issues in one call
  */
 
-import { test as base, expect } from "@playwright/test"
+import { test as base, expect, chromium } from "@playwright/test"
 import {
   KernelTestClient,
   uniqueProjectKey,
@@ -36,10 +36,49 @@ type BoardFixtures = {
 }
 
 export const test = base.extend<BoardFixtures>({
+  /**
+   * Browser fixture: local Chromium launch or Cloudflare Browser Rendering
+   * via CDP. Set CDP_ENDPOINT + CF_API_TOKEN to use remote rendering.
+   */
+  browser: [
+    async ({}, use) => {
+      const cdpEndpoint = process.env.CDP_ENDPOINT
+      if (cdpEndpoint) {
+        const browser = await chromium.connectOverCDP(cdpEndpoint, {
+          headers: { Authorization: `Bearer ${process.env.CF_API_TOKEN}` },
+        })
+        await use(browser)
+        await browser.close()
+      } else {
+        const browser = await chromium.launch({
+          args: ["--remote-debugging-port=0"],
+        })
+        await use(browser)
+        await browser.close()
+      }
+    },
+    { scope: "worker" },
+  ],
+
   kernel: async ({}, use) => {
+    const previewUrl = process.env.PREVIEW_URL
     const port = process.env.GCTL_KERNEL_PORT ?? "14318"
-    const client = new KernelTestClient(`http://localhost:${port}`)
-    await client.waitForReady()
+    const baseUrl = previewUrl ?? `http://localhost:${port}`
+    const client = new KernelTestClient(baseUrl)
+    if (previewUrl) {
+      // Remote mode: Worker already deployed, verify via board API
+      const deadline = Date.now() + 30_000
+      while (Date.now() < deadline) {
+        try {
+          await client.listProjects()
+          break
+        } catch {
+          await new Promise((r) => setTimeout(r, 500))
+        }
+      }
+    } else {
+      await client.waitForReady()
+    }
     await use(client)
   },
 
