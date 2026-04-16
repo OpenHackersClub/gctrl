@@ -78,28 +78,52 @@ impl Default for ProxyConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncConfig {
     pub enabled: bool,
-    pub r2_bucket: String,
-    pub r2_endpoint: String,
-    pub r2_access_key_id: String,
-    pub r2_secret_access_key: String,
     pub interval_seconds: u64,
     pub device_id: String,
     #[serde(default)]
     pub auto_pull: bool,
+
+    // R2 — DuckDB sync target (telemetry, spans, sessions)
+    pub r2_bucket: String,
+    pub r2_endpoint: String,
+    pub r2_access_key_id: String,
+    pub r2_secret_access_key: String,
+
+    // D1 — SQLite sync target (board, tasks, app state)
+    // Credentials: CLI flags > env vars (GCTL_D1_DATABASE_ID, GCTL_D1_ACCOUNT_ID,
+    // GCTL_D1_API_TOKEN) > config file.
+    #[serde(default)]
+    pub d1_database_id: String,
+    #[serde(default)]
+    pub d1_account_id: String,
+    #[serde(default)]
+    pub d1_api_token: String,
 }
 
 impl Default for SyncConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            interval_seconds: 300,
+            device_id: String::new(),
+            auto_pull: false,
             r2_bucket: String::new(),
             r2_endpoint: String::new(),
             r2_access_key_id: String::new(),
             r2_secret_access_key: String::new(),
-            interval_seconds: 300,
-            device_id: String::new(),
-            auto_pull: false,
+            d1_database_id: String::new(),
+            d1_account_id: String::new(),
+            d1_api_token: String::new(),
         }
+    }
+}
+
+impl SyncConfig {
+    /// Returns true if D1 sync is configured (all three fields non-empty).
+    pub fn d1_enabled(&self) -> bool {
+        !self.d1_database_id.is_empty()
+            && !self.d1_account_id.is_empty()
+            && !self.d1_api_token.is_empty()
     }
 }
 
