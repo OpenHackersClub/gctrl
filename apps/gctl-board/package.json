@@ -12,6 +12,7 @@
     "deploy": "wrangler deploy",
     "deploy:preview": "wrangler deploy --env preview",
     "test": "vitest run",
+    "test:workers": "vitest run --config vitest.config.workers.ts",
     "test:watch": "vitest",
     "lint": "biome lint src/"
   },
@@ -26,6 +27,7 @@
     "react-dom": "^19.2.4"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.9.0",
     "@cloudflare/workers-types": "^4.20260405.1",
     "@playwright/test": "^1.59.1",
     "@tailwindcss/vite": "^4.2.2",

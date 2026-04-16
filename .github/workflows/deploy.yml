@@ -42,6 +42,13 @@ jobs:
         run: pnpm build:web
         working-directory: apps/gctl-board
 
+      - name: Ensure preview D1 database exists
+        working-directory: apps/gctl-board
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/ensure-preview-d1.mjs
+
       - name: Run D1 migrations on preview
         working-directory: apps/gctl-board
         env:
@@ -125,6 +132,13 @@ jobs:
           done
           echo "::error::Health check failed after 5 attempts (last HTTP $STATUS)"
           exit 1
+
+      - name: Patch wrangler.toml with preview D1 UUID
+        working-directory: apps/gctl-board
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/ensure-preview-d1.mjs
 
       - name: Clean D1 test data
         working-directory: apps/gctl-board

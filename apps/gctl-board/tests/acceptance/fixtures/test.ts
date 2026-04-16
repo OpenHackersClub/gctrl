@@ -68,13 +68,20 @@ export const test = base.extend<BoardFixtures>({
     if (previewUrl) {
       // Remote mode: Worker already deployed, verify via board API
       const deadline = Date.now() + 30_000
+      let reachable = false
       while (Date.now() < deadline) {
         try {
           await client.listProjects()
+          reachable = true
           break
         } catch {
           await new Promise((r) => setTimeout(r, 500))
         }
+      }
+      if (!reachable) {
+        throw new Error(
+          `Preview Worker not reachable after 30s at ${previewUrl}`
+        )
       }
     } else {
       await client.waitForReady()

@@ -123,7 +123,7 @@ CI uses two execution environments to balance cost and speed:
 
 #### What runs on Cloudflare
 
-- **Unit & edge testing** — board Worker tests run via `@cloudflare/vitest-pool-workers` in the same V8 runtime they deploy to, not a generic Node.js runner. This catches runtime compat issues (D1 bindings, `nodejs_compat` flags) that Node.js-based tests miss.
+- **Unit & edge testing** (implemented) — board Worker tests run via `@cloudflare/vitest-pool-workers` in the same V8 runtime they deploy to, not a generic Node.js runner (`pnpm test:workers` / `vitest.config.workers.ts`). This catches runtime compat issues (D1 bindings, `nodejs_compat` flags) that Node.js-based tests miss. Runs in the `typescript` CI job.
 - **Preview deploys** — every PR gets a preview Worker (`--env preview`) with its own D1 database. The `ensure-preview-d1.mjs` script provisions the D1 database idempotently.
 - **D1 migrations** — `wrangler d1 migrations apply` runs against the remote D1 database before each deploy.
 - **Browser Rendering acceptance tests** — Playwright connects to Cloudflare Browser Rendering via Chrome DevTools Protocol (CDP over WSS). Tests run against the deployed preview Worker — no local Chromium install, no Playwright browser binaries on the runner.
@@ -138,20 +138,18 @@ CI uses two execution environments to balance cost and speed:
 
 ### CI (`.github/workflows/ci.yml`)
 
-Four jobs on `depot-ubuntu-24.04`:
+Three jobs on `depot-ubuntu-24.04`:
 
 ```mermaid
 graph LR
     Rust["rust: cargo build + test"] --> Playwright
-    TS["typescript: lint + test + build:web"] --> Playwright
-    TS --> CDP["acceptance-cdp: Cloudflare Browser Rendering"]
+    TS["typescript: lint + test + test:workers + build:web"] --> Playwright
     Playwright["playwright: local acceptance tests"]
 ```
 
 1. **`rust`** — builds and tests the kernel workspace, uploads the `gctl` binary as an artifact. No explicit Cargo cache step — Depot runners provide persistent build caches.
-2. **`typescript`** — installs deps (root + board + shell), runs Biome lint, tests shell + board, runs `build:web`, uploads `dist-web/` as artifact.
+2. **`typescript`** — installs deps (root + board + shell), runs Biome lint, tests shell + board, runs `test:workers` (Miniflare V8 isolate), runs `build:web`, uploads `dist-web/` as artifact.
 3. **`playwright`** — downloads kernel binary + web assets, runs full Playwright acceptance test suite against the local kernel + Vite dev server. Covers all tests including OTel ingestion and markdown sync.
-4. **`acceptance-cdp`** (PR only) — downloads web assets, provisions the preview D1 database, deploys a preview Worker, then runs Playwright acceptance tests using Cloudflare Browser Rendering (CDP). Skips tests that require kernel-only endpoints (`agent-integration`, `markdown-sync`). No browser install needed — the browser runs on Cloudflare's infrastructure.
 
 All jobs use a shared composite action (`.github/actions/setup-node`) for Node.js + pnpm setup, and a single root `pnpm install` resolves the full workspace (`pnpm-workspace.yaml`).
 
@@ -186,9 +184,10 @@ This handles wrangler's mixed stdout (telemetry banners before JSON) by extracti
 
 ### Deploy (`.github/workflows/deploy.yml`)
 
-Two jobs:
+Three jobs:
 
-- **`preview`** (PR only) — provisions preview D1, runs migrations, deploys with `--env preview`, comments the preview URL on the PR.
+- **`preview`** (PR only) — provisions preview D1, runs migrations, deploys with `--env preview`, comments the preview URL on the PR. Outputs `deployment-url` for downstream jobs.
+- **`acceptance-cdp`** (PR only, `needs: preview`) — health-checks the preview URL, cleans D1 test data, runs Playwright acceptance tests using Cloudflare Browser Rendering (CDP over WSS). Skips tests requiring kernel-only endpoints (`agent-integration`, `markdown-sync`). No browser install needed.
 - **`deploy`** (main only) — triggered by `workflow_run` after CI succeeds, or `workflow_dispatch` for manual deploy. Downloads `board-web-dist` artifact from CI, runs `wrangler deploy`, health checks the deployed URL.
 
 ### Required Secrets
@@ -203,7 +202,6 @@ Two jobs:
 
 Opportunities to move more CI work off Depot runners:
 
-- **Worker-native unit tests** — migrate `vitest run` (board + shell) to `@cloudflare/vitest-pool-workers` running in a Worker environment, triggered by a GitHub webhook → Worker → GitHub check run.
 - **CI orchestration Worker** — a Worker receives push/PR webhooks, inspects changed files (`apps/gctl-board/**` vs `kernel/**`), and triggers only the relevant GitHub Actions workflows. Avoids running the full matrix on doc-only changes.
 - **Global E2E smoke tests** — Cron Trigger Workers that run lightweight health checks from multiple edge locations after each production deploy.
 - **Artifact-free TypeScript CI** — if Cloudflare can host build artifacts (R2 or Workers KV), the TypeScript lint/test/build job can move entirely to a Worker, eliminating the Depot runner for that job.
