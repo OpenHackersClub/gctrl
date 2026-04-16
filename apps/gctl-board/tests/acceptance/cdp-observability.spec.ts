@@ -222,6 +222,10 @@ test.describe("CDP Observability", () => {
     kernel,
     seedProject,
   }) => {
+    test.skip(
+      !!process.env.PREVIEW_URL,
+      "remote: D1 over network exceeds the local 500ms threshold — relax bound before re-enabling"
+    )
     await page.goto("/")
     await selectProject(page, seedProject.key)
 
