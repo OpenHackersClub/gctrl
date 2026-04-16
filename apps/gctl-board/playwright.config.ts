@@ -35,18 +35,27 @@ const kernelCommand = process.env.GCTL_KERNEL_BIN
 
 export default defineConfig({
   testDir: "./tests/acceptance",
-  // In remote CDP mode, skip tests that need kernel-only endpoints
+  // In remote CDP mode: skip kernel-only tests, and cap the suite to a smoke
+  // subset. Cloudflare Browser Rendering enforces a per-account session-
+  // creation rate limit (429) that makes the full 34-test suite unreliable;
+  // the smoke subset validates the deployed Worker's golden path under one
+  // CDP session.
   ...(isRemoteCDP
     ? {
         testIgnore: [
           "**/agent-integration.spec.ts",
           "**/markdown-sync.spec.ts",
+          "**/cdp-observability.spec.ts",
+          "**/issue-detail-panel.spec.ts",
+          "**/issue-lifecycle.spec.ts",
         ],
       }
     : {}),
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 1 : 0,
+  // Disable test-level retries in CDP mode: Playwright spawns a new worker
+  // (and thus a new connectOverCDP) on retry, which compounds the rate limit.
+  retries: process.env.CI && !isRemoteCDP ? 1 : 0,
   workers: 1,
   reporter: process.env.CI ? "github" : "html",
   timeout: isRemoteCDP ? 60_000 : 30_000,
