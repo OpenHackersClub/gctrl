@@ -5,6 +5,7 @@
 //!
 //! See `specs/architecture/kernel/sync.md` for the full design.
 
+pub mod d1;
 pub mod engine;
 pub mod manifest;
 pub mod parquet_export;

@@ -361,6 +361,32 @@ const inboxStats: ApiHandler = () =>
     jsonResponse({ total: 0, unread: 0, requires_action: 0, by_urgency: {}, by_kind: {} }),
   )
 
+// Sync status — per-table unsynced row counts and device watermarks.
+// Used by the Rust sync engine and acceptance tests to verify D1 schema health.
+
+const syncStatus: ApiHandler = () =>
+  Effect.gen(function* () {
+    const db = yield* D1Client
+
+    const [projects, issues, comments, events, manifest] = yield* Effect.all([
+      db.first<{ count: number }>("SELECT COUNT(*) AS count FROM projects WHERE synced = 0"),
+      db.first<{ count: number }>("SELECT COUNT(*) AS count FROM issues WHERE synced = 0"),
+      db.first<{ count: number }>("SELECT COUNT(*) AS count FROM comments WHERE synced = 0"),
+      db.first<{ count: number }>("SELECT COUNT(*) AS count FROM issue_events WHERE synced = 0"),
+      db.query("SELECT device_id, last_pull_at FROM sync_manifest ORDER BY last_pull_at DESC"),
+    ])
+
+    return jsonResponse({
+      pending: {
+        projects: projects?.count ?? 0,
+        issues: issues?.count ?? 0,
+        comments: comments?.count ?? 0,
+        issue_events: events?.count ?? 0,
+      },
+      devices: manifest,
+    })
+  })
+
 // ── Route table ──
 
 const routes: Route[] = [
@@ -376,6 +402,7 @@ const routes: Route[] = [
   defineRoute("GET", "/api/board/issues/:id/events", listEvents),
   defineRoute("POST", "/api/board/issues/:id/link-session", linkSession),
   defineRoute("GET", "/api/inbox/stats", inboxStats),
+  defineRoute("GET", "/api/sync/status", syncStatus),
 ]
 
 // ── Route matcher → Effect<Response> ──
