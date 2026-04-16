@@ -339,6 +339,20 @@ export class KernelTestClient {
   async getAnalytics(): Promise<any> {
     return this.request("/api/analytics")
   }
+
+  // ── Sync ──
+
+  async getSyncStatus(): Promise<{
+    pending: {
+      projects: number
+      issues: number
+      comments: number
+      issue_events: number
+    }
+    devices: Array<{ device_id: string; last_pull_at: string }>
+  }> {
+    return this.request("/api/sync/status")
+  }
 }
 
 // ── Helpers ──
