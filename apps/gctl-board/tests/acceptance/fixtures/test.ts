@@ -44,11 +44,32 @@ export const test = base.extend<BoardFixtures>({
     async ({}, use) => {
       const cdpEndpoint = process.env.CDP_ENDPOINT
       if (cdpEndpoint) {
-        const browser = await chromium.connectOverCDP(cdpEndpoint, {
-          headers: { Authorization: `Bearer ${process.env.CF_API_TOKEN}` },
-        })
-        await use(browser)
-        await browser.close()
+        // Cloudflare Browser Rendering caps concurrent sessions per account.
+        // Retry with exponential backoff on 429 so suite-wide session churn
+        // doesn't fail tests on the first hot seat.
+        const maxAttempts = 6
+        let attempt = 0
+        let lastErr: unknown
+        while (attempt < maxAttempts) {
+          try {
+            const browser = await chromium.connectOverCDP(cdpEndpoint, {
+              headers: {
+                Authorization: `Bearer ${process.env.CF_API_TOKEN}`,
+              },
+            })
+            await use(browser)
+            await browser.close()
+            return
+          } catch (err) {
+            lastErr = err
+            const msg = err instanceof Error ? err.message : String(err)
+            if (!msg.includes("429") && !/rate limit/i.test(msg)) throw err
+            attempt++
+            const delay = Math.min(2000 * 2 ** attempt, 30_000)
+            await new Promise((r) => setTimeout(r, delay))
+          }
+        }
+        throw lastErr
       } else {
         const browser = await chromium.launch({
           args: ["--remote-debugging-port=0"],

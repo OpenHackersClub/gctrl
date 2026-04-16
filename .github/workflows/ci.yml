@@ -66,12 +66,14 @@ jobs:
         run: pnpm test
         working-directory: apps/gctl-board
 
-      - name: Test — board Workers runtime
-        run: pnpm test:workers
-        working-directory: apps/gctl-board
-
+      # Build web assets first: wrangler.toml references dist-web/ for [assets],
+      # and the Workers runtime test harness loads that config.
       - name: Build — board web
         run: pnpm build:web
+        working-directory: apps/gctl-board
+
+      - name: Test — board Workers runtime
+        run: pnpm test:workers
         working-directory: apps/gctl-board
 
       # Upload web assets for deploy and Playwright jobs
