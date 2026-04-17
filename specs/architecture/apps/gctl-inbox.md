@@ -1,23 +1,23 @@
-# Application: gctl-inbox (Human Action Center)
+# Application: gctrl-inbox (Human Action Center)
 
-gctl-inbox is a **native application** — the structured I/O channel between agents and humans. It aggregates requests, alerts, and notifications into context-grouped threads, enabling humans to triage and batch-act on agent needs without per-message context switching.
+gctrl-inbox is a **native application** — the structured I/O channel between agents and humans. It aggregates requests, alerts, and notifications into context-grouped threads, enabling humans to triage and batch-act on agent needs without per-message context switching.
 
 Unix analogy: `/dev/tty` + `mail` + signal handling. Agents are processes that occasionally need human input (`read(stdin)`), guardrails emit signals (`SIGSTOP`), and the inbox is the terminal where the operator responds.
 
 ## Architectural Position
 
-gctl-inbox is a **native application** in the Unix layer model, peer to gctl-board.
+gctrl-inbox is a **native application** in the Unix layer model, peer to gctrl-board.
 
 ```
-App (gctl-inbox) → Shell (HTTP API :4318) → Kernel (Storage, Guardrails, Orchestrator)
+App (gctrl-inbox) → Shell (HTTP API :4318) → Kernel (Storage, Guardrails, Orchestrator)
 ```
 
 - **Depends on the shell** — reads/writes data via kernel HTTP API (`:4318`). MUST NOT access DuckDB directly or import kernel crates.
 - **Never depended on by the shell or kernel** — removing the app breaks nothing below it.
-- **Storage tables registered on kernel** — `inbox_*` DuckDB tables are registered in the kernel's `schema.rs` and `all_migrations()`, same pattern as `board_*` tables. HTTP routes (`/api/inbox/*`) are registered on the kernel's axum router at `:4318`. This follows the established gctl-board pattern where the kernel hosts app storage and API routes while apps provide the domain logic via shell commands and web UIs.
+- **Storage tables registered on kernel** — `inbox_*` DuckDB tables are registered in the kernel's `schema.rs` and `all_migrations()`, same pattern as `board_*` tables. HTTP routes (`/api/inbox/*`) are registered on the kernel's axum router at `:4318`. This follows the established gctrl-board pattern where the kernel hosts app storage and API routes while apps provide the domain logic via shell commands and web UIs.
 - **Web UI served separately** — the inbox web UI (feed, thread views, batch action bar) is served by its own HTTP server on a separate port, distinct from the kernel `:4318` API.
-- **Has a CLI surface** — `gctl inbox` commands live in the shell package and call kernel HTTP endpoints directly.
-- **Companion to gctl-board** — inbox handles time-sensitive requests ("what needs my attention now"); board handles strategic planning ("what's the plan"). They share issue context but are independently optional.
+- **Has a CLI surface** — `gctrl inbox` commands live in the shell package and call kernel HTTP endpoints directly.
+- **Companion to gctrl-board** — inbox handles time-sensitive requests ("what needs my attention now"); board handles strategic planning ("what's the plan"). They share issue context but are independently optional.
 
 See [os.md — Dependency Direction](../os.md) for the full invariant.
 
@@ -69,12 +69,12 @@ See [os.md — Dependency Direction](../os.md) for the full invariant.
 
 ```mermaid
 graph LR
-    subgraph Board["gctl-board"]
+    subgraph Board["gctrl-board"]
         Issue["BACK-42<br/>Fix auth middleware"]
         Badge["⚡ 3 pending"]
     end
 
-    subgraph Inbox["gctl-inbox"]
+    subgraph Inbox["gctrl-inbox"]
         Thread["Thread: BACK-42"]
         M1["🔒 Permission: force-push"]
         M2["💰 Budget at 80%"]
@@ -88,7 +88,7 @@ graph LR
     M3 --> Thread
 ```
 
-All cross-app data flows through **kernel IPC events**. gctl-inbox and gctl-board MUST NOT call each other's APIs directly or join each other's tables.
+All cross-app data flows through **kernel IPC events**. gctrl-inbox and gctrl-board MUST NOT call each other's APIs directly or join each other's tables.
 
 - **Issue cards show inbox badge** — board fetches pending count via kernel API (`GET /api/inbox/threads?context_type=issue&context_ref={key}`)
 - **Inbox threads link to issues** — inbox enriches display by fetching issue metadata via kernel API (`GET /api/board/issues/{key}`)
@@ -100,12 +100,12 @@ All cross-app data flows through **kernel IPC events**. gctl-inbox and gctl-boar
 
 ### M0 Bootstrap (No IPC — Direct HTTP Routes)
 
-Kernel IPC (event bus) is [planned] but not yet implemented. For M0, gctl-inbox follows the same integration pattern as gctl-board:
+Kernel IPC (event bus) is [planned] but not yet implemented. For M0, gctrl-inbox follows the same integration pattern as gctrl-board:
 
 1. **Storage tables** (`inbox_*`) are registered in the kernel's `schema.rs` and created by `all_migrations()`
 2. **HTTP routes** (`/api/inbox/*`) are registered on the kernel's axum router at `:4318`
 3. **Handlers** in the kernel call `DuckDbStore` methods for inbox CRUD
-4. **Shell commands** (`gctl inbox`) call kernel HTTP API via `KernelClient`
+4. **Shell commands** (`gctrl inbox`) call kernel HTTP API via `KernelClient`
 5. **Message creation** is triggered by shell commands or kernel-side handlers — not by an event subscription model
 
 This means for M0, the guardrail→inbox flow is:
@@ -129,8 +129,8 @@ When kernel IPC (event bus) lands, the integration migrates to event subscriptio
 
 ## Runtime
 
-- **Application logic:** Effect-TS (same stack as gctl-board)
-- **Web UI:** React 19 + Tailwind CSS + shadcn/ui (shared component library with gctl-board)
+- **Application logic:** Effect-TS (same stack as gctrl-board)
+- **Web UI:** React 19 + Tailwind CSS + shadcn/ui (shared component library with gctrl-board)
 - **Testing:** Vitest (unit), Playwright (E2E)
 
 ## Storage
@@ -150,17 +150,17 @@ Indexes on: thread_id, status, urgency, kind (messages); context_type+context_re
 
 | Surface | Description |
 |---------|-------------|
-| **Web UI: Inbox Feed** | Threads sorted by urgency, filter sidebar, batch action bar. Served by gctl-inbox's own HTTP server. |
+| **Web UI: Inbox Feed** | Threads sorted by urgency, filter sidebar, batch action bar. Served by gctrl-inbox's own HTTP server. |
 | **Web UI: Thread View** | Chronological messages with inline action buttons, context panel (linked issue, session, cost). |
-| **Web UI: Board Widget** | Inbox panel embedded in gctl-board's issue detail page (pending messages for that issue). |
-| **Shell CLI** | `gctl inbox` subcommands for list, view, approve, deny, batch-approve, actions, stats, subscriptions. |
+| **Web UI: Board Widget** | Inbox panel embedded in gctrl-board's issue detail page (pending messages for that issue). |
+| **Shell CLI** | `gctrl inbox` subcommands for list, view, approve, deny, batch-approve, actions, stats, subscriptions. |
 | **Shell HTTP** | `/api/inbox/*` routes in the kernel — data API consumed by web UI and CLI. |
 | **SSE** | `/api/inbox/sse` for real-time updates to web UI (no polling). |
 
 ## Related Docs
 
-- `apps/gctl-inbox/PRD.md` — Full product requirements, use cases, roadmap
-- `apps/gctl-inbox/WORKFLOW.md` — Message lifecycle, triage flow, CLI reference, storage DDL
-- `specs/architecture/apps/gctl-board.md` — Companion app for project management
+- `apps/gctrl-inbox/PRD.md` — Full product requirements, use cases, roadmap
+- `apps/gctrl-inbox/WORKFLOW.md` — Message lifecycle, triage flow, CLI reference, storage DDL
+- `specs/architecture/apps/gctrl-board.md` — Companion app for project management
 - `specs/architecture/kernel/orchestrator.md` — Agent dispatch and permission gates
 - `specs/architecture/domain-model.md` — Shared domain types

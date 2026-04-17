@@ -1,0 +1,22 @@
+[package]
+name = "gctrl-storage"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gctrl-core = { path = "../gctrl-core" }
+duckdb = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+sha2 = "0.10"
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"

@@ -1,0 +1,30 @@
+[package]
+name = "gctrl-net"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gctrl-core = { path = "../gctrl-core" }
+gctrl-storage = { path = "../gctrl-storage" }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+
+# HTML processing
+htmd = "0.5"
+readability = "0.3"
+scraper = "0.22"
+url = "2"
+
+# Async utilities
+futures = "0.3"
+
+# File system
+dirs = "6"
+
+[dev-dependencies]
+tempfile = "3"

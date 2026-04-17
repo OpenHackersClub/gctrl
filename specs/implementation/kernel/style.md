@@ -19,7 +19,7 @@ Use `clap` derive macros. Global flags (like `--db`) on the top-level struct:
 
 ```rust
 #[derive(Parser)]
-#[command(name = "gctl")]
+#[command(name = "gctrl")]
 struct Cli {
     #[arg(long, global = true)]
     db: Option<String>,
@@ -62,6 +62,6 @@ pub trait GuardrailPolicy: Send + Sync {
 ## Testing
 
 - `DuckDbStore::open(":memory:")` for all DB tests
-- `tempfile::TempDir` for filesystem tests (gctl-net, gctl-context)
+- `tempfile::TempDir` for filesystem tests (gctrl-net, gctrl-context)
 - `tower::ServiceExt::oneshot` for axum router tests
 - See [testing.md](../testing.md) for the full test strategy

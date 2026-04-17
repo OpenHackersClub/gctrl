@@ -1,6 +1,6 @@
 # Unix Architecture — Layers, Execution Model, and Extension Points
 
-gctl is modeled after Unix. This document covers two complementary views:
+gctrl is modeled after Unix. This document covers two complementary views:
 
 1. **Layer structure** — what belongs in each architectural layer (Kernel, Shell, Apps, Utilities) and how to extend each layer. Drivers are loadable kernel modules, not a separate layer.
 2. **Execution model** — how agent work is scheduled, who runs it, and how identity works in a world where humans and agents are first-class actors.
@@ -11,16 +11,16 @@ For the high-level diagram and internal code architecture, see [README.md](READM
 
 ## Terminology
 
-gctl uses **Unix terminology** as the primary architectural language. Some terms overlap with hexagonal architecture (ports & adapters) — this glossary disambiguates.
+gctrl uses **Unix terminology** as the primary architectural language. Some terms overlap with hexagonal architecture (ports & adapters) — this glossary disambiguates.
 
 | Term | Meaning | Unix Analogy | NOT to be confused with |
 |------|---------|-------------|------------------------|
 | **Kernel** | Core primitives (Telemetry, Storage, Guardrails, Orchestrator) | Linux kernel | — |
 | **Shell** | CLI dispatcher, HTTP API, Query Engine | bash / zsh | — |
-| **Native Application** | Stateful program built on gctl (gctl-board, Observe & Eval) | `vim`, `git` | — |
-| **External Application** | Third-party tool connected to gctl (Linear, Plane, Notion, Phoenix) | Hardware accessed via kernel module | "Adapter" (which means something else) |
+| **Native Application** | Stateful program built on gctrl (gctrl-board, Observe & Eval) | `vim`, `git` | — |
+| **External Application** | Third-party tool connected to gctrl (Linear, Plane, Notion, Phoenix) | Hardware accessed via kernel module | "Adapter" (which means something else) |
 | **Driver** | Loadable kernel module connecting an external app (`driver-linear`, `driver-github`). Feature-gated, independently optional. Lives inside the kernel. | Loadable kernel module (LKM) — `insmod`/`modprobe` | "Adapter" in hexagonal architecture |
-| **Kernel Interface** | Trait in `gctl-core` that drivers implement (`TrackerPort`, `ObservabilityExportPort`) | Driver interface / syscall interface | "Port" as a network port |
+| **Kernel Interface** | Trait in `gctrl-core` that drivers implement (`TrackerPort`, `ObservabilityExportPort`) | Driver interface / syscall interface | "Port" as a network port |
 | **Kernel IPC** | Cross-app communication (event bus, pipes, sockets) | Unix IPC (pipes, signals, sockets) | — |
 | **Adapter** | Internal kernel implementation of a trait (DuckDB storage, OTel receiver) — used only in [implementation specs](../implementation/kernel/components.md) | — | "Driver" (which connects external apps) |
 
@@ -41,7 +41,7 @@ flowchart TB
   end
 
   subgraph Apps["NATIVE APPLICATIONS (stateful, optional)"]
-    Board["gctl-board\n(kanban)"]
+    Board["gctrl-board\n(kanban)"]
     Eval["Observe & Eval\n(scoring, analytics)"]
     Capacity["Capacity Engine\n(forecasting)"]
   end
@@ -98,7 +98,7 @@ flowchart TB
   KernelExt --> Kernel
 ```
 
-Dependencies flow **inward only** — this is the fundamental invariant of the gctl architecture.
+Dependencies flow **inward only** — this is the fundamental invariant of the gctrl architecture.
 
 ### Dependency Direction (Invariant)
 
@@ -109,21 +109,21 @@ Kernel → Shell → App       (NEVER — inner must not know about outer)
 
 | Rule | What it means | Violation example |
 |------|--------------|-------------------|
-| **Kernel depends on nothing above it** | Kernel crates MUST NOT import shell or app code. The kernel has no knowledge of gctl-board, gctl-eval, or any application. | Kernel crate importing a board schema type |
-| **Shell depends on kernel, never on apps** | Shell consumes kernel HTTP API and crate interfaces. It MUST NOT import app code. | Shell importing `BoardService` from gctl-board |
-| **Apps depend on shell, never the reverse** | Apps invoke kernel capabilities via the shell's HTTP API surface (`:4318`). They MUST NOT access DuckDB directly or import kernel crate internals. | App opening a DuckDB connection, or importing `gctl-storage` directly |
-| **Apps are independently removable** | Any app (gctl-board, gctl-eval, etc.) can be uninstalled without breaking the kernel or shell. | Shell code that breaks if gctl-board package is removed |
+| **Kernel depends on nothing above it** | Kernel crates MUST NOT import shell or app code. The kernel has no knowledge of gctrl-board, gctrl-eval, or any application. | Kernel crate importing a board schema type |
+| **Shell depends on kernel, never on apps** | Shell consumes kernel HTTP API and crate interfaces. It MUST NOT import app code. | Shell importing `BoardService` from gctrl-board |
+| **Apps depend on shell, never the reverse** | Apps invoke kernel capabilities via the shell's HTTP API surface (`:4318`). They MUST NOT access DuckDB directly or import kernel crate internals. | App opening a DuckDB connection, or importing `gctrl-storage` directly |
+| **Apps are independently removable** | Any app (gctrl-board, gctrl-eval, etc.) can be uninstalled without breaking the kernel or shell. | Shell code that breaks if gctrl-board package is removed |
 | **External APIs go through kernel drivers** | The shell and apps MUST NOT call external APIs (GitHub, Linear, etc.) directly, nor hold secrets (PATs, API keys). External services are accessed through kernel drivers (LKMs) exposed via the kernel HTTP API. The kernel manages all secrets and injects them into drivers. | Shell importing an HTTP client for `api.github.com`, shell reading `GITHUB_TOKEN` from env, or app holding an API key |
 
 **Enforcement:** The monorepo workspace config (`package.json` workspaces, `Cargo.toml` workspace members) encodes these boundaries. An app's `package.json` MUST NOT list kernel crates or shell packages as dependencies. Apps consume kernel data exclusively through HTTP.
 
-> **CLI surface note:** The shell exposes `gctl board` CLI commands that call kernel HTTP endpoints directly. These are shell commands, not app code — they live in the shell package and do not import from `apps/gctl-board/`. The app's web UI is a separate process that also calls the same kernel HTTP endpoints.
+> **CLI surface note:** The shell exposes `gctrl board` CLI commands that call kernel HTTP endpoints directly. These are shell commands, not app code — they live in the shell package and do not import from `apps/gctrl-board/`. The app's web UI is a separate process that also calls the same kernel HTTP endpoints.
 
 ---
 
 ## 1. Kernel — Mechanisms, Not Policy
 
-The kernel provides small, focused primitives. It is agent-agnostic, application-agnostic, and use-case-agnostic. A solo developer running `gctl serve` gets a working system with just the kernel — no applications, no drivers, no configuration.
+The kernel provides small, focused primitives. It is agent-agnostic, application-agnostic, and use-case-agnostic. A solo developer running `gctrl serve` gets a working system with just the kernel — no applications, no drivers, no configuration.
 
 ### Core Primitives (always present)
 
@@ -191,10 +191,10 @@ Add a new kernel primitive or extension when:
 
 To add a kernel extension:
 
-1. Create a new Rust crate: `crates/gctl-{name}/`
-2. Define the port trait in `gctl-core` (e.g., `trait Scheduler`)
+1. Create a new Rust crate: `crates/gctrl-{name}/`
+2. Define the port trait in `gctrl-core` (e.g., `trait Scheduler`)
 3. Implement the adapter in the new crate
-4. Feature-gate it in `gctl-cli/Cargo.toml` so it is opt-in
+4. Feature-gate it in `gctrl-cli/Cargo.toml` so it is opt-in
 5. The new primitive MUST NOT know about any application
 
 ---
@@ -207,7 +207,7 @@ The shell mediates **all** access to the kernel. It is the dispatcher — it par
 
 | Component | What It Does | Unix Analogy |
 |-----------|-------------|--------------|
-| **CLI Dispatcher** | Parses `gctl <noun> <verb>` args, routes to command handlers | `bash` — the interpreter, not the commands |
+| **CLI Dispatcher** | Parses `gctrl <noun> <verb>` args, routes to command handlers | `bash` — the interpreter, not the commands |
 | **HTTP API** | REST endpoints on `:4318`, SSE for live feeds | Network sockets / IPC |
 | **Query Engine** | Guardrailed DuckDB queries, structured output | `awk` / `sed` for structured data |
 
@@ -224,13 +224,13 @@ The shell mediates **all** access to the kernel. It is the dispatcher — it par
 - Business logic (that is the application or kernel layer)
 - Direct DuckDB queries beyond dispatching to the query engine
 - Knowledge of external tools or adapters
-- **Direct calls to external APIs or CLIs** (GitHub, Linear, Notion, etc.) — external services are accessed through kernel drivers (LKMs) exposed via the kernel HTTP API. The shell MUST NOT import HTTP clients for external services, hold secrets (PATs, API keys), or shell out to native CLIs (e.g., `gh`). Secrets are managed exclusively by the kernel and injected into drivers. Example: `gctl gh issues` calls the kernel's `/api/github/issues` route → `driver-github` receives the PAT from the kernel, invokes `gh issue list` → kernel caches the result and emits an OTel span.
+- **Direct calls to external APIs or CLIs** (GitHub, Linear, Notion, etc.) — external services are accessed through kernel drivers (LKMs) exposed via the kernel HTTP API. The shell MUST NOT import HTTP clients for external services, hold secrets (PATs, API keys), or shell out to native CLIs (e.g., `gh`). Secrets are managed exclusively by the kernel and injected into drivers. Example: `gctrl gh issues` calls the kernel's `/api/github/issues` route → `driver-github` receives the PAT from the kernel, invokes `gh issue list` → kernel caches the result and emits an OTel span.
 
 ### How the shell dispatches
 
 ```mermaid
 flowchart LR
-  Agent["Agent or Human"] -->|"gctl sessions --format json"| CLI
+  Agent["Agent or Human"] -->|"gctrl sessions --format json"| CLI
   Agent -->|"GET /api/sessions"| HTTP["HTTP API"]
   CLI --> Router["Route to handler"]
   HTTP --> Router
@@ -244,7 +244,7 @@ CLI commands and HTTP endpoints are **not** part of the shell — they are appli
 
 You rarely need to extend the shell itself. Instead, you register new commands or routes:
 
-- **New CLI subcommand**: Add a file in `gctl-cli/src/commands/`, register in `mod.rs`
+- **New CLI subcommand**: Add a file in `gctrl-cli/src/commands/`, register in `mod.rs`
 - **New HTTP route**: Mount under `/api/{app}/*` in the axum router
 
 ---
@@ -257,7 +257,7 @@ Applications are larger, stateful programs that orchestrate kernel primitives th
 
 | Application | Tables Owned | Kernel Primitives Used | Runtime | Status |
 |-------------|-------------|----------------------|---------|--------|
-| **gctl-board** | `board_projects`, `board_issues`, `board_events`, `board_comments` | Storage, Telemetry (session-issue linking) | Effect-TS | Implemented |
+| **gctrl-board** | `board_projects`, `board_issues`, `board_events`, `board_comments` | Storage, Telemetry (session-issue linking) | Effect-TS | Implemented |
 | **Observe & Eval** | `scores` | Telemetry, Storage, Query Engine | Rust (compiled into binary) | Partial (auto-scoring implemented, no separate app boundary) |
 | **Capacity Engine** | `capacity_*` | Storage, Telemetry, Query Engine | Rust (compiled into binary) | **Planned** |
 
@@ -275,7 +275,7 @@ Applications are larger, stateful programs that orchestrate kernel primitives th
 1. **Table namespacing**: All tables MUST use `{app}_*` prefixes (`board_issues`, `eval_scores`)
 2. **Kernel access via shell**: Applications access kernel primitives through CLI or HTTP API — not by importing kernel crates directly (except Rust apps compiled into the binary)
 3. **Cross-app isolation**: Apps MUST NOT join across each other's tables. Cross-app data flows through kernel-level events
-4. **Optional by default**: Every application MUST be independently disableable. A developer using gctl only for telemetry MUST NOT see board commands
+4. **Optional by default**: Every application MUST be independently disableable. A developer using gctrl only for telemetry MUST NOT see board commands
 
 ### Extending with a new application
 
@@ -283,39 +283,39 @@ Applications are larger, stateful programs that orchestrate kernel primitives th
 flowchart TB
   A1["1. Define domain model\n(types, state machines, rules)"]
   A2["2. Declare storage tables\nCREATE TABLE IF NOT EXISTS myapp_*"]
-  A3["3. Register CLI subcommands\ngctl myapp <verb>"]
+  A3["3. Register CLI subcommands\ngctrl myapp <verb>"]
   A4["4. Mount HTTP routes\n/api/myapp/*"]
   A5["5. Subscribe to kernel events\n(span ingested, session ended)"]
   A6["6. Declare sync prefixes\nanalytics/myapp/, knowledge/myapp/"]
   A1 --> A2 --> A3 --> A4 --> A5 --> A6
 ```
 
-**Rust applications** are compiled into the `gctl` binary as feature-gated crates. They have direct access to `DuckDbStore` and register axum routes on the shared router.
+**Rust applications** are compiled into the `gctrl` binary as feature-gated crates. They have direct access to `DuckDbStore` and register axum routes on the shared router.
 
-**TypeScript applications** (like gctl-board) run as sidecar processes or are proxied through the Rust daemon. They communicate via the shell (HTTP API or CLI subprocess calls).
+**TypeScript applications** (like gctrl-board) run as sidecar processes or are proxied through the Rust daemon. They communicate via the shell (HTTP API or CLI subprocess calls).
 
 ---
 
 ## 4. Utilities — Small, Single-Purpose Tools
 
-Utilities are small tools that do one thing well and compose via stdin/stdout where practical. They are the `grep`, `curl`, `wget` of gctl.
+Utilities are small tools that do one thing well and compose via stdin/stdout where practical. They are the `grep`, `curl`, `wget` of gctrl.
 
 ### Shipped Utilities
 
 | Utility | What It Does | Unix Analogy | Composes With |
 |---------|-------------|--------------|---------------|
-| `gctl net fetch <url>` | Fetch URL, convert to markdown | `curl` | Pipe to `gctl eval score` |
-| `gctl net crawl <url>` | Crawl site, extract readable content | `wget -r` | Output feeds `net compact` |
-| `gctl net compact <domain>` | Compact pages into LLM-ready context | `tar` / `cat` | Produces stdin-ready output |
-| `gctl net list` | List crawled domains | `ls` | — |
-| `gctl net show <domain>` | Show crawled content | `cat` | — |
-| `gctl browser goto <url>` | Navigate browser to URL | headless Chrome | — |
-| `gctl browser snapshot` | Capture page screenshot/DOM | `screencapture` | — |
-| `gctl spec audit` | Check specs against principles and documentation standards | `lint` | `gctl spec review` |
-| `gctl spec review` | Identify spec gaps, contradictions, ambiguities | Linter + inspector | — |
-| `gctl spec list` | List all spec files with metadata | `ls -la` | Pipe to `gctl spec refs` |
-| `gctl spec refs` | Validate cross-references between spec files | Link checker | — |
-| `gctl spec diff <base>` | Show spec changes since a git ref | `diff` | — |
+| `gctrl net fetch <url>` | Fetch URL, convert to markdown | `curl` | Pipe to `gctrl eval score` |
+| `gctrl net crawl <url>` | Crawl site, extract readable content | `wget -r` | Output feeds `net compact` |
+| `gctrl net compact <domain>` | Compact pages into LLM-ready context | `tar` / `cat` | Produces stdin-ready output |
+| `gctrl net list` | List crawled domains | `ls` | — |
+| `gctrl net show <domain>` | Show crawled content | `cat` | — |
+| `gctrl browser goto <url>` | Navigate browser to URL | headless Chrome | — |
+| `gctrl browser snapshot` | Capture page screenshot/DOM | `screencapture` | — |
+| `gctrl spec audit` | Check specs against principles and documentation standards | `lint` | `gctrl spec review` |
+| `gctrl spec review` | Identify spec gaps, contradictions, ambiguities | Linter + inspector | — |
+| `gctrl spec list` | List all spec files with metadata | `ls -la` | Pipe to `gctrl spec refs` |
+| `gctrl spec refs` | Validate cross-references between spec files | Link checker | — |
+| `gctrl spec diff <base>` | Show spec changes since a git ref | `diff` | — |
 
 ### What makes something a utility (not an application)
 
@@ -326,16 +326,16 @@ Utilities are small tools that do one thing well and compose via stdin/stdout wh
 
 ### Utility rules
 
-1. **One verb per command**: `gctl net fetch` fetches. `gctl net compact` compacts. No combined super-commands.
+1. **One verb per command**: `gctrl net fetch` fetches. `gctrl net compact` compacts. No combined super-commands.
 2. **Stdin/stdout where practical**: Output goes to stdout; metadata/errors go to stderr
 3. **`--format json`**: Every utility that produces structured output MUST support JSON output
 4. **No kernel coupling**: Utilities MAY use kernel primitives (e.g., net fetch logs to traffic table) but MUST NOT require the kernel to function for their core purpose
 
 ### Extending with a new utility
 
-1. Create a Rust crate: `crates/gctl-{name}/` (or add to an existing utility crate if related)
+1. Create a Rust crate: `crates/gctrl-{name}/` (or add to an existing utility crate if related)
 2. Implement the core logic as a library (testable without CLI)
-3. Register CLI subcommands in `gctl-cli/src/commands/`
+3. Register CLI subcommands in `gctrl-cli/src/commands/`
 4. Support `--format json` for structured output
 5. Accept stdin and produce stdout where it makes sense
 
@@ -345,15 +345,15 @@ Utilities are small tools that do one thing well and compose via stdin/stdout wh
 
 > **Status: Planned.** No driver crates, kernel interface traits (`TrackerPort`, `ObservabilityExportPort`, `KnowledgeSourcePort`), or event bus infrastructure exist yet. This section describes the target architecture.
 
-Drivers are **loadable kernel modules** — they live inside the kernel, not as a separate layer. Each driver connects an external application (Linear, GitHub, Notion, Obsidian, Arize Phoenix, Langfuse, SigNoz) to gctl by implementing a kernel interface trait, translating between the external app's API and gctl's internal event/data model.
+Drivers are **loadable kernel modules** — they live inside the kernel, not as a separate layer. Each driver connects an external application (Linear, GitHub, Notion, Obsidian, Arize Phoenix, Langfuse, SigNoz) to gctrl by implementing a kernel interface trait, translating between the external app's API and gctrl's internal event/data model.
 
-This is the **Unix loadable kernel module (LKM) analogy**: like `insmod`/`modprobe` loading a device driver into the kernel, gctl drivers are feature-gated crates compiled into the kernel binary. They run in kernel space, have direct access to kernel interfaces, and are independently loadable/optional.
+This is the **Unix loadable kernel module (LKM) analogy**: like `insmod`/`modprobe` loading a device driver into the kernel, gctrl drivers are feature-gated crates compiled into the kernel binary. They run in kernel space, have direct access to kernel interfaces, and are independently loadable/optional.
 
-> **Terminology note:** gctl uses **"driver"** (not "adapter") for these loadable kernel modules to avoid confusion with hexagonal architecture adapters, which are internal kernel implementations (DuckDB storage, OTel receiver, etc.). See [README.md § Hexagonal Architecture](README.md#hexagonal-architecture-kernel--shell-only) for the distinction.
+> **Terminology note:** gctrl uses **"driver"** (not "adapter") for these loadable kernel modules to avoid confusion with hexagonal architecture adapters, which are internal kernel implementations (DuckDB storage, OTel receiver, etc.). See [README.md § Hexagonal Architecture](README.md#hexagonal-architecture-kernel--shell-only) for the distinction.
 
 ### The LKM Metaphor
 
-In Unix, device drivers are loadable kernel modules — they run in kernel space, implement a standard interface, and bridge between external hardware and kernel internals. gctl drivers follow the same model: they are feature-gated crates that compile into the kernel binary, implement kernel interface traits, and bridge between external app APIs and gctl's event/data model.
+In Unix, device drivers are loadable kernel modules — they run in kernel space, implement a standard interface, and bridge between external hardware and kernel internals. gctrl drivers follow the same model: they are feature-gated crates that compile into the kernel binary, implement kernel interface traits, and bridge between external app APIs and gctrl's event/data model.
 
 ```mermaid
 flowchart LR
@@ -365,7 +365,7 @@ flowchart LR
   end
 
   subgraph UserSpace["Applications"]
-    Board["gctl-board"]
+    Board["gctrl-board"]
     Eval["Observe & Eval"]
   end
 
@@ -382,14 +382,14 @@ flowchart LR
   Eval --- Events
 ```
 
-Drivers live in kernel space. Native apps (gctl-board, Observe & Eval) live in user space. Neither talks directly to the other — all cross-app data flows through kernel IPC.
+Drivers live in kernel space. Native apps (gctrl-board, Observe & Eval) live in user space. Neither talks directly to the other — all cross-app data flows through kernel IPC.
 
 ### IPC Mechanisms
 
-| Mechanism | Unix Analogy | gctl Implementation | Example |
+| Mechanism | Unix Analogy | gctrl Implementation | Example |
 |-----------|-------------|---------------------|---------|
 | **Event Bus** | Signals / named pipes | Domain events (`SessionEnded`, `IssueCreated`) | Telemetry emits `SessionEnded` → Eval auto-scores → Phoenix driver (LKM) exports |
-| **Pipes** | stdin/stdout | CLI output piped between commands | `gctl sessions --format json \| gctl analytics cost` |
+| **Pipes** | stdin/stdout | CLI output piped between commands | `gctrl sessions --format json \| gctrl analytics cost` |
 | **Sockets** | Unix sockets / TCP | HTTP API endpoints | Applications access kernel via HTTP API |
 
 ### Kernel Interfaces for External Apps
@@ -403,16 +403,16 @@ Drivers live in kernel space. Native apps (gctl-board, Observe & Eval) live in u
 ### Driver Rules
 
 1. **Loadable kernel module**: Every driver is a feature-gated crate compiled into the kernel binary — like `insmod` loading a `.ko` into the Linux kernel
-2. **Implement a kernel interface**: Every driver MUST implement a trait defined in `gctl-core`
+2. **Implement a kernel interface**: Every driver MUST implement a trait defined in `gctrl-core`
 3. **No direct table access**: Drivers MUST go through the kernel interface trait, never write to DuckDB directly
 4. **Independently optional**: Each driver is independently feature-gated — zero drivers is the default; add as needed
-5. **Bidirectional where needed**: Pull from external API into gctl; push gctl events back to external API
+5. **Bidirectional where needed**: Pull from external API into gctrl; push gctrl events back to external API
 6. **Cross-module isolation**: Drivers MUST NOT import or call other drivers or native apps. All cross-component communication flows through kernel IPC (events, shell APIs, pipes)
 7. **Prefer native CLIs**: Where a mature native CLI exists (e.g., `gh` for GitHub), drivers SHOULD delegate to it via subprocess rather than reimplementing the REST API client. This reuses the CLI's authentication, pagination, and format handling. The kernel wraps the subprocess call with **caching** (response-level, TTL-based) and **OTel instrumentation** (spans for each call, cost/latency attribution)
 
 ### Driver Execution Model — Kernel Responsibilities
 
-When a shell command triggers a driver (e.g., `gctl gh issues` → kernel `/api/github/issues` → `driver-github`), the kernel provides cross-cutting concerns:
+When a shell command triggers a driver (e.g., `gctrl gh issues` → kernel `/api/github/issues` → `driver-github`), the kernel provides cross-cutting concerns:
 
 | Concern | Kernel handles | Driver handles |
 |---------|---------------|----------------|
@@ -424,7 +424,7 @@ When a shell command triggers a driver (e.g., `gctl gh issues` → kernel `/api/
 **Example: `driver-github` using native `gh` CLI**
 
 ```
-Shell: gctl gh issues --repo org/repo
+Shell: gctrl gh issues --repo org/repo
   → KernelClient.get("/api/github/issues?repo=org/repo")
     → Kernel: check cache → miss
       → driver-github: subprocess `gh issue list --repo org/repo --json ...`
@@ -434,10 +434,10 @@ Shell: gctl gh issues --repo org/repo
 
 ### Extending with a new driver (loadable kernel module)
 
-1. Define or reuse a kernel interface trait in `gctl-core` (e.g., `trait TrackerPort`)
-2. Create a feature-gated crate: `crates/gctl-driver-{name}/`
+1. Define or reuse a kernel interface trait in `gctrl-core` (e.g., `trait TrackerPort`)
+2. Create a feature-gated crate: `crates/gctrl-driver-{name}/`
 3. Implement the interface trait with the external app's API
-4. Feature-gate it in `gctl-cli/Cargo.toml` — off by default, loaded when enabled (like `modprobe`)
+4. Feature-gate it in `gctrl-cli/Cargo.toml` — off by default, loaded when enabled (like `modprobe`)
 5. The driver runs in kernel space but MUST NOT modify core kernel primitives — it plugs into existing kernel interfaces
 6. Cross-component data flows through kernel IPC — the driver MUST NOT couple to other drivers or applications
 
@@ -463,7 +463,7 @@ When in doubt, start as a utility. Promote to an application only when the utili
 
 An extension of the Unix metaphor to cover processes and users — humans and agents alike.
 
-| Unix Concept | gctl Equivalent |
+| Unix Concept | gctrl Equivalent |
 |---|---|
 | User (`uid`) | User (human or agent persona, with `user_id`) |
 | Process (`pid`) | Agent Session (`session_id`) |
@@ -477,7 +477,7 @@ An extension of the Unix metaphor to cover processes and users — humans and ag
 | `setuid` / capabilities | Agent capability grants — what tools and resources a session may use |
 | Login / `su` | Persona adoption — agent assumes a configured persona at dispatch time |
 
-> **Issues are not in this model.** Issues are an application-level concept owned by gctl-board. The kernel only knows about Tasks (Scheduler) and Sessions (Telemetry/Orchestrator). Applications observe Task and Session events via kernel IPC and update their own work items (Issues) accordingly.
+> **Issues are not in this model.** Issues are an application-level concept owned by gctrl-board. The kernel only knows about Tasks (Scheduler) and Sessions (Telemetry/Orchestrator). Applications observe Task and Session events via kernel IPC and update their own work items (Issues) accordingly.
 >
 > **Multi-agent normalization.** The kernel tracks Tasks and prompts uniformly across all agent systems — Claude Code, Codex, Aider, OpenAI API, and custom executables. Every Task records `agent_kind`, `prompt_hash`, and `context` so the full audit trail of who did what is queryable regardless of which agent system was used. See `specs/architecture/kernel/scheduler.md` for the `AgentKind` enum and `SchedulerPort` interface.
 
@@ -487,7 +487,7 @@ An extension of the Unix metaphor to cover processes and users — humans and ag
 
 > **Types:** See [domain-model.md § 2 User](domain-model.md#user-specs-only) for the `User` / `UserId` / `UserKind` definitions. This section describes the *execution model* (Unix analogy, persona config, user→session binding) — not the types.
 
-In Unix, every process runs as a user identified by a `uid`. In gctl, every session runs on behalf of a **user** — a human or an agent persona, each with a `user_id`.
+In Unix, every process runs as a user identified by a `uid`. In gctrl, every session runs on behalf of a **user** — a human or an agent persona, each with a `user_id`.
 
 ```
 user_id  name         kind     capabilities
@@ -501,7 +501,7 @@ p4       nightly-run  agent    read, dispatch, net
 
 #### 6.1 User Types
 
-**Human users** correspond to real team members. Their sessions are interactive; they spawn agent sessions explicitly (e.g. `gctl board assign BACK-42 --agent claude-code`).
+**Human users** correspond to real team members. Their sessions are interactive; they spawn agent sessions explicitly (e.g. `gctrl board assign BACK-42 --agent claude-code`).
 
 **Agent personas** are configured identities with a fixed capability set. A persona is like a Unix system account (`www-data`, `postgres`) — it defines *what* the agent may do, not *who* the agent is at the model level. The same LLM (Claude) can run under different personas with different capability grants.
 
@@ -516,12 +516,12 @@ cost_limit = { per_session = "0.10" }   # guardrail binding
 
 #### 6.2 Persona ↔ Unix Analogy
 
-| Unix | gctl |
+| Unix | gctrl |
 |---|---|
 | `uid=0` (root) | `system` user — kernel-internal, never dispatched from user code |
 | Named system user (`postgres`) | Agent persona (`claude-code`, `reviewer-bot`) |
 | `sudo` / `setuid` | Capability grant — promote a session's allowed tools for a specific issue |
-| `getent passwd` | `gctl user list` |
+| `getent passwd` | `gctrl user list` |
 | `/etc/sudoers` | WORKFLOW.md `[persona.*]` capability config |
 
 #### 6.3 Session → User Binding
@@ -529,7 +529,7 @@ cost_limit = { per_session = "0.10" }   # guardrail binding
 Every session record carries a `user_id`. Telemetry, guardrail decisions, cost attribution, and audit trails are all keyed to the user.
 
 ```sql
--- sessions table (gctl-storage)
+-- sessions table (gctrl-storage)
 user_id     VARCHAR  -- FK → users
 session_id  VARCHAR  -- the running "process"
 cost_usd    DECIMAL  -- attributed to this user
@@ -539,12 +539,12 @@ cost_usd    DECIMAL  -- attributed to this user
 
 ### 7. Processes (Sessions)
 
-A **session** is the unit of agent execution — the gctl analogue of a Unix process. Sessions execute **Tasks**. The kernel manages two independent lifecycles:
+A **session** is the unit of agent execution — the gctrl analogue of a Unix process. Sessions execute **Tasks**. The kernel manages two independent lifecycles:
 
 - The **Task** (Scheduler) is the kernel-level work unit. It has a state the Orchestrator transitions as Sessions execute it.
 - The **Session** (Telemetry) is the execution vehicle. It has its own execution state (`active`, `completed`, `failed`, `cancelled`) tracked in the `sessions` table.
 
-**Issues are application-level** (gctl-board). The kernel has no concept of Issues. Applications observe Task and Session events via kernel IPC and update their own work items accordingly.
+**Issues are application-level** (gctrl-board). The kernel has no concept of Issues. Applications observe Task and Session events via kernel IPC and update their own work items accordingly.
 
 #### 7.1 Task Lifecycle (as managed by the Orchestrator)
 
@@ -566,7 +566,7 @@ The Scheduler owns 7 Task states; the Orchestrator drives transitions as it disp
 
 #### 7.2 Dispatch — `fork` + `exec`
 
-The **Orchestrator** is the gctl equivalent of `init`/`systemd` — the always-running supervisor that manages the lifecycle of all agent sessions.
+The **Orchestrator** is the gctrl equivalent of `init`/`systemd` — the always-running supervisor that manages the lifecycle of all agent sessions.
 
 **Dispatch flow:**
 
@@ -594,8 +594,8 @@ Task-D (blocked by Task-C) → stays blocked until Task-C is done
 This is the equivalent of `wait(pid)` / `waitpid()` — a dependent Task cannot proceed until its dependency exits successfully.
 
 ```sh
-gctl orchestrate list --state pending   # tasks eligible for dispatch
-gctl orchestrate list --state blocked   # tasks blocked on dependencies
+gctrl orchestrate list --state pending   # tasks eligible for dispatch
+gctrl orchestrate list --state blocked   # tasks blocked on dependencies
 ```
 
 #### 7.4 Slots and Concurrency
@@ -614,9 +614,9 @@ When all slots are full, newly eligible issues remain in `todo` until a slot ope
 
 ### 8. Guardrails as cgroups
 
-Unix `cgroups` limit CPU, memory, and I/O per process group. gctl **Guardrails** play the same role for agent sessions:
+Unix `cgroups` limit CPU, memory, and I/O per process group. gctrl **Guardrails** play the same role for agent sessions:
 
-| cgroup | gctl Guardrail |
+| cgroup | gctrl Guardrail |
 |---|---|
 | `cpu.max` | Token budget — max tokens per session |
 | `memory.max` | Context window guard — truncate or compact before overflow |
@@ -631,20 +631,20 @@ Guardrail policies are attached to **users**, not individual sessions — just a
 [guardrails.user.claude-code]
 max_cost_per_session  = "1.00"
 max_loop_iterations   = 20
-allowed_commands      = ["cargo", "git", "gctl"]
+allowed_commands      = ["cargo", "git", "gctrl"]
 ```
 
 ---
 
 ### 9. Telemetry as `/proc`
 
-In Unix, `/proc/<pid>` exposes live process state. In gctl, **OTel telemetry** is the equivalent — every running session emits structured spans that the kernel stores and exposes via the shell.
+In Unix, `/proc/<pid>` exposes live process state. In gctrl, **OTel telemetry** is the equivalent — every running session emits structured spans that the kernel stores and exposes via the shell.
 
 ```sh
-gctl tree <session_id>          # like ls /proc/<pid>/ — span hierarchy
-gctl sessions --status running  # like ps aux
-gctl status                     # like top — overview of all running sessions
-gctl spans <session_id>         # like /proc/<pid>/status — raw resource data
+gctrl tree <session_id>          # like ls /proc/<pid>/ — span hierarchy
+gctrl sessions --status running  # like ps aux
+gctrl status                     # like top — overview of all running sessions
+gctrl spans <session_id>         # like /proc/<pid>/status — raw resource data
 ```
 
 The telemetry layer is always on. You cannot opt a session out of `/proc` — observability is a kernel primitive, not an application feature.
@@ -653,9 +653,9 @@ The telemetry layer is always on. You cannot opt a session out of `/proc` — ob
 
 ### 10. Signals and Alerts
 
-Unix signals interrupt running processes. gctl **alerts** are the equivalent — guardrail-triggered or human-triggered interrupts that change session behavior.
+Unix signals interrupt running processes. gctrl **alerts** are the equivalent — guardrail-triggered or human-triggered interrupts that change session behavior.
 
-| Signal | gctl Alert / Action |
+| Signal | gctrl Alert / Action |
 |---|---|
 | `SIGTERM` | Graceful stop — finish current tool call, then exit |
 | `SIGKILL` | Hard terminate — immediate session end, no cleanup |
@@ -666,17 +666,17 @@ Unix signals interrupt running processes. gctl **alerts** are the equivalent —
 Alerts are emitted by the Guardrails engine and delivered to the running session via the kernel's alert channel. Human operators can also send signals directly via the CLI:
 
 ```sh
-gctl session pause  <session_id>    # SIGSTOP
-gctl session resume <session_id>    # SIGCONT
-gctl session stop   <session_id>    # SIGTERM
-gctl session kill   <session_id>    # SIGKILL
+gctrl session pause  <session_id>    # SIGSTOP
+gctrl session resume <session_id>    # SIGCONT
+gctrl session stop   <session_id>    # SIGTERM
+gctrl session kill   <session_id>    # SIGKILL
 ```
 
 ---
 
 ### 11. Multi-Agent Teams — Process Groups
 
-Unix **process groups** let you signal a tree of related processes together. gctl **agent teams** are the equivalent — a lead session that spawns sub-sessions, all operating on related work.
+Unix **process groups** let you signal a tree of related processes together. gctrl **agent teams** are the equivalent — a lead session that spawns sub-sessions, all operating on related work.
 
 ```mermaid
 graph TD
@@ -692,23 +692,23 @@ graph TD
 4. Cost and token usage roll up to the parent issue for attribution.
 
 ```sh
-gctl session tree <lead_session_id>      # show process group tree
-gctl session kill --group <session_id>   # kill the whole group
+gctrl session tree <lead_session_id>      # show process group tree
+gctrl session kill --group <session_id>   # kill the whole group
 ```
 
 ---
 
 ### 12. Everything is a File
 
-Unix's most powerful abstraction is that every resource — devices, sockets, pipes, proc state — is a file. gctl applies this principle to its storage model: **everything the kernel persists is a file**, owned and managed by the kernel, not by individual applications.
+Unix's most powerful abstraction is that every resource — devices, sockets, pipes, proc state — is a file. gctrl applies this principle to its storage model: **everything the kernel persists is a file**, owned and managed by the kernel, not by individual applications.
 
 The Kernel owns all I/O. Applications write rows through the Shell (SQL via DuckDB or HTTP API); the Kernel handles serialization, partitioning, replication, and conflict resolution — just as the Unix kernel owns block I/O and the VFS layer, not userspace programs.
 
-> **Full sync spec:** See [kernel/sync.md](kernel/sync.md) for the authoritative design — DuckDB→Parquet→R2 flow, manifest format, path layout, conflict resolution, context sync, scheduler integration, and `gctl sync` CLI.
+> **Full sync spec:** See [kernel/sync.md](kernel/sync.md) for the authoritative design — DuckDB→Parquet→R2 flow, manifest format, path layout, conflict resolution, context sync, scheduler integration, and `gctrl sync` CLI.
 
 #### Everything is a File — Mapping
 
-| Unix Resource | File Representation | gctl Equivalent |
+| Unix Resource | File Representation | gctrl Equivalent |
 |---|---|---|
 | Process state | `/proc/<pid>/status` | Session Parquet row, OTel span |
 | Block device | `/dev/sda` | DuckDB WAL segment |
@@ -716,7 +716,7 @@ The Kernel owns all I/O. Applications write rows through the Shell (SQL via Duck
 | Config | `/etc/`, dotfiles | WORKFLOW.md, AGENTS.md, driver (LKM) configs |
 | Audit log | `/var/log/audit/` | `spans` table, `net_traffic` table |
 | Shared memory | `/dev/shm/` | DuckDB in-memory (`:memory:`) for tests |
-| Archive / backup | tar / dump | Parquet export under `~/.local/share/gctl/sync/` |
+| Archive / backup | tar / dump | Parquet export under `~/.local/share/gctrl/sync/` |
 | Cloud object store | NFS / remote mount | R2 bucket — Parquet files, read by Workers |
 
 ---
@@ -724,7 +724,7 @@ The Kernel owns all I/O. Applications write rows through the Shell (SQL via Duck
 ### 13. Execution Model Summary
 
 ```
-gctl OS Model
+gctrl OS Model
 
   Users (uid)                     humans and agent personas
   ├── capability grants           setuid / sudoers

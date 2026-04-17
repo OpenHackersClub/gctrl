@@ -1,15 +1,15 @@
 # Dogfooding Plan — gh & wrangler Drivers
 
-gctl's invariant: **shell and CI never call external CLIs directly**. All
+gctrl's invariant: **shell and CI never call external CLIs directly**. All
 external tooling flows through a kernel driver (LKM) exposed over the kernel
 HTTP API (`:4318`). This pins the driver surface the project depends on and
-makes sure gctl is its own first user.
+makes sure gctrl is its own first user.
 
 ## Current State (2026-04-17)
 
 | Tool      | Shell surface                     | Kernel routes             | CI usage                                          |
 |-----------|-----------------------------------|---------------------------|---------------------------------------------------|
-| `gh`      | `gctl gh {issues,prs,runs}`       | `/api/github/*` (read+create) | `.claude/hooks/pre-pr-check.sh` greps `gh pr create`; `deploy.yml` uses `actions/github-script` for PR comments |
+| `gh`      | `gctrl gh {issues,prs,runs}`       | `/api/github/*` (read+create) | `.claude/hooks/pre-pr-check.sh` greps `gh pr create`; `deploy.yml` uses `actions/github-script` for PR comments |
 | `wrangler`| *(none)*                          | *(none)*                  | `.github/workflows/deploy.yml` calls `pnpm exec wrangler d1 …` and `cloudflare/wrangler-action@v3` |
 | `dotenvx` | npm scripts (`env:encrypt/decrypt/run`) | n/a (local secrets only) | not yet wired                                      |
 
@@ -19,8 +19,8 @@ Both drivers expose a generic `POST /api/{driver}/exec` route backed by the
 shared `cli_exec` helper in the kernel. The shell surfaces this as:
 
 ```
-gctl wrangler exec -- d1 execute my-db --env preview --remote --command "SELECT 1"
-gctl gh exec -- pr merge 42 --squash --delete-branch
+gctrl wrangler exec -- d1 execute my-db --env preview --remote --command "SELECT 1"
+gctrl gh exec -- pr merge 42 --squash --delete-branch
 ```
 
 Envelope: `{ stdout, stderr, exitCode, durationMs }`. HTTP is `200` whenever
@@ -38,28 +38,28 @@ callers and nicer CLI output for common ops.
 — the same trust boundary as running `wrangler` or `gh` directly. It is *not*
 a remote-exec surface: axum binds to `127.0.0.1:4318` only.
 
-## `gctl gh` — Typed Gap Fill
+## `gctrl gh` — Typed Gap Fill
 
-Mirror the existing inline driver in `kernel/crates/gctl-otel/src/receiver.rs`
-(90-97, 1100-1256). Extract to a dedicated `gctl-driver-github` crate once it
+Mirror the existing inline driver in `kernel/crates/gctrl-otel/src/receiver.rs`
+(90-97, 1100-1256). Extract to a dedicated `gctrl-driver-github` crate once it
 outgrows the receiver module.
 
 Structured ops layered on top of the `exec` passthrough, in priority order:
 
-1. **`gctl gh prs create`** — `POST /api/github/prs` (delegates to `gh pr create`)
-2. **`gctl gh prs comment <#>`** — `POST /api/github/prs/{n}/comments`
-3. **`gctl gh prs diff <#>`** — `GET /api/github/prs/{n}/diff` (text/plain)
-4. **`gctl gh prs checks <#>`** — `GET /api/github/prs/{n}/checks`
-5. **`gctl gh prs merge <#>`** — `POST /api/github/prs/{n}/merge`
-6. **`gctl gh runs watch <id>`** — `GET /api/github/runs/{id}/watch` (SSE; polls `gh run view --json`)
-7. **`gctl gh issues comment <#>`** — `POST /api/github/issues/{n}/comments`
-8. **`gctl gh workflow dispatch`** — `POST /api/github/workflows/{file}/dispatches`
+1. **`gctrl gh prs create`** — `POST /api/github/prs` (delegates to `gh pr create`)
+2. **`gctrl gh prs comment <#>`** — `POST /api/github/prs/{n}/comments`
+3. **`gctrl gh prs diff <#>`** — `GET /api/github/prs/{n}/diff` (text/plain)
+4. **`gctrl gh prs checks <#>`** — `GET /api/github/prs/{n}/checks`
+5. **`gctrl gh prs merge <#>`** — `POST /api/github/prs/{n}/merge`
+6. **`gctrl gh runs watch <id>`** — `GET /api/github/runs/{id}/watch` (SSE; polls `gh run view --json`)
+7. **`gctrl gh issues comment <#>`** — `POST /api/github/issues/{n}/comments`
+8. **`gctrl gh workflow dispatch`** — `POST /api/github/workflows/{file}/dispatches`
 
 Each op gets: axum handler → shell command → schema decode → 1 happy-path test
 (mock `KernelClient`) + 1 integration test (real `gh` against a fixture repo
 when `CI_INTEGRATION=1`).
 
-## `gctl wrangler` — New Driver
+## `gctrl wrangler` — New Driver
 
 New kernel surface under `/api/wrangler/*`, delegating to local `wrangler`
 binary (already a root `devDependency`). Auth is resolved from the kernel
@@ -68,20 +68,20 @@ dotenvx populates from the encrypted `.env.vault`.
 
 Typed ops layered on top of the `exec` passthrough, scope for v0:
 
-1. **`gctl wrangler whoami`** — `GET /api/wrangler/whoami` (proves the pattern)
-2. **`gctl wrangler d1 execute`** — `POST /api/wrangler/d1/{db}/execute` (body: `{ sql, env, remote }`)
-3. **`gctl wrangler d1 migrations apply`** — `POST /api/wrangler/d1/{db}/migrations/apply`
-4. **`gctl wrangler deploy`** — `POST /api/wrangler/deploy` (body: `{ env, dryRun }`)
-5. **`gctl wrangler tail`** — `GET /api/wrangler/tail?env=…` (SSE — stream logs)
+1. **`gctrl wrangler whoami`** — `GET /api/wrangler/whoami` (proves the pattern)
+2. **`gctrl wrangler d1 execute`** — `POST /api/wrangler/d1/{db}/execute` (body: `{ sql, env, remote }`)
+3. **`gctrl wrangler d1 migrations apply`** — `POST /api/wrangler/d1/{db}/migrations/apply`
+4. **`gctrl wrangler deploy`** — `POST /api/wrangler/deploy` (body: `{ env, dryRun }`)
+5. **`gctrl wrangler tail`** — `GET /api/wrangler/tail?env=…` (SSE — stream logs)
 
 `deploy.yml` migrates as each op lands:
 
 ```yaml
 # Before
-- run: pnpm exec wrangler d1 migrations apply gctl-board-preview-db --env preview --remote
+- run: pnpm exec wrangler d1 migrations apply gctrl-board-preview-db --env preview --remote
 
 # After
-- run: pnpm exec gctl wrangler d1 migrations apply gctl-board-preview-db --env preview --remote
+- run: pnpm exec gctrl wrangler d1 migrations apply gctrl-board-preview-db --env preview --remote
 ```
 
 `cloudflare/wrangler-action@v3` stays for now — replacing it requires the
@@ -107,8 +107,8 @@ Actions repo secrets.
 ## Hook Policy
 
 `.claude/settings.json` pre-tool-use hooks currently gate PR creation on
-`npm run build` + `biome lint`. After `gctl gh prs create` lands, extend the
-hook to *also* reject raw `gh pr create` in favour of `gctl gh prs create`,
+`npm run build` + `biome lint`. After `gctrl gh prs create` lands, extend the
+hook to *also* reject raw `gh pr create` in favour of `gctrl gh prs create`,
 completing the dogfood loop.
 
 ## Acceptance
@@ -116,6 +116,6 @@ completing the dogfood loop.
 Dogfooding is "done" when:
 
 - [ ] `rg "\\bgh (pr|issue|run|workflow|api)\\b" .github/ .claude/` returns no matches outside this spec.
-- [ ] `rg "\\bwrangler\\b" .github/ | grep -v "gctl wrangler"` returns no matches outside this spec.
+- [ ] `rg "\\bwrangler\\b" .github/ | grep -v "gctrl wrangler"` returns no matches outside this spec.
 - [ ] Pre-PR hook rejects raw `gh pr create`.
-- [ ] `gctl gh prs create` used at least once in a published PR.
+- [ ] `gctrl gh prs create` used at least once in a published PR.

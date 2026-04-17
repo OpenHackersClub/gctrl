@@ -1,0 +1,28 @@
+[package]
+name = "gctrl-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "gctrld"
+path = "src/main.rs"
+
+[dependencies]
+gctrl-core = { path = "../gctrl-core" }
+gctrl-storage = { path = "../gctrl-storage" }
+gctrl-otel = { path = "../gctrl-otel" }
+gctrl-guardrails = { path = "../gctrl-guardrails" }
+gctrl-query = { path = "../gctrl-query" }
+gctrl-net = { path = "../gctrl-net" }
+gctrl-context = { path = "../gctrl-context" }
+
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+axum = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+notify = "7"

@@ -1,0 +1,16 @@
+[package]
+name = "gctrl-guardrails"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gctrl-core = { path = "../gctrl-core" }
+gctrl-storage = { path = "../gctrl-storage" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

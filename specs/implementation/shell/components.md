@@ -8,13 +8,13 @@ The shell is an Effect-TS package using `@effect/cli` for command parsing and `@
 
 | Package | Directory | Responsibility | Key Dependencies |
 |---------|-----------|---------------|-----------------|
-| `gctl-shell` | `shell/gctl-shell/` | Effect-TS CLI, command dispatcher, external tool adapters | `effect`, `@effect/cli`, `@effect/platform` |
+| `gctrl-shell` | `shell/gctrl-shell/` | Effect-TS CLI, command dispatcher, external tool adapters | `effect`, `@effect/cli`, `@effect/platform` |
 
 ## Architecture
 
 ```mermaid
 graph TD
-    subgraph Shell["shell/gctl-shell (Effect-TS)"]
+    subgraph Shell["shell/gctrl-shell (Effect-TS)"]
         CLI["CLI Entry Point (@effect/cli)"]
         Commands["Commands (Effect.gen)"]
         KClient["KernelClient (HTTP adapter)"]
@@ -22,7 +22,7 @@ graph TD
 
     subgraph Kernel["kernel/ (Rust)"]
         API["HTTP API (:4318)"]
-        Daemon["gctl serve"]
+        Daemon["gctrl serve"]
         DrvGH["driver-github (LKM)"]
     end
 
@@ -40,17 +40,17 @@ graph TD
 ## Package Structure
 
 ```
-shell/gctl-shell/
+shell/gctrl-shell/
 ├── src/
 │   ├── main.ts               # Entry point, top-level Command
 │   ├── commands/              # Command implementations (Effect.gen)
-│   │   ├── sessions.ts        # gctl sessions
-│   │   ├── status.ts          # gctl status
-│   │   ├── board.ts           # gctl board (delegates to gctl-board)
-│   │   ├── analytics.ts       # gctl analytics
-│   │   ├── context.ts         # gctl context
-│   │   ├── net.ts             # gctl net
-│   │   └── gh.ts              # gctl gh (GitHub via kernel driver)
+│   │   ├── sessions.ts        # gctrl sessions
+│   │   ├── status.ts          # gctrl status
+│   │   ├── board.ts           # gctrl board (delegates to gctrl-board)
+│   │   ├── analytics.ts       # gctrl analytics
+│   │   ├── context.ts         # gctrl context
+│   │   ├── net.ts             # gctrl net
+│   │   └── gh.ts              # gctrl gh (GitHub via kernel driver)
 │   ├── services/              # Port interfaces (Context.Tag)
 │   │   └── KernelClient.ts    # Kernel HTTP API port
 │   ├── adapters/              # Concrete implementations
@@ -84,7 +84,7 @@ graph TD
     KC -.->|"Layer"| HttpKC["HttpKernelClient"]
 ```
 
-All commands — including `gctl gh` — route through `KernelClient`. GitHub operations are handled by `driver-github` (a kernel LKM) behind the kernel HTTP API. The shell has no direct knowledge of the GitHub REST API.
+All commands — including `gctrl gh` — route through `KernelClient`. GitHub operations are handled by `driver-github` (a kernel LKM) behind the kernel HTTP API. The shell has no direct knowledge of the GitHub REST API.
 
 ---
 
@@ -96,7 +96,7 @@ Uses `@effect/cli` to define the top-level command tree. Each subcommand is a se
 import { Command } from "@effect/cli"
 import { NodeContext, NodeRuntime } from "@effect/platform-node"
 
-const command = Command.make("gctl").pipe(
+const command = Command.make("gctrl").pipe(
   Command.withSubcommands([
     sessionsCommand,
     statusCommand,
@@ -108,7 +108,7 @@ const command = Command.make("gctl").pipe(
   ])
 )
 
-const cli = Command.run(command, { name: "gctl", version: "0.1.0" })
+const cli = Command.run(command, { name: "gctrl", version: "0.1.0" })
 cli(process.argv).pipe(
   Effect.provide(ShellLive),
   NodeRuntime.runMain
@@ -119,17 +119,17 @@ cli(process.argv).pipe(
 
 | Command | Subcommands | Description |
 |---------|-------------|-------------|
-| `gctl sessions` | | List recent sessions (--agent, --status, --format) |
-| `gctl status` | | Config and system info (kernel health + version) |
-| `gctl board` | `create`, `list`, `move`, `assign`, `view` | Board operations (delegates to gctl-board) |
-| `gctl analytics` | `overview`, `cost`, `latency`, `scores`, `daily` | Analytics dashboard and queries |
-| `gctl context` | `add`, `list`, `show`, `remove`, `compact`, `stats` | Manage agent context |
-| `gctl net` | `fetch`, `crawl`, `list`, `show`, `compact` | Web scraping and agent context |
-| `gctl gh` | `issues`, `prs`, `runs` | GitHub integration (via kernel driver) |
+| `gctrl sessions` | | List recent sessions (--agent, --status, --format) |
+| `gctrl status` | | Config and system info (kernel health + version) |
+| `gctrl board` | `create`, `list`, `move`, `assign`, `view` | Board operations (delegates to gctrl-board) |
+| `gctrl analytics` | `overview`, `cost`, `latency`, `scores`, `daily` | Analytics dashboard and queries |
+| `gctrl context` | `add`, `list`, `show`, `remove`, `compact`, `stats` | Manage agent context |
+| `gctrl net` | `fetch`, `crawl`, `list`, `show`, `compact` | Web scraping and agent context |
+| `gctrl gh` | `issues`, `prs`, `runs` | GitHub integration (via kernel driver) |
 
 ### Adding a New CLI Command
 
-1. Create `shell/gctl-shell/src/commands/{name}.ts` with a `Command.make` definition.
+1. Create `shell/gctrl-shell/src/commands/{name}.ts` with a `Command.make` definition.
 2. Add the command to the `withSubcommands` list in `main.ts`.
 3. If the command needs a new kernel endpoint, add the route in the kernel first (see [kernel/components.md](../kernel/components.md)).
 4. If the command needs a new external tool, create a service port in `services/` and adapter in `adapters/`.
@@ -155,10 +155,10 @@ class KernelClient extends Context.Tag("KernelClient")<
 
 ### GitHub Operations (via Kernel Driver)
 
-GitHub operations (`gctl gh issues`, `gctl gh prs`, `gctl gh runs`) use the same `KernelClient` port as all other commands. The kernel exposes GitHub data through HTTP routes (`/api/github/*`) backed by `driver-github` (a loadable kernel module that delegates to the native `gh` CLI). The kernel handles **caching** (TTL-based, invalidated on writes) and **OTel instrumentation** (spans per call with latency/status). The shell has **no `GitHubClient` service** — it is not aware of the GitHub API or `gh` CLI.
+GitHub operations (`gctrl gh issues`, `gctrl gh prs`, `gctrl gh runs`) use the same `KernelClient` port as all other commands. The kernel exposes GitHub data through HTTP routes (`/api/github/*`) backed by `driver-github` (a loadable kernel module that delegates to the native `gh` CLI). The kernel handles **caching** (TTL-based, invalidated on writes) and **OTel instrumentation** (spans per call with latency/status). The shell has **no `GitHubClient` service** — it is not aware of the GitHub API or `gh` CLI.
 
 ```typescript
-// gctl gh issues — calls kernel, which delegates to driver-github
+// gctrl gh issues — calls kernel, which delegates to driver-github
 const listIssues = (repo: string) =>
   KernelClient.pipe(
     Effect.flatMap((kc) => kc.get(`/api/github/issues?repo=${repo}`, GhIssueList))
@@ -206,7 +206,7 @@ const HttpKernelClientLive = (baseUrl = "http://localhost:4318") =>
 
 ## HTTP API (Kernel-hosted)
 
-The HTTP API lives in the Rust kernel (`kernel/crates/gctl-otel/src/receiver.rs`) as an axum router. It is served by `gctl serve` on port 4318. The shell consumes this API — it does not host its own server.
+The HTTP API lives in the Rust kernel (`kernel/crates/gctrl-otel/src/receiver.rs`) as an axum router. It is served by `gctrl serve` on port 4318. The shell consumes this API — it does not host its own server.
 
 ### Routes
 
@@ -253,5 +253,5 @@ The HTTP API lives in the Rust kernel (`kernel/crates/gctl-otel/src/receiver.rs`
 
 - Effect-TS command tests via vitest with mock `KernelClient` layer
 - No real HTTP server needed — mock layer returns canned responses
-- Adapter integration tests call real kernel daemon (requires `gctl serve` running)
+- Adapter integration tests call real kernel daemon (requires `gctrl serve` running)
 - GitHub command tests use the same `KernelClient` mock — no separate GitHub mock needed

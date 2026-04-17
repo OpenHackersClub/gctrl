@@ -27,7 +27,7 @@ Different agent systems have incompatible internal representations of work. The 
 | OpenAI API direct | System prompt + messages | `Task` row with `prompt_hash`, `agent_kind = openai` |
 | Custom | Arbitrary | `Task` row with `prompt_hash`, `agent_kind = custom` |
 
-By routing all agent work through the Scheduler, gctl gets a single queryable record of what every agent did, what prompt drove it, and what session it ran in — regardless of the agent system used.
+By routing all agent work through the Scheduler, gctrl gets a single queryable record of what every agent did, what prompt drove it, and what session it ran in — regardless of the agent system used.
 
 ### Task Domain Type
 
@@ -51,7 +51,7 @@ The `context` JSON field stores agent-system-specific metadata, normalized at ta
 { "executable": "/path/to/agent", "args": ["--prompt-file", "task.md"] }
 ```
 
-Applications (gctl-board) MAY read `context` for display purposes but MUST NOT write to it.
+Applications (gctrl-board) MAY read `context` for display purposes but MUST NOT write to it.
 
 ---
 
@@ -125,6 +125,6 @@ graph LR
 3. The in-process adapter is the default and requires no external setup.
 4. Task payloads are serializable — they describe *what* to run, not *how*.
 5. Durable adapters persist schedules across restarts. The in-process adapter does not — applications MUST handle re-registration on startup if durability is needed.
-6. Only agents create and mutate Tasks through the Scheduler port. Human-facing interfaces (CLI `gctl board`, HTTP `/api/board/*`) expose Tasks as read-only.
+6. Only agents create and mutate Tasks through the Scheduler port. Human-facing interfaces (CLI `gctrl board`, HTTP `/api/board/*`) expose Tasks as read-only.
 7. Every agent system MUST create Tasks via `SchedulerPort.create_task` — MUST NOT write to the `tasks` table directly.
-8. The Scheduler MUST emit kernel IPC events on every Task state transition so applications (gctl-board) can react.
+8. The Scheduler MUST emit kernel IPC events on every Task state transition so applications (gctrl-board) can react.

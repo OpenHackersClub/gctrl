@@ -10,10 +10,10 @@ researcher-market is a **native application** in the Unix layer model.
 App (researcher-market) → Shell (HTTP API :4318) → Kernel (Storage, Telemetry, KB)
 ```
 
-- **Depends on kernel primitives**: `gctl-kb` (wiki operations), `gctl-context` (source storage), `gctl-net` (web crawling), Storage (DuckDB), Telemetry (session tracking)
+- **Depends on kernel primitives**: `gctrl-kb` (wiki operations), `gctrl-context` (source storage), `gctrl-net` (web crawling), Storage (DuckDB), Telemetry (session tracking)
 - **Accesses kernel via HTTP API only** — never imports kernel crates directly
 - **Table namespace**: `market_*` (watchlists, portfolios, alerts — app-specific state beyond the wiki)
-- **Shares wiki infrastructure** — uses `gctl-kb` for the persistent knowledge graph; does not maintain its own wiki layer
+- **Shares wiki infrastructure** — uses `gctrl-kb` for the persistent knowledge graph; does not maintain its own wiki layer
 
 ## Domain Model
 
@@ -34,10 +34,10 @@ App (researcher-market) → Shell (HTTP API :4318) → Kernel (Storage, Telemetr
 
 | Source | Ingestion Method | Notes |
 |--------|-----------------|-------|
-| Earnings transcripts | `gctl kb ingest --url` or dropped `.md` | Seeking Alpha, company IR pages |
-| SEC filings | `gctl kb ingest --url` (EDGAR) | 10-K, 10-Q, 8-K, proxy statements |
+| Earnings transcripts | `gctrl kb ingest --url` or dropped `.md` | Seeking Alpha, company IR pages |
+| SEC filings | `gctrl kb ingest --url` (EDGAR) | 10-K, 10-Q, 8-K, proxy statements |
 | Analyst reports | Dropped `.md` or `.pdf` | Third-party research |
-| News articles | `gctl net fetch` → `gctl kb ingest` | Financial news, press releases |
+| News articles | `gctrl net fetch` → `gctrl kb ingest` | Financial news, press releases |
 | Market data | Structured data files (CSV/JSON) | Price history, fundamentals |
 | Podcast/video notes | Manual transcription or summary | Interviews, conference calls |
 
@@ -109,15 +109,15 @@ Flag when new data contradicts the current thesis direction.
 ## Shell Commands
 
 ```sh
-# Market-specific commands (thin wrappers around gctl kb)
-gctl market ingest-earnings --ticker NVDA --url https://...
-gctl market ingest-filing --ticker NVDA --filing 10-K --url https://...
-gctl market company NVDA                  # Show company wiki page
-gctl market sector semiconductors          # Show sector page
-gctl market thesis "AI infrastructure"     # Query wiki for thesis
-gctl market watchlist list                 # List watchlists
-gctl market watchlist add NVDA --list core # Add company to watchlist
-gctl market lint                           # Market-specific lint (stale thesis, missing earnings)
+# Market-specific commands (thin wrappers around gctrl kb)
+gctrl market ingest-earnings --ticker NVDA --url https://...
+gctrl market ingest-filing --ticker NVDA --filing 10-K --url https://...
+gctrl market company NVDA                  # Show company wiki page
+gctrl market sector semiconductors          # Show sector page
+gctrl market thesis "AI infrastructure"     # Query wiki for thesis
+gctrl market watchlist list                 # List watchlists
+gctrl market watchlist add NVDA --list core # Add company to watchlist
+gctrl market lint                           # Market-specific lint (stale thesis, missing earnings)
 ```
 
 ## Example Workflow
@@ -126,8 +126,8 @@ gctl market lint                           # Market-specific lint (stale thesis,
 Human: "Ingest NVIDIA Q1 2026 earnings transcript"
 
 Agent:
-1. gctl net fetch https://seekingalpha.com/article/nvda-q1-2026-transcript
-2. gctl kb ingest --source sources/nvda-q1-2026-transcript.md
+1. gctrl net fetch https://seekingalpha.com/article/nvda-q1-2026-transcript
+2. gctrl kb ingest --source sources/nvda-q1-2026-transcript.md
 3. Creates: wiki/sources/nvda-q1-2026.md (earnings summary)
 4. Updates: wiki/entities/nvidia.md (## Key Metrics, ## Thesis, ## Guidance)
 5. Updates: wiki/entities/semiconductors.md (sector dynamics)

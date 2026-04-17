@@ -1,6 +1,6 @@
 Prepare a dispatch recommendation for agent work on an issue — gather context and suggest an execution plan.
 
-> **Transitional skill**: The board and orchestrator CLI commands are not yet implemented. This skill currently uses available `gctl` commands and spec context to produce dispatch recommendations. Once `gctl board list --ready` and `gctl orchestrate dispatch` exist, this skill MUST be updated to invoke them.
+> **Transitional skill**: The board and orchestrator CLI commands are not yet implemented. This skill currently uses available `gctrl` commands and spec context to produce dispatch recommendations. Once `gctrl board list --ready` and `gctrl orchestrate dispatch` exist, this skill MUST be updated to invoke them.
 
 ## Instructions
 
@@ -14,17 +14,17 @@ Read these files to understand orchestration and task structure:
 
 ### 2. Gather System State
 
-Run these `gctl` commands to understand current state:
+Run these `gctrl` commands to understand current state:
 
-1. `gctl sessions --format json` — active and recent sessions (to avoid duplicate work)
-2. `gctl status` — system health (ensure kernel is ready for work)
-3. `gctl analytics overview` — recent cost and error trends (to inform capacity decisions)
+1. `gctrl sessions --format json` — active and recent sessions (to avoid duplicate work)
+2. `gctrl status` — system health (ensure kernel is ready for work)
+3. `gctrl analytics overview` — recent cost and error trends (to inform capacity decisions)
 
 ### 3. Analyze the Issue
 
 If `$ARGUMENTS` provides an issue description or ID:
 1. Identify the scope of work from the issue
-2. Cross-reference with the loaded specs to determine which gctl layers are involved
+2. Cross-reference with the loaded specs to determine which gctrl layers are involved
 3. Check active sessions for any overlapping work
 
 If no arguments provided, report current system state and ask the user what work to dispatch.
@@ -46,7 +46,7 @@ Present a dispatch recommendation:
 - [ ] <any preconditions: specs to read, commands to verify, dependencies>
 
 ### Suggested Execution Plan
-1. <step 1 — specific gctl commands or file changes>
+1. <step 1 — specific gctrl commands or file changes>
 2. <step 2>
 3. ...
 

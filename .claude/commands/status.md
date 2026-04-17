@@ -11,11 +11,11 @@ Read these files to understand the system model:
 
 ### 2. Gather Data
 
-Run these `gctl` commands to collect system state:
+Run these `gctrl` commands to collect system state:
 
-1. `gctl status` — kernel health (DuckDB, OTLP receiver, guardrails)
-2. `gctl sessions --format json` — recent sessions with cost/token totals
-3. `gctl analytics overview` — aggregate metrics (total cost, session count, error rate)
+1. `gctrl status` — kernel health (DuckDB, OTLP receiver, guardrails)
+2. `gctrl sessions --format json` — recent sessions with cost/token totals
+3. `gctrl analytics overview` — aggregate metrics (total cost, session count, error rate)
 
 ### 3. Output Format
 
@@ -44,6 +44,6 @@ Present a health dashboard:
 - <any anomalies: high error rate, cost spikes, stuck sessions>
 ```
 
-If any `gctl` command fails (e.g., server not running), report the failure clearly and continue with available data. Suggest `gctl serve` if the HTTP API is required.
+If any `gctrl` command fails (e.g., server not running), report the failure clearly and continue with available data. Suggest `gctrl serve` if the HTTP API is required.
 
 $ARGUMENTS

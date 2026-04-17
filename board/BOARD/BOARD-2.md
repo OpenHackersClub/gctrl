@@ -19,5 +19,5 @@ When an issue transitions to `done`, auto-generate a completion record that cros
 - Completion record includes: linked sessions, total cost, total tokens, duration, retry count
 - Record references kernel Task IDs if orchestrator was used
 - Viewable in issue detail panel under a new "Completion" tab
-- CLI: `gctl board issues completion <id>` shows the record
+- CLI: `gctrl board issues completion <id>` shows the record
 - HTTP: `GET /api/board/issues/{id}/completion` returns JSON

@@ -1,4 +1,4 @@
-# Knowledgebase (gctl-kb)
+# Knowledgebase (gctrl-kb)
 
 > Agents and humans incrementally build and maintain a persistent, interlinked wiki — a structured knowledge store that compounds over time. Inspired by [Karpathy's LLM knowledge base pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) and Vannevar Bush's Memex.
 
@@ -8,18 +8,18 @@
 
 Current knowledge workflows are retrieval-oriented: drop documents into a corpus, retrieve chunks at query time, re-derive synthesis from scratch on every question. Nothing accumulates. RAG re-discovers connections between documents every time instead of building them up.
 
-gctl already has the primitives — `gctl-context` for hybrid DuckDB+filesystem storage, `gctl-net` for web crawling, and the board file watcher for reactive imports. What's missing is the **wiki layer**: persistent cross-references, hierarchical organization, incremental synthesis, and lint/health operations that keep the knowledge base coherent as it grows.
+gctrl already has the primitives — `gctrl-context` for hybrid DuckDB+filesystem storage, `gctrl-net` for web crawling, and the board file watcher for reactive imports. What's missing is the **wiki layer**: persistent cross-references, hierarchical organization, incremental synthesis, and lint/health operations that keep the knowledge base coherent as it grows.
 
 ---
 
 ## Architecture
 
-Three layers, mapping to gctl's Unix model:
+Three layers, mapping to gctrl's Unix model:
 
 ```mermaid
 flowchart TB
   subgraph Sources["RAW SOURCES (immutable)"]
-    Crawls["Web crawls\n(gctl-net)"]
+    Crawls["Web crawls\n(gctrl-net)"]
     Files["Dropped files\n(.md, .pdf, .txt)"]
     Clips["Web clips\n(Obsidian, browser ext)"]
     Agents["Agent outputs\n(session artifacts)"]
@@ -43,13 +43,13 @@ flowchart TB
   Wiki -->|"query results filed back"| Wiki
 ```
 
-### Mapping to gctl layers
+### Mapping to gctrl layers
 
-| Karpathy Layer | gctl Layer | Implementation |
+| Karpathy Layer | gctrl Layer | Implementation |
 |---|---|---|
-| **Raw sources** | Kernel: `gctl-context` (kind: `source`) + `gctl-net` (crawls) | Immutable source documents, crawled pages. Never modified after ingest. |
-| **Wiki** | Kernel: `gctl-context` (kind: `wiki`) + filesystem `~/.local/share/gctl/context/wiki/` | LLM-generated markdown files with `[[internal-links]]`, frontmatter metadata, cross-references. |
-| **Schema** | Kernel: `gctl-context` (kind: `config`, path: `kb-schema.md`) | Conventions doc governing wiki structure, ingestion workflows, page types. Co-evolved by human and LLM. |
+| **Raw sources** | Kernel: `gctrl-context` (kind: `source`) + `gctrl-net` (crawls) | Immutable source documents, crawled pages. Never modified after ingest. |
+| **Wiki** | Kernel: `gctrl-context` (kind: `wiki`) + filesystem `~/.local/share/gctrl/context/wiki/` | LLM-generated markdown files with `[[internal-links]]`, frontmatter metadata, cross-references. |
+| **Schema** | Kernel: `gctrl-context` (kind: `config`, path: `kb-schema.md`) | Conventions doc governing wiki structure, ingestion workflows, page types. Co-evolved by human and LLM. |
 
 ---
 
@@ -73,7 +73,7 @@ See [domain-model.md § 5.1](../domain-model.md#51-kernel-owned-tables-implement
 ### Filesystem Layout
 
 ```
-~/.local/share/gctl/context/
+~/.local/share/gctrl/context/
   wiki/                          # Wiki pages (LLM-maintained)
     index.md                     # Catalog — all pages with summaries
     log.md                       # Chronological operations log
@@ -108,16 +108,16 @@ Add a raw source, extract knowledge, integrate into wiki.
 
 ```sh
 # Ingest a single document
-gctl kb ingest --source sources/paper.md
+gctrl kb ingest --source sources/paper.md
 
 # Ingest from a URL (crawl → source → wiki)
-gctl kb ingest --url https://docs.example.com/guide
+gctrl kb ingest --url https://docs.example.com/guide
 
-# Ingest from crawled domain (already in gctl-net)
-gctl kb ingest --crawl example.com
+# Ingest from crawled domain (already in gctrl-net)
+gctrl kb ingest --crawl example.com
 
 # Batch ingest a directory
-gctl kb ingest --dir sources/papers/
+gctrl kb ingest --dir sources/papers/
 ```
 
 **Ingest workflow** (agent-executed, schema-governed):
@@ -139,13 +139,13 @@ Ask questions against the wiki. Good answers get filed back as pages.
 
 ```sh
 # Query the wiki
-gctl kb query "How does Effect-TS handle errors?"
+gctrl kb query "How does Effect-TS handle errors?"
 
 # Query with output format
-gctl kb query "Compare RAG vs wiki approach" --format table
+gctrl kb query "Compare RAG vs wiki approach" --format table
 
 # File a query result as a new wiki page
-gctl kb query "Deployment architecture options" --file synthesis/deployment-options.md
+gctrl kb query "Deployment architecture options" --file synthesis/deployment-options.md
 ```
 
 **Query workflow:**
@@ -161,14 +161,14 @@ Health-check the wiki. Find stale content, broken links, gaps.
 
 ```sh
 # Full lint pass
-gctl kb lint
+gctrl kb lint
 
 # Lint specific areas
-gctl kb lint --check orphans        # Pages with no inbound links
-gctl kb lint --check contradictions # Conflicting claims across pages
-gctl kb lint --check stale          # Pages not updated since newer sources arrived
-gctl kb lint --check gaps           # Important concepts mentioned but lacking own page
-gctl kb lint --check links          # Broken [[wikilinks]]
+gctrl kb lint --check orphans        # Pages with no inbound links
+gctrl kb lint --check contradictions # Conflicting claims across pages
+gctrl kb lint --check stale          # Pages not updated since newer sources arrived
+gctrl kb lint --check gaps           # Important concepts mentioned but lacking own page
+gctrl kb lint --check links          # Broken [[wikilinks]]
 ```
 
 **Lint output:** Markdown report with issues, suggestions for new sources to find, and pages to update.
@@ -179,16 +179,16 @@ Navigate the knowledge graph.
 
 ```sh
 # Show backlinks for a page
-gctl kb backlinks entities/effect-ts.md
+gctrl kb backlinks entities/effect-ts.md
 
 # Show link graph (outbound + inbound)
-gctl kb graph entities/effect-ts.md
+gctrl kb graph entities/effect-ts.md
 
 # Show orphan pages
-gctl kb graph --orphans
+gctrl kb graph --orphans
 
 # Show page hierarchy
-gctl kb tree
+gctrl kb tree
 ```
 
 ---
@@ -225,21 +225,21 @@ GET    /api/kb/stats                Wiki stats (page count by type, link count, 
 ### Shell Commands
 
 ```sh
-gctl kb ingest [--source PATH | --url URL | --crawl DOMAIN | --dir DIR]
-gctl kb query QUESTION [--format markdown|table|json] [--file PATH]
-gctl kb lint [--check CHECK]
-gctl kb backlinks PATH
-gctl kb graph PATH [--depth N]
-gctl kb tree
-gctl kb stats
-gctl kb pages [--type TYPE] [--parent PATH]
+gctrl kb ingest [--source PATH | --url URL | --crawl DOMAIN | --dir DIR]
+gctrl kb query QUESTION [--format markdown|table|json] [--file PATH]
+gctrl kb lint [--check CHECK]
+gctrl kb backlinks PATH
+gctrl kb graph PATH [--depth N]
+gctrl kb tree
+gctrl kb stats
+gctrl kb pages [--type TYPE] [--parent PATH]
 ```
 
 ### File Watcher Integration
 
 The existing board file watcher pattern extends to wiki:
 
-- Watch `~/.local/share/gctl/context/wiki/` for changes
+- Watch `~/.local/share/gctrl/context/wiki/` for changes
 - On file create/modify: parse `[[wikilinks]]` from markdown content, update `kb_links` table
 - Extract backlinks automatically (no manual link management needed)
 - Re-compute orphan status on link graph changes
@@ -338,7 +338,7 @@ Chronological, append-only. Parseable with grep.
 The schema is a config document that governs wiki conventions. Co-evolved by human and LLM. Example:
 
 ```markdown
-# KB Schema — gctl Knowledge Base Conventions
+# KB Schema — gctrl Knowledge Base Conventions
 
 ## Page Types
 - **Entity**: one page per distinct thing (tool, person, org, API)
@@ -373,30 +373,30 @@ Every wiki page must have:
 
 ## Implementation Plan
 
-### M0: Foundation (extends gctl-context)
+### M0: Foundation (extends gctrl-context)
 
 - Add `kb_links` and `kb_pages` tables to schema
-- Add `WikiPageType` enum to `gctl-core`
+- Add `WikiPageType` enum to `gctrl-core`
 - Extend `ContextEntry` with optional `parent_id`
 - Implement wikilink extraction (regex parser on markdown content)
 - Implement backlink computation (query `kb_links` by target)
 - Add HTTP routes: `/api/kb/pages`, `/api/kb/pages/{id}/backlinks`, `/api/kb/links`, `/api/kb/stats`
-- Add shell commands: `gctl kb pages`, `gctl kb backlinks`, `gctl kb stats`
+- Add shell commands: `gctrl kb pages`, `gctrl kb backlinks`, `gctrl kb stats`
 
 ### M1: Ingest + Query
 
-- Implement `gctl kb ingest` workflow (source → wiki page pipeline)
-- Implement `gctl kb query` (index-based page lookup + synthesis)
+- Implement `gctrl kb ingest` workflow (source → wiki page pipeline)
+- Implement `gctrl kb query` (index-based page lookup + synthesis)
 - Auto-update `index.md` and `log.md` on every operation
 - File watcher on `wiki/` directory for link graph updates
-- Shell commands: `gctl kb ingest`, `gctl kb query`
+- Shell commands: `gctrl kb ingest`, `gctrl kb query`
 
 ### M2: Lint + Graph
 
-- Implement `gctl kb lint` checks (orphans, stale, contradictions, gaps, broken links)
-- Implement `gctl kb graph` and `gctl kb tree` visualization
+- Implement `gctrl kb lint` checks (orphans, stale, contradictions, gaps, broken links)
+- Implement `gctrl kb graph` and `gctrl kb tree` visualization
 - Kernel IPC events for wiki operations
-- Integration with gctl-inbox (lint issues as inbox messages)
+- Integration with gctrl-inbox (lint issues as inbox messages)
 
 ### M3: Search + Scale
 
@@ -411,7 +411,7 @@ Every wiki page must have:
 
 1. **LLM writes, human curates.** The wiki is maintained by the LLM. Humans provide sources, ask questions, and review results.
 2. **Knowledge compounds.** Every ingest, query, and lint pass makes the wiki richer. Good answers are filed back as pages.
-3. **Build on gctl-context.** The wiki is an evolution of context entries, not a parallel system. Same storage model, same sync, same APIs.
+3. **Build on gctrl-context.** The wiki is an evolution of context entries, not a parallel system. Same storage model, same sync, same APIs.
 4. **Markdown is the interface.** Wiki pages are plain markdown with `[[wikilinks]]`. Readable in Obsidian, VS Code, or any text editor.
 5. **Schema-governed.** The `kb-schema.md` config doc is the single source of truth for wiki conventions. It evolves with the knowledge base.
 6. **Local-first.** Everything runs on-device. No cloud dependency for core operations. Cloud sync is optional and kernel-managed.

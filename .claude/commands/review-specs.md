@@ -1,6 +1,6 @@
-Review the gctl specs to identify gaps, contradictions, and ambiguities — then ask clarifying questions.
+Review the gctrl specs to identify gaps, contradictions, and ambiguities — then ask clarifying questions.
 
-> **Transitional skill**: Claude applies review analysis directly from spec context. Once `gctl spec review` is implemented, this skill MUST be updated to invoke that command instead.
+> **Transitional skill**: Claude applies review analysis directly from spec context. Once `gctrl spec review` is implemented, this skill MUST be updated to invoke that command instead.
 
 ## Instructions
 
@@ -16,8 +16,8 @@ Read these files to build your mental model of the system:
 - `specs/architecture/os.md` — Layer definitions, what belongs where, extension rules
 - `specs/architecture/domain-model.md` — Domain types, storage schema
 - `specs/architecture/apps/tracker.md` — Issue & task graph, lifecycle state machines
-- `specs/architecture/apps/gctl-board.md` — Board application
-- `specs/gctl/PRD.md` — Product requirements (skim for feature scope)
+- `specs/architecture/apps/gctrl-board.md` — Board application
+- `specs/gctrl/PRD.md` — Product requirements (skim for feature scope)
 - `specs/implementation/kernel/components.md` — Kernel crate map
 - `specs/implementation/repo.md` — Monorepo structure (Rust, Effect-TS, Lean 4)
 - `specs/implementation/kernel/orchestrator.md` — Orchestration implementation

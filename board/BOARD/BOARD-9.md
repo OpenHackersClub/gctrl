@@ -9,7 +9,7 @@ created_by: debuggingfuture
 
 # GitHub sync — outbound issue and comment sync
 
-Push gctl-board issue creates, status changes, and comments to bound GitHub repos via driver-github.
+Push gctrl-board issue creates, status changes, and comments to bound GitHub repos via driver-github.
 
 ## Acceptance Criteria
 

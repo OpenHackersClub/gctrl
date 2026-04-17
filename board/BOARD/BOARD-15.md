@@ -10,7 +10,7 @@ github_issue: 7
 
 # Add GitHub Actions CI/CD — build, test, deployment
 
-Add GitHub Actions CI/CD pipeline for gctl: build, test, and deployment.
+Add GitHub Actions CI/CD pipeline for gctrl: build, test, and deployment.
 
 ## CI (on every PR + push to main)
 
@@ -27,6 +27,6 @@ Add GitHub Actions CI/CD pipeline for gctl: build, test, and deployment.
 
 ## Deployment (on merge to main)
 
-- Build gctl-board web assets (`pnpm build:web`)
+- Build gctrl-board web assets (`pnpm build:web`)
 - Deploy to Cloudflare Pages/Workers (see BOARD-13)
 - Optionally: publish kernel binary as GitHub Release artifact

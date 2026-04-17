@@ -1,0 +1,13 @@
+[package]
+name = "gctrl-proxy"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gctrl-core = { path = "../gctrl-core" }
+gctrl-storage = { path = "../gctrl-storage" }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }

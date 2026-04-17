@@ -1,4 +1,4 @@
-# Competitive Landscape: gctl vs. Ruflo, oh-my-claudecode, Symphony
+# Competitive Landscape: gctrl vs. Ruflo, oh-my-claudecode, Symphony
 
 > Comparison as of 2026-03-30. Sources: public GitHub READMEs, SPEC.md, and documentation.
 
@@ -6,7 +6,7 @@
 
 | Project | What It Is |
 |---------|-----------|
-| **gctl (GroundCtrl)** | Local-first OS for human+agent teams — Unix-inspired kernel (Rust) + shell (Effect-TS) providing telemetry, storage, guardrails, and orchestration as infrastructure. |
+| **gctrl (GroundCtrl)** | Local-first OS for human+agent teams — Unix-inspired kernel (Rust) + shell (Effect-TS) providing telemetry, storage, guardrails, and orchestration as infrastructure. |
 | **Ruflo** (ruvnet/ruflo) | Enterprise multi-agent orchestration platform — 100+ specialized agents in coordinated swarms with self-learning, consensus protocols, and multi-LLM routing. |
 | **oh-my-claudecode** (OMC) | Claude Code plugin adding multi-agent orchestration, natural-language task dispatch, and persistent execution modes on top of the existing Claude Code runtime. |
 | **Symphony** (openai/symphony) | Issue-tracker-driven daemon that polls Linear for work, creates isolated workspaces, and dispatches coding agents (Codex) — spec-first, language-agnostic. |
@@ -17,7 +17,7 @@
 
 ```mermaid
 graph TB
-    subgraph gctl["gctl — Unix OS Model"]
+    subgraph gctrl["gctrl — Unix OS Model"]
         gK["Kernel (Rust)<br/>telemetry, storage,<br/>guardrails, orchestrator"]
         gS["Shell (Effect-TS CLI)<br/>CLI, HTTP API, query"]
         gA["Apps (Effect-TS)<br/>board, eval, capacity"]
@@ -51,7 +51,7 @@ graph TB
 
 ### Architectural Philosophy
 
-| Dimension | gctl | Ruflo | OMC | Symphony |
+| Dimension | gctrl | Ruflo | OMC | Symphony |
 |-----------|------|-------|-----|----------|
 | **Metaphor** | Operating system (Unix) | Enterprise platform | Plugin / framework | Daemon / service |
 | **Core lang** | Rust kernel + Effect-TS apps | TypeScript + WASM (Rust-compiled policy engine, embeddings) | TypeScript (Claude Code plugin, .mjs hooks) | Spec-agnostic (reference impl: Elixir/OTP) |
@@ -63,15 +63,15 @@ graph TB
 
 ## Feature Matrix
 
-| Feature | gctl | Ruflo | OMC | Symphony |
+| Feature | gctrl | Ruflo | OMC | Symphony |
 |---------|------|-------|-----|----------|
-| **Telemetry / observability** | OTel span ingestion, trace trees, cost analytics, `gctl status` | V3 statusline, context autopilot metrics, background daemon monitoring, performance benchmarking (P95/P99) | HUD statusline (5 presets), Agent Observatory (per-agent health/bottleneck), session replay JSONL, notification callbacks (Telegram/Discord/Slack) | Structured logs with issue/session context, token accounting (delta tracking), optional Phoenix LiveView dashboard + JSON REST API |
+| **Telemetry / observability** | OTel span ingestion, trace trees, cost analytics, `gctrl status` | V3 statusline, context autopilot metrics, background daemon monitoring, performance benchmarking (P95/P99) | HUD statusline (5 presets), Agent Observatory (per-agent health/bottleneck), session replay JSONL, notification callbacks (Telegram/Discord/Slack) | Structured logs with issue/session context, token accounting (delta tracking), optional Phoenix LiveView dashboard + JSON REST API |
 | **Guardrails / safety** | Policy engine: cost budgets, loop detection, command allowlists | AIDefence security layer (<10ms), prompt injection protection, input validation, `@claude-flow/guidance` governance with HMAC-SHA256 proof chains | N/A (relies on Claude Code permissions) | Trust boundary at WORKFLOW.md; sandbox posture left to implementation; stall detection (5 min default) |
 | **Orchestration** | Orchestrator primitive: dispatch, retry, dependency DAG, concurrency slots | Q-Learning router, MoE, consensus protocols (Raft/BFT/CRDT), swarm topologies | Team pipeline: plan→prd→exec→verify→fix, autopilot, ultrawork modes | Poll-based dispatch, concurrency limits, exponential backoff retries, reconciliation |
 | **Storage** | DuckDB (single-writer, namespaced tables), Parquet export | Multi-tier: in-memory (1MB) → SQLite episodic → SQLite+HNSW semantic → optional pgvector; JSON fallback | File-based `.omc/` directory: notepad.md (compaction-resistant), project-memory.json, JSONL session replay | In-memory orchestrator state, filesystem workspaces; no persistent DB required |
 | **Multi-LLM support** | Agent-agnostic (any LLM that produces OTel spans) | Claude, GPT, Gemini, Cohere, Ollama with automatic failover | Claude (primary), Codex, Gemini via tmux CLI workers | Codex (primary); spec is agent-executable-agnostic |
-| **Issue tracking** | gctl-board (native kanban) + drivers for Linear, GitHub, Notion | Claims system for human-agent coordination | N/A (task dispatch via natural language) | Linear integration (polls active issues, manages state transitions) |
-| **Web scraping / context** | gctl-net: fetch, crawl, compact; context manager with DuckDB+filesystem | N/A | N/A | N/A |
+| **Issue tracking** | gctrl-board (native kanban) + drivers for Linear, GitHub, Notion | Claims system for human-agent coordination | N/A (task dispatch via natural language) | Linear integration (polls active issues, manages state transitions) |
+| **Web scraping / context** | gctrl-net: fetch, crawl, compact; context manager with DuckDB+filesystem | N/A | N/A | N/A |
 | **Browser control** | CDP daemon with ref system, tab management | N/A | N/A | N/A |
 | **Cloud sync** | Cloudflare R2 (opt-in), Parquet-based | N/A | N/A | N/A (local workspaces only) |
 | **Workspace isolation** | Per-agent sessions tracked via telemetry | Per-swarm agent isolation | Per-team execution | Per-issue workspace directories with lifecycle hooks |
@@ -83,19 +83,19 @@ graph TB
 
 ## Design Trade-offs
 
-### gctl: Infrastructure-first, agent-agnostic
+### gctrl: Infrastructure-first, agent-agnostic
 
 **Strengths:**
 1. Unix-inspired layered architecture provides clean separation — kernel never assumes which agents or apps are present
 2. Agent-agnostic: works with Claude Code, Aider, Codex, or any agent that emits OTel spans
-3. Local-first with zero config (`gctl serve` gives you telemetry + storage + guardrails immediately)
+3. Local-first with zero config (`gctrl serve` gives you telemetry + storage + guardrails immediately)
 4. DuckDB storage provides SQL queryability, Parquet export, and structured analytics
 5. Built-in web scraping, browser control, and context management — comprehensive toolbox
 6. Guardrails as a kernel primitive — not an afterthought
 
 **Trade-offs:**
 1. No built-in self-learning or ML-based routing — agents are external, not orchestrated internally
-2. Requires running a daemon (`gctl serve`) for full functionality
+2. Requires running a daemon (`gctrl serve`) for full functionality
 3. Rust kernel + Effect-TS apps is a dual-language stack that requires both ecosystems
 
 ### Ruflo: Maximum agent capability, batteries-included
@@ -109,7 +109,7 @@ graph TB
 
 **Trade-offs:**
 1. Very large surface area — 313 MCP tools across 31 modules, 26 CLI commands with 140+ subcommands; complexity is front-loaded
-2. Tightly coupled to Claude Code's hook system and MCP protocol — less agent-agnostic than gctl
+2. Tightly coupled to Claude Code's hook system and MCP protocol — less agent-agnostic than gctrl
 3. Heavy footprint (~340MB full install, Node.js 20+ required); many packages at `3.0.0-alpha.x`
 4. Performance claims (352x faster WASM transforms, 150x-12,500x HNSW search) appear without independent benchmarks
 5. "Enterprise" positioning (governance proof chains, plugin marketplace) may overserve individual developer use cases
@@ -155,7 +155,7 @@ graph TB
 ```
                     Infrastructure ←————————————→ Workflow Tool
                          |                              |
-                    gctl |                              |
+                    gctrl |                              |
                          |                              |
            Broad scope   |          Ruflo               |
            (OS model)    |          (platform)          |
@@ -171,14 +171,14 @@ graph TB
 
 | | Agent-agnostic | Agent-specific |
 |---|---|---|
-| **Broad scope** | **gctl** — OS-level infra for any agent | **Ruflo** — full platform with 100+ built-in agents |
+| **Broad scope** | **gctrl** — OS-level infra for any agent | **Ruflo** — full platform with 100+ built-in agents |
 | **Narrow scope** | **Symphony** — dispatcher for any coding agent (spec-level) | **OMC** — Claude Code enhancement layer |
 
 ---
 
 ## Maturity and Adoption
 
-| Dimension | gctl | Ruflo | OMC | Symphony |
+| Dimension | gctrl | Ruflo | OMC | Symphony |
 |-----------|------|-------|-----|----------|
 | **Stage** | Active development (dogfooding) | v3.5, alpha packages | v4.4.0+, active releases | Engineering preview (draft v1 spec) |
 | **GitHub stars** | Early | 6k+ (formerly claude-flow) | 11k+ | OpenAI-backed, new |
@@ -193,7 +193,7 @@ graph TB
 
 Several ideas appear across multiple projects, suggesting convergence in the space:
 
-| Concept | gctl | Ruflo | OMC | Symphony |
+| Concept | gctrl | Ruflo | OMC | Symphony |
 |---------|------|-------|-----|----------|
 | **WORKFLOW.md as config** | Prompt templates + YAML frontmatter for agent dispatch | N/A | N/A | YAML frontmatter + prompt body — identical concept |
 | **Orchestrator with concurrency control** | Dispatch, retry, dependency DAG, concurrency slots | Swarm coordination with consensus | Team pipeline with verify/fix loops | Poll-based dispatch with concurrency limits |
@@ -201,15 +201,15 @@ Several ideas appear across multiple projects, suggesting convergence in the spa
 | **Claim/dispatch model** | Orchestrator claim states (pending→claimed→running→done) | Claims for human-agent coordination | N/A | Running map + claimed set + retry queue |
 | **Retry with backoff** | Orchestrator retry policy | N/A | Ralph mode (persistent execution) | Exponential backoff with configurable attempts |
 
-### gctl vs. Symphony: Closest Cousins
+### gctrl vs. Symphony: Closest Cousins
 
-gctl and Symphony share the most architectural DNA:
+gctrl and Symphony share the most architectural DNA:
 1. Both use WORKFLOW.md with YAML frontmatter as the policy contract
 2. Both have an orchestrator with claim states, concurrency control, and retry
 3. Both separate mechanism (kernel/orchestrator) from policy (WORKFLOW.md/apps)
 4. Both are agent-agnostic at the spec level
 
-Key differences: gctl provides a full OS (telemetry, storage, guardrails, context, web scraping, browser control) while Symphony is intentionally minimal (dispatcher + workspace manager). gctl is implemented; Symphony is primarily a spec with a reference Elixir implementation. Symphony deeply integrates with Linear; gctl uses a driver/port abstraction for tracker integration.
+Key differences: gctrl provides a full OS (telemetry, storage, guardrails, context, web scraping, browser control) while Symphony is intentionally minimal (dispatcher + workspace manager). gctrl is implemented; Symphony is primarily a spec with a reference Elixir implementation. Symphony deeply integrates with Linear; gctrl uses a driver/port abstraction for tracker integration.
 
 ---
 
@@ -217,14 +217,14 @@ Key differences: gctl provides a full OS (telemetry, storage, guardrails, contex
 
 | Scenario | Best Fit | Why |
 |----------|----------|-----|
-| Solo dev wanting visibility + safety for agent work | **gctl** | Zero-config daemon gives telemetry, guardrails, and cost tracking immediately |
+| Solo dev wanting visibility + safety for agent work | **gctrl** | Zero-config daemon gives telemetry, guardrails, and cost tracking immediately |
 | Team managing work via Linear with Codex agents | **Symphony** | Purpose-built for Linear→Codex dispatch loop |
 | Claude Code user wanting multi-agent without setup | **OMC** | Plugin install, natural language dispatch, team mode |
 | Enterprise needing 100+ specialized agents with learning | **Ruflo** | Pre-built agent library, self-learning, multi-LLM routing |
-| Building a custom agent platform | **gctl** or **Symphony** | Both are designed as infrastructure layers, not opinionated applications |
-| Need guardrails (budget limits, command safety) | **gctl** | Only project with guardrails as a kernel primitive |
-| Need web scraping + context management for agents | **gctl** | Built-in net fetch/crawl/compact + context manager |
-| Need browser automation for agents | **gctl** | Built-in CDP browser control |
+| Building a custom agent platform | **gctrl** or **Symphony** | Both are designed as infrastructure layers, not opinionated applications |
+| Need guardrails (budget limits, command safety) | **gctrl** | Only project with guardrails as a kernel primitive |
+| Need web scraping + context management for agents | **gctrl** | Built-in net fetch/crawl/compact + context manager |
+| Need browser automation for agents | **gctrl** | Built-in CDP browser control |
 
 ---
 
@@ -232,9 +232,9 @@ Key differences: gctl provides a full OS (telemetry, storage, guardrails, contex
 
 The agent orchestration space is converging on similar primitives (dispatch, isolation, retry, observability) but diverging on scope and philosophy:
 
-1. **gctl** bets that the problem is infrastructure — agents need an operating system, not a framework. Small kernel, agent-agnostic, local-first. The Unix bet.
+1. **gctrl** bets that the problem is infrastructure — agents need an operating system, not a framework. Small kernel, agent-agnostic, local-first. The Unix bet.
 2. **Ruflo** bets that the problem is agent capability — ship 100+ agents with learning, routing, and swarm coordination. The platform bet.
 3. **OMC** bets that the problem is friction — make Claude Code do multi-agent work with zero learning curve. The plugin bet.
 4. **Symphony** bets that the problem is dispatch — turn issue trackers into agent work queues with minimal machinery. The spec bet.
 
-These are complementary more than competitive. gctl could use Symphony's Linear polling as a driver. OMC's skills could run inside a gctl-orchestrated session. Ruflo's self-learning could inform gctl's routing. The space is early enough that composition beats competition.
+These are complementary more than competitive. gctrl could use Symphony's Linear polling as a driver. OMC's skills could run inside a gctrl-orchestrated session. Ruflo's self-learning could inform gctrl's routing. The space is early enough that composition beats competition.

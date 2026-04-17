@@ -10,11 +10,11 @@ Read these files to understand cost attribution:
 
 ### 2. Gather Data
 
-Run these `gctl` commands to collect cost data:
+Run these `gctrl` commands to collect cost data:
 
-1. `gctl analytics cost` — aggregate cost summary (total spend, avg per session)
-2. `gctl analytics cost-breakdown` — cost breakdown by agent, model, session
-3. `gctl analytics daily` — daily cost and token trends
+1. `gctrl analytics cost` — aggregate cost summary (total spend, avg per session)
+2. `gctrl analytics cost-breakdown` — cost breakdown by agent, model, session
+3. `gctrl analytics daily` — daily cost and token trends
 
 ### 3. Output Format
 
@@ -48,6 +48,6 @@ Present a cost report:
 - <trend analysis: cost increasing/decreasing, anomalies, expensive sessions>
 ```
 
-If a time range is provided via $ARGUMENTS, pass it to the `gctl` commands (e.g., `--since 7d`). Default to all available data.
+If a time range is provided via $ARGUMENTS, pass it to the `gctrl` commands (e.g., `--since 7d`). Default to all available data.
 
 $ARGUMENTS

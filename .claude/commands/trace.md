@@ -12,14 +12,14 @@ Read these files to understand trace structure:
 
 If `$ARGUMENTS` provides a session ID, use it directly.
 
-If no session ID is provided, run `gctl sessions --format json` and ask the user which session to investigate. Show the most recent 10 sessions with their IDs, agents, and statuses.
+If no session ID is provided, run `gctrl sessions --format json` and ask the user which session to investigate. Show the most recent 10 sessions with their IDs, agents, and statuses.
 
 ### 3. Gather Trace Data
 
-Run these `gctl` commands for the target session:
+Run these `gctrl` commands for the target session:
 
-1. `gctl tree <session_id>` — render the trace tree (span hierarchy with timing)
-2. `gctl spans --session <session_id>` — list all spans with details (type, duration, status, cost)
+1. `gctrl tree <session_id>` — render the trace tree (span hierarchy with timing)
+2. `gctrl spans --session <session_id>` — list all spans with details (type, duration, status, cost)
 
 ### 4. Output Format
 
@@ -36,7 +36,7 @@ Present the trace investigation:
 - Spans: N total (N generations, N tools, N events)
 
 ### Trace Tree
-<paste gctl tree output — the visual span hierarchy>
+<paste gctrl tree output — the visual span hierarchy>
 
 ### Error Analysis
 <if errors exist>

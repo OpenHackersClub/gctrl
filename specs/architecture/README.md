@@ -1,25 +1,25 @@
-# gctl Architecture
+# gctrl Architecture
 
-GroundCtrl (gctl) is a small, local-first operating system for human+agent teams. Usable out of the box by an individual developer or a small team.
+GroundCtrl (gctrl) is a small, local-first operating system for human+agent teams. Usable out of the box by an individual developer or a small team.
 
-gctl follows the **Unix philosophy** — both the layered model and the design tenets articulated by McIlroy, Pike, Kernighan, and Gancarz:
+gctrl follows the **Unix philosophy** — both the layered model and the design tenets articulated by McIlroy, Pike, Kernighan, and Gancarz:
 
 > *Small is beautiful. Make each program do one thing well. Build a prototype as soon as possible. Choose portability over efficiency. Store data in flat text files. Use software leverage to your advantage. Use shell scripts to increase leverage and portability. Avoid captive user interfaces. Make every program a filter.*
 > — Mike Gancarz, *The Unix Philosophy*
 
-### How gctl Applies These Tenets
+### How gctrl Applies These Tenets
 
-| Tenet | How gctl Applies It |
+| Tenet | How gctrl Applies It |
 |-------|-------------------|
 | **Small is beautiful** | The kernel has four core primitives. Everything else is optional. A solo developer gets a working system with zero config. |
-| **Make each program do one thing well** | Each crate is one primitive. Each CLI command is one verb. `gctl net fetch` fetches. `gctl net compact` compacts. No combined super-commands. |
-| **Build a prototype as soon as possible** | Stub crates (`gctl-proxy`, `gctl-sync`) ship with clear interfaces before full implementation. Feature-gated code allows incomplete work to coexist. |
+| **Make each program do one thing well** | Each crate is one primitive. Each CLI command is one verb. `gctrl net fetch` fetches. `gctrl net compact` compacts. No combined super-commands. |
+| **Build a prototype as soon as possible** | Stub crates (`gctrl-proxy`, `gctrl-sync`) ship with clear interfaces before full implementation. Feature-gated code allows incomplete work to coexist. |
 | **Choose portability over efficiency** | Scheduler uses a trait/driver pattern: tokio (local), launchd (macOS), DO Alarms (Cloudflare). DuckDB runs everywhere. |
 | **Store data in flat text files** | WORKFLOW.md, AGENTS.md, and specs/ are plain Markdown — editable with any tool. DuckDB stores structured data but exports to flat Parquet/CSV. Traffic logs are JSONL. |
 | **Use software leverage** | External tools (Linear, Plane, Notion, Obsidian, Phoenix) are applications installed on the OS — connected via drivers and kernel IPC, not rebuilt. The kernel multiplies the value of every installed app. |
-| **Use shell scripts to increase leverage** | The CLI is the primary interface. Agents compose `gctl` commands in scripts. WORKFLOW.md prompt templates generate agent prompts. Hooks are shell scripts. |
+| **Use shell scripts to increase leverage** | The CLI is the primary interface. Agents compose `gctrl` commands in scripts. WORKFLOW.md prompt templates generate agent prompts. Hooks are shell scripts. |
 | **Avoid captive user interfaces** | No mandatory GUI. Every feature is CLI/API-first and automatable. Obsidian, web dashboards, and other UIs are optional external apps, not requirements. |
-| **Make every program a filter** | Utilities accept stdin and produce stdout where practical. `--format json` on every command. Output pipes to `jq`, `grep`, other `gctl` commands. |
+| **Make every program a filter** | Utilities accept stdin and produce stdout where practical. `--format json` on every command. Output pipes to `jq`, `grep`, other `gctrl` commands. |
 
 See `specs/principles.md` for the full Unix philosophy mapping and design principles.
 
@@ -39,7 +39,7 @@ specs/architecture/
 ├── shell/             ← shell layer (CLI dispatcher, HTTP API, query engine)
 │
 └── apps/              ← native applications and utilities (Issues live here)
-    ├── gctl-board.md      kanban — issues, board visualization, agent integration
+    ├── gctrl-board.md      kanban — issues, board visualization, agent integration
     └── tracker.md         Issue lifecycle, DAG, auto-transitions, TrackerPort
 ```
 
@@ -51,7 +51,7 @@ specs/architecture/
 | [kernel/orchestrator.md](kernel/orchestrator.md) | Orchestrator kernel primitive — Task claim states, dispatch eligibility, retry/backoff, concurrency control |
 | [kernel/scheduler.md](kernel/scheduler.md) | Scheduler kernel primitive — Task lifecycle, interface trait, platform implementations |
 | [kernel/browser.md](kernel/browser.md) | Browser control kernel extension — CDP daemon, ref system, tab management |
-| [apps/gctl-board.md](apps/gctl-board.md) | Kanban application — Issues, board visualization, agent integration |
+| [apps/gctrl-board.md](apps/gctrl-board.md) | Kanban application — Issues, board visualization, agent integration |
 | [apps/tracker.md](apps/tracker.md) | Tracker application component — Issue lifecycle, DAG, auto-transitions, TrackerPort |
 
 ---
@@ -72,7 +72,7 @@ graph TB
     end
 
     subgraph Apps["NATIVE APPLICATIONS & UTILITIES (all optional)"]
-        Board["gctl-board<br/>(kanban)"]
+        Board["gctrl-board<br/>(kanban)"]
         Eval["Observe & Eval"]
         NetUtils["net fetch/crawl/compact"]
         BrowserUtils["browser goto/snap/click"]
@@ -134,7 +134,7 @@ graph TB
 
 #### Kernel (Small, Always Present)
 
-Four core primitives. Agent-agnostic and use-case-agnostic. Makes no assumptions about applications. This is all you get with `gctl serve` — and it is enough for a solo developer.
+Four core primitives. Agent-agnostic and use-case-agnostic. Makes no assumptions about applications. This is all you get with `gctrl serve` — and it is enough for a solo developer.
 
 | Primitive | What It Does |
 |-----------|-------------|
@@ -166,19 +166,19 @@ Mediates all access to the kernel — like Unix shells mediate access to syscall
 
 Domain-specific tools built on kernel + shell. CLI subcommands live at this layer — they are programs that *run through* the shell, not part of the shell itself.
 
-- **Applications**: [gctl-board](apps/gctl-board.md) (kanban for agent+human issues & tasks), Observe & Eval (scoring, analytics), Capacity Engine (forecasting)
+- **Applications**: [gctrl-board](apps/gctrl-board.md) (kanban for agent+human issues & tasks), Observe & Eval (scoring, analytics), Capacity Engine (forecasting)
 - **Utilities**: net fetch/crawl/compact (web scraping), browser goto/snapshot/click (browser control), sessions, analytics, etc.
 
 #### Drivers (Loadable Kernel Modules)
 
-Drivers are **loadable kernel modules** — feature-gated crates compiled into the kernel binary that bridge external applications (Linear, Plane, Notion, Obsidian, Arize Phoenix, Langfuse) to gctl's internal event/data model. Like Unix LKMs (`insmod`/`modprobe`), they run in kernel space, implement kernel interface traits, and are independently optional.
+Drivers are **loadable kernel modules** — feature-gated crates compiled into the kernel binary that bridge external applications (Linear, Plane, Notion, Obsidian, Arize Phoenix, Langfuse) to gctrl's internal event/data model. Like Unix LKMs (`insmod`/`modprobe`), they run in kernel space, implement kernel interface traits, and are independently optional.
 
-External applications have their own state and logic but communicate through drivers inside the kernel, not through direct coupling. Cross-app communication — e.g., a Linear issue syncing to gctl-board, or traces exporting to Phoenix — always flows through kernel IPC, never app-to-app directly.
+External applications have their own state and logic but communicate through drivers inside the kernel, not through direct coupling. Cross-app communication — e.g., a Linear issue syncing to gctrl-board, or traces exporting to Phoenix — always flows through kernel IPC, never app-to-app directly.
 
-| IPC Mechanism | Unix Analogy | gctl Implementation | Example |
+| IPC Mechanism | Unix Analogy | gctrl Implementation | Example |
 |---------------|-------------|---------------------|---------|
 | **Event Bus** | Signals / named pipes | Domain events (`SessionEnded`, `IssueCreated`) | Telemetry emits `SessionEnded` → Eval auto-scores → Phoenix driver exports |
-| **Pipes** | stdin/stdout | CLI output piped between commands | `gctl sessions --format json \| gctl analytics cost` |
+| **Pipes** | stdin/stdout | CLI output piped between commands | `gctrl sessions --format json \| gctrl analytics cost` |
 | **Sockets** | Unix sockets / TCP | HTTP API endpoints | Driver polls `/api/sessions` or receives webhook callbacks |
 
 | Kernel Interface | Driver (LKM) | External App |
@@ -197,7 +197,7 @@ sequenceDiagram
     participant Shell as Shell: HTTP API
     participant Kernel as Kernel: Telemetry + Storage
     participant IPC as Kernel IPC: Event Bus
-    participant Board as Native App: gctl-board
+    participant Board as Native App: gctrl-board
     participant Eval as Native App: Observe & Eval
     participant Linear as External App: Linear
 
@@ -215,7 +215,7 @@ All cross-app communication flows through kernel IPC (event bus, shell APIs, pip
 
 ## Hexagonal Architecture (Kernel + Shell Only)
 
-Hexagonal architecture (ports and adapters) governs the **internal structure of the Kernel and Shell** — the Rust binary. It does NOT extend to external applications (Linear, Plane, Notion, etc.) or native applications (gctl-board). Those are **applications installed on the OS** that communicate through kernel IPC, not through hexagonal port/adapter wiring.
+Hexagonal architecture (ports and adapters) governs the **internal structure of the Kernel and Shell** — the Rust binary. It does NOT extend to external applications (Linear, Plane, Notion, etc.) or native applications (gctrl-board). Those are **applications installed on the OS** that communicate through kernel IPC, not through hexagonal port/adapter wiring.
 
 ```mermaid
 flowchart LR
@@ -224,13 +224,13 @@ flowchart LR
     Shell["Shell\n(CLI, HTTP API, Query)"]
     Adapters["Kernel Adapters\n(DuckDB, OTel, Guardrails,\nProxy, Browser, Sync)"]
     LKMs["Drivers (LKMs)\n(driver-linear, driver-github,\ndriver-phoenix, driver-obsidian)"]
-    Domain["Domain\n(gctl-core: types,\ntraits, errors)"]
+    Domain["Domain\n(gctrl-core: types,\ntraits, errors)"]
     Shell --> Adapters --> Domain
     LKMs --> Domain
   end
 
   subgraph Outside["Outside the Hexagon"]
-    NativeApps["Native Apps\n(gctl-board, Eval,\nCapacity)"]
+    NativeApps["Native Apps\n(gctrl-board, Eval,\nCapacity)"]
     ExtApps["External Apps\n(Linear, Plane,\nNotion, Phoenix)"]
   end
 
@@ -240,10 +240,10 @@ flowchart LR
 
 Dependencies flow inward: Shell → Adapters → Domain, never reverse.
 
-- **Domain** (`gctl-core`): Pure types, errors, business rules. Aggregates (Session, TrafficRecord), value objects (SpanId, SessionId), domain errors. See [domain-model.md](domain-model.md).
-- **Ports** (`gctl-core` traits): Abstract interfaces — storage port, guardrail policy trait, scheduler trait, browser port, sync engine.
+- **Domain** (`gctrl-core`): Pure types, errors, business rules. Aggregates (Session, TrafficRecord), value objects (SpanId, SessionId), domain errors. See [domain-model.md](domain-model.md).
+- **Ports** (`gctrl-core` traits): Abstract interfaces — storage port, guardrail policy trait, scheduler trait, browser port, sync engine.
 - **Adapters** (kernel crates): Concrete implementations — DuckDB storage, OTel receiver, guardrail policies, scheduler adapters, network proxy, browser daemon, cloud sync.
-- **Shell** (`gctl-cli`, `gctl-otel` HTTP routes, `gctl-query`): Dispatches to adapters — CLI routing, HTTP API routing, query execution.
+- **Shell** (`gctrl-cli`, `gctrl-otel` HTTP routes, `gctrl-query`): Dispatches to adapters — CLI routing, HTTP API routing, query execution.
 
 ### What lives inside vs. outside the hexagon
 
@@ -253,7 +253,7 @@ Dependencies flow inward: Shell → Adapters → Domain, never reverse.
 3. **Utilities** (net fetch, browser goto) — compiled into the binary, access kernel adapters directly.
 
 **Outside the hexagon:**
-1. **Native applications** (gctl-board, Observe & Eval, Capacity Engine) communicate through shell APIs (HTTP endpoints, CLI subprocess calls) and kernel IPC (domain events). They are peers of the kernel, not internals of it.
+1. **Native applications** (gctrl-board, Observe & Eval, Capacity Engine) communicate through shell APIs (HTTP endpoints, CLI subprocess calls) and kernel IPC (domain events). They are peers of the kernel, not internals of it.
 2. **External applications** (Linear, Plane, Notion, Phoenix) live entirely outside the binary. Drivers (LKMs) inside the kernel bridge the gap.
 
 ---

@@ -9,7 +9,7 @@ created_by: debuggingfuture
 
 # Core message storage — inbox_messages and inbox_threads tables
 
-Implement the foundational DuckDB tables for gctl-inbox: `inbox_messages`, `inbox_threads`, `inbox_actions`, `inbox_subscriptions`. Add CRUD operations in gctl-storage.
+Implement the foundational DuckDB tables for gctrl-inbox: `inbox_messages`, `inbox_threads`, `inbox_actions`, `inbox_subscriptions`. Add CRUD operations in gctrl-storage.
 
 ## Acceptance Criteria
 

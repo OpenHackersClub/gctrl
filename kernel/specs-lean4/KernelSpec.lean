@@ -8,7 +8,7 @@ import KernelSpec.TaskDAG
 import KernelSpec.DispatchEligibility
 
 /-!
-# gctl Kernel — Formal Specification
+# gctrl Kernel — Formal Specification
 
 Verified state machines, domain types, and invariants for the GroundCtrl OS
 **kernel layer**. All proofs are complete (no `sorry`).
@@ -24,5 +24,5 @@ Verified state machines, domain types, and invariants for the GroundCtrl OS
 - **TaskDAG**: Dependency graph acyclicity via topological ordering
 - **DispatchEligibility**: 7-condition dispatch predicate, retry backoff bounds
 
-Application-level specs (e.g. IssueState for gctl-board) are separate from the kernel.
+Application-level specs (e.g. IssueState for gctrl-board) are separate from the kernel.
 -/
