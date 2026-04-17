@@ -69,17 +69,20 @@ export const test = base.extend<BoardFixtures>({
                 Authorization: `Bearer ${process.env.CF_API_TOKEN}`,
               },
             })
-            console.log(
-              `[cdp] connected in ${Date.now() - started}ms (singleton — this should log exactly once per CI run)`
+            process.stderr.write(
+              `[cdp] connected in ${Date.now() - started}ms (singleton — should log exactly once per CI run)\n`
             )
+            cdpBrowser.on("disconnected", () => {
+              process.stderr.write("[cdp] Browser disconnected (CF closed session)\n")
+            })
           } catch (err) {
             cdpSessionFailure = err as Error
             const msg = err instanceof Error ? err.message : String(err)
-            console.error(`[cdp] connect failed: ${msg}`)
+            process.stderr.write(`[cdp] connect failed: ${msg}\n`)
             throw err
           }
         } else {
-          console.log("[cdp] reusing existing Browser handle (fixture re-entered)")
+          process.stderr.write("[cdp] reusing Browser handle (fixture re-entered)\n")
         }
         await use(cdpBrowser)
         // Intentionally do NOT close — see block comment above.

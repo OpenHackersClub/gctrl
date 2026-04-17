@@ -144,7 +144,7 @@ jobs:
             --command "DELETE FROM issue_events; DELETE FROM comments; DELETE FROM issues; DELETE FROM projects;"
 
       - name: Run acceptance tests against preview (CF Browser Rendering)
-        run: pnpm exec playwright test --max-failures=1
+        run: pnpm exec playwright test
         working-directory: apps/gctl-board
         env:
           CI: "true"
