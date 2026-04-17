@@ -1,8 +1,8 @@
 # Cloud Sync (Kernel Primitive)
 
-> Canonical spec for gctl's local-first sync engine. Supersedes scattered references in
+> Canonical spec for gctrl's local-first sync engine. Supersedes scattered references in
 > [os.md §12](../os.md), [domain-model.md §SyncEngine](../domain-model.md), and
-> [ROADMAP.md M3](../../gctl/ROADMAP.md).
+> [ROADMAP.md M3](../../gctrl/ROADMAP.md).
 
 ## 1. Design Principles
 
@@ -18,8 +18,8 @@
 flowchart TD
     DuckDB["DuckDB (local, OLAP)"]
     SQLite["SQLite (local, OLTP)"]
-    StagingParquet["Parquet files (~/.local/share/gctl/sync/)"]
-    StagingSQL["SQL dumps (~/.local/share/gctl/sync/sqlite/)"]
+    StagingParquet["Parquet files (~/.local/share/gctrl/sync/)"]
+    StagingSQL["SQL dumps (~/.local/share/gctrl/sync/sqlite/)"]
     R2["R2 bucket (Cloudflare)"]
     D1["D1 database (Cloudflare)"]
     Consumers["Remote consumers (Workers, dashboards, other devices)"]
@@ -82,7 +82,7 @@ flowchart TD
 
 Context entries have hybrid storage: DuckDB metadata + filesystem markdown content.
 
-- **Push**: upload markdown files from `~/.local/share/gctl/context/` to R2 `knowledge/context/`, keyed by `content_hash`. Mark `synced = TRUE` in DuckDB.
+- **Push**: upload markdown files from `~/.local/share/gctrl/context/` to R2 `knowledge/context/`, keyed by `content_hash`. Mark `synced = TRUE` in DuckDB.
 - **Pull**: download new/changed files by comparing remote manifest hashes against local `content_hash` values. Write to local filesystem + upsert DuckDB metadata.
 - **Dedup**: content-addressable by SHA-256 hash — identical content is never re-uploaded.
 
@@ -121,7 +121,7 @@ Context entries have hybrid storage: DuckDB metadata + filesystem markdown conte
 D1 mirrors the local SQLite schema. Tables include a `device_id` column and `updated_at` timestamp for multi-device sync.
 
 ```
-D1 database: gctl_{workspace_id}
+D1 database: gctrl_{workspace_id}
   board_projects       # kanban projects
   board_issues         # kanban issues / cards
   board_labels         # issue labels
@@ -130,11 +130,11 @@ D1 database: gctl_{workspace_id}
 ```
 
 - D1 is the **shared merge point** for SQLite data — all devices push to and pull from the same D1 database.
-- Workers and API routes (e.g. `gctl-board` Cloudflare Worker) read/write D1 directly for the remote UI.
+- Workers and API routes (e.g. `gctrl-board` Cloudflare Worker) read/write D1 directly for the remote UI.
 
 ## 4. Sync Manifest
 
-The manifest tracks what has been pushed and pulled. Stored both locally (`~/.local/share/gctl/sync/manifest.json`) and in R2 (`{workspace}/manifest.json`).
+The manifest tracks what has been pushed and pulled. Stored both locally (`~/.local/share/gctrl/sync/manifest.json`) and in R2 (`{workspace}/manifest.json`).
 
 ```json
 {
@@ -241,11 +241,11 @@ Credentials priority: CLI flags > env vars (`GCTL_R2_ACCESS_KEY_ID`, `GCTL_R2_SE
 ## 9. CLI Commands
 
 ```sh
-gctl sync status                  # pending rows, last push/pull, R2 reachability
-gctl sync push                    # push all syncable tables
-gctl sync push --table sessions   # push specific table
-gctl sync pull                    # pull all tables from all devices
-gctl sync pull --since 7d         # pull only recent data
+gctrl sync status                  # pending rows, last push/pull, R2 reachability
+gctrl sync push                    # push all syncable tables
+gctrl sync push --table sessions   # push specific table
+gctrl sync pull                    # pull all tables from all devices
+gctrl sync pull --since 7d         # pull only recent data
 ```
 
 ## 10. Scheduler Integration

@@ -1288,20 +1288,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "gctl-cli"
+name = "gctrl-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
  "chrono",
  "clap",
- "gctl-context",
- "gctl-core",
- "gctl-guardrails",
- "gctl-net",
- "gctl-otel",
- "gctl-query",
- "gctl-storage",
+ "gctrl-context",
+ "gctrl-core",
+ "gctrl-guardrails",
+ "gctrl-net",
+ "gctrl-otel",
+ "gctrl-query",
+ "gctrl-storage",
  "notify",
  "serde_json",
  "tokio",
@@ -1311,13 +1311,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "gctl-context"
+name = "gctrl-context"
 version = "0.1.0"
 dependencies = [
  "chrono",
  "dirs",
  "duckdb",
- "gctl-core",
+ "gctrl-core",
  "serde",
  "serde_json",
  "sha2",
@@ -1328,7 +1328,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "gctl-core"
+name = "gctrl-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1341,12 +1341,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "gctl-guardrails"
+name = "gctrl-guardrails"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "gctl-core",
- "gctl-storage",
+ "gctrl-core",
+ "gctrl-storage",
  "serde",
  "serde_json",
  "thiserror",
@@ -1355,14 +1355,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "gctl-net"
+name = "gctrl-net"
 version = "0.1.0"
 dependencies = [
  "chrono",
  "dirs",
  "futures",
- "gctl-core",
- "gctl-storage",
+ "gctrl-core",
+ "gctrl-storage",
  "htmd",
  "readability",
  "reqwest 0.12.28",
@@ -1377,14 +1377,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "gctl-otel"
+name = "gctrl-otel"
 version = "0.1.0"
 dependencies = [
  "axum",
  "chrono",
- "gctl-context",
- "gctl-core",
- "gctl-storage",
+ "gctrl-context",
+ "gctrl-core",
+ "gctrl-storage",
  "http 1.4.0",
  "http-body-util",
  "serde",
@@ -1397,12 +1397,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "gctl-proxy"
+name = "gctrl-proxy"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "gctl-core",
- "gctl-storage",
+ "gctrl-core",
+ "gctrl-storage",
  "thiserror",
  "tokio",
  "tracing",
@@ -1410,11 +1410,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "gctl-query"
+name = "gctrl-query"
 version = "0.1.0"
 dependencies = [
- "gctl-core",
- "gctl-storage",
+ "gctrl-core",
+ "gctrl-storage",
  "serde",
  "serde_json",
  "thiserror",
@@ -1423,13 +1423,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "gctl-storage"
+name = "gctrl-storage"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
  "duckdb",
- "gctl-core",
+ "gctrl-core",
  "rusqlite",
  "serde",
  "serde_json",
@@ -1442,15 +1442,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "gctl-sync"
+name = "gctrl-sync"
 version = "0.1.0"
 dependencies = [
  "arrow 54.3.1",
  "async-trait",
  "chrono",
  "duckdb",
- "gctl-core",
- "gctl-storage",
+ "gctrl-core",
+ "gctrl-storage",
  "parquet",
  "reqwest 0.12.28",
  "serde",

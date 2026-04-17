@@ -1,6 +1,6 @@
-# Browser Control (gctl-browser)
+# Browser Control (gctrl-browser)
 
-> Agents talk to gctl to make use of persistent browser instances via Chrome DevTools Protocol (CDP).
+> Agents talk to gctrl to make use of persistent browser instances via Chrome DevTools Protocol (CDP).
 
 ---
 
@@ -11,13 +11,13 @@ AI agents frequently need browser access for QA, testing, form filling, scraping
 1. **Cold-starting a browser per command** -- 3-5s startup, no state persistence, cookies/sessions lost between calls.
 2. **External browser-as-a-service** -- network latency, cloud dependency, breaks local-first principle.
 
-gctl already provides network control (fetch, crawl, proxy). Browser control is the natural next primitive: a long-lived, agent-addressable Chromium instance managed by the OS layer.
+gctrl already provides network control (fetch, crawl, proxy). Browser control is the natural next primitive: a long-lived, agent-addressable Chromium instance managed by the OS layer.
 
 ---
 
 ## Architecture
 
-Inspired by [gstack](https://github.com/garrytan/gstack)'s daemon model: a persistent Chromium process managed by gctl, accessible to agents via HTTP API and CLI.
+Inspired by [gstack](https://github.com/garrytan/gstack)'s daemon model: a persistent Chromium process managed by gctrl, accessible to agents via HTTP API and CLI.
 
 ### System Diagram
 
@@ -29,8 +29,8 @@ graph TB
         Custom["Custom Agents"]
     end
 
-    subgraph GCTL["gctl OS LAYER"]
-        CLI["CLI Gateway<br/>gctl browser *"]
+    subgraph GCTL["gctrl OS LAYER"]
+        CLI["CLI Gateway<br/>gctrl browser *"]
         API["HTTP API<br/>/api/browser/*"]
         BM["BrowserManager<br/>(lifecycle, refs, tabs)"]
         CDP["CDP Client<br/>(chromiumoxide / playwright)"]
@@ -54,11 +54,11 @@ graph TB
 ```mermaid
 sequenceDiagram
     participant Agent
-    participant CLI as gctl CLI / HTTP API
+    participant CLI as gctrl CLI / HTTP API
     participant BM as BrowserManager
     participant Chrome as Chromium (CDP)
 
-    Agent->>CLI: gctl browser snapshot -i
+    Agent->>CLI: gctrl browser snapshot -i
     CLI->>BM: dispatch(snapshot, flags)
     Note over BM: Auto-start Chromium if not running
     BM->>Chrome: CDP: getAccessibilityTree()
@@ -67,7 +67,7 @@ sequenceDiagram
     BM-->>CLI: Annotated text tree
     CLI-->>Agent: Plain text output
 
-    Agent->>CLI: gctl browser click @e3
+    Agent->>CLI: gctrl browser click @e3
     CLI->>BM: dispatch(click, ref=@e3)
     BM->>BM: Resolve @e3 -> Locator
     BM->>Chrome: CDP: click(locator)
@@ -84,14 +84,14 @@ Following gstack's key insight: **sub-second latency requires a persistent brows
 
 ### Lifecycle
 
-1. **Auto-start on first use.** `gctl browser <cmd>` checks for a running daemon; if none, spawns Chromium and the browser manager.
+1. **Auto-start on first use.** `gctrl browser <cmd>` checks for a running daemon; if none, spawns Chromium and the browser manager.
 2. **Persistent state.** Cookies, localStorage, open tabs survive across commands. Log in once, stay logged in.
 3. **Idle shutdown.** Auto-terminate after configurable idle timeout (default: 30 minutes). No process babysitting.
 4. **Crash recovery.** If Chromium crashes, the manager exits. Next CLI invocation detects the dead process and restarts cleanly. No self-healing complexity.
 
 ### State File
 
-The daemon writes a state file at `~/.local/share/gctl/browser.json`:
+The daemon writes a state file at `~/.local/share/gctrl/browser.json`:
 
 ```json
 {
@@ -106,7 +106,7 @@ The daemon writes a state file at `~/.local/share/gctl/browser.json`:
 - CLI reads this file to locate the daemon. If missing, stale, or PID is dead, CLI spawns a new one.
 - **Bearer token auth** on every HTTP request (token from state file, file mode 0o600).
 - **Random port** (10000-60000) to support multiple workspaces without port conflicts.
-- **Version auto-restart**: if the gctl binary version doesn't match the daemon's version, kill and restart.
+- **Version auto-restart**: if the gctrl binary version doesn't match the daemon's version, kill and restart.
 
 ### Security
 
@@ -122,14 +122,14 @@ Agents need to address page elements without writing CSS selectors or XPath. gst
 
 ### How It Works
 
-1. Agent runs `gctl browser snapshot -i`
+1. Agent runs `gctrl browser snapshot -i`
 2. Manager calls Chromium's accessibility tree via CDP
 3. Parser walks the ARIA tree, assigns sequential refs: `@e1`, `@e2`, `@e3`...
 4. For each ref, builds a locator: `getByRole(role, { name }).nth(index)`
 5. Returns annotated tree as plain text
 
 Later:
-6. Agent runs `gctl browser click @e3`
+6. Agent runs `gctrl browser click @e3`
 7. Manager resolves `@e3` to locator, executes click via CDP
 
 ### Why Locators, Not DOM Mutation
@@ -200,23 +200,23 @@ Elements styled with `cursor: pointer` or `onclick` but missing from the ARIA tr
 
 ```sh
 # Inspect page state
-gctl browser goto https://example.com
-gctl browser snapshot -i
-gctl browser screenshot --output /tmp/page.png
+gctrl browser goto https://example.com
+gctrl browser snapshot -i
+gctrl browser screenshot --output /tmp/page.png
 
 # Interact with elements
-gctl browser click @e3
-gctl browser fill @e7 "search query"
-gctl browser press Enter
+gctrl browser click @e3
+gctrl browser fill @e7 "search query"
+gctrl browser press Enter
 
 # Tab management
-gctl browser tabs
-gctl browser newtab https://staging.example.com
-gctl browser tab 2
+gctrl browser tabs
+gctrl browser newtab https://staging.example.com
+gctrl browser tab 2
 
 # Daemon lifecycle
-gctl browser status
-gctl browser stop
+gctrl browser status
+gctrl browser stop
 ```
 
 ## HTTP API
@@ -240,7 +240,7 @@ Errors are for AI agents, not humans. Every error message must be actionable:
 
 | Raw Error | Agent-Friendly Error |
 |-----------|---------------------|
-| Element not found | `Element not found. Run 'gctl browser snapshot -i' to see available elements.` |
+| Element not found | `Element not found. Run 'gctrl browser snapshot -i' to see available elements.` |
 | Ref @e5 stale | `Ref @e5 is stale -- element no longer exists. Run 'snapshot' to get fresh refs.` |
 | Navigation timeout | `Navigation timed out after 30s. The page may be slow or the URL may be wrong.` |
 | Chromium crashed | `Browser process died. It will auto-restart on next command.` |
@@ -249,16 +249,16 @@ Errors are for AI agents, not humans. Every error message must be actionable:
 
 ## Telemetry Integration
 
-Browser commands emit OTLP spans into the standard gctl telemetry pipeline:
+Browser commands emit OTLP spans into the standard gctrl telemetry pipeline:
 
 ```mermaid
 sequenceDiagram
     participant Agent
     participant BM as BrowserManager
-    participant OTel as gctl OTel Receiver
+    participant OTel as gctrl OTel Receiver
     participant DB as DuckDB
 
-    Agent->>BM: gctl browser click @e3
+    Agent->>BM: gctrl browser click @e3
     BM->>BM: Execute click
     BM->>OTel: Span: browser.click { ref: @e3, url: "...", duration_ms: 150 }
     OTel->>DB: Insert span (session linkage)
@@ -286,7 +286,7 @@ sequenceDiagram
 
 ## Configuration
 
-In `~/.config/gctl/config.toml`:
+In `~/.config/gctrl/config.toml`:
 
 ```toml
 [browser]
@@ -294,7 +294,7 @@ headless = true              # default: true (set false for debugging)
 idle_timeout_seconds = 1800  # default: 30 minutes
 viewport_width = 1280
 viewport_height = 720
-# user_data_dir = "~/.local/share/gctl/browser-profile"
+# user_data_dir = "~/.local/share/gctrl/browser-profile"
 # chromium_path = "/usr/bin/chromium"  # auto-detected if omitted
 ```
 
@@ -302,9 +302,9 @@ viewport_height = 720
 
 ## Implementation Strategy
 
-### Crate: `gctl-browser`
+### Crate: `gctrl-browser`
 
-New crate in `crates/gctl-browser/`, feature-gated in the workspace Cargo.toml (`feature: browser`).
+New crate in `crates/gctrl-browser/`, feature-gated in the workspace Cargo.toml (`feature: browser`).
 
 **Dependencies:**
 - `chromiumoxide` -- Rust CDP client (async, tokio-based)
@@ -315,7 +315,7 @@ New crate in `crates/gctl-browser/`, feature-gated in the workspace Cargo.toml (
 **Internal structure:**
 
 ```
-crates/gctl-browser/
+crates/gctrl-browser/
   src/
     lib.rs              # Public API
     daemon.rs           # Lifecycle: start, stop, health check, state file
@@ -331,7 +331,7 @@ crates/gctl-browser/
 
 ### CLI Integration
 
-New subcommand group in `gctl-cli`:
+New subcommand group in `gctrl-cli`:
 
 ```rust
 #[derive(Subcommand)]
@@ -365,10 +365,10 @@ Router::new()
 | OS Primitive | Browser Integration |
 |---|---|
 | **Telemetry** | Browser commands emit spans; page network requests become traffic records |
-| **Storage** | Browser state file in gctl data dir; screenshots optionally stored |
+| **Storage** | Browser state file in gctrl data dir; screenshots optionally stored |
 | **Guardrails** | `DomainAllowlistPolicy` -- restrict which URLs the browser can visit; `BrowserBudgetPolicy` -- limit commands per session |
-| **Network** | Page requests visible in `gctl net logs/stats`; proxy integration for MITM inspection of browser traffic |
-| **CLI Gateway** | `gctl browser <cmd>` subcommand group |
+| **Network** | Page requests visible in `gctrl net logs/stats`; proxy integration for MITM inspection of browser traffic |
+| **CLI Gateway** | `gctrl browser <cmd>` subcommand group |
 | **HTTP API** | `/api/browser/*` endpoints |
 
 ---
@@ -379,4 +379,4 @@ Router::new()
 - **No WebSocket streaming.** HTTP request/response is simpler and fast enough for the command model.
 - **No multi-user browser sharing.** One daemon per workspace, one user.
 - **No iframe ref crossing.** Refs don't cross frame boundaries (can be added later).
-- **No cookie import from host browser.** Unlike gstack, gctl doesn't decrypt host browser cookies. Agents log in through the controlled browser or cookies are set via the API.
+- **No cookie import from host browser.** Unlike gstack, gctrl doesn't decrypt host browser cookies. Agents log in through the controlled browser or cookies are set via the API.

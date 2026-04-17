@@ -10,10 +10,10 @@ researcher-agentic is a **native application** in the Unix layer model.
 App (researcher-agentic) → Shell (HTTP API :4318) → Kernel (Storage, Telemetry, KB)
 ```
 
-- **Depends on kernel primitives**: `gctl-kb` (wiki operations), `gctl-context` (source storage), `gctl-net` (web crawling), Storage (DuckDB), Telemetry (session tracking)
+- **Depends on kernel primitives**: `gctrl-kb` (wiki operations), `gctrl-context` (source storage), `gctrl-net` (web crawling), Storage (DuckDB), Telemetry (session tracking)
 - **Accesses kernel via HTTP API only** — never imports kernel crates directly
 - **Table namespace**: `agentic_*` (benchmarks, framework comparisons — app-specific state beyond the wiki)
-- **Shares wiki infrastructure** — uses `gctl-kb` for the persistent knowledge graph
+- **Shares wiki infrastructure** — uses `gctrl-kb` for the persistent knowledge graph
 
 ## Domain Model
 
@@ -35,13 +35,13 @@ App (researcher-agentic) → Shell (HTTP API :4318) → Kernel (Storage, Telemet
 
 | Source | Ingestion Method | Notes |
 |--------|-----------------|-------|
-| Academic papers | Dropped `.pdf` or `gctl kb ingest --url` (arXiv) | ReAct, Toolformer, MRKL, etc. |
-| Framework docs | `gctl net crawl` → `gctl kb ingest --crawl` | Official documentation sites |
-| Blog posts | `gctl net fetch` → `gctl kb ingest` | Engineering blogs, research announcements |
+| Academic papers | Dropped `.pdf` or `gctrl kb ingest --url` (arXiv) | ReAct, Toolformer, MRKL, etc. |
+| Framework docs | `gctrl net crawl` → `gctrl kb ingest --crawl` | Official documentation sites |
+| Blog posts | `gctrl net fetch` → `gctrl kb ingest` | Engineering blogs, research announcements |
 | Benchmark results | Structured data + analysis | SWE-bench, HumanEval, GAIA |
 | Conference talks | Transcription or summary | NeurIPS, ICLR, agent workshops |
-| GitHub repos | `gctl net fetch` README + key files | Framework source code analysis |
-| gctl's own telemetry | `gctl-context` (kind: snapshot) | Dogfooding data — how our agents perform |
+| GitHub repos | `gctrl net fetch` README + key files | Framework source code analysis |
+| gctrl's own telemetry | `gctrl-context` (kind: snapshot) | Dogfooding data — how our agents perform |
 
 ### App-Specific Tables
 
@@ -120,7 +120,7 @@ Must cite sources for every claim in the matrix.
 
 ## Meta: Dogfooding
 This wiki is itself an agentic workflow. Track:
-- Cost per ingest (via gctl telemetry)
+- Cost per ingest (via gctrl telemetry)
 - Pages touched per source (measure synthesis effort)
 - Query quality over time (are answers improving?)
 - Wiki health metrics (orphan rate, link density, freshness)
@@ -129,15 +129,15 @@ This wiki is itself an agentic workflow. Track:
 ## Shell Commands
 
 ```sh
-# Agentic research commands (thin wrappers around gctl kb)
-gctl agentic ingest-paper --url https://arxiv.org/abs/2210.03629 --title "ReAct"
-gctl agentic ingest-docs --crawl docs.anthropic.com
-gctl agentic framework claude-code                # Show framework wiki page
-gctl agentic pattern human-in-the-loop            # Show pattern page
-gctl agentic compare claude-code openai-codex     # Generate/show comparison
-gctl agentic benchmarks --framework claude-code   # Show benchmark results
-gctl agentic thesis "agent OS convergence"        # Query wiki for thesis
-gctl agentic lint                                  # Agentic-specific lint
+# Agentic research commands (thin wrappers around gctrl kb)
+gctrl agentic ingest-paper --url https://arxiv.org/abs/2210.03629 --title "ReAct"
+gctrl agentic ingest-docs --crawl docs.anthropic.com
+gctrl agentic framework claude-code                # Show framework wiki page
+gctrl agentic pattern human-in-the-loop            # Show pattern page
+gctrl agentic compare claude-code openai-codex     # Generate/show comparison
+gctrl agentic benchmarks --framework claude-code   # Show benchmark results
+gctrl agentic thesis "agent OS convergence"        # Query wiki for thesis
+gctrl agentic lint                                  # Agentic-specific lint
 ```
 
 ## Example Workflow
@@ -146,8 +146,8 @@ gctl agentic lint                                  # Agentic-specific lint
 Human: "Crawl the Claude Code docs and integrate into the wiki"
 
 Agent:
-1. gctl net crawl https://docs.anthropic.com/claude-code --depth 3 --max-pages 100
-2. gctl kb ingest --crawl docs.anthropic.com
+1. gctrl net crawl https://docs.anthropic.com/claude-code --depth 3 --max-pages 100
+2. gctrl kb ingest --crawl docs.anthropic.com
 3. Creates: wiki/sources/claude-code-docs-crawl.md (crawl summary)
 4. Updates: wiki/entities/claude-code.md (## Architecture, ## Key Features, ## Limitations)
 5. Creates: wiki/topics/hook-system.md (new pattern discovered in docs)
@@ -174,14 +174,14 @@ Both researcher apps share the same kernel and shell infrastructure:
 
 ```
 researcher-market ──┐
-                    ├──→ gctl-kb (wiki) → gctl-context (storage) → Kernel
+                    ├──→ gctrl-kb (wiki) → gctrl-context (storage) → Kernel
 researcher-agentic ─┘
 ```
 
 Each app has its own wiki namespace (separate `wiki/` directories or tag-based separation), its own schema, and its own domain tables. But they share:
-- The same `gctl kb` CLI and HTTP API
+- The same `gctrl kb` CLI and HTTP API
 - The same wikilink format and link graph
 - The same ingest/query/lint operations
 - The same file watcher for reactive imports
-- The same web crawling pipeline (`gctl-net`)
+- The same web crawling pipeline (`gctrl-net`)
 - Cross-wiki linking is possible (e.g., an agentic research page linking to a market data source about AI companies)

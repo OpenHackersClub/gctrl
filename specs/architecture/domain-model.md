@@ -1,6 +1,6 @@
 # Domain Model Reference
 
-> Canonical domain model for GroundCtrl (gctl).
+> Canonical domain model for GroundCtrl (gctrl).
 >
 > **Policy:** Types that exist in the codebase link to source (single source of truth, zero drift). Types that are specs-only — not yet implemented — remain inline here, and the spec is authoritative until the code catches up.
 
@@ -12,7 +12,7 @@ Newtype wrappers over `String` with `Serialize`/`Deserialize`.
 
 | Type | Source |
 |------|--------|
-| `WorkspaceId`, `DeviceId`, `SessionId`, `TraceId`, `SpanId` | [`kernel/crates/gctl-core/src/types.rs`](../../kernel/crates/gctl-core/src/types.rs) § Identifiers |
+| `WorkspaceId`, `DeviceId`, `SessionId`, `TraceId`, `SpanId` | [`kernel/crates/gctrl-core/src/types.rs`](../../kernel/crates/gctrl-core/src/types.rs) § Identifiers |
 | `TaskId` *(specs-only)* | see § 2 Task below |
 | `UserId` *(specs-only)* | see § 2 User below |
 | `ScheduleId` *(specs-only)* | [`kernel/scheduler.md`](kernel/scheduler.md) |
@@ -23,7 +23,7 @@ Newtype wrappers over `String` with `Serialize`/`Deserialize`.
 
 ### Session
 
-**Source:** [`kernel/crates/gctl-core/src/types.rs`](../../kernel/crates/gctl-core/src/types.rs) — `Session` struct.
+**Source:** [`kernel/crates/gctrl-core/src/types.rs`](../../kernel/crates/gctrl-core/src/types.rs) — `Session` struct.
 
 Current shape: `id`, `workspace_id`, `device_id`, `agent_name`, `started_at`, `ended_at`, `status`, `total_cost_usd`, `total_input_tokens`, `total_output_tokens`.
 
@@ -43,17 +43,17 @@ task_id: Option<TaskId>   // Scheduler Task this session is executing
 
 ### SessionStatus
 
-**Source:** [`kernel/crates/gctl-core/src/types.rs`](../../kernel/crates/gctl-core/src/types.rs) — `SessionStatus` enum.
+**Source:** [`kernel/crates/gctrl-core/src/types.rs`](../../kernel/crates/gctrl-core/src/types.rs) — `SessionStatus` enum.
 
 States: `Active` (initial) → `Completed` | `Failed` | `Cancelled` (terminal).
 
 ### Span
 
-**Source:** [`kernel/crates/gctl-core/src/types.rs`](../../kernel/crates/gctl-core/src/types.rs) — `Span` struct (includes `span_type`: `Generation` | `Span` | `Event`).
+**Source:** [`kernel/crates/gctrl-core/src/types.rs`](../../kernel/crates/gctrl-core/src/types.rs) — `Span` struct (includes `span_type`: `Generation` | `Span` | `Event`).
 
 ### SpanStatus
 
-**Source:** [`kernel/crates/gctl-core/src/types.rs`](../../kernel/crates/gctl-core/src/types.rs) — `SpanStatus` enum.
+**Source:** [`kernel/crates/gctrl-core/src/types.rs`](../../kernel/crates/gctrl-core/src/types.rs) — `SpanStatus` enum.
 
 States: `Ok` | `Error(String)` | `Unset` (pending).
 
@@ -110,11 +110,11 @@ pub struct User {
 
 ### TrafficRecord
 
-**Source:** [`kernel/crates/gctl-core/src/types.rs`](../../kernel/crates/gctl-core/src/types.rs) — `TrafficRecord` struct.
+**Source:** [`kernel/crates/gctrl-core/src/types.rs`](../../kernel/crates/gctrl-core/src/types.rs) — `TrafficRecord` struct.
 
 ### PolicyDecision
 
-**Source:** [`kernel/crates/gctl-core/src/types.rs`](../../kernel/crates/gctl-core/src/types.rs) — `PolicyDecision` enum.
+**Source:** [`kernel/crates/gctrl-core/src/types.rs`](../../kernel/crates/gctrl-core/src/types.rs) — `PolicyDecision` enum.
 
 Variants: `Allow` | `Warn(String)` | `Deny(String)`.
 
@@ -143,7 +143,7 @@ pub struct BrowserDaemonState {
     pub port: u16,
     pub token: String,          // UUID v4, bearer auth
     pub started_at: DateTime<Utc>,
-    pub version: String,        // gctl binary version
+    pub version: String,        // gctrl binary version
 }
 ```
 
@@ -202,9 +202,9 @@ pub trait TrafficStore: Send + Sync {
 
 ### GuardrailPolicy
 
-**Source:** [`kernel/crates/gctl-guardrails/src/engine.rs`](../../kernel/crates/gctl-guardrails/src/engine.rs) — `GuardrailPolicy` trait.
+**Source:** [`kernel/crates/gctrl-guardrails/src/engine.rs`](../../kernel/crates/gctrl-guardrails/src/engine.rs) — `GuardrailPolicy` trait.
 
-Built-in policies *(partially implemented; see `gctl-guardrails/src/policies.rs`)*:
+Built-in policies *(partially implemented; see `gctrl-guardrails/src/policies.rs`)*:
 - `SessionBudgetPolicy` — halt if session cost exceeds threshold
 - `LoopDetectionPolicy` — flag repeated identical tool calls
 - `DiffSizePolicy` — alert on large diffs
@@ -213,7 +213,7 @@ Built-in policies *(partially implemented; see `gctl-guardrails/src/policies.rs`
 
 ### SyncEngine
 
-**Source:** [`kernel/crates/gctl-sync/src/engine.rs`](../../kernel/crates/gctl-sync/src/engine.rs) — `SyncEngine` trait. Full design in [`kernel/sync.md`](kernel/sync.md).
+**Source:** [`kernel/crates/gctrl-sync/src/engine.rs`](../../kernel/crates/gctrl-sync/src/engine.rs) — `SyncEngine` trait. Full design in [`kernel/sync.md`](kernel/sync.md).
 
 ### SchedulerPort *(specs-only)*
 
@@ -273,7 +273,7 @@ pub trait BrowserPort: Send + Sync {
 
 ## 4. Configuration Types
 
-**Source:** [`kernel/crates/gctl-core/src/config.rs`](../../kernel/crates/gctl-core/src/config.rs).
+**Source:** [`kernel/crates/gctrl-core/src/config.rs`](../../kernel/crates/gctrl-core/src/config.rs).
 
 `GctlConfig` composes: `StorageConfig`, `OtelConfig`, `ProxyConfig`, `SyncConfig`, `GuardrailsConfig`. See source for field-level defaults.
 
@@ -286,7 +286,7 @@ pub trait BrowserPort: Send + Sync {
 
 ## 5. Storage Schema (DuckDB)
 
-**Source:** [`kernel/crates/gctl-storage/src/schema.rs`](../../kernel/crates/gctl-storage/src/schema.rs) — all `CREATE_*_TABLE` constants and `CREATE_INDEXES`.
+**Source:** [`kernel/crates/gctrl-storage/src/schema.rs`](../../kernel/crates/gctrl-storage/src/schema.rs) — all `CREATE_*_TABLE` constants and `CREATE_INDEXES`.
 
 ### 5.1 Kernel-owned tables (implemented)
 
@@ -357,7 +357,7 @@ Every agent MUST create tasks via `SchedulerPort` — never write directly.
 
 ### 5.2 Board application tables
 
-**Source:** [`kernel/crates/gctl-storage/src/schema.rs`](../../kernel/crates/gctl-storage/src/schema.rs) — `CREATE_BOARD_*_TABLE` constants: `board_projects`, `board_issues`, `board_events`, `board_comments`.
+**Source:** [`kernel/crates/gctrl-storage/src/schema.rs`](../../kernel/crates/gctrl-storage/src/schema.rs) — `CREATE_BOARD_*_TABLE` constants: `board_projects`, `board_issues`, `board_events`, `board_comments`.
 
 Per Invariant #3, application tables carry the `board_` namespace prefix.
 
@@ -367,18 +367,18 @@ From `schema.rs`: `scores` (kernel-owned, general target_type/target_id). The `e
 
 ### 5.4 Indexes
 
-**Source:** [`kernel/crates/gctl-storage/src/schema.rs`](../../kernel/crates/gctl-storage/src/schema.rs) — `CREATE_INDEXES` constant.
+**Source:** [`kernel/crates/gctrl-storage/src/schema.rs`](../../kernel/crates/gctrl-storage/src/schema.rs) — `CREATE_INDEXES` constant.
 
 ---
 
-## 6. gctl-board Effect-TS Schemas
+## 6. gctrl-board Effect-TS Schemas
 
-**Source:** [`apps/gctl-board/src/schema/`](../../apps/gctl-board/src/schema/).
+**Source:** [`apps/gctrl-board/src/schema/`](../../apps/gctrl-board/src/schema/).
 
 | Type | File |
 |------|------|
-| `IssueId`, `ProjectId`, `IssueStatus`, `Priority`, `AssigneeType`, `Assignee`, `Issue`, `CreateIssueInput`, `IssueFilter` | [`Issue.ts`](../../apps/gctl-board/src/schema/Issue.ts) |
-| `IssueEventType`, `IssueEvent`, `Comment` | [`IssueEvent.ts`](../../apps/gctl-board/src/schema/IssueEvent.ts) |
-| `BoardId`, `Board`, `Project` | [`Board.ts`](../../apps/gctl-board/src/schema/Board.ts) |
+| `IssueId`, `ProjectId`, `IssueStatus`, `Priority`, `AssigneeType`, `Assignee`, `Issue`, `CreateIssueInput`, `IssueFilter` | [`Issue.ts`](../../apps/gctrl-board/src/schema/Issue.ts) |
+| `IssueEventType`, `IssueEvent`, `Comment` | [`IssueEvent.ts`](../../apps/gctrl-board/src/schema/IssueEvent.ts) |
+| `BoardId`, `Board`, `Project` | [`Board.ts`](../../apps/gctrl-board/src/schema/Board.ts) |
 
 All identifiers are `Schema.String.pipe(Schema.brand(...))` branded value objects. Enumerations use `Schema.Literal(...)`. Structures use `Schema.Struct({...})`.

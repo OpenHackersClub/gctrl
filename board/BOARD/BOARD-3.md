@@ -13,9 +13,9 @@ Implement product cycles as time-bounded batches of issues with aggregate metric
 
 ## Acceptance Criteria
 
-- CLI: `gctl board cycles create --name "Sprint 1" --start 2026-04-01 --end 2026-04-14`
-- CLI: `gctl board cycles list` shows all cycles with summary stats
-- CLI: `gctl board cycles view <id>` shows issues, cost, velocity, scores
+- CLI: `gctrl board cycles create --name "Sprint 1" --start 2026-04-01 --end 2026-04-14`
+- CLI: `gctrl board cycles list` shows all cycles with summary stats
+- CLI: `gctrl board cycles view <id>` shows issues, cost, velocity, scores
 - HTTP: CRUD endpoints under `/api/board/cycles`
 - Web UI: cycle selector in header, aggregate dashboard view
 - Metrics: total cost, issues completed, avg time-to-done, avg eval score

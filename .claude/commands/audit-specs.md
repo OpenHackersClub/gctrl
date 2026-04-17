@@ -1,10 +1,10 @@
-Audit the gctl specs for compliance with the project's principles, guidelines, and documentation standards.
+Audit the gctrl specs for compliance with the project's principles, guidelines, and documentation standards.
 
-> **Transitional skill**: Claude applies audit rules directly from spec context. Once `gctl spec audit` is implemented, this skill MUST be updated to invoke that command instead.
+> **Transitional skill**: Claude applies audit rules directly from spec context. Once `gctrl spec audit` is implemented, this skill MUST be updated to invoke that command instead.
 
 ## Instructions
 
-You are performing a spec audit. This skill is a thin wrapper — it loads the rules from gctl specs, applies them to every file under `specs/`, and reports violations.
+You are performing a spec audit. This skill is a thin wrapper — it loads the rules from gctrl specs, applies them to every file under `specs/`, and reports violations.
 
 ### 1. Load the Rules
 

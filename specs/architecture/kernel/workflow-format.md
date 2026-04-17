@@ -2,7 +2,7 @@
 
 Defines the `WORKFLOW.md` file format for agent dispatch — a Markdown file with optional YAML frontmatter that configures tracker, polling, workspace, hooks, and agent settings plus a prompt template body.
 
-The orchestrator (see [orchestrator.md](orchestrator.md)) reads this file to configure dispatch behavior. Applications built on gctl use this format to define automated agent workflows.
+The orchestrator (see [orchestrator.md](orchestrator.md)) reads this file to configure dispatch behavior. Applications built on gctrl use this format to define automated agent workflows.
 
 ## File Discovery
 
@@ -65,7 +65,7 @@ Unknown keys SHOULD be ignored for forward compatibility. The front matter is ex
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `root` | `<system-temp>/gctl_workspaces` | Workspace directory. `~` and path separators expanded. |
+| `root` | `<system-temp>/gctrl_workspaces` | Workspace directory. `~` and path separators expanded. |
 
 ### `hooks` (object)
 

@@ -6,23 +6,23 @@ Implementation details for the orchestration state machine defined in [specs/arc
 
 The Rust orchestrator MUST use the **tower + JoinSet + backon + tracing** stack. This stack is preferred because:
 
-1. **tower** — Middleware composition (retries, timeouts, rate limiting, concurrency limits) mirrors Effect-TS Layer/Service composition. Tower `Service` trait is the Rust analog of Effect-TS services: request-in, response-out, with composable middleware. Reuses the same middleware patterns as the axum HTTP layer already in gctl.
+1. **tower** — Middleware composition (retries, timeouts, rate limiting, concurrency limits) mirrors Effect-TS Layer/Service composition. Tower `Service` trait is the Rust analog of Effect-TS services: request-in, response-out, with composable middleware. Reuses the same middleware patterns as the axum HTTP layer already in gctrl.
 2. **tokio::task::JoinSet** — Lightweight structured concurrency for managing multiple agent processes. Provides spawn + collect semantics without distributed computing overhead. Sufficient for local single-machine orchestration — we MUST NOT introduce distributed task queues (Temporal, Celery, etc.) until there is a proven need for multi-machine dispatch.
 3. **backon** — Declarative retry/backoff strategies that compose cleanly. Avoids hand-rolling exponential backoff loops. Supports fixed, exponential, and custom backoff — matches the retry constants defined in this spec.
-4. **tracing** — Structured, span-based observability that maps directly to OpenTelemetry. Every dispatch, retry, and reconciliation event becomes a tracing span, automatically exported via the existing `gctl-otel` pipeline.
+4. **tracing** — Structured, span-based observability that maps directly to OpenTelemetry. Every dispatch, retry, and reconciliation event becomes a tracing span, automatically exported via the existing `gctrl-otel` pipeline.
 
-This stack keeps orchestration **local-first and single-process**, consistent with gctl's design principles. It is the closest Rust analog to Effect-TS's composable service model (tower ≈ Layer, JoinSet ≈ Effect.fork, backon ≈ Schedule, tracing ≈ Effect.withSpan). Distributed orchestration (multi-machine, durable queues) is explicitly deferred — if needed in the future, tower middleware can be swapped to back a distributed dispatcher without changing the agent adapter trait or state machine logic.
+This stack keeps orchestration **local-first and single-process**, consistent with gctrl's design principles. It is the closest Rust analog to Effect-TS's composable service model (tower ≈ Layer, JoinSet ≈ Effect.fork, backon ≈ Schedule, tracing ≈ Effect.withSpan). Distributed orchestration (multi-machine, durable queues) is explicitly deferred — if needed in the future, tower middleware can be swapped to back a distributed dispatcher without changing the agent adapter trait or state machine logic.
 
 ---
 
-## 1. Rust Crate: `gctl-orch` [deferred]
+## 1. Rust Crate: `gctrl-orch` [deferred]
 
 The Rust implementation mirrors the Lean 4 model. The transition function is a direct translation — any divergence is a bug.
 
 ### Crate Structure
 
 ```
-kernel/crates/gctl-orch/
+kernel/crates/gctrl-orch/
   src/
     lib.rs                   -- Public API
     state.rs                 -- ClaimState, Trigger, transition()
@@ -186,12 +186,12 @@ fn available_state_slots(&self, state: &str) -> usize {
 ```
 <workspace_root>/
   <sanitized_issue_identifier>/    # e.g., BACK-42/
-    .gctl/
+    .gctrl/
       run-log.jsonl                # append-only run attempt log
     <repo contents or working files>
 ```
 
-Default workspace root: `~/.local/share/gctl/workspaces`.
+Default workspace root: `~/.local/share/gctrl/workspaces`.
 
 ## 3. Observability Events
 
@@ -217,10 +217,10 @@ pub enum OrchEvent {
 ## 4. Crate Dependencies
 
 ```
-gctl-orch
-  ├── gctl-core       (ClaimState, Trigger, transition — shared types)
-  ├── gctl-storage    (read issue/task state)
-  ├── gctl-otel       (emit orchestration telemetry spans)
+gctrl-orch
+  ├── gctrl-core       (ClaimState, Trigger, transition — shared types)
+  ├── gctrl-storage    (read issue/task state)
+  ├── gctrl-otel       (emit orchestration telemetry spans)
   ├── tower           (Service trait, middleware: concurrency limit, timeout, retry)
   ├── tokio           (async runtime, timers, process spawning, JoinSet)
   ├── backon          (declarative retry/backoff strategies)

@@ -6,24 +6,24 @@ Applications are stateful programs that orchestrate kernel primitives through th
 
 | Package | Responsibility | Key Dependencies |
 |---------|---------------|-----------------|
-| `gctl-board` | Kanban schemas, services, domain logic | `effect`, `@effect/schema`, `@effect/platform` |
+| `gctrl-board` | Kanban schemas, services, domain logic | `effect`, `@effect/schema`, `@effect/platform` |
 
 ## Runtime Model
 
 ```mermaid
 graph LR
     subgraph Apps["Effect-TS — Applications"]
-        Board["gctl-board"]
+        Board["gctrl-board"]
         FutureApps["Future Apps"]
     end
 
     subgraph Shell["Effect-TS — Shell"]
-        CLI["gctl CLI (@effect/cli)"]
+        CLI["gctrl CLI (@effect/cli)"]
     end
 
     subgraph Kernel["Rust — Kernel"]
         API["HTTP API (:4318)"]
-        Daemon["gctl serve"]
+        Daemon["gctrl serve"]
         DrvGH["driver-github (LKM)"]
     end
 
@@ -41,7 +41,7 @@ Applications and the shell communicate with the kernel via the HTTP API on `:431
 ## Package Structure
 
 ```
-apps/gctl-{app}/
+apps/gctrl-{app}/
 ├── src/
 │   ├── schema/        # Domain: Schema.Class types, branded IDs
 │   ├── services/      # Ports: Context.Tag service interfaces
@@ -76,7 +76,7 @@ apps/gctl-{app}/
   Tests then use `HttpClient.HttpClient` inside `Effect.gen`, provided with `TestHttpClient`. Raw `SELF.fetch` calls are permitted only in a single shared test fixture that defines this layer.
 - App tables MUST use namespaced prefixes (`board_*`, `eval_*`)
 
-## gctl-board
+## gctrl-board
 
 - **Domain schemas**: `src/schema/` — Issue, Board, Project as `Schema.Class` types
 - **Service ports**: `src/services/` — `BoardService`, `DependencyResolver` as `Context.Tag` services
@@ -84,13 +84,13 @@ apps/gctl-{app}/
 
 ## Integration with Kernel
 
-Applications talk to the Rust kernel daemon via the HTTP API on `:4318`. The Effect-TS shell CLI (`shell/gctl-shell/`) delegates app-specific commands (e.g., `gctl board`) to the corresponding app's service layer.
+Applications talk to the Rust kernel daemon via the HTTP API on `:4318`. The Effect-TS shell CLI (`shell/gctrl-shell/`) delegates app-specific commands (e.g., `gctrl board`) to the corresponding app's service layer.
 
 ## Each App Can Be Its Own Codebase
 
 Applications under `apps/` are independent npm packages. They depend on the kernel only through the HTTP API. This means:
 
-- An app can be extracted to its own repo and still work — it just talks to `gctl` over HTTP
+- An app can be extracted to its own repo and still work — it just talks to `gctrl` over HTTP
 - Apps MUST NOT join across other apps' tables — cross-app data flows through kernel IPC
 - Each app declares its own `package.json`, `tsconfig.json`, and test setup
 

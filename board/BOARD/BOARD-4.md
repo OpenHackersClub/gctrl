@@ -9,12 +9,12 @@ created_by: debuggingfuture
 
 # GitHub sync — project binding and config
 
-Configure per-project binding between gctl-board projects and GitHub repos via driver-github LKM.
+Configure per-project binding between gctrl-board projects and GitHub repos via driver-github LKM.
 
 ## Acceptance Criteria
 
-- CLI: `gctl board projects bind-github --project BOARD --repo debuggingfuture/gctrl`
+- CLI: `gctrl board projects bind-github --project BOARD --repo debuggingfuture/gctrl`
 - Binding stored in board_projects table (github_repo column)
-- Binding visible in `gctl board projects list` and web UI ProjectSelector
-- `gctl board projects unbind-github --project BOARD` removes binding
+- Binding visible in `gctrl board projects list` and web UI ProjectSelector
+- `gctrl board projects unbind-github --project BOARD` removes binding
 - HTTP: `POST /api/board/projects/{id}/bind-github`, `DELETE /api/board/projects/{id}/bind-github`

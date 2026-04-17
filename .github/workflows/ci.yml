@@ -38,8 +38,8 @@ jobs:
       - name: Upload kernel binary
         uses: actions/upload-artifact@v4
         with:
-          name: gctl-kernel
-          path: target/debug/gctld
+          name: gctrl-kernel
+          path: target/debug/gctrld
           retention-days: 1
 
   # ──────────────────────────────────────────────
@@ -60,28 +60,28 @@ jobs:
 
       - name: Test — shell
         run: pnpm test
-        working-directory: shell/gctl-shell
+        working-directory: shell/gctrl-shell
 
       - name: Test — board
         run: pnpm test
-        working-directory: apps/gctl-board
+        working-directory: apps/gctrl-board
 
       # Build web assets first: wrangler.toml references dist-web/ for [assets],
       # and the Workers runtime test harness loads that config.
       - name: Build — board web
         run: pnpm build:web
-        working-directory: apps/gctl-board
+        working-directory: apps/gctrl-board
 
       - name: Test — board Workers runtime
         run: pnpm test:workers
-        working-directory: apps/gctl-board
+        working-directory: apps/gctrl-board
 
       # Upload web assets for deploy and Playwright jobs
       - name: Upload board web assets
         uses: actions/upload-artifact@v4
         with:
           name: board-web-dist
-          path: apps/gctl-board/dist-web/
+          path: apps/gctrl-board/dist-web/
           retention-days: 1
 
   # ──────────────────────────────────────────────
@@ -100,30 +100,30 @@ jobs:
 
       - name: Install Playwright browsers
         run: pnpm exec playwright install --with-deps chromium
-        working-directory: apps/gctl-board
+        working-directory: apps/gctrl-board
 
       - name: Download kernel binary
         uses: actions/download-artifact@v4
         with:
-          name: gctl-kernel
+          name: gctrl-kernel
           path: target/debug/
 
       - name: Make kernel binary executable
-        run: chmod +x target/debug/gctld
+        run: chmod +x target/debug/gctrld
 
       - name: Run Playwright tests
         run: pnpm exec playwright test
-        working-directory: apps/gctl-board
+        working-directory: apps/gctrl-board
         env:
           CI: "true"
           GCTL_KERNEL_PORT: "14318"
           GCTL_VITE_PORT: "14200"
-          GCTL_KERNEL_BIN: ${{ github.workspace }}/target/debug/gctld
+          GCTL_KERNEL_BIN: ${{ github.workspace }}/target/debug/gctrld
 
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
           name: playwright-report
-          path: apps/gctl-board/playwright-report/
+          path: apps/gctrl-board/playwright-report/
           retention-days: 7

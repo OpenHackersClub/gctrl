@@ -10,10 +10,10 @@ github_issue: 6
 
 # Add navigation menu bar with Inbox page
 
-gctl-board web UI should have a navigation menu bar that allows switching between pages:
+gctrl-board web UI should have a navigation menu bar that allows switching between pages:
 
 - **Board** (`/projects/:key`) — existing kanban view
-- **Inbox** (`/inbox`) — view for gctl-inbox messages, threads, and actions
+- **Inbox** (`/inbox`) — view for gctrl-inbox messages, threads, and actions
 
 ## Requirements
 

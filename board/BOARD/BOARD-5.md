@@ -13,7 +13,7 @@ Add multi-dimensional eval scoring to issues. Three scoring sources: human (manu
 
 ## Acceptance Criteria
 
-- CLI: `gctl board issues score <id> --dimension correctness --value 4 --source human`
+- CLI: `gctrl board issues score <id> --dimension correctness --value 4 --source human`
 - Auto-scoring: on issue `done`, compute test pass rate and coverage delta
 - Model-based: optional LLM judge evaluates code diff against acceptance criteria
 - Issue detail panel shows score breakdown by dimension

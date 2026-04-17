@@ -9,7 +9,7 @@ created_by: debuggingfuture
 
 # Agent OTel dashboard — cost charts, session timeline, score trends
 
-Add an observability dashboard surface to gctl-board web UI showing aggregate agent metrics: cost over time, session timeline, latency distribution, and eval score trends.
+Add an observability dashboard surface to gctrl-board web UI showing aggregate agent metrics: cost over time, session timeline, latency distribution, and eval score trends.
 
 ## Acceptance Criteria
 

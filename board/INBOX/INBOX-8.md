@@ -9,7 +9,7 @@ created_by: debuggingfuture
 
 # Kernel IPC integration — guardrail and orchestrator event routing
 
-Wire gctl-inbox into the kernel IPC event system. Guardrail events auto-create inbox messages. Inbox approval actions route back to the orchestrator to resume/terminate sessions.
+Wire gctrl-inbox into the kernel IPC event system. Guardrail events auto-create inbox messages. Inbox approval actions route back to the orchestrator to resume/terminate sessions.
 
 ## Acceptance Criteria
 

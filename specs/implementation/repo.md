@@ -1,6 +1,6 @@
 # Monorepo Structure
 
-gctl uses a **single Nx-managed monorepo** for Rust and TypeScript (Effect-TS) code. Nx orchestrates builds, tests, and caching across both runtimes. Cargo workspace handles Rust crate dependency resolution; Nx handles cross-language task orchestration, affected detection, and caching.
+gctrl uses a **single Nx-managed monorepo** for Rust and TypeScript (Effect-TS) code. Nx orchestrates builds, tests, and caching across both runtimes. Cargo workspace handles Rust crate dependency resolution; Nx handles cross-language task orchestration, affected detection, and caching.
 
 ## Directory Layout
 
@@ -13,25 +13,25 @@ gctrl/
 │
 ├── kernel/                    # Rust kernel (Cargo workspace)
 │   └── crates/
-│       ├── gctl-core/         # Domain: types, errors, config, port traits
+│       ├── gctrl-core/         # Domain: types, errors, config, port traits
 │       │
 │       │  # --- Kernel primitives ---
-│       ├── gctl-storage/      # DuckDB embedded storage
-│       ├── gctl-otel/         # OTel receiver + HTTP API (:4318)
-│       ├── gctl-guardrails/   # Policy engine
-│       ├── gctl-context/      # Context manager (DuckDB + filesystem)
-│       ├── gctl-query/        # Guardrailed query executor
-│       ├── gctl-net/          # Web fetch, crawl, compaction
-│       ├── gctl-proxy/        # MITM proxy (stub)
-│       ├── gctl-browser/      # CDP browser daemon
-│       ├── gctl-sync/         # R2 cloud sync (stub)
-│       ├── gctl-scheduler/    # Scheduler port + adapters
+│       ├── gctrl-storage/      # DuckDB embedded storage
+│       ├── gctrl-otel/         # OTel receiver + HTTP API (:4318)
+│       ├── gctrl-guardrails/   # Policy engine
+│       ├── gctrl-context/      # Context manager (DuckDB + filesystem)
+│       ├── gctrl-query/        # Guardrailed query executor
+│       ├── gctrl-net/          # Web fetch, crawl, compaction
+│       ├── gctrl-proxy/        # MITM proxy (stub)
+│       ├── gctrl-browser/      # CDP browser daemon
+│       ├── gctrl-sync/         # R2 cloud sync (stub)
+│       ├── gctrl-scheduler/    # Scheduler port + adapters
 │       │
 │       │  # --- Daemon binary ---
-│       └── gctl-cli/          # Minimal binary: `gctl serve`
+│       └── gctrl-cli/          # Minimal binary: `gctrl serve`
 │
 ├── shell/                     # Effect-TS CLI (user-facing)
-│   └── gctl-shell/            # @effect/cli command dispatcher
+│   └── gctrl-shell/            # @effect/cli command dispatcher
 │       ├── src/
 │       │   ├── main.ts        # CLI entry point
 │       │   ├── commands/      # Command implementations
@@ -41,7 +41,7 @@ gctrl/
 │       └── package.json
 │
 ├── apps/                      # Effect-TS applications
-│   ├── gctl-board/            # App: kanban (schemas, services, adapters)
+│   ├── gctrl-board/            # App: kanban (schemas, services, adapters)
 │   └── ...                    # Future: observe-eval, capacity
 │
 ├── specs/                     # Architecture, design, and formal specs
@@ -55,19 +55,19 @@ gctrl/
 
 ## Three Codebases, One Repo
 
-gctl separates concerns across three codebases. Each has its own build system, dependency management, and can be developed independently. Nx provides the cross-language orchestration layer.
+gctrl separates concerns across three codebases. Each has its own build system, dependency management, and can be developed independently. Nx provides the cross-language orchestration layer.
 
 | Codebase | Language | Directory | Build System | Responsibility |
 |----------|----------|-----------|-------------|----------------|
-| **Kernel** | Rust | `kernel/crates/` | Cargo workspace | Core primitives: storage, telemetry, guardrails, context, query, sync, proxy, browser, scheduler. HTTP API on `:4318`. Minimal daemon binary (`gctl serve`). |
-| **Shell** | TypeScript (Effect-TS) | `shell/gctl-shell/` | pnpm + tsup | User-facing CLI (`@effect/cli`). Invokes kernel via HTTP API. External services (GitHub, Linear) accessed through kernel drivers, never directly. |
-| **Applications** | TypeScript (Effect-TS) | `apps/` | pnpm + tsup | Application-level logic: gctl-board (kanban), future apps. Each app owns its namespaced tables, domain model, and services. Communicates with kernel via HTTP API. |
+| **Kernel** | Rust | `kernel/crates/` | Cargo workspace | Core primitives: storage, telemetry, guardrails, context, query, sync, proxy, browser, scheduler. HTTP API on `:4318`. Minimal daemon binary (`gctrl serve`). |
+| **Shell** | TypeScript (Effect-TS) | `shell/gctrl-shell/` | pnpm + tsup | User-facing CLI (`@effect/cli`). Invokes kernel via HTTP API. External services (GitHub, Linear) accessed through kernel drivers, never directly. |
+| **Applications** | TypeScript (Effect-TS) | `apps/` | pnpm + tsup | Application-level logic: gctrl-board (kanban), future apps. Each app owns its namespaced tables, domain model, and services. Communicates with kernel via HTTP API. |
 
 **Kernel exposes, shell consumes.** The Rust kernel's only external interface is the HTTP API on `:4318`. The Effect-TS shell CLI calls this API to access kernel features. External services (GitHub, Linear, etc.) are accessed through kernel drivers (loadable kernel modules) — the shell calls kernel HTTP routes which delegate to the appropriate driver. The shell MUST NOT call external APIs directly.
 
 **Each app can take its own codebase.** Applications under `apps/` are independent npm packages. They depend on the kernel only through the HTTP API on `:4318`. This means:
 
-- An app can be extracted to its own repo and still work — it just talks to the `gctl` daemon over HTTP.
+- An app can be extracted to its own repo and still work — it just talks to the `gctrl` daemon over HTTP.
 - Apps MUST NOT import Rust crates directly (no FFI, no shared memory).
 - Apps MUST NOT join across other apps' tables — cross-app data flows through kernel IPC.
 - Each app declares its own `package.json`, `tsconfig.json`, and test setup.
@@ -143,9 +143,9 @@ gctl separates concerns across three codebases. Each has its own build system, d
 Each Rust crate MAY have a `project.json` for Nx target overrides. The `@monodon/rust` plugin auto-infers `build` and `test` targets from `Cargo.toml`, so `project.json` is only needed for custom targets.
 
 ```jsonc
-// kernel/crates/gctl-cli/project.json (example)
+// kernel/crates/gctrl-cli/project.json (example)
 {
-  "name": "gctl-cli",
+  "name": "gctrl-cli",
   "targets": {
     "build": {
       "executor": "@monodon/rust:build",
@@ -167,9 +167,9 @@ Each Rust crate MAY have a `project.json` for Nx target overrides. The `@monodon
 TypeScript packages use their `package.json` scripts. Nx infers targets from `package.json#scripts` automatically.
 
 ```jsonc
-// shell/gctl-shell/package.json
+// shell/gctrl-shell/package.json
 {
-  "name": "gctl-shell",
+  "name": "gctrl-shell",
   "scripts": {
     "build": "tsup src/main.ts --format esm --dts",
     "test": "vitest run"
@@ -183,9 +183,9 @@ TypeScript packages use their `package.json` scripts. Nx infers targets from `pa
 ```
 
 ```jsonc
-// apps/gctl-board/package.json
+// apps/gctrl-board/package.json
 {
-  "name": "gctl-board",
+  "name": "gctrl-board",
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts",
     "test": "vitest run"
@@ -220,26 +220,26 @@ nx run-many -t test
 nx affected -t test
 
 # Single project
-nx test gctl-shell
-nx test gctl-board
-nx build gctl-cli
+nx test gctrl-shell
+nx test gctrl-board
+nx build gctrl-cli
 
 # Rust kernel directly (bypasses Nx, no cross-language cache)
 cd kernel && cargo build
 cd kernel && cargo test
 
 # Shell directly
-cd shell/gctl-shell && pnpm run test
+cd shell/gctrl-shell && pnpm run test
 
 # Applications directly
-cd apps/gctl-board && pnpm run test
+cd apps/gctrl-board && pnpm run test
 ```
 
 ## Conventions
 
-1. **Rust kernel crates live in `kernel/crates/`.** Named `gctl-{name}`. Managed by Cargo workspace.
-2. **Effect-TS shell lives in `shell/gctl-shell/`.** The user-facing CLI. Managed by pnpm + Nx.
-3. **Effect-TS applications live in `apps/`.** Named `gctl-{name}`. Managed by pnpm + Nx.
+1. **Rust kernel crates live in `kernel/crates/`.** Named `gctrl-{name}`. Managed by Cargo workspace.
+2. **Effect-TS shell lives in `shell/gctrl-shell/`.** The user-facing CLI. Managed by pnpm + Nx.
+3. **Effect-TS applications live in `apps/`.** Named `gctrl-{name}`. Managed by pnpm + Nx.
 4. **Shared nothing between runtimes at build time.** TypeScript (shell + apps) communicates with Rust via the kernel HTTP API on `:4318`, never via FFI or shared memory.
 5. **Nx is the top-level orchestrator.** Use `nx run-many -t test` for CI, not separate `cargo test && pnpm run test` steps.
 6. **Cache inputs MUST be explicit.** Rust targets use the `rust` named input; TypeScript targets use the `typescript` named input. This prevents false cache hits across languages.

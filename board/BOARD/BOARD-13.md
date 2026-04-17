@@ -8,13 +8,13 @@ created_by: debuggingfuture
 github_issue: 5
 ---
 
-# Add Cloudflare Worker deployment setup for gctl-board
+# Add Cloudflare Worker deployment setup for gctrl-board
 
-Add Cloudflare Worker deployment setup for gctl-board web UI so the kanban board can be hosted and accessed remotely.
+Add Cloudflare Worker deployment setup for gctrl-board web UI so the kanban board can be hosted and accessed remotely.
 
 ## Requirements
 
-- Add wrangler.toml config for gctl-board Worker
+- Add wrangler.toml config for gctrl-board Worker
 - Configure Vite build output for Workers-compatible static asset serving
 - Set up environment variables / secrets for kernel API base URL
 - Add pnpm deploy / pnpm deploy:preview scripts

@@ -19,4 +19,4 @@ Build the core inbox web interface: message feed sorted by urgency, thread-group
 - Message card shows: source icon, kind badge, title, urgency, timestamp
 - Thread detail view: all messages in thread with full context
 - Individual action buttons on each message (approve, deny, dismiss)
-- Design tokens match gctl-board (zinc-950 bg, emerald accent, Chakra Petch display)
+- Design tokens match gctrl-board (zinc-950 bg, emerald accent, Chakra Petch display)

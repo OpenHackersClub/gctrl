@@ -1,8 +1,8 @@
 Spawn a team of specialist agents for a task — each with the right persona and system prompt.
 
 > **Thin bridge**: Persona data is managed by the kernel (`persona_definitions` table).
-> This skill calls `gctl persona` and `gctl team` CLI commands to resolve and render prompts.
-> Edit personas in `specs/team/personas.md` and run `gctl persona seed` to update the kernel.
+> This skill calls `gctrl persona` and `gctrl team` CLI commands to resolve and render prompts.
+> Edit personas in `specs/team/personas.md` and run `gctrl persona seed` to update the kernel.
 
 ## Instructions
 
@@ -10,14 +10,14 @@ Spawn a team of specialist agents for a task — each with the right persona and
 
 Read `specs/team/personas.md` to understand the 7 specialist roles.
 
-Run `gctl persona list --format json` to get kernel-stored personas. If empty, run `gctl persona seed` first.
+Run `gctrl persona list --format json` to get kernel-stored personas. If empty, run `gctrl persona seed` first.
 
 ### 2. Resolve Team
 
 If $ARGUMENTS provides labels, issue key, PR type, or task description:
 
-1. Run `gctl team recommend --labels <extracted-labels> --format json` to get the recommended team.
-2. If a `--pr-type` is provided (e.g., `new_kernel_primitive`, `new_cli_command`, `new_application`, `guardrail_change`, `ci_cd_change`, `spec_change`), use `gctl team recommend --pr-type <type> --format json` instead.
+1. Run `gctrl team recommend --labels <extracted-labels> --format json` to get the recommended team.
+2. If a `--pr-type` is provided (e.g., `new_kernel_primitive`, `new_cli_command`, `new_application`, `guardrail_change`, `ci_cd_change`, `spec_change`), use `gctrl team recommend --pr-type <type> --format json` instead.
 
 If no arguments provided, show the available personas and ask the user what work needs a team.
 
@@ -26,10 +26,10 @@ If no arguments provided, show the available personas and ask the user what work
 For each recommended persona, get the rendered system prompt:
 
 ```
-gctl team render <comma-separated-persona-ids> --format json
+gctrl team render <comma-separated-persona-ids> --format json
 ```
 
-If an issue key is available, include it: `gctl team render <ids> --issue <key> --format json`
+If an issue key is available, include it: `gctrl team render <ids> --issue <key> --format json`
 
 ### 4. Spawn Agents
 

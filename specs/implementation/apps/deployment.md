@@ -1,8 +1,8 @@
-# gctl-board Cloudflare Deployment
+# gctrl-board Cloudflare Deployment
 
 ## Overview
 
-gctl-board deploys to **Cloudflare Workers** as a unified origin: a single Worker serves both the API (`/api/*`) and the static SPA frontend. Persistence uses **Cloudflare D1** (SQLite at the edge).
+gctrl-board deploys to **Cloudflare Workers** as a unified origin: a single Worker serves both the API (`/api/*`) and the static SPA frontend. Persistence uses **Cloudflare D1** (SQLite at the edge).
 
 ```mermaid
 graph TD
@@ -20,7 +20,7 @@ graph TD
 
 ## Architecture: Two Runtimes
 
-gctl-board has two distinct runtime modes that share the same domain model:
+gctrl-board has two distinct runtime modes that share the same domain model:
 
 | Mode | Runtime | Storage | API Access |
 |------|---------|---------|------------|
@@ -69,7 +69,7 @@ Indexes on `issues(project_id)`, `issues(status)`, `comments(issue_id)`, `issue_
 
 ### Migrations
 
-Applied via `wrangler d1 migrations apply`. Migration directory: `apps/gctl-board/migrations/`.
+Applied via `wrangler d1 migrations apply`. Migration directory: `apps/gctrl-board/migrations/`.
 
 ## D1Client (Effect Port)
 
@@ -85,7 +85,7 @@ Applied via `wrangler d1 migrations apply`. Migration directory: `apps/gctl-boar
 ## Wrangler Configuration (`wrangler.toml`)
 
 ```toml
-name = "gctl-board"
+name = "gctrl-board"
 compatibility_date = "2025-04-01"
 compatibility_flags = ["nodejs_compat"]
 main = "src/worker.ts"
@@ -99,7 +99,7 @@ not_found_handling = "single-page-application"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "gctl-board-db"
+database_name = "gctrl-board-db"
 database_id = "2173a9e0-f901-4d76-9f26-71f532b0eda7"
 migrations_dir = "migrations"
 ```
@@ -147,7 +147,7 @@ graph LR
     Playwright["playwright: local acceptance tests"]
 ```
 
-1. **`rust`** — builds and tests the kernel workspace, uploads the `gctl` binary as an artifact. No explicit Cargo cache step — Depot runners provide persistent build caches.
+1. **`rust`** — builds and tests the kernel workspace, uploads the `gctrl` binary as an artifact. No explicit Cargo cache step — Depot runners provide persistent build caches.
 2. **`typescript`** — installs deps (root + board + shell), runs Biome lint, tests shell + board, runs `test:workers` (Miniflare V8 isolate), runs `build:web`, uploads `dist-web/` as artifact.
 3. **`playwright`** — downloads kernel binary + web assets, runs full Playwright acceptance test suite against the local kernel + Vite dev server. Covers all tests including OTel ingestion and markdown sync.
 
@@ -177,7 +177,7 @@ When `CDP_ENDPOINT` is set, `playwright.config.ts` skips `webServer` startup (no
 The preview environment uses a placeholder `database_id = "preview"` in `wrangler.toml`. Before each preview deploy, `scripts/ensure-preview-d1.mjs` runs to:
 
 1. List existing D1 databases via `wrangler d1 list --json`
-2. Create `gctl-board-preview-db` if it doesn't exist
+2. Create `gctrl-board-preview-db` if it doesn't exist
 3. Patch `wrangler.toml` with the real database UUID
 
 This handles wrangler's mixed stdout (telemetry banners before JSON) by extracting the JSON array/object from the raw output using Node.js.
@@ -202,7 +202,7 @@ Three jobs:
 
 Opportunities to move more CI work off Depot runners:
 
-- **CI orchestration Worker** — a Worker receives push/PR webhooks, inspects changed files (`apps/gctl-board/**` vs `kernel/**`), and triggers only the relevant GitHub Actions workflows. Avoids running the full matrix on doc-only changes.
+- **CI orchestration Worker** — a Worker receives push/PR webhooks, inspects changed files (`apps/gctrl-board/**` vs `kernel/**`), and triggers only the relevant GitHub Actions workflows. Avoids running the full matrix on doc-only changes.
 - **Global E2E smoke tests** — Cron Trigger Workers that run lightweight health checks from multiple edge locations after each production deploy.
 - **Artifact-free TypeScript CI** — if Cloudflare can host build artifacts (R2 or Workers KV), the TypeScript lint/test/build job can move entirely to a Worker, eliminating the Depot runner for that job.
 
@@ -210,7 +210,7 @@ Opportunities to move more CI work off Depot runners:
 
 ```sh
 # Start Vite dev server (SPA + proxy to kernel)
-cd apps/gctl-board && pnpm dev
+cd apps/gctrl-board && pnpm dev
 
 # Vite proxies /api/* → http://localhost:4318 (kernel daemon)
 # Override kernel port: GCTL_KERNEL_PORT=5000 pnpm dev
@@ -220,7 +220,7 @@ For local D1 testing (without the Rust kernel):
 
 ```sh
 # Start Worker locally with Miniflare (includes local D1)
-cd apps/gctl-board && wrangler dev
+cd apps/gctrl-board && wrangler dev
 ```
 
 ## Local vs Cloud Storage
@@ -228,7 +228,7 @@ cd apps/gctl-board && wrangler dev
 | Concern | Local (kernel mode) | Cloud (Worker mode) |
 |---------|-------------------|-------------------|
 | Storage engine | DuckDB (embedded, kernel-owned) | D1 (SQLite, Cloudflare-managed) |
-| Schema location | Kernel crate (`gctl-storage`) | `migrations/0001_init.sql` |
+| Schema location | Kernel crate (`gctrl-storage`) | `migrations/0001_init.sql` |
 | Table prefix | `board_*` (namespaced in kernel) | No prefix (Worker owns the database) |
 | Access pattern | Shell/app → HTTP API `:4318` → DuckDB | Worker → D1 binding → SQLite |
 | JSON columns | DuckDB native JSON type | `TEXT` columns with `JSON.parse` at app layer |

@@ -1,16 +1,16 @@
 [workspace]
 resolver = "2"
 members = [
-    "kernel/crates/gctl-core",
-    "kernel/crates/gctl-cli",
-    "kernel/crates/gctl-storage",
-    "kernel/crates/gctl-otel",
-    "kernel/crates/gctl-guardrails",
-    "kernel/crates/gctl-query",
-    "kernel/crates/gctl-proxy",
-    "kernel/crates/gctl-net",
-    "kernel/crates/gctl-sync",
-    "kernel/crates/gctl-context",
+    "kernel/crates/gctrl-core",
+    "kernel/crates/gctrl-cli",
+    "kernel/crates/gctrl-storage",
+    "kernel/crates/gctrl-otel",
+    "kernel/crates/gctrl-guardrails",
+    "kernel/crates/gctrl-query",
+    "kernel/crates/gctrl-proxy",
+    "kernel/crates/gctrl-net",
+    "kernel/crates/gctrl-sync",
+    "kernel/crates/gctrl-context",
 ]
 
 [workspace.package]

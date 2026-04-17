@@ -50,16 +50,16 @@ Gaps and product requirements to address in future phases.
 - [ ] **Workload modeling** — Estimate agent parallelism, optimal team size, cost projections.
 - [ ] **Delegation intelligence** — Recommend which tasks to delegate to agents vs. keep for humans.
 
-## Phase 6: gctl-board (Effect-TS Kanban)
+## Phase 6: gctrl-board (Effect-TS Kanban)
 
-- [ ] **Effect-TS project setup** — Initialize apps/gctl-board/ with Effect, vitest, DuckDB bindings. Decide Bun vs Node.
+- [ ] **Effect-TS project setup** — Initialize apps/gctrl-board/ with Effect, vitest, DuckDB bindings. Decide Bun vs Node.
 - [ ] **Core issue CRUD** — Create, read, update, delete issues with Schema validation. Status transitions with WIP limit enforcement.
 - [ ] **Dependency resolver** — DAG-based blocking/unblocking with cycle detection. Auto-unblock when dependencies complete.
 - [ ] **Event sourcing** — Append-only event log for all issue mutations. Enables audit trail and activity feeds.
 - [ ] **Agent coordination protocol** — Task claiming with device-level assignment. Prevent multiple agents claiming same issue. Agent-initiated decomposition.
 - [ ] **OTel auto-linkage** — Subscribe to span events, match to issues via branch name, commit message, or explicit link. Accumulate cost/tokens on issues.
-- [ ] **CLI bridge** — `gctl board *` commands in Rust that delegate to TS service via HTTP or subprocess spawn.
-- [ ] **Board context export** — `gctl board context` generates markdown summary for agent context windows.
+- [ ] **CLI bridge** — `gctrl board *` commands in Rust that delegate to TS service via HTTP or subprocess spawn.
+- [ ] **Board context export** — `gctrl board context` generates markdown summary for agent context windows.
 - [ ] **Linear sync** — Pull issues from Linear API, map statuses, sync back agent execution data as comments.
 - [ ] **GitHub Issues sync** — Pull issues from GitHub, map labels/milestones, push agent summaries.
 - [ ] **Kanban web view** — Local web dashboard showing board columns, drag-and-drop (HTMX or React + Effect Platform).
@@ -70,9 +70,9 @@ Gaps and product requirements to address in future phases.
 
 ## Cross-Cutting Concerns
 
-- [ ] **Config file support** — Load from `~/.config/gctl/config.toml` with proper precedence (env > file > defaults).
+- [ ] **Config file support** — Load from `~/.config/gctrl/config.toml` with proper precedence (env > file > defaults).
 - [ ] **Schema migrations** — Version tracking for DuckDB schema changes. Currently tables are CREATE IF NOT EXISTS only.
-- [ ] **Daemon mode** — `gctl daemon` that runs OTel receiver + proxy + sync in a single long-lived process.
+- [ ] **Daemon mode** — `gctrl daemon` that runs OTel receiver + proxy + sync in a single long-lived process.
 - [ ] **Structured logging** — JSON logging mode for production, human-readable for dev.
 - [ ] **Metrics export** — Expose Prometheus metrics for the daemon itself (spans/sec, storage size, sync status).
 - [ ] **Multi-workspace** — Support multiple workspaces in a single DuckDB instance, with workspace-scoped queries.

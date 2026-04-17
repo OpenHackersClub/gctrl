@@ -4,10 +4,10 @@ Run a full codebase quality audit — build, lint, tests, and acceptance criteri
 
 ### 1. Run the Audit CLI
 
-Execute the gctl audit command from the workspace root:
+Execute the gctrl audit command from the workspace root:
 
 ```
-node shell/gctl-shell/dist/main.js audit
+node shell/gctrl-shell/dist/main.js audit
 ```
 
 If the shell hasn't been built yet, build it first:
@@ -36,7 +36,7 @@ For each failure:
 For lint issues, you can run with `--fix`:
 
 ```
-node shell/gctl-shell/dist/main.js audit --fix
+node shell/gctrl-shell/dist/main.js audit --fix
 ```
 
 ### 4. Report

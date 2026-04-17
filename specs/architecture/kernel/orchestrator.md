@@ -2,7 +2,7 @@
 
 The orchestrator is a **kernel primitive** responsible for agent-agnostic dispatch, retry, and reconciliation of agentic work on **Tasks** (Scheduler primitives). It is the single authoritative source of claim state — no application or driver may mutate orchestrator state directly.
 
-Issues are an application-level concept (gctl-board) and are NOT visible to the Orchestrator. The Orchestrator dispatches Sessions to execute Tasks; applications observe the resulting events via kernel IPC and update their own work items.
+Issues are an application-level concept (gctrl-board) and are NOT visible to the Orchestrator. The Orchestrator dispatches Sessions to execute Tasks; applications observe the resulting events via kernel IPC and update their own work items.
 
 For implementation details (formal verification, crate structure, adapter wiring, tech stack), see [specs/implementation/orchestrator.md](../../implementation/kernel/orchestrator.md).
 
@@ -84,8 +84,8 @@ Every transition strictly increases phase ordering, guaranteeing termination (no
 | **Agent Exit (Abnormal)** | Remove from running set, record error telemetry, schedule exponential-backoff retry. |
 | **Retry Timer Fired** | Re-fetch candidates, re-dispatch if still eligible, else release claim. |
 | **Guardrail Suspend** | Guardrails engine emits suspend signal → running Session transitions to `Paused`. |
-| **Human Pause** | Operator runs `gctl orchestrate pause` → running Session transitions to `Paused`. |
-| **Human Resume** | Operator runs `gctl orchestrate resume` → `Paused` Session transitions back to `Running`. |
+| **Human Pause** | Operator runs `gctrl orchestrate pause` → running Session transitions to `Paused`. |
+| **Human Resume** | Operator runs `gctrl orchestrate resume` → `Paused` Session transitions back to `Running`. |
 | **Reconciliation** | Detect stalls (elapsed > timeout → kill + retry). Refresh Scheduler Task state (terminal → release, active → update snapshot, fetch failure → keep running). Paused sessions are skipped. |
 
 ### Tick Sequence
@@ -220,24 +220,24 @@ The orchestrator MUST emit structured telemetry for every state transition:
 
 ```sh
 # Start the orchestration loop
-gctl orchestrate start
-gctl orchestrate start --daemon
+gctrl orchestrate start
+gctrl orchestrate start --daemon
 
 # Inspect state
-gctl orchestrate status
-gctl orchestrate list
-gctl orchestrate list --state running
-gctl orchestrate inspect <task-id>
+gctrl orchestrate status
+gctrl orchestrate list
+gctrl orchestrate list --state running
+gctrl orchestrate inspect <task-id>
 
 # Manual control
-gctl orchestrate dispatch <task-id>
-gctl orchestrate pause   <task-id>   # suspend, await human review
-gctl orchestrate resume  <task-id>   # approve continuation
-gctl orchestrate cancel  <task-id>   # graceful stop
-gctl orchestrate retry   <task-id>
-gctl orchestrate release <task-id>
+gctrl orchestrate dispatch <task-id>
+gctrl orchestrate pause   <task-id>   # suspend, await human review
+gctrl orchestrate resume  <task-id>   # approve continuation
+gctrl orchestrate cancel  <task-id>   # graceful stop
+gctrl orchestrate retry   <task-id>
+gctrl orchestrate release <task-id>
 
 # Configuration
-gctl orchestrate config
-gctl orchestrate config --validate
+gctrl orchestrate config
+gctrl orchestrate config --validate
 ```

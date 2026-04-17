@@ -9,7 +9,7 @@ created_by: debuggingfuture
 
 # GitHub sync — inbound events and auto-transitions
 
-Receive GitHub events (issue close/reopen, PR open/merge, comments) and sync back to gctl-board via driver-github.
+Receive GitHub events (issue close/reopen, PR open/merge, comments) and sync back to gctrl-board via driver-github.
 
 ## Acceptance Criteria
 

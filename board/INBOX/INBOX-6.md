@@ -9,7 +9,7 @@ created_by: debuggingfuture
 
 # HTTP API routes for inbox CRUD and actions
 
-Implement kernel HTTP API endpoints for gctl-inbox under `/api/inbox/*`.
+Implement kernel HTTP API endpoints for gctrl-inbox under `/api/inbox/*`.
 
 ## Acceptance Criteria
 
