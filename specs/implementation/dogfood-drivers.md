@@ -13,13 +13,38 @@ makes sure gctl is its own first user.
 | `wrangler`| *(none)*                          | *(none)*                  | `.github/workflows/deploy.yml` calls `pnpm exec wrangler d1 …` and `cloudflare/wrangler-action@v3` |
 | `dotenvx` | npm scripts (`env:encrypt/decrypt/run`) | n/a (local secrets only) | not yet wired                                      |
 
-## `gctl gh` — Gap Fill
+## Generic Passthrough — `exec`
+
+Both drivers expose a generic `POST /api/{driver}/exec` route backed by the
+shared `cli_exec` helper in the kernel. The shell surfaces this as:
+
+```
+gctl wrangler exec -- d1 execute my-db --env preview --remote --command "SELECT 1"
+gctl gh exec -- pr merge 42 --squash --delete-branch
+```
+
+Envelope: `{ stdout, stderr, exitCode, durationMs }`. HTTP is `200` whenever
+the subprocess *ran* (even if it exited non-zero); `502` only if the binary
+is missing. The shell writes stdout/stderr to the parent process's streams
+and `process.exit(exitCode)` when non-zero, so it behaves like a native
+wrapper.
+
+This gives day-one coverage of every `gh` / `wrangler` subcommand — the typed
+routes below are additive, providing structured JSON for programmatic
+callers and nicer CLI output for common ops.
+
+**Security:** the kernel already runs as the user with access to
+`CLOUDFLARE_API_TOKEN` / `gh auth` creds, so `exec` is effectively RCE-as-user
+— the same trust boundary as running `wrangler` or `gh` directly. It is *not*
+a remote-exec surface: axum binds to `127.0.0.1:4318` only.
+
+## `gctl gh` — Typed Gap Fill
 
 Mirror the existing inline driver in `kernel/crates/gctl-otel/src/receiver.rs`
-(90-95, 1100-1256). Extract to a dedicated `gctl-driver-github` crate once it
+(90-97, 1100-1256). Extract to a dedicated `gctl-driver-github` crate once it
 outgrows the receiver module.
 
-Missing ops to add, in priority order:
+Structured ops layered on top of the `exec` passthrough, in priority order:
 
 1. **`gctl gh prs create`** — `POST /api/github/prs` (delegates to `gh pr create`)
 2. **`gctl gh prs comment <#>`** — `POST /api/github/prs/{n}/comments`
@@ -41,7 +66,7 @@ binary (already a root `devDependency`). Auth is resolved from the kernel
 process environment (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`), which
 dotenvx populates from the encrypted `.env.vault`.
 
-Scope for v0:
+Typed ops layered on top of the `exec` passthrough, scope for v0:
 
 1. **`gctl wrangler whoami`** — `GET /api/wrangler/whoami` (proves the pattern)
 2. **`gctl wrangler d1 execute`** — `POST /api/wrangler/d1/{db}/execute` (body: `{ sql, env, remote }`)

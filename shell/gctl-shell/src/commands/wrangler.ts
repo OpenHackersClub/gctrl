@@ -8,6 +8,7 @@
 import { Command } from "@effect/cli"
 import { Console, Effect, Schema } from "effect"
 import { KernelClient } from "../services/KernelClient"
+import { makeExecCommand } from "./cli-exec"
 
 export const WranglerAccount = Schema.Struct({
   name: Schema.String,
@@ -41,6 +42,8 @@ const whoamiCommand = Command.make("whoami", {}, () =>
   })
 )
 
+const execCommand = makeExecCommand("/api/wrangler/exec")
+
 export const wranglerCommand = Command.make("wrangler").pipe(
-  Command.withSubcommands([whoamiCommand])
+  Command.withSubcommands([whoamiCommand, execCommand])
 )

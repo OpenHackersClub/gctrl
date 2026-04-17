@@ -93,8 +93,10 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/github/prs/{number}", get(gh_get_pr))
         .route("/api/github/runs", get(gh_list_runs))
         .route("/api/github/runs/{run_id}", get(gh_get_run))
+        .route("/api/github/exec", post(gh_exec_passthrough))
         // Wrangler driver (LKM — delegates to native `wrangler` CLI)
         .route("/api/wrangler/whoami", get(wrangler_whoami))
+        .route("/api/wrangler/exec", post(wrangler_exec_passthrough))
         // Persona management (kernel extension)
         .route("/api/personas", get(persona_list).post(persona_upsert))
         .route("/api/personas/seed", post(persona_seed))
@@ -1334,6 +1336,57 @@ fn normalize_gh_run(mut v: serde_json::Value) -> serde_json::Value {
         }
     }
     v
+}
+
+// --- Generic CLI passthrough (shared by wrangler + gh drivers) ---
+
+#[derive(Deserialize)]
+struct CliExecBody {
+    #[serde(default)]
+    args: Vec<String>,
+    /// Optional working directory — must be an absolute path on the kernel host.
+    #[serde(default)]
+    cwd: Option<String>,
+}
+
+/// Run `<bin> <args...>` and return a structured envelope.
+///
+/// The envelope always carries `exitCode` so the shell can mirror it without
+/// conflating subprocess exit status with HTTP status. HTTP 200 on spawn
+/// success (even for nonzero exit), 502 only when the binary cannot be
+/// launched at all.
+async fn cli_exec(bin: &str, body: CliExecBody) -> axum::response::Response {
+    let start = std::time::Instant::now();
+    let mut cmd = tokio::process::Command::new(bin);
+    cmd.args(&body.args);
+    if let Some(cwd) = body.cwd.as_ref() {
+        cmd.current_dir(cwd);
+    }
+
+    match cmd.output().await {
+        Ok(out) => {
+            let envelope = serde_json::json!({
+                "stdout": String::from_utf8_lossy(&out.stdout),
+                "stderr": String::from_utf8_lossy(&out.stderr),
+                "exitCode": out.status.code().unwrap_or(-1),
+                "durationMs": start.elapsed().as_millis() as u64,
+            });
+            Json(envelope).into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            format!("{bin} CLI not available: {e}"),
+        )
+            .into_response(),
+    }
+}
+
+async fn wrangler_exec_passthrough(Json(body): Json<CliExecBody>) -> impl IntoResponse {
+    cli_exec("wrangler", body).await
+}
+
+async fn gh_exec_passthrough(Json(body): Json<CliExecBody>) -> impl IntoResponse {
+    cli_exec("gh", body).await
 }
 
 // --- Wrangler Driver Handlers (LKM — delegates to native `wrangler` CLI) ---
@@ -2799,5 +2852,79 @@ Getting User settings...
         let parsed = parse_wrangler_whoami(stdout);
         assert!(parsed["email"].is_null());
         assert!(parsed["accounts"].as_array().unwrap().is_empty());
+    }
+
+    /// Use a binary that's guaranteed present on POSIX + CI runners so we can
+    /// exercise the passthrough envelope without depending on `wrangler`/`gh`.
+    #[tokio::test]
+    async fn test_cli_exec_success_envelope() {
+        let body = CliExecBody {
+            args: vec!["hello from cli_exec".to_string()],
+            cwd: None,
+        };
+        let resp = cli_exec("echo", body).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(json["stdout"].as_str().unwrap().contains("hello from cli_exec"));
+        assert_eq!(json["exitCode"], 0);
+        assert!(json["durationMs"].is_number());
+    }
+
+    #[tokio::test]
+    async fn test_cli_exec_nonzero_exit_still_200() {
+        // `false` exits 1 without spawning failure — envelope should carry the code.
+        let body = CliExecBody { args: vec![], cwd: None };
+        let resp = cli_exec("false", body).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["exitCode"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_cli_exec_missing_binary_502() {
+        let body = CliExecBody { args: vec![], cwd: None };
+        let resp = cli_exec("gctl-definitely-not-a-binary-xyz", body).await;
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test]
+    async fn test_wrangler_exec_route_accepts_post() {
+        let app = test_app();
+        let body = serde_json::json!({ "args": ["--version"] });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/wrangler/exec")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        // 200 if wrangler is installed on the test host; 502 if not. Either
+        // means the route wired up correctly — we only assert it's not a 404
+        // or 405.
+        assert!(
+            resp.status() == StatusCode::OK || resp.status() == StatusCode::BAD_GATEWAY,
+            "unexpected status {}",
+            resp.status()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_gh_exec_route_accepts_post() {
+        let app = test_app();
+        let body = serde_json::json!({ "args": ["--version"] });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/github/exec")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert!(
+            resp.status() == StatusCode::OK || resp.status() == StatusCode::BAD_GATEWAY,
+            "unexpected status {}",
+            resp.status()
+        );
     }
 }
