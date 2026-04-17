@@ -147,6 +147,31 @@ pub struct BrowserDaemonState {
 }
 ```
 
+### WikiMeta / WikiPageType *(specs-only)*
+
+Knowledge-base fields layered onto `ContextEntry`. See [`kernel/knowledgebase.md`](kernel/knowledgebase.md) for the full wiki design.
+
+```rust
+pub struct WikiMeta {
+    pub parent_id: Option<String>,       // hierarchical parent page
+    pub links_to: Vec<String>,           // forward links (extracted from [[wikilinks]])
+    pub linked_from: Vec<String>,        // backlinks (computed from kb_links)
+    pub page_type: WikiPageType,
+    pub source_ids: Vec<String>,         // raw sources this page synthesizes
+    pub last_lint: Option<DateTime<Utc>>,
+}
+
+pub enum WikiPageType {
+    Index,          // catalog page (index.md)
+    Log,            // chronological log (log.md)
+    Entity,         // person, org, tool, project
+    Topic,          // concept, domain area
+    Source,         // summary of a raw source document
+    Synthesis,      // cross-cutting analysis, comparison, thesis
+    Question,       // filed query result worth keeping
+}
+```
+
 ---
 
 ## 3. Key Traits
@@ -189,6 +214,46 @@ Built-in policies *(partially implemented; see `gctl-guardrails/src/policies.rs`
 ### SyncEngine
 
 **Source:** [`kernel/crates/gctl-sync/src/engine.rs`](../../kernel/crates/gctl-sync/src/engine.rs) — `SyncEngine` trait. Full design in [`kernel/sync.md`](kernel/sync.md).
+
+### SchedulerPort *(specs-only)*
+
+Kernel primitive for Task management and deferred/recurring execution. Every agent system MUST create Tasks through this interface — never write to the `tasks` table directly. Full design in [`kernel/scheduler.md`](kernel/scheduler.md).
+
+```rust
+#[async_trait]
+pub trait SchedulerPort: Send + Sync {
+    // --- Task management ---
+    async fn create_task(&self, input: CreateTaskInput) -> Result<Task, SchedulerError>;
+    async fn update_task_status(&self, id: &TaskId, status: TaskStatus) -> Result<Task, SchedulerError>;
+    async fn complete_task(&self, id: &TaskId, result: serde_json::Value) -> Result<Task, SchedulerError>;
+    async fn fail_task(&self, id: &TaskId, reason: &str) -> Result<Task, SchedulerError>;
+    async fn cancel_task(&self, id: &TaskId, reason: &str) -> Result<Task, SchedulerError>;
+    async fn get_task(&self, id: &TaskId) -> Result<Task, SchedulerError>;
+    async fn list_tasks(&self, filter: TaskFilter) -> Result<Vec<Task>, SchedulerError>;
+    async fn link_session(&self, task_id: &TaskId, session_id: &SessionId) -> Result<(), SchedulerError>;
+
+    // --- Dependency graph (acyclicity MUST be enforced) ---
+    async fn add_dependency(&self, blocker: TaskId, blocked: TaskId) -> Result<(), CyclicDependencyError>;
+    async fn remove_dependency(&self, blocker: TaskId, blocked: TaskId) -> Result<(), SchedulerError>;
+    async fn list_ready(&self) -> Result<Vec<Task>, SchedulerError>;
+
+    // --- Deferred / recurring scheduling ---
+    async fn schedule_once(&self, task: TaskId, at: DateTime<Utc>) -> Result<ScheduleId, SchedulerError>;
+    async fn schedule_recurring(&self, task: TaskId, cron: &str) -> Result<ScheduleId, SchedulerError>;
+    async fn cancel_schedule(&self, id: &ScheduleId) -> Result<(), SchedulerError>;
+}
+
+pub struct CreateTaskInput {
+    pub title: String,
+    pub description: Option<String>,
+    pub agent_kind: AgentKind,
+    pub prompt_hash: Option<String>,   // pre-register prompt via prompt_versions
+    pub parent_task_id: Option<TaskId>,
+    pub created_by_id: String,
+    pub created_by_kind: ActorKind,
+    pub context: serde_json::Value,    // agent-system-specific metadata
+}
+```
 
 ### BrowserPort *(specs-only)*
 
@@ -268,6 +333,24 @@ CREATE TABLE IF NOT EXISTS tasks (
 --   user_id         VARCHAR REFERENCES users(id)
 --   agent_kind      VARCHAR NOT NULL
 --   task_id         VARCHAR REFERENCES tasks(id)
+
+-- kb_links table (knowledgebase wiki link graph — see kernel/knowledgebase.md)
+CREATE TABLE IF NOT EXISTS kb_links (
+    source_id   VARCHAR NOT NULL,    -- entry containing the link
+    target_id   VARCHAR NOT NULL,    -- entry being linked to
+    link_type   VARCHAR NOT NULL DEFAULT 'reference',  -- reference, parent, prerequisite, refines, contradicts
+    created_at  VARCHAR NOT NULL,
+    PRIMARY KEY (source_id, target_id, link_type)
+);
+
+-- kb_pages table (wiki-specific metadata, FK → context_entries)
+CREATE TABLE IF NOT EXISTS kb_pages (
+    entry_id    VARCHAR PRIMARY KEY,
+    page_type   VARCHAR NOT NULL DEFAULT 'topic',
+    parent_id   VARCHAR,
+    source_ids  JSON DEFAULT '[]',
+    last_lint   VARCHAR
+);
 ```
 
 Every agent MUST create tasks via `SchedulerPort` — never write directly.

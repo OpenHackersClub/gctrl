@@ -31,38 +31,7 @@ By routing all agent work through the Scheduler, gctl gets a single queryable re
 
 ### Task Domain Type
 
-```rust
-pub struct TaskId(pub String);
-
-pub struct Task {
-    pub id: TaskId,
-    pub title: String,
-    pub description: Option<String>,
-    pub status: TaskStatus,
-    pub agent_kind: AgentKind,          // which agent system executes this task
-    pub session_id: Option<SessionId>,  // active or last session working on this task
-    pub prompt_hash: Option<String>,    // FK → prompt_versions (rendered prompt)
-    pub parent_task_id: Option<TaskId>, // sub-task of another task
-    pub blocked_by: Vec<TaskId>,        // dependency DAG
-    pub blocking: Vec<TaskId>,
-    pub workspace: Option<String>,      // isolated workspace directory path
-    pub created_by_id: String,
-    pub created_by_kind: ActorKind,     // 'human' | 'agent'
-    pub context: serde_json::Value,     // agent-system-specific metadata (see below)
-    pub result: Option<serde_json::Value>, // artifacts produced (commits, PRs, file paths)
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-// TaskStatus — see domain-model.md § Task
-//   Pending | Running | Paused | Done (terminal) | Failed (retry) | Cancelled (terminal)
-
-// AgentKind — see domain-model.md § Domain Types
-//   ClaudeCode | Codex | Aider | OpenAI | Custom
-
-// ActorKind — see domain-model.md § Domain Types
-//   Human | Agent
-```
+See [domain-model.md § 2 Task](../domain-model.md#task-specs-only) for `TaskId` and `Task` struct. `TaskStatus` (`Pending` | `Running` | `Paused` | `Done` | `Failed` | `Cancelled`), `AgentKind` (`ClaudeCode` | `Codex` | `Aider` | `OpenAI` | `Custom`), and `ActorKind` (`Human` | `Agent`) are defined there.
 
 ### Context Field — Agent-System Metadata
 
@@ -90,45 +59,13 @@ Applications (gctl-board) MAY read `context` for display purposes but MUST NOT w
 
 The Scheduler exposes a unified port for task management and scheduling. All agent systems that create Tasks MUST go through this interface.
 
-```rust
-#[async_trait]
-pub trait SchedulerPort: Send + Sync {
-    // --- Task management ---
-    async fn create_task(&self, input: CreateTaskInput) -> Result<Task, SchedulerError>;
-    async fn update_task_status(&self, id: &TaskId, status: TaskStatus) -> Result<Task, SchedulerError>;
-    async fn complete_task(&self, id: &TaskId, result: serde_json::Value) -> Result<Task, SchedulerError>;
-    async fn fail_task(&self, id: &TaskId, reason: &str) -> Result<Task, SchedulerError>;
-    async fn cancel_task(&self, id: &TaskId, reason: &str) -> Result<Task, SchedulerError>;
-    async fn get_task(&self, id: &TaskId) -> Result<Task, SchedulerError>;
-    async fn list_tasks(&self, filter: TaskFilter) -> Result<Vec<Task>, SchedulerError>;
-    async fn link_session(&self, task_id: &TaskId, session_id: &SessionId) -> Result<(), SchedulerError>;
+See [domain-model.md § 3 SchedulerPort](../domain-model.md#schedulerport-specs-only) for the full `SchedulerPort` trait and `CreateTaskInput` type.
 
-    // --- Dependency graph (acyclicity MUST be enforced) ---
-    async fn add_dependency(&self, blocker: TaskId, blocked: TaskId) -> Result<(), CyclicDependencyError>;
-    async fn remove_dependency(&self, blocker: TaskId, blocked: TaskId) -> Result<(), SchedulerError>;
-    async fn list_ready(&self) -> Result<Vec<Task>, SchedulerError>;
+The port covers three responsibility groups:
 
-    // --- Deferred / recurring scheduling ---
-    async fn schedule_once(&self, task: TaskId, at: DateTime<Utc>) -> Result<ScheduleId, SchedulerError>;
-    async fn schedule_recurring(&self, task: TaskId, cron: &str) -> Result<ScheduleId, SchedulerError>;
-    async fn cancel_schedule(&self, id: &ScheduleId) -> Result<(), SchedulerError>;
-}
-```
-
-### CreateTaskInput
-
-```rust
-pub struct CreateTaskInput {
-    pub title: String,
-    pub description: Option<String>,
-    pub agent_kind: AgentKind,
-    pub prompt_hash: Option<String>,   // pre-register prompt via prompt_versions
-    pub parent_task_id: Option<TaskId>,
-    pub created_by_id: String,
-    pub created_by_kind: ActorKind,
-    pub context: serde_json::Value,
-}
-```
+1. **Task management** — create / status / complete / fail / cancel / get / list, and `link_session` for binding a Task to its executing Session.
+2. **Dependency graph** — `add_dependency` / `remove_dependency` (acyclicity enforced), `list_ready` for the dispatcher to poll.
+3. **Deferred & recurring scheduling** — `schedule_once(at)`, `schedule_recurring(cron)`, `cancel_schedule`.
 
 ---
 
