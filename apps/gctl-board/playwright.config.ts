@@ -25,8 +25,9 @@ const KERNEL_PORT = Number(process.env.GCTL_KERNEL_PORT ?? 14318)
 const VITE_PORT = Number(process.env.GCTL_VITE_PORT ?? 14200)
 
 // Remote mode: drive a (deployed) Worker at PREVIEW_URL. Browser is either
-// local Chromium (default, reliable) or Cloudflare Browser Rendering CDP
-// (opt-in via CDP_ENDPOINT — rate-limited on free tier).
+// local Chromium (fallback) or Cloudflare Browser Rendering CDP (set
+// CDP_ENDPOINT + CF_API_TOKEN). CDP mode enforces a single-connect
+// invariant to stay under CF's free-tier rate limit — see fixtures/test.ts.
 const isRemote = !!process.env.PREVIEW_URL
 const isRemoteCDP = isRemote && !!process.env.CDP_ENDPOINT
 
@@ -54,6 +55,10 @@ export default defineConfig({
   // (and thus a new connectOverCDP) on retry, which compounds the rate limit.
   retries: process.env.CI && !isRemoteCDP ? 1 : 0,
   workers: 1,
+  // In CDP mode, abort the whole run on the first failure — if we hit a
+  // rate limit, keep burning the CF Browser Rendering quota is worse than
+  // surfacing the issue immediately.
+  ...(isRemoteCDP ? { maxFailures: 1 } : {}),
   reporter: process.env.CI ? "github" : "html",
   timeout: isRemoteCDP ? 60_000 : 30_000,
 

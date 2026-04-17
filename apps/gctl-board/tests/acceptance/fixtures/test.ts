@@ -9,11 +9,15 @@
  *  - seedBoard   — factory: project + N issues in one call
  */
 
-import { test as base, expect, chromium } from "@playwright/test"
+import { test as base, expect, chromium, type Browser } from "@playwright/test"
 
-// Module-level short-circuit: if the first connectOverCDP attempt fails
-// (even after backoff), fail subsequent tests immediately instead of
-// retrying the whole backoff sequence per worker restart.
+// Module-level singleton: Cloudflare Browser Rendering's free tier
+// rate-limits connectOverCDP (new session per connect, 3 concurrent,
+// per-minute throttle). We enforce *exactly one* connect per CI run by
+// caching the Browser handle here. Even if Playwright re-enters the
+// browser fixture (worker recycle, fixture timeout, etc.), we reuse the
+// same handle instead of opening a second session.
+let cdpBrowser: Browser | undefined
 let cdpSessionFailure: Error | undefined
 import {
   KernelTestClient,
@@ -44,53 +48,50 @@ export const test = base.extend<BoardFixtures>({
   /**
    * Browser fixture: local Chromium launch or Cloudflare Browser Rendering
    * via CDP. Set CDP_ENDPOINT + CF_API_TOKEN to use remote rendering.
+   *
+   * CDP mode enforces exactly one `connectOverCDP` per CI run via the
+   * module-level `cdpBrowser` singleton. Do NOT close the Browser in
+   * `use()` teardown — closing ends the CF session and a subsequent
+   * worker would need a new connect (→ 429). The session dies naturally
+   * when the Node process exits at end of run; `keep_alive` on the CDP
+   * URL lets CF reap it if we crash.
    */
   browser: [
     async ({}, use) => {
       const cdpEndpoint = process.env.CDP_ENDPOINT
       if (cdpEndpoint) {
-        // Short-circuit: once the session creation has failed for this
-        // process, don't re-run the whole backoff sequence for each
-        // subsequent worker restart — fail fast.
         if (cdpSessionFailure) throw cdpSessionFailure
-        // Cloudflare Browser Rendering rate-limits per-account session
-        // creation (HTTP 429). Retry with bounded exponential backoff so a
-        // transient hot seat doesn't fail the suite, but keep the total
-        // under the fixture timeout (set to 5m below).
-        const delaysMs = [1_000, 3_000, 8_000, 20_000, 40_000, 60_000]
-        let lastErr: unknown
-        for (let i = 0; i <= delaysMs.length; i++) {
+        if (!cdpBrowser) {
           try {
-            const browser = await chromium.connectOverCDP(cdpEndpoint, {
+            const started = Date.now()
+            cdpBrowser = await chromium.connectOverCDP(cdpEndpoint, {
               headers: {
                 Authorization: `Bearer ${process.env.CF_API_TOKEN}`,
               },
             })
-            await use(browser)
-            await browser.close()
-            return
+            console.log(
+              `[cdp] connected in ${Date.now() - started}ms (singleton — this should log exactly once per CI run)`
+            )
           } catch (err) {
-            lastErr = err
+            cdpSessionFailure = err as Error
             const msg = err instanceof Error ? err.message : String(err)
-            if (!msg.includes("429") && !/rate limit/i.test(msg)) {
-              cdpSessionFailure = err as Error
-              throw err
-            }
-            if (i === delaysMs.length) break
-            await new Promise((r) => setTimeout(r, delaysMs[i]))
+            console.error(`[cdp] connect failed: ${msg}`)
+            throw err
           }
+        } else {
+          console.log("[cdp] reusing existing Browser handle (fixture re-entered)")
         }
-        cdpSessionFailure = lastErr as Error
-        throw lastErr
-      } else {
-        const browser = await chromium.launch({
-          args: ["--remote-debugging-port=0"],
-        })
-        await use(browser)
-        await browser.close()
+        await use(cdpBrowser)
+        // Intentionally do NOT close — see block comment above.
+        return
       }
+      const browser = await chromium.launch({
+        args: ["--remote-debugging-port=0"],
+      })
+      await use(browser)
+      await browser.close()
     },
-    { scope: "worker", timeout: 300_000 },
+    { scope: "worker", timeout: 120_000 },
   ],
 
   kernel: async ({}, use) => {
