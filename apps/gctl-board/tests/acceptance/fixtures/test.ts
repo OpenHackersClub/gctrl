@@ -17,8 +17,13 @@ import { test as base, expect, chromium, type Browser } from "@playwright/test"
 // caching the Browser handle here. Even if Playwright re-enters the
 // browser fixture (worker recycle, fixture timeout, etc.), we reuse the
 // same handle instead of opening a second session.
+//
+// NOTE: `cdpBrowser` only lives as long as the worker process. Playwright
+// recycles workers when a worker-scoped fixture throws, so on CF 429 we
+// fall back to local Chromium instead of re-throwing — otherwise every
+// recycled worker would re-attempt the connect and cascade-429 for the
+// remainder of CF's rolling window.
 let cdpBrowser: Browser | undefined
-let cdpSessionFailure: Error | undefined
 import {
   KernelTestClient,
   uniqueProjectKey,
@@ -59,33 +64,38 @@ export const test = base.extend<BoardFixtures>({
   browser: [
     async ({}, use) => {
       const cdpEndpoint = process.env.CDP_ENDPOINT
-      if (cdpEndpoint) {
-        if (cdpSessionFailure) throw cdpSessionFailure
-        if (!cdpBrowser) {
-          try {
-            const started = Date.now()
-            cdpBrowser = await chromium.connectOverCDP(cdpEndpoint, {
-              headers: {
-                Authorization: `Bearer ${process.env.CF_API_TOKEN}`,
-              },
-            })
-            process.stderr.write(
-              `[cdp] connected in ${Date.now() - started}ms (singleton — should log exactly once per CI run)\n`
-            )
-            cdpBrowser.on("disconnected", () => {
-              process.stderr.write("[cdp] Browser disconnected (CF closed session)\n")
-            })
-          } catch (err) {
-            cdpSessionFailure = err as Error
-            const msg = err instanceof Error ? err.message : String(err)
-            process.stderr.write(`[cdp] connect failed: ${msg}\n`)
-            throw err
-          }
-        } else {
+      if (cdpEndpoint && !cdpBrowser) {
+        try {
+          const started = Date.now()
+          cdpBrowser = await chromium.connectOverCDP(cdpEndpoint, {
+            headers: {
+              Authorization: `Bearer ${process.env.CF_API_TOKEN}`,
+            },
+          })
+          process.stderr.write(
+            `[cdp] connected in ${Date.now() - started}ms (singleton — should log exactly once per CI run)\n`
+          )
+          cdpBrowser.on("disconnected", () => {
+            process.stderr.write("[cdp] Browser disconnected (CF closed session)\n")
+          })
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          // Swallow CDP connect failures (typically CF 429) and fall
+          // through to local Chromium — re-throwing would make Playwright
+          // recycle the worker, each recycle re-connects, cascading the
+          // rate limit across the whole suite.
+          process.stderr.write(
+            `[cdp] connect failed — falling back to local Chromium: ${msg}\n`
+          )
+        }
+      }
+      if (cdpBrowser) {
+        if (cdpEndpoint) {
           process.stderr.write("[cdp] reusing Browser handle (fixture re-entered)\n")
         }
         await use(cdpBrowser)
-        // Intentionally do NOT close — see block comment above.
+        // Intentionally do NOT close — closing ends the CF session and a
+        // subsequent worker recycle would need a fresh connect.
         return
       }
       const browser = await chromium.launch({

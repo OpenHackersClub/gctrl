@@ -143,6 +143,13 @@ jobs:
           pnpm exec wrangler d1 execute gctl-board-preview-db --env preview --remote \
             --command "DELETE FROM issue_events; DELETE FROM comments; DELETE FROM issues; DELETE FROM projects;"
 
+      # Installed as a fallback: the fixture prefers CF Browser Rendering
+      # via CDP, but falls back to local Chromium on CF 429 so a transient
+      # rate-limit blip does not cascade-fail the suite.
+      - name: Install Playwright Chromium (CDP fallback)
+        run: pnpm exec playwright install --with-deps chromium
+        working-directory: apps/gctl-board
+
       - name: Run acceptance tests against preview (CF Browser Rendering)
         run: pnpm exec playwright test
         working-directory: apps/gctl-board
