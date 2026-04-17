@@ -93,6 +93,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/github/prs/{number}", get(gh_get_pr))
         .route("/api/github/runs", get(gh_list_runs))
         .route("/api/github/runs/{run_id}", get(gh_get_run))
+        // Wrangler driver (LKM — delegates to native `wrangler` CLI)
+        .route("/api/wrangler/whoami", get(wrangler_whoami))
         // Persona management (kernel extension)
         .route("/api/personas", get(persona_list).post(persona_upsert))
         .route("/api/personas/seed", post(persona_seed))
@@ -1332,6 +1334,74 @@ fn normalize_gh_run(mut v: serde_json::Value) -> serde_json::Value {
         }
     }
     v
+}
+
+// --- Wrangler Driver Handlers (LKM — delegates to native `wrangler` CLI) ---
+
+async fn wrangler_whoami() -> impl IntoResponse {
+    let output = tokio::process::Command::new("wrangler")
+        .arg("whoami")
+        .output()
+        .await;
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            Json(parse_wrangler_whoami(&stdout)).into_response()
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            (StatusCode::BAD_GATEWAY, format!("wrangler whoami failed: {stderr}")).into_response()
+        }
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, format!("wrangler CLI not available: {e}")).into_response(),
+    }
+}
+
+/// Parse the text output of `wrangler whoami` into a structured JSON envelope.
+///
+/// Wrangler emits decorated text (no `--json` flag for whoami as of v4), so we
+/// extract:
+/// - `email`   — first quoted string on the "associated with the email" line
+/// - `accounts`— `[{name,id}]` rows from the ASCII table (skips header + divider)
+/// - `raw`     — the original stdout for callers that want the full output
+fn parse_wrangler_whoami(stdout: &str) -> serde_json::Value {
+    let email = stdout
+        .lines()
+        .find(|l| l.contains("associated with the email"))
+        .and_then(|l| {
+            let start = l.find('\'')?;
+            let rest = &l[start + 1..];
+            let end = rest.find('\'')?;
+            Some(rest[..end].to_string())
+        });
+
+    let mut accounts: Vec<serde_json::Value> = Vec::new();
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('│') {
+            continue;
+        }
+        let cells: Vec<&str> = trimmed
+            .trim_matches('│')
+            .split('│')
+            .map(|c| c.trim())
+            .collect();
+        if cells.len() != 2 {
+            continue;
+        }
+        let (name, id) = (cells[0], cells[1]);
+        // Skip header and empty rows.
+        if name.eq_ignore_ascii_case("Account Name") || name.is_empty() || id.is_empty() {
+            continue;
+        }
+        accounts.push(serde_json::json!({ "name": name, "id": id }));
+    }
+
+    serde_json::json!({
+        "email": email,
+        "accounts": accounts,
+        "raw": stdout,
+    })
 }
 
 // --- Persona Handlers ---
@@ -2681,5 +2751,53 @@ mod tests {
         assert_eq!(json["id"], thread_id);
         assert!(json["messages"].is_array());
         assert_eq!(json["messages"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_parse_wrangler_whoami_extracts_email_and_accounts() {
+        let stdout = "\
+ ⛅️ wrangler 4.80.0
+-------------------
+Getting User settings...
+👋 You are logged in with an API Token, associated with the email 'dev@example.com'!
+┌──────────────────────────┬──────────────────────────────────┐
+│ Account Name             │ Account ID                       │
+├──────────────────────────┼──────────────────────────────────┤
+│ Acme Labs                │ abc123def456                     │
+├──────────────────────────┼──────────────────────────────────┤
+│ Personal                 │ 9876543210fedcba                 │
+└──────────────────────────┴──────────────────────────────────┘
+🔓 Token Permissions: workers:write, d1:write
+";
+        let parsed = parse_wrangler_whoami(stdout);
+        assert_eq!(parsed["email"], "dev@example.com");
+        let accounts = parsed["accounts"].as_array().expect("accounts array");
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[0]["name"], "Acme Labs");
+        assert_eq!(accounts[0]["id"], "abc123def456");
+        assert_eq!(accounts[1]["name"], "Personal");
+        assert_eq!(accounts[1]["id"], "9876543210fedcba");
+        assert_eq!(parsed["raw"], stdout);
+    }
+
+    #[test]
+    fn test_parse_wrangler_whoami_no_accounts() {
+        // Logged in but no accounts resolved (API token with limited scope).
+        let stdout = "\
+Getting User settings...
+👋 You are logged in with an API Token, associated with the email 'ci@example.com'!
+";
+        let parsed = parse_wrangler_whoami(stdout);
+        assert_eq!(parsed["email"], "ci@example.com");
+        assert!(parsed["accounts"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_parse_wrangler_whoami_logged_out() {
+        // `wrangler whoami` when not logged in — no email, no accounts.
+        let stdout = "You are not authenticated. Please run `wrangler login`.\n";
+        let parsed = parse_wrangler_whoami(stdout);
+        assert!(parsed["email"].is_null());
+        assert!(parsed["accounts"].as_array().unwrap().is_empty());
     }
 }
