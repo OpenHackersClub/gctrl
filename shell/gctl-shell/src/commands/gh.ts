@@ -8,6 +8,7 @@
 import { Command, Options, Args } from "@effect/cli"
 import { Console, Effect, Option, Schema } from "effect"
 import { KernelClient } from "../services/KernelClient"
+import { makeExecCommand } from "./cli-exec"
 
 // --- Schemas for kernel GitHub API responses ---
 
@@ -251,8 +252,12 @@ const runsCommand = Command.make("runs").pipe(
   Command.withSubcommands([runsListCommand, runsViewCommand])
 )
 
+// --- exec (passthrough) ---
+
+const execCommand = makeExecCommand("/api/github/exec")
+
 // --- gh (parent) ---
 
 export const ghCommand = Command.make("gh").pipe(
-  Command.withSubcommands([issuesCommand, prsCommand, runsCommand])
+  Command.withSubcommands([issuesCommand, prsCommand, runsCommand, execCommand])
 )

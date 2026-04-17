@@ -7,6 +7,7 @@
   ],
   "devDependencies": {
     "@biomejs/biome": "^2.4.9",
+    "@dotenvx/dotenvx": "^1.60.0",
     "@monodon/rust": "^2.3.0",
     "nx": "^21",
     "typescript": "^5.7",
@@ -21,6 +22,9 @@
     "test:rust": "cargo test",
     "test:ts": "nx run-many -t test --projects=shell/*,apps/*",
     "lint": "nx run-many -t lint",
-    "lint:biome": "biome lint shell/*/src/ apps/*/src/"
+    "lint:biome": "biome lint shell/*/src/ apps/*/src/",
+    "env:encrypt": "dotenvx encrypt",
+    "env:decrypt": "dotenvx decrypt",
+    "env:run": "dotenvx run --"
   }
 }
