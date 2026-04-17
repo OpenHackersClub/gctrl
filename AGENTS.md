@@ -131,6 +131,18 @@ Detailed programming patterns, code examples, and how-to guides live under `spec
 12. External tools (GitHub, Slack, AWS) MUST be accessed from the shell via direct REST API adapters — never from the kernel.
 13. Every application MUST have its own `apps/{app-name}/` directory with `PRD.md` and `WORKFLOW.md`.
 
+## Agent Conventions
+
+Rules agents MUST follow when assisting in this repository. These govern *tool choice* (what command to reach for), not source-code structure — the Invariants above cover the latter.
+
+1. **Package manager is `pnpm`, never `bun`.** Use `pnpm install`, `pnpm run test`, `pnpm run build`, `pnpm audit`. `bun` MUST NOT be used in commands, scripts, docs, or specs.
+
+2. **Use the `gctl` shell for CI / PR / issue / workflow operations.** Prefer `gctl gh runs list`, `gctl gh prs view`, `gctl sessions`, etc. If the gctl binary isn't on PATH, invoke via `node shell/gctl-shell/dist/main.js ...` (kernel daemon on `:4318`). Bare `gh` is an acceptable fallback when the shell doesn't yet cover a command; third-party wrapper CLIs MUST NOT be substituted. Rationale: dogfooding — every external call must route through the kernel's driver HTTP API, which is the path the project is validating.
+
+3. **Verify repo owner before using `--repo owner/name`.** Run `gh repo view --json nameWithOwner -q .nameWithOwner`, or omit `--repo` and let `gh` resolve from the checkout. MUST NOT construct `owner/repo` from the git user handle plus the local directory name — they are unrelated here (the git user is `debuggingfuture`; the repo is `OpenHackersClub/gctrl`).
+
+4. **CI status — use `gh run list` / `gh run view`, not `gh pr checks`.** `gh pr checks` fails with "Resource not accessible by personal access token." For a PR branch: `gh run list --branch <branch>`.
+
 ## TDD Workflow
 
 All new features MUST follow the red-green-refactor cycle. Write the test BEFORE the implementation.
