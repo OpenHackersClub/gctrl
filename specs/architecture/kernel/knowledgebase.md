@@ -57,59 +57,18 @@ flowchart TB
 
 ### Extended ContextEntry
 
-Build on the existing `ContextEntry` model. New fields for wiki entries:
+Build on the existing `ContextEntry` model. Wiki pages layer on a `WikiMeta` record with forward/backward link lists, a `WikiPageType` tag (`Index` | `Log` | `Entity` | `Topic` | `Source` | `Synthesis` | `Question`), hierarchy (`parent_id`), source provenance (`source_ids`), and a `last_lint` timestamp.
 
-```rust
-// New fields on ContextEntry (or a wiki-specific extension)
-pub struct WikiMeta {
-    /// Parent page ID for hierarchy (e.g. topic page → subtopic)
-    pub parent_id: Option<String>,
-    /// Pages this entry links to (forward links, extracted from [[wikilinks]])
-    pub links_to: Vec<String>,
-    /// Pages that link to this entry (backlinks, computed)
-    pub linked_from: Vec<String>,
-    /// Page type for wiki organization
-    pub page_type: WikiPageType,
-    /// Source entries this wiki page synthesizes
-    pub source_ids: Vec<String>,
-    /// Last lint timestamp
-    pub last_lint: Option<DateTime<Utc>>,
-}
-
-pub enum WikiPageType {
-    Index,          // Catalog page (index.md)
-    Log,            // Chronological log (log.md)
-    Entity,         // Person, org, tool, project
-    Topic,          // Concept, domain area
-    Source,         // Summary of a raw source document
-    Synthesis,      // Cross-cutting analysis, comparison, thesis
-    Question,       // Filed query result worth keeping
-}
-```
+See [domain-model.md § 2 WikiMeta / WikiPageType](../domain-model.md#wikimeta--wikipagetype-specs-only) for the full type definitions.
 
 ### New DuckDB Tables
 
-```sql
--- Wiki link graph (bidirectional links between context entries)
-CREATE TABLE IF NOT EXISTS kb_links (
-    source_id   VARCHAR NOT NULL,    -- entry that contains the link
-    target_id   VARCHAR NOT NULL,    -- entry being linked to
-    link_type   VARCHAR NOT NULL DEFAULT 'reference',  -- reference, parent, prerequisite, refines, contradicts
-    created_at  VARCHAR NOT NULL,
-    PRIMARY KEY (source_id, target_id, link_type)
-);
+Two tables extend the context store:
 
-CREATE INDEX idx_kb_links_target ON kb_links(target_id);
+- **`kb_links`** — bidirectional wiki-link graph between `context_entries` rows. Composite PK `(source_id, target_id, link_type)` supports multiple link kinds (`reference`, `parent`, `prerequisite`, `refines`, `contradicts`). Indexed on `target_id` for fast backlink lookups.
+- **`kb_pages`** — wiki-specific metadata keyed by `entry_id` (FK → `context_entries.id`). Carries `page_type`, `parent_id`, `source_ids` (JSON), `last_lint`.
 
--- Wiki page metadata (extends context_entries for wiki-specific fields)
-CREATE TABLE IF NOT EXISTS kb_pages (
-    entry_id    VARCHAR PRIMARY KEY,    -- FK to context_entries.id
-    page_type   VARCHAR NOT NULL DEFAULT 'topic',
-    parent_id   VARCHAR,                -- hierarchical parent
-    source_ids  JSON DEFAULT '[]',      -- raw source entries this page synthesizes
-    last_lint   VARCHAR                 -- last lint check timestamp
-);
-```
+See [domain-model.md § 5.1](../domain-model.md#51-kernel-owned-tables-implemented) for the full DDL under "Spec-only extensions".
 
 ### Filesystem Layout
 

@@ -416,7 +416,7 @@ When a shell command triggers a driver (e.g., `gctl gh issues` → kernel `/api/
 
 | Concern | Kernel handles | Driver handles |
 |---------|---------------|----------------|
-| **Caching** | Response-level TTL cache (like `ccli gh` caching). Cache key = route + query params. Invalidated on write operations. | Nothing — caching is transparent to the driver |
+| **Caching** | Response-level TTL cache (like `gh` caching). Cache key = route + query params. Invalidated on write operations. | Nothing — caching is transparent to the driver |
 | **OTel instrumentation** | Wraps each driver call in a span (`driver.github.list_issues`), records latency, status, cache hit/miss | Nothing — instrumentation is transparent |
 | **Secrets & authentication** | Resolves and injects credentials (PATs, API keys, OAuth tokens) from kernel secret store. For `driver-github`, the kernel provides the `GH_TOKEN` / PAT to the `gh` CLI subprocess via environment. The shell and apps MUST NOT hold or read secrets directly. | Receives credentials from the kernel — never reads env vars or config files for auth |
 | **Error mapping** | Maps driver/subprocess errors to kernel error types | Returns raw errors from the native CLI |
@@ -484,6 +484,8 @@ An extension of the Unix metaphor to cover processes and users — humans and ag
 ---
 
 ### 6. Users
+
+> **Types:** See [domain-model.md § 2 User](domain-model.md#user-specs-only) for the `User` / `UserId` / `UserKind` definitions. This section describes the *execution model* (Unix analogy, persona config, user→session binding) — not the types.
 
 In Unix, every process runs as a user identified by a `uid`. In gctl, every session runs on behalf of a **user** — a human or an agent persona, each with a `user_id`.
 
@@ -700,27 +702,11 @@ gctl session kill --group <session_id>   # kill the whole group
 
 Unix's most powerful abstraction is that every resource — devices, sockets, pipes, proc state — is a file. gctl applies this principle to its storage model: **everything the kernel persists is a file**, owned and managed by the kernel, not by individual applications.
 
-> **Full sync spec:** See [kernel/sync.md](kernel/sync.md) for the authoritative design — manifest format, R2 path layout, conflict resolution, context sync, and scheduler integration. This section is a summary.
+The Kernel owns all I/O. Applications write rows through the Shell (SQL via DuckDB or HTTP API); the Kernel handles serialization, partitioning, replication, and conflict resolution — just as the Unix kernel owns block I/O and the VFS layer, not userspace programs.
 
-#### 12.1 DuckDB → Parquet → R2
+> **Full sync spec:** See [kernel/sync.md](kernel/sync.md) for the authoritative design — DuckDB→Parquet→R2 flow, manifest format, path layout, conflict resolution, context sync, scheduler integration, and `gctl sync` CLI.
 
-DuckDB is gctl's filesystem. But DuckDB files are local, mutable, and single-writer. To cross device and team boundaries, the kernel serializes state as **Parquet** — the universal, columnar, open format that both DuckDB and Cloudflare Workers can read natively.
-
-```mermaid
-flowchart TD
-    A["Local (DuckDB in-process)"]
-    B["Parquet files (~/.local/share/gctl/sync/)"]
-    C["R2 bucket (Cloudflare)"]
-    D["Remote consumers (dashboards, team views, cross-device queries)"]
-
-    A -->|"COPY … TO … FORMAT PARQUET"| B
-    B -->|"gctl sync push (Cloud Sync kernel primitive)"| C
-    C -->|"Workers / D1 / Analytics Engine read directly"| D
-```
-
-The sync layer is a **kernel responsibility**, not an application concern. Applications write through the shell (DuckDB). The kernel handles durability, format translation, and replication — just as the Unix kernel owns block I/O and the VFS layer, not userspace programs.
-
-#### 12.2 Everything is a File — Mapping
+#### Everything is a File — Mapping
 
 | Unix Resource | File Representation | gctl Equivalent |
 |---|---|---|
@@ -732,23 +718,6 @@ The sync layer is a **kernel responsibility**, not an application concern. Appli
 | Shared memory | `/dev/shm/` | DuckDB in-memory (`:memory:`) for tests |
 | Archive / backup | tar / dump | Parquet export under `~/.local/share/gctl/sync/` |
 | Cloud object store | NFS / remote mount | R2 bucket — Parquet files, read by Workers |
-
-#### 12.3 Kernel Owns All I/O
-
-Applications MUST NOT write Parquet directly or sync to R2 themselves. They write rows through the Shell (SQL via DuckDB or HTTP API). The Kernel's Cloud Sync primitive handles:
-
-1. **Serialization** — `COPY … TO … (FORMAT PARQUET)` on schedule or trigger
-2. **Partitioning** — by device ID and date for parallel, non-conflicting multi-device writes
-3. **Upload** — `PUT` to the R2 bucket via the kernel's sync adapter
-4. **Conflict resolution** — last-write-wins with device-partition isolation; no row-level merging needed
-5. **Remote query** — Cloudflare Workers query R2 Parquet directly via DuckDB WASM or Workers Analytics Engine
-
-```sh
-gctl sync status                  # what's been exported, when
-gctl sync push --table sessions   # manual export trigger
-gctl sync push --all              # full export
-gctl sync pull --since 7d         # pull remote Parquet into local DuckDB
-```
 
 ---
 
