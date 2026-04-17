@@ -113,6 +113,10 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/inbox/actions", get(inbox_list_actions).post(inbox_create_action))
         .route("/api/inbox/batch-action", post(inbox_batch_action))
         .route("/api/inbox/stats", get(inbox_stats))
+        // Memory (D1-syncable long-lived knowledge)
+        .route("/api/memory", get(memory_list).post(memory_upsert))
+        .route("/api/memory/stats", get(memory_stats))
+        .route("/api/memory/{id}", get(memory_get).delete(memory_delete))
         // Health
         .route("/health", get(health))
         .with_state(state)
@@ -662,6 +666,122 @@ async fn context_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         return (StatusCode::SERVICE_UNAVAILABLE, "context manager not initialized").into_response();
     };
     match ctx.stats() {
+        Ok(stats) => Json(serde_json::to_value(&stats).unwrap()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+// --- Memory Handlers ---
+
+#[derive(Deserialize)]
+struct MemoryListParams {
+    #[serde(rename = "type")]
+    memory_type: Option<String>,
+    tag: Option<String>,
+    search: Option<String>,
+    #[serde(default = "default_memory_limit")]
+    limit: usize,
+}
+
+fn default_memory_limit() -> usize {
+    100
+}
+
+async fn memory_list(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<MemoryListParams>,
+) -> impl IntoResponse {
+    let filter = gctl_core::memory::MemoryFilter {
+        memory_type: params.memory_type.as_deref().and_then(gctl_core::memory::MemoryType::from_str),
+        tag: params.tag,
+        search: params.search,
+        limit: Some(params.limit),
+    };
+    match state.sqlite.list_memories(&filter) {
+        Ok(entries) => Json(serde_json::to_value(&entries).unwrap()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct MemoryUpsertBody {
+    #[serde(rename = "type")]
+    memory_type: String,
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    tags: Vec<String>,
+    device_id: String,
+    /// Optional — if omitted, we generate a UUID. On conflict with (device_id, name) the
+    /// existing id is preserved regardless.
+    #[serde(default)]
+    id: Option<String>,
+}
+
+async fn memory_upsert(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<MemoryUpsertBody>,
+) -> impl IntoResponse {
+    let memory_type = match gctl_core::memory::MemoryType::from_str(&body.memory_type) {
+        Some(t) => t,
+        None => return (StatusCode::BAD_REQUEST, format!("invalid type: {}", body.memory_type)).into_response(),
+    };
+    if body.name.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "name is required").into_response();
+    }
+    if body.device_id.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "device_id is required").into_response();
+    }
+
+    let now = chrono::Utc::now();
+    let entry = gctl_core::memory::MemoryEntry {
+        id: gctl_core::memory::MemoryEntryId(
+            body.id.unwrap_or_else(|| format!("mem-{}", uuid::Uuid::new_v4())),
+        ),
+        memory_type,
+        name: body.name,
+        description: body.description,
+        body: body.body,
+        tags: body.tags,
+        device_id: body.device_id,
+        created_at: now,
+        updated_at: now,
+        synced: false,
+    };
+
+    match state.sqlite.upsert_memory(&entry) {
+        Ok(_) => (StatusCode::CREATED, Json(serde_json::to_value(&entry).unwrap())).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn memory_get(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.sqlite.get_memory(&id) {
+        Ok(Some(entry)) => Json(serde_json::to_value(&entry).unwrap()).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, format!("not found: {}", id)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn memory_delete(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.sqlite.remove_memory(&id) {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, format!("not found: {}", id)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn memory_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match state.sqlite.get_memory_stats() {
         Ok(stats) => Json(serde_json::to_value(&stats).unwrap()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }

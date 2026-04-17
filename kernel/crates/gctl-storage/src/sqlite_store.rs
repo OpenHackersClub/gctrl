@@ -1,7 +1,7 @@
-//! SQLite-backed store for board, inbox, persona, and context data.
+//! SQLite-backed store for board, inbox, persona, context, and memory data.
 //!
 //! This is a mechanical port of the relevant DuckDB methods from `duckdb_store.rs`,
-//! using `rusqlite` instead of `duckdb`. SQLite handles board/inbox/persona/context
+//! using `rusqlite` instead of `duckdb`. SQLite handles board/inbox/persona/context/memory
 //! while DuckDB continues to handle OTel/analytics. This enables Cloudflare D1
 //! portability since D1 IS SQLite.
 
@@ -14,6 +14,7 @@ use gctl_core::{
     InboxAction, InboxActionFilter, InboxMessage, InboxMessageFilter, InboxThread,
     PersonaDefinition, PersonaReviewRule,
     context::{ContextEntry, ContextEntryId, ContextFilter, ContextKind, ContextSource},
+    memory::{MemoryEntry, MemoryEntryId, MemoryFilter, MemoryStats, MemoryType},
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -190,6 +191,25 @@ CREATE TABLE IF NOT EXISTS context_entries (
 )
 "#;
 
+// Memory: D1-syncable table. `device_id` + `updated_at` + `synced` are mandatory
+// for the `gctl-sync` D1 contract (see kernel/crates/gctl-sync/src/d1.rs).
+// `name` is unique per device — upserting the same (device_id, name) overwrites.
+const CREATE_MEMORY_ENTRIES: &str = r#"
+CREATE TABLE IF NOT EXISTS memory_entries (
+    id              TEXT PRIMARY KEY,
+    type            TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    description     TEXT NOT NULL DEFAULT '',
+    body            TEXT NOT NULL DEFAULT '',
+    tags            TEXT NOT NULL DEFAULT '[]',
+    device_id       TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    synced          INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(device_id, name)
+)
+"#;
+
 const CREATE_INDEXES: &[&str] = &[
     // Board indexes
     "CREATE INDEX IF NOT EXISTS idx_board_issues_project ON board_issues(project_id)",
@@ -216,6 +236,11 @@ const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_context_source ON context_entries(source_type)",
     "CREATE INDEX IF NOT EXISTS idx_context_path ON context_entries(path)",
     "CREATE INDEX IF NOT EXISTS idx_context_synced ON context_entries(synced)",
+    // Memory indexes
+    "CREATE INDEX IF NOT EXISTS idx_memory_type ON memory_entries(type)",
+    "CREATE INDEX IF NOT EXISTS idx_memory_synced ON memory_entries(synced)",
+    "CREATE INDEX IF NOT EXISTS idx_memory_device ON memory_entries(device_id)",
+    "CREATE INDEX IF NOT EXISTS idx_memory_updated ON memory_entries(updated_at)",
 ];
 
 // ═══════════════════════════════════════════════════════════════
@@ -262,6 +287,7 @@ impl SqliteStore {
             CREATE_INBOX_ACTIONS,
             CREATE_INBOX_SUBSCRIPTIONS,
             CREATE_CONTEXT_ENTRIES,
+            CREATE_MEMORY_ENTRIES,
         ];
         for stmt in &tables {
             conn.execute_batch(stmt)
@@ -1323,6 +1349,185 @@ impl SqliteStore {
             "by_source": by_source,
         }))
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Memory CRUD
+    // ═══════════════════════════════════════════════════════════════
+
+    /// Upsert a memory entry by `(device_id, name)`. Returns true if created, false if updated.
+    /// Any update resets `synced = 0` so the sync engine will re-push the row.
+    pub fn upsert_memory(&self, entry: &MemoryEntry) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let tags_json = serde_json::to_string(&entry.tags).unwrap_or_else(|_| "[]".into());
+
+        let existing_id: Option<String> = conn
+            .query_row(
+                "SELECT id FROM memory_entries WHERE device_id = ?1 AND name = ?2",
+                params![entry.device_id, entry.name],
+                |row| row.get(0),
+            )
+            .ok();
+
+        if existing_id.is_some() {
+            conn.execute(
+                "UPDATE memory_entries SET type = ?1, description = ?2, body = ?3, tags = ?4,
+                 updated_at = ?5, synced = 0
+                 WHERE device_id = ?6 AND name = ?7",
+                params![
+                    entry.memory_type.as_str(),
+                    entry.description,
+                    entry.body,
+                    tags_json,
+                    entry.updated_at.to_rfc3339(),
+                    entry.device_id,
+                    entry.name,
+                ],
+            ).map_err(|e| GctlError::Storage(e.to_string()))?;
+            Ok(false)
+        } else {
+            conn.execute(
+                "INSERT INTO memory_entries (id, type, name, description, body, tags, device_id, created_at, updated_at, synced)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)",
+                params![
+                    entry.id.0,
+                    entry.memory_type.as_str(),
+                    entry.name,
+                    entry.description,
+                    entry.body,
+                    tags_json,
+                    entry.device_id,
+                    entry.created_at.to_rfc3339(),
+                    entry.updated_at.to_rfc3339(),
+                ],
+            ).map_err(|e| GctlError::Storage(e.to_string()))?;
+            Ok(true)
+        }
+    }
+
+    pub fn get_memory(&self, id: &str) -> Result<Option<MemoryEntry>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, type, name, description, body, tags, device_id, created_at, updated_at, synced FROM memory_entries WHERE id = ?1",
+            [id],
+            row_to_memory_entry,
+        ).ok().map(Ok).transpose()
+    }
+
+    pub fn list_memories(&self, filter: &MemoryFilter) -> Result<Vec<MemoryEntry>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut sql = String::from(
+            "SELECT id, type, name, description, body, tags, device_id, created_at, updated_at, synced FROM memory_entries WHERE 1=1"
+        );
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        let mut idx = 1;
+
+        if let Some(ref ty) = filter.memory_type {
+            sql.push_str(&format!(" AND type = ?{}", idx));
+            params_vec.push(Box::new(ty.as_str().to_string()));
+            idx += 1;
+        }
+        if let Some(ref search) = filter.search {
+            sql.push_str(&format!(
+                " AND (name LIKE ?{0} OR description LIKE ?{0} OR body LIKE ?{0})",
+                idx
+            ));
+            params_vec.push(Box::new(format!("%{}%", search)));
+            idx += 1;
+        }
+
+        sql.push_str(" ORDER BY updated_at DESC");
+
+        if let Some(limit) = filter.limit {
+            sql.push_str(&format!(" LIMIT ?{}", idx));
+            params_vec.push(Box::new(limit as i64));
+        }
+
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = conn.prepare(&sql).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let entries = stmt
+            .query_map(param_refs.as_slice(), row_to_memory_entry)
+            .map_err(|e| GctlError::Storage(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect::<Vec<_>>();
+
+        let entries = if let Some(ref tag) = filter.tag {
+            entries.into_iter().filter(|e| e.tags.contains(tag)).collect()
+        } else {
+            entries
+        };
+
+        Ok(entries)
+    }
+
+    pub fn remove_memory(&self, id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let affected = conn
+            .execute("DELETE FROM memory_entries WHERE id = ?1", [id])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
+    pub fn get_memory_stats(&self) -> Result<MemoryStats> {
+        let conn = self.conn.lock().unwrap();
+
+        let total_entries: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memory_entries", [], |row| row.get(0))
+            .unwrap_or(0);
+
+        let unsynced: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memory_entries WHERE synced = 0", [], |row| row.get(0))
+            .unwrap_or(0);
+
+        let mut by_type = Vec::new();
+        {
+            let mut stmt = conn
+                .prepare("SELECT type, COUNT(*) FROM memory_entries GROUP BY type ORDER BY type")
+                .map_err(|e| GctlError::Storage(e.to_string()))?;
+            let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+            while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+                let ty: String = row.get(0).unwrap_or_default();
+                let count: i64 = row.get(1).unwrap_or(0);
+                by_type.push((ty, count as u64));
+            }
+        }
+
+        Ok(MemoryStats {
+            total_entries: total_entries as u64,
+            by_type,
+            unsynced: unsynced as u64,
+        })
+    }
+
+    /// Fetch unsynced memory rows for the sync engine. Limited by `batch_size` to
+    /// keep D1 payloads bounded.
+    pub fn list_unsynced_memories(&self, batch_size: usize) -> Result<Vec<MemoryEntry>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, type, name, description, body, tags, device_id, created_at, updated_at, synced
+             FROM memory_entries WHERE synced = 0 ORDER BY updated_at ASC LIMIT ?1",
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map([batch_size as i64], row_to_memory_entry)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// Mark a set of memory rows as synced after a successful D1 push.
+    pub fn mark_memories_synced(&self, ids: &[String]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn.lock().unwrap();
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let sql = format!("UPDATE memory_entries SET synced = 1 WHERE id IN ({placeholders})");
+        let params_vec: Vec<&dyn rusqlite::types::ToSql> =
+            ids.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
+        conn.execute(&sql, params_vec.as_slice())
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1458,6 +1663,41 @@ fn row_to_context_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContextEntr
         word_count: word_count as usize,
         content_hash,
         tags,
+        created_at,
+        updated_at,
+        synced,
+    })
+}
+
+fn row_to_memory_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryEntry> {
+    let id: String = row.get(0)?;
+    let type_str: String = row.get(1)?;
+    let name: String = row.get(2)?;
+    let description: String = row.get(3)?;
+    let body: String = row.get(4)?;
+    let tags_json: String = row.get(5)?;
+    let device_id: String = row.get(6)?;
+    let created_at: String = row.get(7)?;
+    let updated_at: String = row.get(8)?;
+    let synced: bool = row.get(9)?;
+
+    let memory_type = MemoryType::from_str(&type_str).unwrap_or(MemoryType::Reference);
+    let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+    let created_at = chrono::DateTime::parse_from_rfc3339(&created_at)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|_| chrono::Utc::now());
+    let updated_at = chrono::DateTime::parse_from_rfc3339(&updated_at)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|_| chrono::Utc::now());
+
+    Ok(MemoryEntry {
+        id: MemoryEntryId(id),
+        memory_type,
+        name,
+        description,
+        body,
+        tags,
+        device_id,
         created_at,
         updated_at,
         synced,
@@ -1743,5 +1983,121 @@ mod tests {
         let stats = store.get_context_stats().unwrap();
         assert_eq!(stats["total_entries"], 2);
         assert_eq!(stats["total_words"], 30);
+    }
+
+    fn make_memory(name: &str, ty: MemoryType, device: &str) -> MemoryEntry {
+        let now = Utc::now();
+        MemoryEntry {
+            id: MemoryEntryId(format!("mem-{device}-{name}")),
+            memory_type: ty,
+            name: name.into(),
+            description: format!("desc for {name}"),
+            body: format!("body for {name}"),
+            tags: vec!["t1".into()],
+            device_id: device.into(),
+            created_at: now,
+            updated_at: now,
+            synced: false,
+        }
+    }
+
+    #[test]
+    fn test_memory_crud() {
+        let store = test_store();
+        let entry = make_memory("no_bun", MemoryType::Feedback, "dev-a");
+
+        let created = store.upsert_memory(&entry).unwrap();
+        assert!(created);
+
+        let fetched = store.get_memory(&entry.id.0).unwrap().unwrap();
+        assert_eq!(fetched.name, "no_bun");
+        assert_eq!(fetched.memory_type, MemoryType::Feedback);
+        assert_eq!(fetched.tags, vec!["t1".to_string()]);
+        assert!(!fetched.synced);
+
+        // Upsert same (device_id, name) updates, preserves id.
+        let mut updated = entry.clone();
+        updated.body = "updated body".into();
+        updated.id = MemoryEntryId("mem-different".into()); // ignored; upsert finds by (device,name)
+        let was_new = store.upsert_memory(&updated).unwrap();
+        assert!(!was_new);
+        let fetched = store.get_memory(&entry.id.0).unwrap().unwrap();
+        assert_eq!(fetched.body, "updated body");
+
+        let removed = store.remove_memory(&entry.id.0).unwrap();
+        assert!(removed);
+        assert!(store.get_memory(&entry.id.0).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_memory_list_and_filter() {
+        let store = test_store();
+        store.upsert_memory(&make_memory("m_user", MemoryType::User, "dev-a")).unwrap();
+        store.upsert_memory(&make_memory("m_fb", MemoryType::Feedback, "dev-a")).unwrap();
+        store.upsert_memory(&make_memory("m_ref", MemoryType::Reference, "dev-a")).unwrap();
+
+        let all = store.list_memories(&MemoryFilter::default()).unwrap();
+        assert_eq!(all.len(), 3);
+
+        let fb_only = store.list_memories(&MemoryFilter {
+            memory_type: Some(MemoryType::Feedback),
+            ..Default::default()
+        }).unwrap();
+        assert_eq!(fb_only.len(), 1);
+        assert_eq!(fb_only[0].name, "m_fb");
+
+        let searched = store.list_memories(&MemoryFilter {
+            search: Some("user".into()),
+            ..Default::default()
+        }).unwrap();
+        assert_eq!(searched.len(), 1);
+        assert_eq!(searched[0].name, "m_user");
+    }
+
+    #[test]
+    fn test_memory_unique_per_device() {
+        let store = test_store();
+        store.upsert_memory(&make_memory("shared_name", MemoryType::Project, "dev-a")).unwrap();
+        store.upsert_memory(&make_memory("shared_name", MemoryType::Project, "dev-b")).unwrap();
+
+        let all = store.list_memories(&MemoryFilter::default()).unwrap();
+        assert_eq!(all.len(), 2, "same name on different devices must coexist");
+    }
+
+    #[test]
+    fn test_memory_sync_roundtrip() {
+        let store = test_store();
+        store.upsert_memory(&make_memory("a", MemoryType::User, "dev-a")).unwrap();
+        store.upsert_memory(&make_memory("b", MemoryType::User, "dev-a")).unwrap();
+
+        let pending = store.list_unsynced_memories(100).unwrap();
+        assert_eq!(pending.len(), 2);
+
+        let ids: Vec<String> = pending.iter().map(|m| m.id.0.clone()).collect();
+        store.mark_memories_synced(&ids).unwrap();
+
+        let pending = store.list_unsynced_memories(100).unwrap();
+        assert!(pending.is_empty());
+
+        // Update bumps synced back to 0.
+        let updated = make_memory("a", MemoryType::User, "dev-a");
+        store.upsert_memory(&updated).unwrap();
+        let pending = store.list_unsynced_memories(100).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].name, "a");
+    }
+
+    #[test]
+    fn test_memory_stats() {
+        let store = test_store();
+        store.upsert_memory(&make_memory("u1", MemoryType::User, "dev-a")).unwrap();
+        store.upsert_memory(&make_memory("u2", MemoryType::User, "dev-a")).unwrap();
+        store.upsert_memory(&make_memory("f1", MemoryType::Feedback, "dev-a")).unwrap();
+
+        let stats = store.get_memory_stats().unwrap();
+        assert_eq!(stats.total_entries, 3);
+        assert_eq!(stats.unsynced, 3);
+        let user_count = stats.by_type.iter().find(|(k, _)| k == "user").map(|(_, v)| *v);
+        assert_eq!(user_count, Some(2));
     }
 }

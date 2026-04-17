@@ -260,9 +260,12 @@ pub fn validate_table_name(table: &str) -> Result<(), SyncError> {
     }
 }
 
-/// Tables synced via SQLite → D1 (board + tasks, OLTP workloads).
+/// Tables synced via SQLite → D1 (OLTP workloads: board, tasks, memory).
+///
+/// All tables here MUST carry the sync contract columns:
+/// `id TEXT PRIMARY KEY`, `device_id TEXT`, `updated_at TEXT`, `synced INTEGER`.
 pub const D1_SYNCABLE_TABLES: &[&str] =
-    &["projects", "issues", "comments", "issue_events", "tasks"];
+    &["projects", "issues", "comments", "issue_events", "tasks", "memory_entries"];
 
 #[cfg(test)]
 mod tests {
@@ -273,6 +276,7 @@ mod tests {
         assert!(validate_table_name("projects").is_ok());
         assert!(validate_table_name("issues").is_ok());
         assert!(validate_table_name("tasks").is_ok());
+        assert!(validate_table_name("memory_entries").is_ok());
     }
 
     #[test]
