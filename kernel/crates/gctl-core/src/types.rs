@@ -262,6 +262,8 @@ pub struct SyncPendingRows {
     pub traffic: u64,
     pub tasks: u64,
     pub context: u64,
+    #[serde(default)]
+    pub memory: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

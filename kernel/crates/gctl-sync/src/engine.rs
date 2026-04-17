@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use duckdb::Connection;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -16,6 +16,7 @@ use gctl_core::{
     SyncConfig, SyncManifest, SyncManifestEntry, SyncPendingRows, SyncResult, SyncStatus,
     SyncTableResult,
 };
+use gctl_storage::SqliteStore;
 
 use crate::d1::{D1Client, D1_SYNCABLE_TABLES};
 use crate::manifest;
@@ -45,6 +46,9 @@ pub struct R2SyncEngine {
     conn: Mutex<Connection>,
     r2: R2Client,
     d1: Option<D1Client>,
+    /// Optional SQLite store. Required to push OLTP tables (e.g. `memory_entries`)
+    /// that originate in SQLite rather than DuckDB. Without it, those tables skip sync.
+    sqlite: Option<Arc<SqliteStore>>,
     config: SyncConfig,
     sync_dir: PathBuf,
     workspace_id: String,
@@ -83,10 +87,17 @@ impl R2SyncEngine {
             conn: Mutex::new(conn),
             r2,
             d1,
+            sqlite: None,
             config,
             sync_dir,
             workspace_id,
         }
+    }
+
+    /// Attach a SQLite store so OLTP tables (e.g. `memory_entries`) can be pushed to D1.
+    pub fn with_sqlite(mut self, sqlite: Arc<SqliteStore>) -> Self {
+        self.sqlite = Some(sqlite);
+        self
     }
 
     /// Resolve which tables to sync: if `tables` is empty, use all syncable tables
@@ -112,9 +123,10 @@ impl R2SyncEngine {
 
     /// Push a single SQLite-backed table to D1.
     ///
-    /// For now queries the DuckDB connection for any rows with `synced = FALSE`
-    /// that belong to D1 tables (tasks). Board tables (projects, issues, etc.)
-    /// are written directly by the Worker; local sync is a future iteration.
+    /// Routing:
+    ///   - `memory_entries` → SQLite (via `self.sqlite`, the canonical path for OLTP rows)
+    ///   - `tasks`          → DuckDB (legacy interim store)
+    ///   - everything else  → no-op (board tables are written directly by the Worker)
     async fn push_table_to_d1(
         &self,
         table: &str,
@@ -125,9 +137,70 @@ impl R2SyncEngine {
             return Ok(0);
         };
 
-        // For tables that live only in D1 (board_* tables managed by the Worker),
-        // there are no local rows to push in this iteration — the Worker writes
-        // directly to D1. For `tasks` we query DuckDB as an interim store.
+        if table == "memory_entries" {
+            let Some(sqlite) = &self.sqlite else {
+                warn!(table, "memory_entries push skipped — SQLite store not attached");
+                return Ok(0);
+            };
+
+            // Batch size matches D1's practical statement limit.
+            let pending = sqlite
+                .list_unsynced_memories(100)
+                .map_err(|e| SyncError::Export(format!("list unsynced memories: {e}")))?;
+
+            if pending.is_empty() {
+                return Ok(0);
+            }
+
+            let rows: Vec<crate::d1::D1Row> = pending
+                .iter()
+                .map(|m| {
+                    let mut row = crate::d1::D1Row::new();
+                    row.insert("id".into(), serde_json::Value::String(m.id.0.clone()));
+                    row.insert(
+                        "type".into(),
+                        serde_json::Value::String(m.memory_type.as_str().to_string()),
+                    );
+                    row.insert("name".into(), serde_json::Value::String(m.name.clone()));
+                    row.insert(
+                        "description".into(),
+                        serde_json::Value::String(m.description.clone()),
+                    );
+                    row.insert("body".into(), serde_json::Value::String(m.body.clone()));
+                    row.insert(
+                        "tags".into(),
+                        serde_json::Value::String(
+                            serde_json::to_string(&m.tags).unwrap_or_else(|_| "[]".into()),
+                        ),
+                    );
+                    row.insert(
+                        "device_id".into(),
+                        serde_json::Value::String(m.device_id.clone()),
+                    );
+                    row.insert(
+                        "created_at".into(),
+                        serde_json::Value::String(m.created_at.to_rfc3339()),
+                    );
+                    row.insert(
+                        "updated_at".into(),
+                        serde_json::Value::String(m.updated_at.to_rfc3339()),
+                    );
+                    // D1 row goes in as synced=1 (it's now the canonical remote copy).
+                    row.insert("synced".into(), serde_json::Value::Number(1.into()));
+                    row
+                })
+                .collect();
+
+            let count = d1.batch_upsert(table, &rows).await?;
+
+            let ids: Vec<String> = pending.iter().map(|m| m.id.0.clone()).collect();
+            sqlite
+                .mark_memories_synced(&ids)
+                .map_err(|e| SyncError::Export(format!("mark memories synced: {e}")))?;
+
+            return Ok(count);
+        }
+
         if table == "tasks" {
             let rows = {
                 let conn = self.conn.lock().unwrap();
@@ -420,7 +493,7 @@ impl SyncEngine for R2SyncEngine {
         let device_id = &self.config.device_id;
 
         // DuckDB pending counts (OLAP tables).
-        let pending = {
+        let mut pending = {
             let conn = self.conn.lock().unwrap();
             SyncPendingRows {
                 sessions: parquet_export::pending_count(&conn, "sessions").unwrap_or(0),
@@ -428,8 +501,16 @@ impl SyncEngine for R2SyncEngine {
                 traffic: parquet_export::pending_count(&conn, "traffic").unwrap_or(0),
                 tasks: 0, // tasks now lives in SQLite→D1
                 context: 0,
+                memory: 0,
             }
         };
+
+        // SQLite pending counts (OLTP tables).
+        if let Some(sqlite) = &self.sqlite {
+            if let Ok(stats) = sqlite.get_memory_stats() {
+                pending.memory = stats.unsynced;
+            }
+        }
 
         let manifest = manifest::load_local(
             &self.sync_dir,
@@ -591,5 +672,51 @@ mod tests {
         assert_eq!(status.pending_rows.spans, 3);
         assert_eq!(status.pending_rows.traffic, 0);
         assert_eq!(status.pending_rows.tasks, 0); // tasks is now D1
+    }
+
+    #[tokio::test]
+    async fn status_counts_memory_pending_when_sqlite_attached() {
+        use gctl_core::{MemoryEntry, MemoryEntryId, MemoryType};
+        use gctl_storage::SqliteStore;
+        use std::sync::Arc;
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id VARCHAR, synced BOOLEAN DEFAULT FALSE);
+             CREATE TABLE spans (id VARCHAR, synced BOOLEAN DEFAULT FALSE);
+             CREATE TABLE traffic (id VARCHAR, synced BOOLEAN DEFAULT FALSE);",
+        )
+        .unwrap();
+
+        let sqlite = Arc::new(SqliteStore::open(":memory:").unwrap());
+        let now = chrono::Utc::now();
+        for i in 0..2 {
+            sqlite
+                .upsert_memory(&MemoryEntry {
+                    id: MemoryEntryId(format!("mem-t{i}")),
+                    memory_type: MemoryType::Feedback,
+                    name: format!("m{i}"),
+                    description: String::new(),
+                    body: String::new(),
+                    tags: vec![],
+                    device_id: "dev-x".into(),
+                    created_at: now,
+                    updated_at: now,
+                    synced: false,
+                })
+                .unwrap();
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let engine = R2SyncEngine::new(
+            conn,
+            test_config(),
+            dir.path().to_path_buf(),
+            "ws1".into(),
+        )
+        .with_sqlite(sqlite);
+
+        let status = engine.status().await.unwrap();
+        assert_eq!(status.pending_rows.memory, 2);
     }
 }
