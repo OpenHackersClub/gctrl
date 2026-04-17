@@ -59,7 +59,21 @@ apps/gctl-{app}/
 - **`Context.Tag`** for service ports (testable via `Layer` substitution)
 - **`Layer.provide`** for dependency injection — wire at the edge, test with in-memory adapters
 - **`Effect.gen`** for all effectful operations
-- **Prefer `@effect/platform` HttpClient over raw `fetch()`** — HTTP adapters use `HttpClient`, `HttpClientResponse`, `HttpBody` from `@effect/platform`. Provide `FetchHttpClient.layer` at the edge.
+- **Prefer `@effect/platform` HttpClient over raw `fetch()` — including in Worker runtime tests.** HTTP adapters and tests use `HttpClient`, `HttpClientResponse`, `HttpBody` from `@effect/platform`. Provide `FetchHttpClient.layer` at the edge. In Cloudflare Worker tests (`@cloudflare/vitest-pool-workers`), do not call `SELF.fetch` directly — adapt it as the underlying fetch via `FetchHttpClient.Fetch` so tests exercise the same Effect HTTP path as production. Example:
+
+  ```ts
+  import { FetchHttpClient, HttpClient } from "@effect/platform"
+  import { Effect, Layer } from "effect"
+  import { SELF } from "cloudflare:test"
+
+  const WorkerFetch = Layer.succeed(
+    FetchHttpClient.Fetch,
+    ((input, init) => SELF.fetch(input as RequestInfo, init)) as typeof fetch,
+  )
+  export const TestHttpClient = FetchHttpClient.layer.pipe(Layer.provide(WorkerFetch))
+  ```
+
+  Tests then use `HttpClient.HttpClient` inside `Effect.gen`, provided with `TestHttpClient`. Raw `SELF.fetch` calls are permitted only in a single shared test fixture that defines this layer.
 - App tables MUST use namespaced prefixes (`board_*`, `eval_*`)
 
 ## gctl-board
@@ -84,4 +98,5 @@ Applications under `apps/` are independent npm packages. They depend on the kern
 
 - vitest + `Schema.decodeUnknownSync` for schema validation
 - Mock `KernelClient` layer for isolated service tests
+- **Worker runtime tests** (`@cloudflare/vitest-pool-workers`) drive the Worker handler through `@effect/platform` `HttpClient` backed by a `FetchHttpClient.Fetch` layer that wraps `SELF.fetch` (see pattern above). Keep the raw `SELF.fetch` call behind one shared fixture; individual tests should only see `HttpClient`.
 - See [style.md](style.md) for Effect-TS testing patterns
