@@ -39,7 +39,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gctl-kernel
-          path: target/debug/gctl
+          path: target/debug/gctld
           retention-days: 1
 
   # ──────────────────────────────────────────────
@@ -109,7 +109,7 @@ jobs:
           path: target/debug/
 
       - name: Make kernel binary executable
-        run: chmod +x target/debug/gctl
+        run: chmod +x target/debug/gctld
 
       - name: Run Playwright tests
         run: pnpm exec playwright test
@@ -118,7 +118,7 @@ jobs:
           CI: "true"
           GCTL_KERNEL_PORT: "14318"
           GCTL_VITE_PORT: "14200"
-          GCTL_KERNEL_BIN: ${{ github.workspace }}/target/debug/gctl
+          GCTL_KERNEL_BIN: ${{ github.workspace }}/target/debug/gctld
 
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4

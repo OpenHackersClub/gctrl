@@ -4,7 +4,7 @@ use anyhow::Result;
 mod commands;
 
 #[derive(Parser)]
-#[command(name = "gctl", version, about = "GroundCtrl — local-first OS for human+agent teams")]
+#[command(name = "gctld", version, about = "GroundCtrl kernel daemon — local-first OS for human+agent teams")]
 struct Cli {
     /// Path to DuckDB database file (default: ~/.local/share/gctl/gctl.duckdb)
     #[arg(long, global = true)]
