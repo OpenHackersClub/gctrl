@@ -174,6 +174,26 @@ Migrations live in `migrations/` and are applied automatically by `wrangler depl
 wrangler d1 migrations create gctrl-board-db "<description>"
 ```
 
+## Markdown Directory Convention
+
+Issues can be authored as plain markdown files under the repo's top-level `gctrl/` directory. The kernel daemon (`gctrld serve`) auto-detects `./gctrl/` and runs a file watcher that imports new/modified `*.md` files into the local DuckDB `board_*` tables (content-hash deduped). Override the path with `gctrld serve --board-dir <path>`.
+
+```
+gctrl/                       # Configurable via --board-dir; default: ./gctrl/
+├── BOARD/                   # Subdirectory name = project key (uppercased)
+│   ├── BOARD-1.md           #   filename stem must match issue key
+│   └── BOARD-2.md
+└── INBOX/
+    └── INBOX-1.md
+```
+
+Rules:
+
+- Each subdirectory is a project key. The watcher auto-creates the `board_projects` row on first import if it doesn't exist.
+- Each `*.md` file is one issue. The filename stem (e.g. `BOARD-1`) must match the issue key in YAML frontmatter.
+- Imports are idempotent — `content_hash` (SHA-256 of file content) is stored on `board_issues`; unchanged files are skipped.
+- The watcher is **local-only**. Markdown files are not bidirectionally synced to D1 — they hydrate the daemon's local DuckDB, which the web UI/CLI then consumes via `/api/board/*`.
+
 ## Code Location
 
 | Component | Path |
