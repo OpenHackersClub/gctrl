@@ -503,7 +503,9 @@ mod tests {
             "ws1".into(),
         );
         let tables = engine.resolve_tables(&[]);
-        assert_eq!(tables, SYNCABLE_TABLES);
+        let mut expected: Vec<&str> = SYNCABLE_TABLES.to_vec();
+        expected.extend_from_slice(D1_SYNCABLE_TABLES);
+        assert_eq!(tables, expected);
     }
 
     #[test]

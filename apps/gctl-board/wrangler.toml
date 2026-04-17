@@ -19,3 +19,13 @@ binding = "DB"
 database_name = "gctl-board-db"
 database_id = "2173a9e0-f901-4d76-9f26-71f532b0eda7"
 migrations_dir = "migrations"
+
+# ── Preview environment (PR deploys) ──
+[env.preview]
+name = "gctl-board-preview"
+
+[[env.preview.d1_databases]]
+binding = "DB"
+database_name = "gctl-board-preview-db"
+database_id = "9b255c9a-738e-4d17-b371-ad6f01511104"
+migrations_dir = "migrations"

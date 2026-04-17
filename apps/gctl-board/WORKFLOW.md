@@ -114,6 +114,66 @@ sequenceDiagram
 | `reviewer-bot` | read, comment | Code review, spec review |
 | `docs-bot` | read, write | Documentation updates, spec maintenance |
 
+## Deployment
+
+### Architecture
+
+The board deploys as a Cloudflare Worker that serves both the SPA frontend (static assets) and the D1-backed API from a single origin. The frontend uses relative paths (`/api/board/...`), so no kernel API URL configuration is needed — the Worker IS the API.
+
+```
+Browser → Cloudflare Worker (gctl-board)
+              ├── /api/*  → D1 database (board state)
+              └── /*      → Static assets (Vite SPA)
+```
+
+### Environments
+
+| Environment | Worker name | D1 database | Trigger |
+|-------------|-------------|-------------|---------|
+| **Production** | `gctl-board` | `gctl-board-db` | Merge to `main` (auto) or manual dispatch |
+| **Preview** | `gctl-board-preview` | `gctl-board-preview-db` | PR touching `apps/gctl-board/**` |
+
+### Local development
+
+```sh
+# SPA dev server with hot reload (proxies /api/* to kernel on :4318)
+pnpm dev
+
+# Or use Wrangler for local Worker + D1 (closer to production)
+wrangler dev
+```
+
+### Manual deploy
+
+```sh
+# Production
+pnpm deploy
+
+# Preview environment
+pnpm deploy:preview
+```
+
+### CI/CD
+
+- **PR opened/updated** → `deploy.yml` preview job builds web assets and deploys to `gctl-board-preview` Worker. Preview URL is posted as a PR comment.
+- **Merge to main** → CI passes → `deploy.yml` production job deploys to `gctl-board` Worker with post-deploy health check.
+- **Manual dispatch** → `deploy.yml` builds from scratch and deploys to production.
+
+### Required secrets (GitHub Actions)
+
+| Secret | Description |
+|--------|-------------|
+| `CLOUDFLARE_API_TOKEN` | Cloudflare API token with Workers + D1 permissions |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID |
+
+### D1 migrations
+
+Migrations live in `migrations/` and are applied automatically by `wrangler deploy`. To create a new migration:
+
+```sh
+wrangler d1 migrations create gctl-board-db "<description>"
+```
+
 ## Code Location
 
 | Component | Path |

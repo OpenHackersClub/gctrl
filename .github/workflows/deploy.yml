@@ -6,17 +6,171 @@ on:
     workflows: ["CI"]
     branches: [main]
     types: [completed]
+  # Preview deploy on PR
+  pull_request:
+    paths:
+      - "apps/gctl-board/**"
+      - ".github/workflows/deploy.yml"
   # Manual trigger (builds from scratch, no CI gate)
   workflow_dispatch:
 
 concurrency:
-  group: deploy-board
-  cancel-in-progress: false
+  group: deploy-board-${{ github.event.pull_request.number || 'production' }}
+  cancel-in-progress: true
 
 jobs:
+  # ── Preview deploy (PR) ──
+  preview:
+    name: Deploy preview
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 15
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      deployments: write
+      pull-requests: write
+    outputs:
+      deployment-url: ${{ steps.deploy.outputs.deployment-url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js + pnpm
+        uses: ./.github/actions/setup-node
+
+      - name: Build board web assets
+        run: pnpm build:web
+        working-directory: apps/gctl-board
+
+      - name: Run D1 migrations on preview
+        working-directory: apps/gctl-board
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm exec wrangler d1 migrations apply gctl-board-preview-db --env preview --remote
+
+      - name: Deploy preview to Cloudflare Workers
+        id: deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/gctl-board
+          command: deploy --env preview
+
+      - name: Comment preview URL on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const url = '${{ steps.deploy.outputs.deployment-url }}';
+            if (!url) return;
+            const body = `### Preview deploy\n\n${url}\n\nDeployed from commit ${{ github.sha }}`;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body?.includes('### Preview deploy'));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+  # ── Acceptance tests against preview Worker ──
+  # Runs Playwright on the Depot runner, connecting the browser over CDP
+  # to Cloudflare Browser Rendering. The suite drives PREVIEW_URL against
+  # the deployed preview Worker.
+  #
+  # Rate-limit strategy (free-tier Browser Rendering):
+  #  - fixtures/test.ts holds a module-level Browser singleton so the run
+  #    calls `connectOverCDP` at most once.
+  #  - playwright.config.ts pins workers=1, retries=0, fullyParallel=false,
+  #    maxFailures=1 in CDP mode — no worker recycles, no retry storms.
+  #  - CDP URL uses `keep_alive=600000` so the CF session survives brief
+  #    idle gaps between test files.
+  acceptance:
+    name: Acceptance (preview Worker)
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 20
+    needs: [preview]
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js + pnpm
+        uses: ./.github/actions/setup-node
+
+      - name: Health check preview deploy
+        run: |
+          DEPLOY_URL="${{ needs.preview.outputs.deployment-url }}"
+          if [ -z "$DEPLOY_URL" ]; then
+            echo "::error::No deployment URL from preview job"
+            exit 1
+          fi
+          echo "Checking $DEPLOY_URL ..."
+          for i in 1 2 3 4 5; do
+            STATUS=$(curl -s -o /dev/null -w '%{http_code}' "$DEPLOY_URL/api/board/projects" --max-time 10 || true)
+            if [ "$STATUS" = "200" ]; then
+              echo "Health check passed (HTTP $STATUS)"
+              exit 0
+            fi
+            echo "Attempt $i: HTTP $STATUS, retrying in 5s..."
+            sleep 5
+          done
+          echo "::error::Health check failed after 5 attempts (last HTTP $STATUS)"
+          exit 1
+
+      - name: Clean D1 test data
+        working-directory: apps/gctl-board
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          pnpm exec wrangler d1 execute gctl-board-preview-db --env preview --remote \
+            --command "DELETE FROM issue_events; DELETE FROM comments; DELETE FROM issues; DELETE FROM projects;"
+
+      # Installed as a fallback: the fixture prefers CF Browser Rendering
+      # via CDP, but falls back to local Chromium on CF 429 so a transient
+      # rate-limit blip does not cascade-fail the suite.
+      - name: Install Playwright Chromium (CDP fallback)
+        run: pnpm exec playwright install --with-deps chromium
+        working-directory: apps/gctl-board
+
+      - name: Run acceptance tests against preview (CF Browser Rendering)
+        run: pnpm exec playwright test
+        working-directory: apps/gctl-board
+        env:
+          CI: "true"
+          PREVIEW_URL: ${{ needs.preview.outputs.deployment-url }}
+          CDP_ENDPOINT: "wss://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/browser-rendering/devtools/browser?keep_alive=600000"
+          CF_API_TOKEN: ${{ secrets.CF_BROWSER_RENDERING_TOKEN }}
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report-preview
+          path: apps/gctl-board/playwright-report/
+          retention-days: 7
+
+  # ── Production deploy (main) ──
   deploy:
     name: Deploy to Cloudflare Workers
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 15
     # Skip deploy if CI failed (workflow_run triggers on both success and failure)
     if: >-

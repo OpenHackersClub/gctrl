@@ -49,6 +49,7 @@ struct D1ApiResponse {
 
 #[derive(Debug, Deserialize)]
 struct D1ApiError {
+    #[allow(dead_code)]
     code: u32,
     message: String,
 }
@@ -57,6 +58,7 @@ struct D1ApiError {
 struct D1QueryResult {
     results: Option<Vec<D1Row>>,
     #[serde(default)]
+    #[allow(dead_code)]
     rows_written: u64,
 }
 

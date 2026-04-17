@@ -9,7 +9,21 @@
  *  - seedBoard   — factory: project + N issues in one call
  */
 
-import { test as base, expect } from "@playwright/test"
+import { test as base, expect, chromium, type Browser } from "@playwright/test"
+
+// Module-level singleton: Cloudflare Browser Rendering's free tier
+// rate-limits connectOverCDP (new session per connect, 3 concurrent,
+// per-minute throttle). We enforce *exactly one* connect per CI run by
+// caching the Browser handle here. Even if Playwright re-enters the
+// browser fixture (worker recycle, fixture timeout, etc.), we reuse the
+// same handle instead of opening a second session.
+//
+// NOTE: `cdpBrowser` only lives as long as the worker process. Playwright
+// recycles workers when a worker-scoped fixture throws, so on CF 429 we
+// fall back to local Chromium instead of re-throwing — otherwise every
+// recycled worker would re-attempt the connect and cascade-429 for the
+// remainder of CF's rolling window.
+let cdpBrowser: Browser | undefined
 import {
   KernelTestClient,
   uniqueProjectKey,
@@ -36,10 +50,89 @@ type BoardFixtures = {
 }
 
 export const test = base.extend<BoardFixtures>({
+  /**
+   * Browser fixture: local Chromium launch or Cloudflare Browser Rendering
+   * via CDP. Set CDP_ENDPOINT + CF_API_TOKEN to use remote rendering.
+   *
+   * CDP mode enforces exactly one `connectOverCDP` per CI run via the
+   * module-level `cdpBrowser` singleton. Do NOT close the Browser in
+   * `use()` teardown — closing ends the CF session and a subsequent
+   * worker would need a new connect (→ 429). The session dies naturally
+   * when the Node process exits at end of run; `keep_alive` on the CDP
+   * URL lets CF reap it if we crash.
+   */
+  browser: [
+    async ({}, use) => {
+      const cdpEndpoint = process.env.CDP_ENDPOINT
+      if (cdpEndpoint && !cdpBrowser) {
+        try {
+          const started = Date.now()
+          cdpBrowser = await chromium.connectOverCDP(cdpEndpoint, {
+            headers: {
+              Authorization: `Bearer ${process.env.CF_API_TOKEN}`,
+            },
+          })
+          process.stderr.write(
+            `[cdp] connected in ${Date.now() - started}ms (singleton — should log exactly once per CI run)\n`
+          )
+          cdpBrowser.on("disconnected", () => {
+            process.stderr.write("[cdp] Browser disconnected (CF closed session)\n")
+          })
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          // Swallow CDP connect failures (typically CF 429) and fall
+          // through to local Chromium — re-throwing would make Playwright
+          // recycle the worker, each recycle re-connects, cascading the
+          // rate limit across the whole suite.
+          process.stderr.write(
+            `[cdp] connect failed — falling back to local Chromium: ${msg}\n`
+          )
+        }
+      }
+      if (cdpBrowser) {
+        if (cdpEndpoint) {
+          process.stderr.write("[cdp] reusing Browser handle (fixture re-entered)\n")
+        }
+        await use(cdpBrowser)
+        // Intentionally do NOT close — closing ends the CF session and a
+        // subsequent worker recycle would need a fresh connect.
+        return
+      }
+      const browser = await chromium.launch({
+        args: ["--remote-debugging-port=0"],
+      })
+      await use(browser)
+      await browser.close()
+    },
+    { scope: "worker", timeout: 120_000 },
+  ],
+
   kernel: async ({}, use) => {
+    const previewUrl = process.env.PREVIEW_URL
     const port = process.env.GCTL_KERNEL_PORT ?? "14318"
-    const client = new KernelTestClient(`http://localhost:${port}`)
-    await client.waitForReady()
+    const baseUrl = previewUrl ?? `http://localhost:${port}`
+    const client = new KernelTestClient(baseUrl)
+    if (previewUrl) {
+      // Remote mode: Worker already deployed, verify via board API
+      const deadline = Date.now() + 30_000
+      let reachable = false
+      while (Date.now() < deadline) {
+        try {
+          await client.listProjects()
+          reachable = true
+          break
+        } catch {
+          await new Promise((r) => setTimeout(r, 500))
+        }
+      }
+      if (!reachable) {
+        throw new Error(
+          `Preview Worker not reachable after 30s at ${previewUrl}`
+        )
+      }
+    } else {
+      await client.waitForReady()
+    }
     await use(client)
   },
 
