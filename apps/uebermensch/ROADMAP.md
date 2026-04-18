@@ -8,9 +8,9 @@
 
 | Task | Description | Priority | Depends On | Issue |
 |------|-------------|----------|------------|-------|
-| Vault scaffolding | `apps/uebermensch/vault.sample/` with `profile.yaml`, `topics.yaml`, `sources.yaml`, `theses/`, `prompts/`, `.obsidian/` defaults, `.gitignore` | P0 | — | TBD |
+| Vault scaffolding | `apps/uebermensch/vault.sample/` with `profile.md`, `topics.md`, `sources.md`, `theses/`, `prompts/`, `.obsidian/` defaults, `.gitignore` | P0 | — | TBD |
 | Profile schema lock-in | Finalise profile+vault layout in `specs/profile.md`; commit sample vault | P0 | — | TBD |
-| Profile/Vault reader | Effect-TS `ProfileService` reading markdown + YAML from `$UBER_VAULT_DIR` (authored tier) with schema validation; VaultWatcher fiber for `fs.watch` | P0 | Profile schema | TBD |
+| Profile/Vault reader | Effect-TS `ProfileService` reading markdown + YAML frontmatter from `$UBER_VAULT_DIR` (authored tier) with schema validation; VaultWatcher fiber for `fs.watch` | P0 | Profile schema | TBD |
 | Kernel vault mount | Wire `gctrl-kb` with `context_root = $UBER_VAULT_DIR, wiki_subpath = "wiki"` so the kernel reads/writes wiki pages at the vault root. Retire the legacy `~/.local/share/gctrl/context/wiki` path for Uebermensch workspaces. | P0 | Profile/Vault reader | TBD |
 | `uber_*` storage migration | Add `uber_briefs` (with `vault_path`, `content_hash`, `failed_at`, `failed_reason`), `uber_brief_items`, `uber_deliveries`, `uber_alerts` to SQLite schema | P0 | — | TBD |
 | HTTP routes (kernel proxy) | Kernel-side `/api/uber/briefs` CRUD — resolves `vault_path` to markdown on read | P0 | Storage migration | TBD |

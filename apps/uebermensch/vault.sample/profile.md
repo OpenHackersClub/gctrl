@@ -1,3 +1,4 @@
+---
 schema_version: 1
 
 identity:
@@ -40,3 +41,8 @@ delivery:
   retention:
     briefs_days: 180
     alerts_days: 90
+---
+
+# Profile
+
+Top-level config for this vault: identity, budgets, delivery cadence, channels, personas, retention. Edit the frontmatter above; the body is free-form notes.

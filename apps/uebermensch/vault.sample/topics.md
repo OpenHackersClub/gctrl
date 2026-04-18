@@ -1,3 +1,4 @@
+---
 topics:
   - slug: "iran-israel-escalation"
     title: "Iran–Israel 2025–2026 escalation + US involvement"
@@ -36,3 +37,8 @@ topics:
       - red-sea-crisis
       - opec
       - saudi-aramco
+---
+
+# Topics
+
+Topics of interest that shape what the daemon ranks, fetches, and briefs. Edit the frontmatter above.

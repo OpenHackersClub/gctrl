@@ -72,7 +72,7 @@ export const BriefFrontmatter = Schema.Struct({
   topics_covered: Schema.Array(Slug),
 })
 
-export const ProfileYaml = Schema.Struct({
+export const ProfileConfig = Schema.Struct({
   schema_version: Schema.Number,
   identity: Schema.Struct({
     name: Schema.String,
@@ -93,7 +93,7 @@ export const ProfileYaml = Schema.Struct({
   }),
 })
 
-export const TopicsYaml = Schema.Struct({
+export const TopicsConfig = Schema.Struct({
   topics: Schema.Array(
     Schema.Struct({
       slug: Slug,
@@ -104,7 +104,7 @@ export const TopicsYaml = Schema.Struct({
   ).pipe(Schema.minItems(1)),
 })
 
-export const SourcesYaml = Schema.Struct({
+export const SourcesConfig = Schema.Struct({
   sources: Schema.Array(
     Schema.Struct({
       slug: Slug,

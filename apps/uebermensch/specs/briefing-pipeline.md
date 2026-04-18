@@ -140,7 +140,7 @@ The curator MUST output JSON matching:
 
 ### Model + Budget
 
-- `persona: uber-curator` → default `claude-opus-4-7` (overridable by `personas.yaml`).
+- `persona: uber-curator` → default `claude-opus-4-7` (overridable by `personas.md`).
 - `budget_hint_usd: profile.budgets.per_brief_usd`.
 - `max_output_tokens: profile.budgets.max_tokens_per_brief * 0.3` (reserves 70% for input + reasoning).
 - Guardrail `SessionBudgetPolicy` halts the session if cost exceeds `per_brief_usd`.

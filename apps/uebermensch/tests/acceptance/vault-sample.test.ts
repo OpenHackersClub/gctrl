@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url"
 import { dirname, resolve } from "node:path"
 import {
   extractWikilinks,
-  findYaml,
+  findConfig,
   loadVault,
   OBSIDIAN_UNSAFE,
   type LoadedVault,
@@ -12,12 +12,12 @@ import {
 import {
   BriefFrontmatter,
   EntityFrontmatter,
-  ProfileYaml,
+  ProfileConfig,
   SourceFrontmatter,
-  SourcesYaml,
+  SourcesConfig,
   ThesisFrontmatter,
   TopicFrontmatter,
-  TopicsYaml,
+  TopicsConfig,
 } from "../helpers/schemas.js"
 
 const __filename = fileURLToPath(import.meta.url)
@@ -31,9 +31,8 @@ describe("vault.sample — structural contract", () => {
     vault = await loadVault(VAULT_ROOT)
   })
 
-  it("loads at least the expected number of pages + YAMLs", () => {
+  it("loads at least the expected number of pages", () => {
     expect(vault.pages.length).toBeGreaterThanOrEqual(20)
-    expect(vault.yamls.length).toBeGreaterThanOrEqual(3)
   })
 
   it("every markdown file under wiki/ or theses/ has frontmatter with slug + page_type", () => {
@@ -210,41 +209,41 @@ describe("vault.sample — thesis + brief quality rules", () => {
   })
 })
 
-describe("vault.sample — yaml profile/topics/sources", () => {
+describe("vault.sample — profile/topics/sources config", () => {
   let vault: LoadedVault
 
   beforeAll(async () => {
     vault = await loadVault(VAULT_ROOT)
   })
 
-  it("profile.yaml conforms to ProfileYaml", () => {
-    const data = findYaml(vault, "profile.yaml")
+  it("profile.md frontmatter conforms to ProfileConfig", () => {
+    const data = findConfig(vault, "profile.md")
     expect(data).toBeDefined()
-    expect(() => Schema.decodeUnknownSync(ProfileYaml)(data)).not.toThrow()
+    expect(() => Schema.decodeUnknownSync(ProfileConfig)(data)).not.toThrow()
   })
 
-  it("profile.yaml has ≥1 enabled channel", () => {
-    const data = findYaml(vault, "profile.yaml") as {
+  it("profile.md has ≥1 enabled channel", () => {
+    const data = findConfig(vault, "profile.md") as {
       delivery: { channels: Record<string, { enabled?: boolean }> }
     }
     const enabled = Object.values(data.delivery.channels).filter((c) => c?.enabled === true)
     expect(enabled.length).toBeGreaterThanOrEqual(1)
   })
 
-  it("topics.yaml conforms to TopicsYaml", () => {
-    const data = findYaml(vault, "topics.yaml")
+  it("topics.md frontmatter conforms to TopicsConfig", () => {
+    const data = findConfig(vault, "topics.md")
     expect(data).toBeDefined()
-    expect(() => Schema.decodeUnknownSync(TopicsYaml)(data)).not.toThrow()
+    expect(() => Schema.decodeUnknownSync(TopicsConfig)(data)).not.toThrow()
   })
 
-  it("sources.yaml conforms to SourcesYaml and every source.topics slug matches a topics.yaml entry", () => {
-    const topicsData = findYaml(vault, "topics.yaml") as { topics: { slug: string }[] }
-    const sourcesData = findYaml(vault, "sources.yaml")
+  it("sources.md conforms to SourcesConfig and every source.topics slug matches a topics.md entry", () => {
+    const topicsData = findConfig(vault, "topics.md") as { topics: { slug: string }[] }
+    const sourcesData = findConfig(vault, "sources.md")
     expect(sourcesData).toBeDefined()
-    expect(() => Schema.decodeUnknownSync(SourcesYaml)(sourcesData)).not.toThrow()
+    expect(() => Schema.decodeUnknownSync(SourcesConfig)(sourcesData)).not.toThrow()
 
     const knownTopics = new Set(topicsData.topics.map((t) => t.slug))
-    const decoded = Schema.decodeUnknownSync(SourcesYaml)(sourcesData)
+    const decoded = Schema.decodeUnknownSync(SourcesConfig)(sourcesData)
     for (const src of decoded.sources) {
       for (const t of src.topics) {
         expect(knownTopics.has(t), `source ${src.slug} references unknown topic "${t}"`).toBe(true)
@@ -252,8 +251,8 @@ describe("vault.sample — yaml profile/topics/sources", () => {
     }
   })
 
-  it("every thesis's topics[] matches a topics.yaml entry", () => {
-    const topicsData = findYaml(vault, "topics.yaml") as { topics: { slug: string }[] }
+  it("every thesis's topics[] matches a topics.md entry", () => {
+    const topicsData = findConfig(vault, "topics.md") as { topics: { slug: string }[] }
     const knownTopics = new Set(topicsData.topics.map((t) => t.slug))
 
     const theses = vault.pages.filter((p) => p.frontmatter.page_type === "thesis")

@@ -172,7 +172,7 @@ export const Alert = Schema.Struct({
 
 ### 2.5 Profile (read-only projection)
 
-Defined fully in [profile.md](profile.md). A `Profile` Schema is the in-memory projection after parsing the authored tier of `$UBER_VAULT_DIR` (profile.yaml, topics.yaml, sources.yaml, theses/, prompts/).
+Defined fully in [profile.md](profile.md). A `Profile` Schema is the in-memory projection after parsing the authored tier of `$UBER_VAULT_DIR` (profile.md, topics.md, sources.md, theses/, prompts/).
 
 ```ts
 export const Topic = Schema.Struct({

@@ -66,7 +66,7 @@ Dependencies MUST flow inward only (see [principles.md § Architectural Invarian
 
 | Concern | Layer | Component | Notes |
 |---------|-------|-----------|-------|
-| User topics, theses, delivery prefs (authored tier) | L0 filesystem | `$UBER_VAULT_DIR/{profile.yaml,topics.yaml,sources.yaml,theses/,prompts/}` | Git-versioned, Obsidian-mountable, portable — see [profile.md](profile.md) |
+| User topics, theses, delivery prefs (authored tier) | L0 filesystem | `$UBER_VAULT_DIR/{profile.md,topics.md,sources.md,theses/,prompts/}` | Git-versioned, Obsidian-mountable, portable — see [profile.md](profile.md) |
 | Generated pages + briefs (generated tier) | L0 filesystem | `$UBER_VAULT_DIR/{wiki/,briefs/}` (`wiki/` contains `sources/`, `synthesis/`, `entities/`, `topics/`, `questions/`) | Gitignored, R2-synced, reproducible from sources |
 | Parse + validate profile | L4 | `ProfileService` | Effect-TS `Schema` over markdown/YAML |
 | Raw source capture | L2 extension | `gctrl-net`, `gctrl-context` | Reuses kernel primitives — no new storage |
@@ -246,7 +246,7 @@ Re-used as-is:
 | `uber_brief_items` | SQLite | D1 | Items within a brief (id, brief_id, position, title, summary_md, action, topic, thesis, source_page_ids JSON) — derived from the vault markdown's H2 structure, carried as an index for fast listing/search |
 | `uber_deliveries` | SQLite | D1 | Per-channel delivery (id, brief_id, channel, external_id, status, delivered_at, error) — unique key (brief_id, channel) |
 | `uber_alerts` | SQLite | D1 | Triggered alerts (id, kind, urgency, subject, payload JSON, related_brief_id, status, created_at) |
-| `uber_sources_cfg` | SQLite | D1 | Rendered source config from profile (for audit / debug only; vault `sources.yaml` is authoritative) |
+| `uber_sources_cfg` | SQLite | D1 | Rendered source config from profile (for audit / debug only; vault `sources.md` is authoritative) |
 
 Rows MUST carry `device_id` + `updated_at` for sync. Transition rules enforced at the storage layer (`pending → curating → rendered → delivered → scored → archived`).
 
@@ -256,7 +256,7 @@ Full layout in [profile.md § Vault Layout](profile.md#vault-layout). The brief-
 
 ```
 $UBER_VAULT_DIR/
-├── profile.yaml, topics.yaml, sources.yaml   # authored tier (git-tracked)
+├── profile.md, topics.md, sources.md         # authored tier (git-tracked)
 ├── theses/<slug>.md                          # authored tier
 ├── briefs/
 │   ├── <YYYY-MM-DD>.md                       # daily brief (generated; R2-synced)

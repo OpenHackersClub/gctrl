@@ -14,7 +14,7 @@ The identity (`identity.slug` × machine fingerprint) gates sync: each vault is 
 
 | Tier | Path glob | Authored by | Git | R2 sync |
 |------|-----------|-------------|-----|---------|
-| **Authored** (source of truth = user) | `profile.yaml`, `topics.yaml`, `sources.yaml`, `theses/**`, `prompts/**`, `personas.yaml`, `avoid.md`, `ME.md`, `projects.md`, `README.md` | User | ✅ tracked | ✅ |
+| **Authored** (source of truth = user) | `profile.md`, `topics.md`, `sources.md`, `theses/**`, `prompts/**`, `personas.md`, `avoid.md`, `ME.md`, `projects.md`, `README.md` | User | ✅ tracked | ✅ |
 | **Generated** (source of truth = LLM / app) | `wiki/**` (includes `wiki/synthesis/**`, `wiki/sources/**`), `briefs/**`, `.gctrl-uber/**`, `.obsidian/workspace*.json` | LLM personas (`uber-ingest`, `uber-curator`, `uber-deepdive`) + app | ❌ gitignored | ✅ |
 
 R2 syncs both tiers — git is for the authored tier only, so the user can `git diff` meaningful changes without generated noise.
@@ -37,11 +37,11 @@ $UBER_VAULT_DIR/
 ├── README.md                 # vault-level readme (optional, rendered in Obsidian home)
 │
 │  ─── Authored (git-tracked) ───
-├── profile.yaml              # top-level: identity, budgets, delivery, brief cadence
-├── topics.yaml               # topics of interest (rank prior + watchlists)
-├── sources.yaml              # RSS, SEC, markets, manual sources
+├── profile.md                # top-level config: identity, budgets, delivery, brief cadence (YAML frontmatter)
+├── topics.md                 # topics of interest (rank prior + watchlists; YAML frontmatter)
+├── sources.md                # RSS, SEC, markets, manual sources (YAML frontmatter)
 ├── avoid.md                  # style / topic negatives in natural language
-├── personas.yaml             # persona → model + prompt path map (optional)
+├── personas.md               # persona → model + prompt path map (optional; YAML frontmatter)
 ├── ME.md                     # free-form self-description; fed as system context
 ├── projects.md               # projects + commitments; fed as system context
 ├── prompts/                  # per-persona prompt overrides (optional)
@@ -123,7 +123,7 @@ The whole vault syncs to R2 — not just the wiki. Configured via kernel `SyncCo
 root = "$UBER_VAULT_DIR"
 r2_bucket = "gctrl-uber-vault"
 r2_prefix = "vault/{identity.slug}/"          # expands once at daemon start; slug is immutable thereafter
-include = ["**/*.md", "**/*.yaml", "**/*.yml"]
+include = ["**/*.md"]
 exclude = [".obsidian/workspace*.json", ".obsidian/plugins/*/data.json", ".git/**", ".gctrl-uber/lock.json"]
 conflict_policy = "local-wins-with-warning"
 ```
@@ -224,7 +224,7 @@ After bootstrap, pulls are incremental and the daemon runs the push/pull protoco
 
 `apps/uebermensch/vault.sample/` ships with:
 
-- `profile.yaml`, `topics.yaml`, `sources.yaml` — minimal viable config
+- `profile.md`, `topics.md`, `sources.md` — minimal viable config (data in YAML frontmatter)
 - `theses/example-thesis.md` — one annotated thesis
 - `ME.md`, `projects.md`, `avoid.md` — stub
 - `prompts/` — copies of shipped defaults
@@ -236,9 +236,11 @@ After bootstrap, pulls are incremental and the daemon runs the push/pull protoco
 
 ## Schema
 
-The Effect-TS `Profile` schema is canonical (see [domain-model.md § 2.5](domain-model.md#25-profile-read-only-projection)). This section documents the **on-disk** YAML/markdown shape and how it maps to that schema.
+The Effect-TS `Profile` schema is canonical (see [domain-model.md § 2.5](domain-model.md#25-profile-read-only-projection)). This section documents the **on-disk** markdown shape and how it maps to that schema. Each config file is a CommonMark markdown document whose frontmatter carries the data; the body is free-form notes. Loaders parse the frontmatter with `gray-matter`.
 
-### profile.yaml
+### profile.md
+
+Frontmatter:
 
 ```yaml
 schema_version: 1
@@ -287,7 +289,9 @@ delivery:
 
 Maps to: `Profile.identity`, `Profile.budgets`, `Profile.delivery`.
 
-### topics.yaml
+### topics.md
+
+Frontmatter:
 
 ```yaml
 topics:
@@ -312,7 +316,9 @@ topics:
 
 Maps to: `Profile.topics`. Slugs are the lingua franca — they appear in theses, source topic filters, brief item tags, and rank priors.
 
-### sources.yaml
+### sources.md
+
+Frontmatter:
 
 ```yaml
 sources:
@@ -400,7 +406,9 @@ Free-form markdown — used as a system-prompt excerpt for every persona.
 
 Maps to: `Profile.avoid[]` (one entry per top-level bullet — parsed as lines).
 
-### personas.yaml (optional)
+### personas.md (optional)
+
+Frontmatter:
 
 ```yaml
 personas:
@@ -441,12 +449,12 @@ These two files anchor every prompt — they're the highest-leverage artifacts i
 
 ### Structural
 
-1. `profile.yaml` parses as YAML and satisfies the `Profile` schema.
-2. `topics.yaml` satisfies `Profile.topics` and contains ≥ 1 topic.
-3. `sources.yaml` satisfies `Profile.sources`; every `topics: [...]` entry matches a topic slug.
+1. `profile.md` frontmatter parses as YAML and satisfies the `Profile` schema.
+2. `topics.md` frontmatter satisfies `Profile.topics` and contains ≥ 1 topic.
+3. `sources.md` frontmatter satisfies `Profile.sources`; every `topics: [...]` entry matches a topic slug.
 4. Every file under `theses/` has valid frontmatter and a non-empty body.
 5. Every thesis `topics: [...]` entry matches a topic slug.
-6. `personas.yaml` (if present) references files that exist under `prompts/`.
+6. `personas.md` (if present) references files that exist under `prompts/`.
 7. `prompts/<persona>.md` (if present) declares all required template variables.
 
 ### Semantic
@@ -462,7 +470,7 @@ These two files anchor every prompt — they're the highest-leverage artifacts i
 ### Security
 
 1. No YAML file references an env var outside an allowlist (`UBER_*`, `TELEGRAM_*`, `DISCORD_*`) — prevents accidental leakage of host secrets into profile-driven driver configs.
-2. `personas.yaml` MUST NOT set `model` to a string containing `/` (prevents path-like injection into driver-llm).
+2. `personas.md` MUST NOT set `model` to a string containing `/` (prevents path-like injection into driver-llm).
 
 Full validator in `apps/uebermensch/src/services/profile-validator.ts`.
 

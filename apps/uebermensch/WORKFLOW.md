@@ -155,7 +155,7 @@ Local daemon + vault is always the source of truth during development. Cloud dep
 
 1. Install Obsidian (desktop / mobile).
 2. "Open folder as vault" → select `$UBER_VAULT_DIR`.
-3. First-run banner: "This vault is managed by Uebermensch. Authored files (`profile.yaml`, `theses/`, `prompts/`) are yours; generated files (`wiki/`, `briefs/`) are updated by the daemon — edit with care." — shipped via `README.md` at the vault root.
+3. First-run banner: "This vault is managed by Uebermensch. Authored files (`profile.md`, `theses/`, `prompts/`) are yours; generated files (`wiki/`, `briefs/`) are updated by the daemon — edit with care." — shipped via `README.md` at the vault root.
 4. Obsidian workspace state is per-machine (gitignored, not R2-synced) — each device has its own pinned notes and pane layout.
 
 ### Multi-device via R2

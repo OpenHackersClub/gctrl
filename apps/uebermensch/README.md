@@ -61,9 +61,9 @@ apps/uebermensch/
 ├── README.md               # (this file)
 ├── specs/                  # Architecture, domain model, pipeline, KB, delivery, eval
 └── vault.sample/           # Seeded vault — Iran–Israel 2026 topic
-    ├── profile.yaml
-    ├── topics.yaml
-    ├── sources.yaml
+    ├── profile.md
+    ├── topics.md
+    ├── sources.md
     ├── ME.md / projects.md / avoid.md
     ├── README.md
     ├── gitignore.template  # → .gitignore on vault init

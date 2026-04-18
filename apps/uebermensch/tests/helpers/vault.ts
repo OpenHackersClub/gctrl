@@ -1,7 +1,6 @@
 import { readdir, readFile } from "node:fs/promises"
 import { basename, extname, join, relative } from "node:path"
 import matter from "gray-matter"
-import YAML from "yaml"
 
 export interface VaultPage {
   /** absolute path */
@@ -14,16 +13,9 @@ export interface VaultPage {
   body: string
 }
 
-export interface VaultYaml {
-  path: string
-  relPath: string
-  data: unknown
-}
-
 export interface LoadedVault {
   root: string
   pages: VaultPage[]
-  yamls: VaultYaml[]
   /** map: slug → VaultPage (one entry per page with frontmatter.slug) */
   bySlug: Map<string, VaultPage>
   /** map: stem → VaultPage (for stem-based wikilink resolution per KB spec) */
@@ -33,7 +25,6 @@ export interface LoadedVault {
 export async function loadVault(root: string): Promise<LoadedVault> {
   const entries = await readdir(root, { recursive: true, withFileTypes: true })
   const pages: VaultPage[] = []
-  const yamls: VaultYaml[] = []
 
   for (const entry of entries) {
     if (!entry.isFile()) continue
@@ -54,13 +45,6 @@ export async function loadVault(root: string): Promise<LoadedVault> {
         frontmatter: (parsed.data ?? {}) as Record<string, unknown>,
         body: parsed.content,
       })
-    } else if (ext === ".yaml" || ext === ".yml") {
-      const raw = await readFile(abs, "utf8")
-      yamls.push({
-        path: abs,
-        relPath: rel,
-        data: YAML.parse(raw),
-      })
     }
   }
 
@@ -74,7 +58,7 @@ export async function loadVault(root: string): Promise<LoadedVault> {
     }
   }
 
-  return { root, pages, yamls, bySlug, byStem }
+  return { root, pages, bySlug, byStem }
 }
 
 const WIKILINK_PATTERN = /\[\[([^\]]+)\]\]/g
@@ -111,11 +95,11 @@ export function extractWikilinks(markdown: string): Wikilink[] {
 /** Obsidian-forbidden filename chars per profile.md § Obsidian-friendliness invariants */
 export const OBSIDIAN_UNSAFE = /[:?*<>|"\\/]/
 
-export function findYaml(vault: LoadedVault, relPath: string): unknown {
-  const found = vault.yamls.find((y) => y.relPath === relPath)
-  return found?.data
-}
-
 export function findPage(vault: LoadedVault, relPath: string): VaultPage | undefined {
   return vault.pages.find((p) => p.relPath === relPath)
+}
+
+/** Read a config doc's frontmatter (e.g. `profile.md`, `topics.md`, `sources.md`). */
+export function findConfig(vault: LoadedVault, relPath: string): Record<string, unknown> | undefined {
+  return findPage(vault, relPath)?.frontmatter
 }

@@ -1,3 +1,4 @@
+---
 sources:
   - slug: "iaea-press"
     driver: "rss"
@@ -36,3 +37,8 @@ sources:
     driver: "manual"
     cadence: "@never"
     topics: ["iran-israel-escalation", "iran-nuclear-program", "mena-oil-shipping"]
+---
+
+# Sources
+
+Feeds the daemon pulls from (RSS, markets, manual). Each source targets one or more `topics[]` slugs declared in [topics.md](topics.md). Edit the frontmatter above.

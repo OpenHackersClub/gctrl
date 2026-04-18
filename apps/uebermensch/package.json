@@ -13,8 +13,7 @@
   "dependencies": {
     "@effect/schema": "^0.75.0",
     "effect": "^3.14.0",
-    "gray-matter": "^4.0.3",
-    "yaml": "^2.6.0"
+    "gray-matter": "^4.0.3"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

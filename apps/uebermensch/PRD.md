@@ -17,7 +17,7 @@ flowchart TB
   end
   subgraph Vault["$UBER_VAULT_DIR (Obsidian-mountable)"]
     direction LR
-    Authored["Authored tier\nprofile.yaml · theses/ · prompts/"]
+    Authored["Authored tier\nprofile.md · theses/ · prompts/"]
     Generated["Generated tier\nwiki/ · briefs/ · sources/"]
   end
   subgraph Shell["Shell (HTTP :4318)"]
@@ -79,7 +79,7 @@ The non-obvious bets:
 
 ## Principles
 
-1. **Vault is portable and Obsidian-mountable.** `$UBER_VAULT_DIR` is a git-versioned Obsidian vault outside the gctrl repo, readable without Uebermensch running. Every file is CommonMark markdown with YAML frontmatter; wikilinks use plain `[[slug]]` form (typed prefixes like `[[thesis:slug]]` are forbidden — they break Obsidian's resolver). The app MUST NOT write to the authored tier (profile.yaml, theses/, prompts/) without explicit user confirmation.
+1. **Vault is portable and Obsidian-mountable.** `$UBER_VAULT_DIR` is a git-versioned Obsidian vault outside the gctrl repo, readable without Uebermensch running. Every file is CommonMark markdown with YAML frontmatter; wikilinks use plain `[[slug]]` form (typed prefixes like `[[thesis:slug]]` are forbidden — they break Obsidian's resolver). The app MUST NOT write to the authored tier (profile.md, theses/, prompts/) without explicit user confirmation.
 2. **Markdown is the source of truth.** Briefs, wiki pages, sources, and theses live on disk as markdown files. SQLite tables (`uber_briefs`, `uber_brief_items`, …) hold `vault_path` + `content_hash` only — pure index. Opening the vault in Obsidian MUST show everything; deleting SQLite MUST be recoverable by re-indexing.
 3. **Wiki compounds.** Every ingest MUST file at least one wiki page (source summary) and update relevant entity/topic pages. Drop-and-forget ingestion is a bug, not a feature.
 4. **Primary sources over commentary.** The curator MUST weight SEC filings, earnings transcripts, primary research, and official announcements above secondary commentary. Hype-tagged sources are tracked but never lead a brief.
@@ -205,7 +205,7 @@ Uebermensch is profile-parameterised. An ML researcher, policy wonk, or clinicia
 
 A single directory at `$UBER_VAULT_DIR` (default `~/workspaces/debuggingfuture/uebermensch-profile`) holding:
 
-- **Authored tier** (git-tracked): `profile.yaml`, `topics.yaml`, `sources.yaml`, `theses/<slug>.md`, `prompts/*.md`, `.obsidian/` — edited by the user in Obsidian or any editor.
+- **Authored tier** (git-tracked): `profile.md`, `topics.md`, `sources.md`, `theses/<slug>.md`, `prompts/*.md`, `.obsidian/` — edited by the user in Obsidian or any editor.
 - **Generated tier** (gitignored, R2-synced): `wiki/**` (`wiki/sources/<slug>.md`, `wiki/synthesis/<slug>.md`, entities, topics, questions) + `briefs/<YYYY-MM-DD>.md` — written by the kernel + Uebermensch services.
 
 Every file is CommonMark + YAML frontmatter. Wikilinks use plain `[[slug]]` — Obsidian and `gctrl-kb` share one resolver. A `VaultWatcher` fiber watches `fs.watch` events so user edits are reindexed without a restart. Full format in [specs/profile.md](specs/profile.md).
