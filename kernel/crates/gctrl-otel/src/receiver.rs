@@ -23,6 +23,9 @@ pub struct AppState {
     pub sync_config: Option<Arc<SyncConfig>>,
     /// External driver credentials (Brave Search, Cloudflare Browser Rendering).
     pub net_config: Arc<NetConfig>,
+    /// Shared HTTP client used by external drivers (Brave, CF Browser) so each
+    /// request reuses the connection pool instead of rebuilding it.
+    pub http_client: reqwest::Client,
 }
 
 pub fn create_router(store: DuckDbStore) -> Router {
@@ -39,6 +42,7 @@ pub fn create_router_from_arc(store: Arc<DuckDbStore>) -> Router {
         started_at: std::time::Instant::now(),
         sync_config: None,
         net_config: Arc::new(NetConfig::default()),
+        http_client: reqwest::Client::new(),
     });
     build_router(state)
 }
@@ -72,6 +76,7 @@ pub fn create_router_full(
         started_at: std::time::Instant::now(),
         sync_config,
         net_config,
+        http_client: reqwest::Client::new(),
     });
     build_router(state)
 }
@@ -85,6 +90,7 @@ pub fn create_router_with_context(store: DuckDbStore, context: Option<ContextMan
         started_at: std::time::Instant::now(),
         sync_config: None,
         net_config: Arc::new(NetConfig::default()),
+        http_client: reqwest::Client::new(),
     });
     build_router(state)
 }
@@ -2339,10 +2345,7 @@ async fn run_search(
         )
             .into_response();
     };
-    let client = match gctrl_net::BraveSearchClient::new(api_key) {
-        Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
+    let client = gctrl_net::BraveSearchClient::with_client(state.http_client.clone(), api_key);
     match client.search(kind, &query).await {
         Ok(resp) => Json(resp).into_response(),
         Err(e) => (net_error_status(&e), e.to_string()).into_response(),
@@ -2420,8 +2423,12 @@ fn cf_backend_from_state(
     let api_token = state.net_config.cf_api_token.clone().ok_or_else(|| {
         (StatusCode::SERVICE_UNAVAILABLE, "CF_API_TOKEN not configured").into_response()
     })?;
-    gctrl_net::CfBrowserBackend::new(account_id, api_token, wait_for)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response())
+    Ok(gctrl_net::CfBrowserBackend::with_client(
+        state.http_client.clone(),
+        account_id,
+        api_token,
+        wait_for,
+    ))
 }
 
 async fn net_render(
@@ -2447,6 +2454,8 @@ async fn net_render(
 struct NetScrapeBody {
     url: String,
     elements: Vec<gctrl_net::ScrapeElement>,
+    #[serde(default)]
+    wait_for: Option<String>,
 }
 
 async fn net_scrape(
@@ -2457,7 +2466,7 @@ async fn net_scrape(
         Ok(b) => b,
         Err(resp) => return resp,
     };
-    match backend.scrape(&body.url, body.elements).await {
+    match backend.scrape(&body.url, body.elements, body.wait_for).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => (net_error_status(&e), e.to_string()).into_response(),
     }

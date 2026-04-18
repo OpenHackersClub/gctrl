@@ -68,6 +68,12 @@ impl BraveSearchClient {
         Ok(Self { client, api_key })
     }
 
+    /// Reuse an existing `reqwest::Client` (preferred when the caller already
+    /// maintains a long-lived client — saves per-request connection pool setup).
+    pub fn with_client(client: Client, api_key: String) -> Self {
+        Self { client, api_key }
+    }
+
     pub async fn search(&self, kind: SearchKind, query: &SearchQuery) -> Result<SearchResponse, NetError> {
         let url = format!("{}/{}", BRAVE_BASE, kind.path());
 

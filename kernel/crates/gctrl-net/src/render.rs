@@ -79,6 +79,17 @@ impl CfBrowserBackend {
         Ok(Self { client, account_id, api_token, wait_for })
     }
 
+    /// Reuse an existing `reqwest::Client` so handler calls don't rebuild the
+    /// connection pool per request.
+    pub fn with_client(
+        client: Client,
+        account_id: String,
+        api_token: String,
+        wait_for: Option<String>,
+    ) -> Self {
+        Self { client, account_id, api_token, wait_for }
+    }
+
     fn endpoint(&self, op: &str) -> String {
         format!(
             "https://api.cloudflare.com/client/v4/accounts/{}/browser-rendering/{}",
@@ -125,40 +136,88 @@ impl CfBrowserBackend {
         Ok(envelope.result.unwrap_or(serde_json::Value::Null))
     }
 
-    /// Raw `/screenshot` endpoint — returns a PNG as base64.
+    /// `/screenshot` endpoint. CF returns raw `image/png` bytes by default,
+    /// and only switches to the JSON envelope when
+    /// `screenshotOptions.encoding = "base64"` is set. We handle both shapes:
+    /// inspect `Content-Type` and either base64-encode the body ourselves or
+    /// parse the envelope.
     pub async fn screenshot(&self, url: &str) -> Result<String, NetError> {
+        use base64::Engine;
+
         let body = serde_json::json!({ "url": url });
-        let result = self.post_json("screenshot", body).await?;
-        // Result is base64 string when `screenshotOptions` not set, or object with data.
-        match result {
-            serde_json::Value::String(s) => Ok(s),
-            serde_json::Value::Object(ref m) => m
-                .get("screenshot")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .ok_or_else(|| NetError::BackendError {
-                    provider: "cloudflare-browser",
-                    status: 0,
-                    body: "screenshot key missing from result".into(),
-                }),
-            _ => Err(NetError::BackendError {
-                provider: "cloudflare-browser",
-                status: 0,
-                body: "unexpected screenshot response shape".into(),
-            }),
+        let resp = self
+            .client
+            .post(self.endpoint("screenshot"))
+            .bearer_auth(&self.api_token)
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = resp.status().as_u16();
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+
+        if status >= 400 {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(NetError::BackendError { provider: "cloudflare-browser", status, body: text });
         }
+
+        if content_type.starts_with("application/json") {
+            let text = resp.text().await?;
+            let envelope: CfEnvelope = serde_json::from_str(&text)?;
+            if !envelope.success {
+                return Err(NetError::BackendError {
+                    provider: "cloudflare-browser",
+                    status,
+                    body: envelope
+                        .errors
+                        .and_then(|e| serde_json::to_string(&e).ok())
+                        .unwrap_or(text),
+                });
+            }
+            return match envelope.result {
+                Some(serde_json::Value::String(s)) => Ok(s),
+                Some(serde_json::Value::Object(ref m)) => m
+                    .get("screenshot")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| NetError::BackendError {
+                        provider: "cloudflare-browser",
+                        status,
+                        body: "screenshot key missing from JSON result".into(),
+                    }),
+                other => Err(NetError::BackendError {
+                    provider: "cloudflare-browser",
+                    status,
+                    body: format!("unexpected screenshot JSON shape: {other:?}"),
+                }),
+            };
+        }
+
+        // Raw image body — base64-encode it for JSON transport.
+        let bytes = resp.bytes().await?;
+        Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
     }
 
     /// `/scrape` endpoint — structured scrape by CSS selectors.
+    /// `wait_for` forwards a CSS selector to wait for before scraping.
     pub async fn scrape(
         &self,
         url: &str,
         elements: Vec<ScrapeElement>,
+        wait_for: Option<String>,
     ) -> Result<serde_json::Value, NetError> {
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "url": url,
             "elements": elements,
         });
+        if let Some(sel) = wait_for {
+            body["waitForSelector"] = serde_json::Value::String(sel);
+        }
         self.post_json("scrape", body).await
     }
 }

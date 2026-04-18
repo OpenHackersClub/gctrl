@@ -9,6 +9,7 @@ gctrl-storage = { path = "../gctrl-storage" }
 gctrl-context = { path = "../gctrl-context" }
 gctrl-sync = { path = "../gctrl-sync" }
 gctrl-net = { path = "../gctrl-net" }
+reqwest = { workspace = true }
 duckdb = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }

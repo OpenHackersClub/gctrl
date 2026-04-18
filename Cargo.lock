@@ -1392,6 +1392,7 @@ dependencies = [
  "gctrl-sync",
  "http 1.4.0",
  "http-body-util",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "thiserror",
