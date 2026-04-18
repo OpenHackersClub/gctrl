@@ -2227,7 +2227,7 @@ async fn inbox_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
 #[derive(Deserialize, Default)]
 struct SyncPushBody {
-    /// Tables to push. Empty = all syncable tables.
+    /// Tables to push. Empty = all SQLite-backed (board) tables.
     #[serde(default)]
     tables: Vec<String>,
 }
@@ -2261,11 +2261,29 @@ async fn sync_push(
     )
     .with_sqlite(Arc::clone(&state.sqlite));
 
+    // Default empty body to the tables that route through `self.sqlite`
+    // inside `push_table_to_d1`. Passing `&[]` to the engine would expand to
+    // every syncable table (including DuckDB-backed `sessions`, `spans`,
+    // `tasks`) — but this handler gives the engine a throwaway in-memory
+    // DuckDB with no schema, so those branches error with "Table … does not
+    // exist". R2/DuckDB sync should land via a separate path once the real
+    // store connection is wired through.
+    const HANDLER_DEFAULT_TABLES: &[&str] = &[
+        "board_projects",
+        "board_issues",
+        "board_comments",
+        "board_events",
+        "memory_entries",
+    ];
     let requested = body.map(|Json(b)| b.tables).unwrap_or_default();
-    let table_refs: Vec<&str> = requested.iter().map(String::as_str).collect();
+    let defaulted: Vec<&str> = if requested.is_empty() {
+        HANDLER_DEFAULT_TABLES.to_vec()
+    } else {
+        requested.iter().map(String::as_str).collect()
+    };
 
     use gctrl_sync::SyncEngine;
-    match engine.push(&table_refs).await {
+    match engine.push(&defaulted).await {
         Ok(result) => Json(result).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -2364,6 +2382,46 @@ mod tests {
             ..SyncConfig::default()
         });
         create_router_dual_with_sync(store, sqlite, Some(sync_config))
+    }
+
+    #[tokio::test]
+    async fn test_sync_push_empty_body_defaults_to_sqlite_tables() {
+        // Regression: empty `{}` previously expanded to every syncable table
+        // including DuckDB ones (sessions/spans), which the throwaway in-memory
+        // DuckDB has no schema for — handler returned 500 "Catalog Error: Table
+        // with name sessions does not exist". Fix: default empty body to the
+        // SQLite-only table set.
+        let app = test_app_with_sync();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/sync/push")
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["total_rows"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_sync_push_no_body_defaults_to_sqlite_tables() {
+        // Same regression, no body at all (not even `{}`). `Option<Json<...>>`
+        // resolves to None → handler uses the default SQLite-only set.
+        let app = test_app_with_sync();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/sync/push")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["total_rows"], 0);
     }
 
     #[tokio::test]
