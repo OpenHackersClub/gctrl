@@ -90,8 +90,8 @@ pub struct SyncConfig {
     pub r2_secret_access_key: String,
 
     // D1 — SQLite sync target (board, tasks, app state)
-    // Credentials: CLI flags > env vars (GCTL_D1_DATABASE_ID, GCTL_D1_ACCOUNT_ID,
-    // GCTL_D1_API_TOKEN) > config file.
+    // Credentials: CLI flags > env vars (GCTRL_D1_DATABASE_ID, GCTRL_D1_ACCOUNT_ID,
+    // GCTRL_D1_API_TOKEN) > config file.
     #[serde(default)]
     pub d1_database_id: String,
     #[serde(default)]
@@ -126,21 +126,21 @@ impl SyncConfig {
             && !self.d1_api_token.is_empty()
     }
 
-    /// Populate D1 credentials from env vars (GCTL_D1_DATABASE_ID,
-    /// GCTL_D1_ACCOUNT_ID, GCTL_D1_API_TOKEN). Returns a config with
+    /// Populate D1 credentials from env vars (GCTRL_D1_DATABASE_ID,
+    /// GCTRL_D1_ACCOUNT_ID, GCTRL_D1_API_TOKEN). Returns a config with
     /// `enabled=true` iff all three are set.
     pub fn from_env() -> Self {
         let mut cfg = Self::default();
-        if let Ok(v) = std::env::var("GCTL_D1_DATABASE_ID") {
+        if let Ok(v) = std::env::var("GCTRL_D1_DATABASE_ID") {
             cfg.d1_database_id = v;
         }
-        if let Ok(v) = std::env::var("GCTL_D1_ACCOUNT_ID") {
+        if let Ok(v) = std::env::var("GCTRL_D1_ACCOUNT_ID") {
             cfg.d1_account_id = v;
         }
-        if let Ok(v) = std::env::var("GCTL_D1_API_TOKEN") {
+        if let Ok(v) = std::env::var("GCTRL_D1_API_TOKEN") {
             cfg.d1_api_token = v;
         }
-        if let Ok(v) = std::env::var("GCTL_DEVICE_ID") {
+        if let Ok(v) = std::env::var("GCTRL_DEVICE_ID") {
             cfg.device_id = v;
         }
         cfg.enabled = cfg.d1_enabled();

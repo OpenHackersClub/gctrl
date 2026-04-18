@@ -18,11 +18,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
  *    Tests run against PREVIEW_URL with a remote browser.
  *    Skips tests that require kernel-only endpoints (/v1/traces, filesystem).
  *
- * Set GCTL_KERNEL_PORT / GCTL_VITE_PORT to override local defaults.
+ * Set GCTRL_KERNEL_PORT / GCTRL_VITE_PORT to override local defaults.
  */
 
-const KERNEL_PORT = Number(process.env.GCTL_KERNEL_PORT ?? 14318)
-const VITE_PORT = Number(process.env.GCTL_VITE_PORT ?? 14200)
+const KERNEL_PORT = Number(process.env.GCTRL_KERNEL_PORT ?? 14318)
+const VITE_PORT = Number(process.env.GCTRL_VITE_PORT ?? 14200)
 
 // Remote mode: drive a (deployed) Worker at PREVIEW_URL. Browser is either
 // local Chromium (fallback) or Cloudflare Browser Rendering CDP (set
@@ -32,9 +32,9 @@ const isRemote = !!process.env.PREVIEW_URL
 const isRemoteCDP = isRemote && !!process.env.CDP_ENDPOINT
 
 // In CI, use the pre-built kernel binary to avoid needing cargo/Rust toolchain.
-// Set GCTL_KERNEL_BIN to the absolute path of the gctrl binary.
-const kernelCommand = process.env.GCTL_KERNEL_BIN
-  ? `${process.env.GCTL_KERNEL_BIN} --db :memory: serve --host 127.0.0.1 --port ${KERNEL_PORT}`
+// Set GCTRL_KERNEL_BIN to the absolute path of the gctrl binary.
+const kernelCommand = process.env.GCTRL_KERNEL_BIN
+  ? `${process.env.GCTRL_KERNEL_BIN} --db :memory: serve --host 127.0.0.1 --port ${KERNEL_PORT}`
   : `cargo run -p gctrl-cli -- --db :memory: serve --host 127.0.0.1 --port ${KERNEL_PORT}`
 
 export default defineConfig({
@@ -108,7 +108,7 @@ export default defineConfig({
             command: `pnpm exec vite --config web/vite.config.ts --port ${VITE_PORT}`,
             port: VITE_PORT,
             reuseExistingServer: !process.env.CI,
-            env: { GCTL_KERNEL_PORT: String(KERNEL_PORT) },
+            env: { GCTRL_KERNEL_PORT: String(KERNEL_PORT) },
           },
         ],
       }),

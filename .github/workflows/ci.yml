@@ -116,9 +116,9 @@ jobs:
         working-directory: apps/gctrl-board
         env:
           CI: "true"
-          GCTL_KERNEL_PORT: "14318"
-          GCTL_VITE_PORT: "14200"
-          GCTL_KERNEL_BIN: ${{ github.workspace }}/target/debug/gctrld
+          GCTRL_KERNEL_PORT: "14318"
+          GCTRL_VITE_PORT: "14200"
+          GCTRL_KERNEL_BIN: ${{ github.workspace }}/target/debug/gctrld
 
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4

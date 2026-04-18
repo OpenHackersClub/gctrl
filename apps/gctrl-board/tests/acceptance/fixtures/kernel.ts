@@ -10,7 +10,7 @@
  *  - Query analytics to validate telemetry pipeline
  */
 
-const DEFAULT_KERNEL_URL = `http://localhost:${process.env.GCTL_KERNEL_PORT ?? 14318}`
+const DEFAULT_KERNEL_URL = `http://localhost:${process.env.GCTRL_KERNEL_PORT ?? 14318}`
 
 // ── Response types ──
 

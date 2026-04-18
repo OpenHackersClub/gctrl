@@ -8,11 +8,11 @@ import { Command, Options, Args } from "@effect/cli"
 import { Console, Effect, Option } from "effect"
 import { execFilePromise } from "../lib/exec"
 
-const GCTL_BIN = "gctrl"
+const GCTRL_BIN = "gctrl"
 
 const runGctl = (args: string[]) =>
   Effect.gen(function* () {
-    const result = yield* execFilePromise(GCTL_BIN, args, process.cwd())
+    const result = yield* execFilePromise(GCTRL_BIN, args, process.cwd())
     if (!result.ok) {
       yield* Console.error(result.output || `gctrl ${args[0]} failed`)
       return yield* Effect.fail(new Error(`gctrl ${args[0]} failed`))

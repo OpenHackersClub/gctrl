@@ -2239,7 +2239,7 @@ async fn sync_push(
     let Some(config) = state.sync_config.as_ref().filter(|c| c.d1_enabled()) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            "D1 sync not configured — set GCTL_D1_DATABASE_ID, GCTL_D1_ACCOUNT_ID, GCTL_D1_API_TOKEN",
+            "D1 sync not configured — set GCTRL_D1_DATABASE_ID, GCTRL_D1_ACCOUNT_ID, GCTRL_D1_API_TOKEN",
         )
             .into_response();
     };
