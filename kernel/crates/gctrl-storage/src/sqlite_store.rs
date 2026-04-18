@@ -21,13 +21,18 @@ use gctrl_core::{
 // Schema (SQLite-compatible DDL)
 // ═══════════════════════════════════════════════════════════════
 
+// Board: D1-syncable tables. `device_id` + `updated_at` + `synced` are mandatory
+// for the `gctrl-sync` D1 contract (see kernel/crates/gctrl-sync/src/d1.rs).
 const CREATE_BOARD_PROJECTS: &str = r#"
 CREATE TABLE IF NOT EXISTS board_projects (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
     key         TEXT NOT NULL UNIQUE,
     counter     INTEGER DEFAULT 0,
-    github_repo TEXT
+    github_repo TEXT,
+    device_id   TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    synced      INTEGER NOT NULL DEFAULT 0
 )
 "#;
 
@@ -58,7 +63,9 @@ CREATE TABLE IF NOT EXISTS board_issues (
     content_hash    TEXT,
     source_path     TEXT,
     github_issue_number INTEGER,
-    github_url      TEXT
+    github_url      TEXT,
+    device_id       TEXT NOT NULL DEFAULT '',
+    synced          INTEGER NOT NULL DEFAULT 0
 )
 "#;
 
@@ -71,7 +78,10 @@ CREATE TABLE IF NOT EXISTS board_events (
     actor_name  TEXT NOT NULL,
     actor_type  TEXT NOT NULL,
     timestamp   TEXT NOT NULL,
-    data        TEXT
+    data        TEXT,
+    device_id   TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    synced      INTEGER NOT NULL DEFAULT 0
 )
 "#;
 
@@ -84,7 +94,10 @@ CREATE TABLE IF NOT EXISTS board_comments (
     author_type TEXT NOT NULL,
     body        TEXT NOT NULL,
     created_at  TEXT NOT NULL,
-    session_id  TEXT
+    session_id  TEXT,
+    device_id   TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    synced      INTEGER NOT NULL DEFAULT 0
 )
 "#;
 
@@ -218,6 +231,15 @@ const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_board_issues_parent ON board_issues(parent_id)",
     "CREATE INDEX IF NOT EXISTS idx_board_events_issue ON board_events(issue_id)",
     "CREATE INDEX IF NOT EXISTS idx_board_comments_issue ON board_comments(issue_id)",
+    // Board sync indexes
+    "CREATE INDEX IF NOT EXISTS idx_board_projects_synced ON board_projects(synced)",
+    "CREATE INDEX IF NOT EXISTS idx_board_projects_updated ON board_projects(updated_at)",
+    "CREATE INDEX IF NOT EXISTS idx_board_issues_synced ON board_issues(synced)",
+    "CREATE INDEX IF NOT EXISTS idx_board_issues_updated ON board_issues(updated_at)",
+    "CREATE INDEX IF NOT EXISTS idx_board_events_synced ON board_events(synced)",
+    "CREATE INDEX IF NOT EXISTS idx_board_events_updated ON board_events(updated_at)",
+    "CREATE INDEX IF NOT EXISTS idx_board_comments_synced ON board_comments(synced)",
+    "CREATE INDEX IF NOT EXISTS idx_board_comments_updated ON board_comments(updated_at)",
     // Persona indexes
     "CREATE INDEX IF NOT EXISTS idx_persona_definitions_name ON persona_definitions(name)",
     "CREATE INDEX IF NOT EXISTS idx_persona_review_rules_type ON persona_review_rules(pr_type)",
@@ -249,12 +271,18 @@ const CREATE_INDEXES: &[&str] = &[
 
 pub struct SqliteStore {
     conn: Mutex<Connection>,
+    device_id: String,
 }
 
 impl SqliteStore {
-    /// Open (or create) a SQLite database at the given path.
+    /// Open (or create) a SQLite database at the given path with default device_id `"local"`.
     /// Pass `:memory:` for an in-memory database (useful for tests).
     pub fn open(path: &str) -> Result<Self> {
+        Self::open_with_device(path, "local")
+    }
+
+    /// Open with an explicit device_id. All writes from this store stamp rows with this id.
+    pub fn open_with_device(path: &str, device_id: &str) -> Result<Self> {
         let conn = if path == ":memory:" {
             Connection::open_in_memory()
         } else {
@@ -268,9 +296,14 @@ impl SqliteStore {
 
         let store = Self {
             conn: Mutex::new(conn),
+            device_id: device_id.to_string(),
         };
         store.run_migrations()?;
         Ok(store)
+    }
+
+    pub fn device_id(&self) -> &str {
+        &self.device_id
     }
 
     fn run_migrations(&self) -> Result<()> {
@@ -293,6 +326,30 @@ impl SqliteStore {
             conn.execute_batch(stmt)
                 .map_err(|e| GctlError::Storage(format!("migration: {e}")))?;
         }
+        // Idempotent ALTERs to add sync-contract columns to board tables created
+        // before the sync contract existed. `ALTER TABLE ADD COLUMN` errors if the
+        // column already exists — swallow only the "duplicate column name" case.
+        let alters: &[&str] = &[
+            "ALTER TABLE board_projects ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE board_projects ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'))",
+            "ALTER TABLE board_projects ADD COLUMN synced INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE board_issues ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE board_issues ADD COLUMN synced INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE board_events ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE board_events ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'))",
+            "ALTER TABLE board_events ADD COLUMN synced INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE board_comments ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE board_comments ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'))",
+            "ALTER TABLE board_comments ADD COLUMN synced INTEGER NOT NULL DEFAULT 0",
+        ];
+        for stmt in alters {
+            if let Err(e) = conn.execute_batch(stmt) {
+                let msg = e.to_string();
+                if !msg.contains("duplicate column name") {
+                    return Err(GctlError::Storage(format!("migration alter: {msg}")));
+                }
+            }
+        }
         for stmt in CREATE_INDEXES {
             conn.execute_batch(stmt)
                 .map_err(|e| GctlError::Storage(format!("migration: {e}")))?;
@@ -306,9 +363,10 @@ impl SqliteStore {
 
     pub fn create_board_project(&self, project: &gctrl_core::BoardProject) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
         conn.execute(
-            "INSERT INTO board_projects (id, name, key, counter, github_repo) VALUES (?, ?, ?, ?, ?)",
-            params![project.id, project.name, project.key, project.counter, project.github_repo],
+            "INSERT INTO board_projects (id, name, key, counter, github_repo, device_id, updated_at, synced) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+            params![project.id, project.name, project.key, project.counter, project.github_repo, self.device_id, now],
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
     }
@@ -348,18 +406,20 @@ impl SqliteStore {
 
     pub fn update_board_project_github_repo(&self, id: &str, github_repo: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
         conn.execute(
-            "UPDATE board_projects SET github_repo = ?1 WHERE id = ?2",
-            params![github_repo, id],
+            "UPDATE board_projects SET github_repo = ?1, device_id = ?2, updated_at = ?3, synced = 0 WHERE id = ?4",
+            params![github_repo, self.device_id, now, id],
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
     }
 
     pub fn increment_project_counter(&self, project_id: &str) -> Result<i32> {
         let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
         conn.execute(
-            "UPDATE board_projects SET counter = counter + 1 WHERE id = ?1",
-            [project_id],
+            "UPDATE board_projects SET counter = counter + 1, device_id = ?1, updated_at = ?2, synced = 0 WHERE id = ?3",
+            params![self.device_id, now, project_id],
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
         let counter: i32 = conn.query_row(
             "SELECT counter FROM board_projects WHERE id = ?1",
@@ -372,8 +432,8 @@ impl SqliteStore {
     pub fn insert_board_issue(&self, issue: &gctrl_core::BoardIssue) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO board_issues (id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO board_issues (id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url, device_id, synced)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
             params![
                 issue.id,
                 issue.project_id,
@@ -401,6 +461,7 @@ impl SqliteStore {
                 issue.source_path,
                 issue.github_issue_number.map(|n| n as i32),
                 issue.github_url,
+                self.device_id,
             ],
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
@@ -420,8 +481,8 @@ impl SqliteStore {
                 "UPDATE board_issues SET title = ?1, description = ?2, status = ?3, priority = ?4,
                  assignee_id = ?5, assignee_name = ?6, assignee_type = ?7,
                  labels = ?8, parent_id = ?9, updated_at = ?10,
-                 content_hash = ?11, source_path = ?12
-                 WHERE id = ?13",
+                 content_hash = ?11, source_path = ?12, device_id = ?13, synced = 0
+                 WHERE id = ?14",
                 params![
                     issue.title,
                     issue.description,
@@ -435,6 +496,7 @@ impl SqliteStore {
                     chrono::Utc::now().to_rfc3339(),
                     issue.content_hash,
                     issue.source_path,
+                    self.device_id,
                     issue.id,
                 ],
             ).map_err(|e| GctlError::Storage(e.to_string()))?;
@@ -525,17 +587,18 @@ impl SqliteStore {
             let now = chrono::Utc::now();
             let step_str = step.as_str();
             conn.execute(
-                "UPDATE board_issues SET status = ?1, updated_at = ?2 WHERE id = ?3",
-                params![step_str, now.to_rfc3339(), id],
+                "UPDATE board_issues SET status = ?1, updated_at = ?2, device_id = ?3, synced = 0 WHERE id = ?4",
+                params![step_str, now.to_rfc3339(), self.device_id, id],
             ).map_err(|e| GctlError::Storage(e.to_string()))?;
 
             let event_id = uuid::Uuid::new_v4().to_string();
             conn.execute(
-                "INSERT INTO board_events (id, issue_id, type, actor_id, actor_name, actor_type, timestamp, data)
-                 VALUES (?, ?, 'status_changed', ?, ?, ?, ?, ?)",
+                "INSERT INTO board_events (id, issue_id, type, actor_id, actor_name, actor_type, timestamp, data, device_id, updated_at, synced)
+                 VALUES (?, ?, 'status_changed', ?, ?, ?, ?, ?, ?, ?, 0)",
                 params![
                     event_id, id, actor_id, actor_name, actor_type, now.to_rfc3339(),
                     serde_json::to_string(&serde_json::json!({"from": prev_str, "to": step_str})).unwrap(),
+                    self.device_id, now.to_rfc3339(),
                 ],
             ).map_err(|e| GctlError::Storage(e.to_string()))?;
             prev_str = step_str.to_string();
@@ -548,8 +611,8 @@ impl SqliteStore {
         let conn = self.conn.lock().unwrap();
         let now = chrono::Utc::now().to_rfc3339();
         conn.execute(
-            "UPDATE board_issues SET assignee_id = ?1, assignee_name = ?2, assignee_type = ?3, updated_at = ?4 WHERE id = ?5",
-            params![assignee_id, assignee_name, assignee_type, now, id],
+            "UPDATE board_issues SET assignee_id = ?1, assignee_name = ?2, assignee_type = ?3, updated_at = ?4, device_id = ?5, synced = 0 WHERE id = ?6",
+            params![assignee_id, assignee_name, assignee_type, now, self.device_id, id],
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
     }
@@ -557,13 +620,14 @@ impl SqliteStore {
     pub fn insert_board_event(&self, event: &gctrl_core::BoardEvent) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO board_events (id, issue_id, type, actor_id, actor_name, actor_type, timestamp, data)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO board_events (id, issue_id, type, actor_id, actor_name, actor_type, timestamp, data, device_id, updated_at, synced)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
             params![
                 event.id, event.issue_id, event.event_type,
                 event.actor_id, event.actor_name, event.actor_type,
                 event.timestamp.to_rfc3339(),
                 serde_json::to_string(&event.data).unwrap_or_else(|_| "null".into()),
+                self.device_id, event.timestamp.to_rfc3339(),
             ],
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
@@ -596,12 +660,13 @@ impl SqliteStore {
     pub fn insert_board_comment(&self, comment: &gctrl_core::BoardComment) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO board_comments (id, issue_id, author_id, author_name, author_type, body, created_at, session_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO board_comments (id, issue_id, author_id, author_name, author_type, body, created_at, session_id, device_id, updated_at, synced)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
             params![
                 comment.id, comment.issue_id,
                 comment.author_id, comment.author_name, comment.author_type,
                 comment.body, comment.created_at.to_rfc3339(), comment.session_id,
+                self.device_id, comment.created_at.to_rfc3339(),
             ],
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
@@ -652,11 +717,136 @@ impl SqliteStore {
                 session_ids = ?1,
                 total_cost_usd = total_cost_usd + ?2,
                 total_tokens = total_tokens + ?3,
-                updated_at = ?4
-             WHERE id = ?5",
-            params![ids_json, cost, tokens as i64, now, issue_id],
+                updated_at = ?4,
+                device_id = ?5,
+                synced = 0
+             WHERE id = ?6",
+            params![ids_json, cost, tokens as i64, now, self.device_id, issue_id],
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Board sync helpers (D1)
+    // ═══════════════════════════════════════════════════════════════
+
+    pub fn list_unsynced_board_projects(&self, batch_size: usize) -> Result<Vec<gctrl_core::BoardProject>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, key, counter, github_repo FROM board_projects WHERE synced = 0 ORDER BY updated_at ASC LIMIT ?1",
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt.query_map([batch_size as i64], |row| {
+            Ok(gctrl_core::BoardProject {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                key: row.get(2)?,
+                counter: row.get(3)?,
+                github_repo: row.get(4)?,
+            })
+        }).map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn list_unsynced_board_issues(&self, batch_size: usize) -> Result<Vec<gctrl_core::BoardIssue>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url FROM board_issues WHERE synced = 0 ORDER BY updated_at ASC LIMIT ?1",
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt.query_map([batch_size as i64], row_to_board_issue)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn list_unsynced_board_events(&self, batch_size: usize) -> Result<Vec<gctrl_core::BoardEvent>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, issue_id, type, actor_id, actor_name, actor_type, timestamp, data FROM board_events WHERE synced = 0 ORDER BY updated_at ASC LIMIT ?1",
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt.query_map([batch_size as i64], |row| {
+            let ts: String = row.get(6)?;
+            let data_str: Option<String> = row.get(7)?;
+            Ok(gctrl_core::BoardEvent {
+                id: row.get(0)?,
+                issue_id: row.get(1)?,
+                event_type: row.get(2)?,
+                actor_id: row.get(3)?,
+                actor_name: row.get(4)?,
+                actor_type: row.get(5)?,
+                timestamp: chrono::DateTime::parse_from_rfc3339(&ts)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now()),
+                data: data_str.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(serde_json::Value::Null),
+            })
+        }).map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn list_unsynced_board_comments(&self, batch_size: usize) -> Result<Vec<gctrl_core::BoardComment>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, issue_id, author_id, author_name, author_type, body, created_at, session_id FROM board_comments WHERE synced = 0 ORDER BY updated_at ASC LIMIT ?1",
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt.query_map([batch_size as i64], |row| {
+            let ts: String = row.get(6)?;
+            Ok(gctrl_core::BoardComment {
+                id: row.get(0)?,
+                issue_id: row.get(1)?,
+                author_id: row.get(2)?,
+                author_name: row.get(3)?,
+                author_type: row.get(4)?,
+                body: row.get(5)?,
+                created_at: chrono::DateTime::parse_from_rfc3339(&ts)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now()),
+                session_id: row.get(7)?,
+            })
+        }).map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    fn mark_ids_synced(&self, table: &str, ids: &[String]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn.lock().unwrap();
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let sql = format!("UPDATE {table} SET synced = 1 WHERE id IN ({placeholders})");
+        let params_vec: Vec<&dyn rusqlite::types::ToSql> =
+            ids.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
+        conn.execute(&sql, params_vec.as_slice())
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn mark_board_projects_synced(&self, ids: &[String]) -> Result<()> {
+        self.mark_ids_synced("board_projects", ids)
+    }
+
+    pub fn mark_board_issues_synced(&self, ids: &[String]) -> Result<()> {
+        self.mark_ids_synced("board_issues", ids)
+    }
+
+    pub fn mark_board_events_synced(&self, ids: &[String]) -> Result<()> {
+        self.mark_ids_synced("board_events", ids)
+    }
+
+    pub fn mark_board_comments_synced(&self, ids: &[String]) -> Result<()> {
+        self.mark_ids_synced("board_comments", ids)
+    }
+
+    /// Count unsynced board rows per table. Used by sync status reporting.
+    pub fn count_unsynced_board(&self) -> Result<(u64, u64, u64, u64)> {
+        let conn = self.conn.lock().unwrap();
+        let count = |table: &str| -> u64 {
+            let sql = format!("SELECT COUNT(*) FROM {table} WHERE synced = 0");
+            conn.query_row(&sql, [], |row| row.get::<_, i64>(0)).unwrap_or(0) as u64
+        };
+        Ok((
+            count("board_projects"),
+            count("board_issues"),
+            count("board_comments"),
+            count("board_events"),
+        ))
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -2099,5 +2289,133 @@ mod tests {
         assert_eq!(stats.unsynced, 3);
         let user_count = stats.by_type.iter().find(|(k, _)| k == "user").map(|(_, v)| *v);
         assert_eq!(user_count, Some(2));
+    }
+
+    fn make_issue(id: &str, project_id: &str) -> BoardIssue {
+        let now = Utc::now();
+        BoardIssue {
+            id: id.into(),
+            project_id: project_id.into(),
+            title: format!("Issue {id}"),
+            description: None,
+            status: IssueStatus::Backlog,
+            priority: "none".into(),
+            assignee_id: None,
+            assignee_name: None,
+            assignee_type: None,
+            labels: vec![],
+            parent_id: None,
+            created_at: now,
+            updated_at: now,
+            created_by_id: "u".into(),
+            created_by_name: "u".into(),
+            created_by_type: "human".into(),
+            blocked_by: vec![],
+            blocking: vec![],
+            session_ids: vec![],
+            total_cost_usd: 0.0,
+            total_tokens: 0,
+            pr_numbers: vec![],
+            content_hash: Some(id.into()),
+            source_path: None,
+            github_issue_number: None,
+            github_url: None,
+        }
+    }
+
+    #[test]
+    fn board_writes_stamp_device_and_unsynced() {
+        let store = SqliteStore::open_with_device(":memory:", "dev-1").unwrap();
+        store.create_board_project(&BoardProject {
+            id: "p1".into(),
+            name: "P".into(),
+            key: "P".into(),
+            counter: 0,
+            github_repo: None,
+        }).unwrap();
+        store.insert_board_issue(&make_issue("P-1", "p1")).unwrap();
+
+        let projects = store.list_unsynced_board_projects(10).unwrap();
+        assert_eq!(projects.len(), 1, "project should be unsynced after insert");
+
+        let issues = store.list_unsynced_board_issues(10).unwrap();
+        assert_eq!(issues.len(), 1, "issue should be unsynced after insert");
+        assert_eq!(issues[0].id, "P-1");
+
+        let (proj_n, issue_n, comment_n, event_n) = store.count_unsynced_board().unwrap();
+        assert_eq!((proj_n, issue_n, comment_n, event_n), (1, 1, 0, 0));
+    }
+
+    #[test]
+    fn board_round_trip_mark_synced() {
+        let store = SqliteStore::open_with_device(":memory:", "dev-1").unwrap();
+        store.create_board_project(&BoardProject {
+            id: "p1".into(),
+            name: "P".into(),
+            key: "P".into(),
+            counter: 0,
+            github_repo: None,
+        }).unwrap();
+        store.insert_board_issue(&make_issue("P-1", "p1")).unwrap();
+
+        // Status change emits an event AND bumps issue updated_at.
+        store.update_board_issue_status("P-1", "todo", "u", "u", "human").unwrap();
+
+        let comment = BoardComment {
+            id: "c1".into(),
+            issue_id: "P-1".into(),
+            author_id: "u".into(),
+            author_name: "u".into(),
+            author_type: "human".into(),
+            body: "hi".into(),
+            created_at: Utc::now(),
+            session_id: None,
+        };
+        store.insert_board_comment(&comment).unwrap();
+
+        // Fetch unsynced, mark them, expect zero unsynced after.
+        let projects: Vec<String> = store.list_unsynced_board_projects(10).unwrap()
+            .into_iter().map(|p| p.id).collect();
+        let issues: Vec<String> = store.list_unsynced_board_issues(10).unwrap()
+            .into_iter().map(|i| i.id).collect();
+        let events: Vec<String> = store.list_unsynced_board_events(10).unwrap()
+            .into_iter().map(|e| e.id).collect();
+        let comments: Vec<String> = store.list_unsynced_board_comments(10).unwrap()
+            .into_iter().map(|c| c.id).collect();
+
+        assert!(!projects.is_empty());
+        assert!(!issues.is_empty());
+        assert!(!events.is_empty(), "status change should produce an event");
+        assert_eq!(comments.len(), 1);
+
+        store.mark_board_projects_synced(&projects).unwrap();
+        store.mark_board_issues_synced(&issues).unwrap();
+        store.mark_board_events_synced(&events).unwrap();
+        store.mark_board_comments_synced(&comments).unwrap();
+
+        let (p, i, c, e) = store.count_unsynced_board().unwrap();
+        assert_eq!((p, i, c, e), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn board_update_resets_synced_flag() {
+        let store = SqliteStore::open_with_device(":memory:", "dev-1").unwrap();
+        store.create_board_project(&BoardProject {
+            id: "p1".into(),
+            name: "P".into(),
+            key: "P".into(),
+            counter: 0,
+            github_repo: None,
+        }).unwrap();
+        store.insert_board_issue(&make_issue("P-1", "p1")).unwrap();
+
+        let issues: Vec<String> = store.list_unsynced_board_issues(10).unwrap()
+            .into_iter().map(|i| i.id).collect();
+        store.mark_board_issues_synced(&issues).unwrap();
+        assert_eq!(store.list_unsynced_board_issues(10).unwrap().len(), 0);
+
+        // A subsequent local edit must mark the row unsynced again.
+        store.assign_board_issue("P-1", "u2", "User 2", "human").unwrap();
+        assert_eq!(store.list_unsynced_board_issues(10).unwrap().len(), 1);
     }
 }

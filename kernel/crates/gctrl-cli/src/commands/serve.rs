@@ -18,9 +18,11 @@ pub async fn run(host: String, port: u16, db_path: &str, board_dir: Option<PathB
     let sqlite = Arc::new(SqliteStore::open(&sqlite_path)?);
     tracing::info!("sqlite (board/inbox): {sqlite_path}");
 
-    // Spawn board directory file watcher (if configured)
+    // Spawn board directory file watcher (if configured). Watcher writes to
+    // SQLite (the source of truth for board data, and the origin side of
+    // the SQLite → D1 sync).
     if let Some(dir) = board_dir {
-        let watcher_store = Arc::clone(&store);
+        let watcher_store = Arc::clone(&sqlite);
         tokio::spawn(watch::watch_board_dir(watcher_store, dir));
     }
 

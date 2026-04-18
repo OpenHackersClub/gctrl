@@ -1,13 +1,15 @@
 //! File watcher for board markdown directories.
 //!
-//! Watches `board/{PROJECT_KEY}/*.md` and auto-imports on create/modify.
+//! Watches `gctrl/{PROJECT_KEY}/*.md` and auto-imports on create/modify into
+//! the SQLite board store (the source of truth for board data, and the
+//! origin side of the SQLite → D1 sync).
 //! Uses native OS file events (FSEvents on macOS, inotify on Linux).
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gctrl_storage::DuckDbStore;
+use gctrl_storage::SqliteStore;
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 
@@ -23,7 +25,7 @@ use tokio::sync::mpsc;
 ///
 /// Each subdirectory name is a project key. Files are imported using
 /// `gctrl_storage::import_markdown_dir` with content_hash dedup.
-pub async fn watch_board_dir(store: Arc<DuckDbStore>, board_dir: PathBuf) {
+pub async fn watch_board_dir(store: Arc<SqliteStore>, board_dir: PathBuf) {
     if !board_dir.is_dir() {
         tracing::warn!("board dir not found: {} — file watcher disabled", board_dir.display());
         return;
@@ -90,8 +92,8 @@ pub async fn watch_board_dir(store: Arc<DuckDbStore>, board_dir: PathBuf) {
     drop(watcher);
 }
 
-/// Import a single project subdirectory (e.g. `board/BOARD/`).
-fn import_subdir(store: &DuckDbStore, dir: &std::path::Path, board_dir: &std::path::Path) {
+/// Import a single project subdirectory (e.g. `gctrl/BOARD/`).
+fn import_subdir(store: &SqliteStore, dir: &std::path::Path, board_dir: &std::path::Path) {
     // Derive project key from directory name
     let project_key = match dir.file_name().and_then(|n| n.to_str()) {
         Some(key) => key.to_uppercase(),
