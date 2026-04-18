@@ -21,4 +21,17 @@ pub enum NetError {
 
     #[error("domain not found in store: {0}")]
     DomainNotFound(String),
+
+    #[error("missing API key for {provider}")]
+    MissingApiKey { provider: &'static str },
+
+    #[error("{provider} backend error ({status}): {body}")]
+    BackendError {
+        provider: &'static str,
+        status: u16,
+        body: String,
+    },
+
+    #[error("serde error: {0}")]
+    Serde(#[from] serde_json::Error),
 }

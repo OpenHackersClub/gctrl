@@ -8,12 +8,16 @@ mod crawl;
 mod compact;
 mod storage;
 mod error;
+pub mod render;
+pub mod search;
 
 pub use fetch::{fetch_page, FetchOptions};
 pub use crawl::{crawl_site, CrawlConfig};
 pub use compact::{compact_site, CompactOptions, CompactFormat};
 pub use storage::{SiteStore, PageEntry};
 pub use error::NetError;
+pub use render::{CfBrowserBackend, RenderBackend, RenderMode, RenderedHtml, ScrapeElement, StaticBackend};
+pub use search::{BraveSearchClient, SearchKind, SearchQuery, SearchResponse, SearchResult};
 
 /// Result of fetching or crawling a single page.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

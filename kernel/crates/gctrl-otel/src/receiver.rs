@@ -8,7 +8,7 @@ use axum::{
     Json, Router,
 };
 use gctrl_context::ContextManager;
-use gctrl_core::SyncConfig;
+use gctrl_core::{NetConfig, SyncConfig};
 use gctrl_storage::{DuckDbStore, SqliteStore};
 use serde::Deserialize;
 
@@ -21,6 +21,8 @@ pub struct AppState {
     pub started_at: std::time::Instant,
     /// D1 sync credentials. None disables the `/api/sync/push` endpoint.
     pub sync_config: Option<Arc<SyncConfig>>,
+    /// External driver credentials (Brave Search, Cloudflare Browser Rendering).
+    pub net_config: Arc<NetConfig>,
 }
 
 pub fn create_router(store: DuckDbStore) -> Router {
@@ -30,7 +32,14 @@ pub fn create_router(store: DuckDbStore) -> Router {
 /// Create router from a pre-shared Arc<DuckDbStore> (used when store is shared with other tasks).
 pub fn create_router_from_arc(store: Arc<DuckDbStore>) -> Router {
     let sqlite = Arc::new(SqliteStore::open(":memory:").expect("sqlite open"));
-    let state = Arc::new(AppState { store: Arc::clone(&store), sqlite, context: None, started_at: std::time::Instant::now(), sync_config: None });
+    let state = Arc::new(AppState {
+        store: Arc::clone(&store),
+        sqlite,
+        context: None,
+        started_at: std::time::Instant::now(),
+        sync_config: None,
+        net_config: Arc::new(NetConfig::default()),
+    });
     build_router(state)
 }
 
@@ -46,13 +55,37 @@ pub fn create_router_dual_with_sync(
     sqlite: Arc<SqliteStore>,
     sync_config: Option<Arc<SyncConfig>>,
 ) -> Router {
-    let state = Arc::new(AppState { store, sqlite, context: None, started_at: std::time::Instant::now(), sync_config });
+    create_router_full(store, sqlite, sync_config, Arc::new(NetConfig::default()))
+}
+
+/// Create router with dual stores, D1 sync, and external network drivers (Brave, CF Browser).
+pub fn create_router_full(
+    store: Arc<DuckDbStore>,
+    sqlite: Arc<SqliteStore>,
+    sync_config: Option<Arc<SyncConfig>>,
+    net_config: Arc<NetConfig>,
+) -> Router {
+    let state = Arc::new(AppState {
+        store,
+        sqlite,
+        context: None,
+        started_at: std::time::Instant::now(),
+        sync_config,
+        net_config,
+    });
     build_router(state)
 }
 
 pub fn create_router_with_context(store: DuckDbStore, context: Option<ContextManager>) -> Router {
     let sqlite = Arc::new(SqliteStore::open(":memory:").expect("sqlite open"));
-    let state = Arc::new(AppState { store: Arc::new(store), sqlite, context, started_at: std::time::Instant::now(), sync_config: None });
+    let state = Arc::new(AppState {
+        store: Arc::new(store),
+        sqlite,
+        context,
+        started_at: std::time::Instant::now(),
+        sync_config: None,
+        net_config: Arc::new(NetConfig::default()),
+    });
     build_router(state)
 }
 
@@ -110,6 +143,15 @@ fn build_router(state: Arc<AppState>) -> Router {
         // Wrangler driver (LKM — delegates to native `wrangler` CLI)
         .route("/api/wrangler/whoami", get(wrangler_whoami))
         .route("/api/wrangler/exec", post(wrangler_exec_passthrough))
+        // Search driver (Brave Search API)
+        .route("/api/search/web", post(search_web))
+        .route("/api/search/news", post(search_news))
+        .route("/api/search/images", post(search_images))
+        // Net driver (reqwest + Cloudflare Browser Rendering orchestrator)
+        .route("/api/net/fetch", post(net_fetch))
+        .route("/api/net/render", post(net_render))
+        .route("/api/net/scrape", post(net_scrape))
+        .route("/api/net/screenshot", post(net_screenshot))
         // Persona management (kernel extension)
         .route("/api/personas", get(persona_list).post(persona_upsert))
         .route("/api/personas/seed", post(persona_seed))
@@ -2268,6 +2310,180 @@ async fn sync_push(
     match engine.push(&table_refs).await {
         Ok(result) => Json(result).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+// ------------------------------------------------------------
+// Search & Net drivers (Brave Search, Cloudflare Browser Rendering)
+// ------------------------------------------------------------
+
+fn net_error_status(e: &gctrl_net::NetError) -> StatusCode {
+    match e {
+        gctrl_net::NetError::MissingApiKey { .. } => StatusCode::SERVICE_UNAVAILABLE,
+        gctrl_net::NetError::BackendError { status, .. } if *status >= 400 && *status < 500 => {
+            StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY)
+        }
+        _ => StatusCode::BAD_GATEWAY,
+    }
+}
+
+async fn run_search(
+    state: &Arc<AppState>,
+    kind: gctrl_net::SearchKind,
+    query: gctrl_net::SearchQuery,
+) -> axum::response::Response {
+    let Some(api_key) = state.net_config.brave_api_key.clone() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "BRAVE_SEARCH_API_KEY not configured",
+        )
+            .into_response();
+    };
+    let client = match gctrl_net::BraveSearchClient::new(api_key) {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    match client.search(kind, &query).await {
+        Ok(resp) => Json(resp).into_response(),
+        Err(e) => (net_error_status(&e), e.to_string()).into_response(),
+    }
+}
+
+async fn search_web(
+    State(state): State<Arc<AppState>>,
+    Json(q): Json<gctrl_net::SearchQuery>,
+) -> impl IntoResponse {
+    run_search(&state, gctrl_net::SearchKind::Web, q).await
+}
+
+async fn search_news(
+    State(state): State<Arc<AppState>>,
+    Json(q): Json<gctrl_net::SearchQuery>,
+) -> impl IntoResponse {
+    run_search(&state, gctrl_net::SearchKind::News, q).await
+}
+
+async fn search_images(
+    State(state): State<Arc<AppState>>,
+    Json(q): Json<gctrl_net::SearchQuery>,
+) -> impl IntoResponse {
+    run_search(&state, gctrl_net::SearchKind::Images, q).await
+}
+
+#[derive(Deserialize)]
+struct NetFetchBody {
+    url: String,
+    #[serde(default)]
+    render: Option<gctrl_net::RenderMode>,
+    #[serde(default = "default_readability")]
+    readability: bool,
+    #[serde(default = "default_min_words")]
+    min_words: usize,
+}
+
+fn default_readability() -> bool { true }
+fn default_min_words() -> usize { 50 }
+
+async fn net_fetch(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<NetFetchBody>,
+) -> impl IntoResponse {
+    let render = body.render.unwrap_or(gctrl_net::RenderMode::Static);
+    let opts = gctrl_net::FetchOptions {
+        readability: body.readability,
+        min_words: body.min_words,
+        render,
+        cf_account_id: state.net_config.cf_account_id.clone(),
+        cf_api_token: state.net_config.cf_api_token.clone(),
+        ..Default::default()
+    };
+    match gctrl_net::fetch_page(&body.url, &opts).await {
+        Ok(page) => Json(page).into_response(),
+        Err(e) => (net_error_status(&e), e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct NetRenderBody {
+    url: String,
+    #[serde(default)]
+    wait_for: Option<String>,
+}
+
+fn cf_backend_from_state(
+    state: &Arc<AppState>,
+    wait_for: Option<String>,
+) -> Result<gctrl_net::CfBrowserBackend, axum::response::Response> {
+    let account_id = state.net_config.cf_account_id.clone().ok_or_else(|| {
+        (StatusCode::SERVICE_UNAVAILABLE, "CF_ACCOUNT_ID not configured").into_response()
+    })?;
+    let api_token = state.net_config.cf_api_token.clone().ok_or_else(|| {
+        (StatusCode::SERVICE_UNAVAILABLE, "CF_API_TOKEN not configured").into_response()
+    })?;
+    gctrl_net::CfBrowserBackend::new(account_id, api_token, wait_for)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response())
+}
+
+async fn net_render(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<NetRenderBody>,
+) -> impl IntoResponse {
+    let backend = match cf_backend_from_state(&state, body.wait_for) {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    match <gctrl_net::CfBrowserBackend as gctrl_net::RenderBackend>::render(&backend, &body.url).await {
+        Ok(rendered) => Json(serde_json::json!({
+            "url": rendered.url,
+            "status": rendered.status,
+            "html": rendered.html,
+        }))
+        .into_response(),
+        Err(e) => (net_error_status(&e), e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct NetScrapeBody {
+    url: String,
+    elements: Vec<gctrl_net::ScrapeElement>,
+}
+
+async fn net_scrape(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<NetScrapeBody>,
+) -> impl IntoResponse {
+    let backend = match cf_backend_from_state(&state, None) {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    match backend.scrape(&body.url, body.elements).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (net_error_status(&e), e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct NetScreenshotBody {
+    url: String,
+}
+
+async fn net_screenshot(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<NetScreenshotBody>,
+) -> impl IntoResponse {
+    let backend = match cf_backend_from_state(&state, None) {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    match backend.screenshot(&body.url).await {
+        Ok(b64) => Json(serde_json::json!({
+            "url": body.url,
+            "image_base64": b64,
+            "format": "png",
+        }))
+        .into_response(),
+        Err(e) => (net_error_status(&e), e.to_string()).into_response(),
     }
 }
 

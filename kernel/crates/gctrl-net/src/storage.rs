@@ -189,12 +189,6 @@ fn url_to_filename(url_str: &str) -> String {
     }
 }
 
-impl From<serde_json::Error> for NetError {
-    fn from(e: serde_json::Error) -> Self {
-        NetError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

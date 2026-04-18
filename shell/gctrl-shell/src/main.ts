@@ -17,6 +17,7 @@ import { analyticsCommand } from "./commands/analytics"
 import { contextCommand } from "./commands/context"
 import { boardCommand } from "./commands/board"
 import { netCommand } from "./commands/net"
+import { searchCommand } from "./commands/search"
 import { personaCommand } from "./commands/persona"
 import { teamCommand } from "./commands/team"
 import { inboxCommand } from "./commands/inbox"
@@ -33,6 +34,7 @@ const command = Command.make("gctrl").pipe(
     contextCommand,
     boardCommand,
     netCommand,
+    searchCommand,
     personaCommand,
     teamCommand,
     inboxCommand,

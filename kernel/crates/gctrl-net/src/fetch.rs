@@ -1,7 +1,7 @@
 //! Single-page fetch with HTML→markdown conversion and readability extraction.
 
+use crate::render::{CfBrowserBackend, RenderBackend, RenderMode, StaticBackend};
 use crate::{NetError, PageContent};
-use reqwest::Client;
 use url::Url;
 
 /// Options for fetching a single page.
@@ -13,6 +13,12 @@ pub struct FetchOptions {
     pub min_words: usize,
     /// Custom User-Agent string.
     pub user_agent: String,
+    /// Render backend (static reqwest vs Cloudflare Browser Rendering).
+    pub render: RenderMode,
+    /// CF account id — required when `render` is `Browser`.
+    pub cf_account_id: Option<String>,
+    /// CF API token — required when `render` is `Browser`.
+    pub cf_api_token: Option<String>,
 }
 
 impl Default for FetchOptions {
@@ -21,6 +27,9 @@ impl Default for FetchOptions {
             readability: true,
             min_words: 50,
             user_agent: "Mozilla/5.0 (compatible; gctrl-net/0.1; +https://github.com/debuggingfuture/gctrl)".into(),
+            render: RenderMode::Static,
+            cf_account_id: None,
+            cf_api_token: None,
         }
     }
 }
@@ -28,17 +37,9 @@ impl Default for FetchOptions {
 /// Fetch a single URL and convert to agent-optimized markdown.
 pub async fn fetch_page(url_str: &str, opts: &FetchOptions) -> Result<PageContent, NetError> {
     let url = Url::parse(url_str)?;
-    let client = Client::builder()
-        .user_agent(&opts.user_agent)
-        .timeout(std::time::Duration::from_secs(30))
-        .build()?;
+    let rendered = build_backend(opts)?.render(url.as_str()).await?;
 
-    let resp = client.get(url.as_str()).send().await?;
-    let status = resp.status().as_u16();
-    let html = resp.text().await?;
-
-    let (title, markdown) = html_to_markdown(&html, url.as_str(), opts.readability);
-
+    let (title, markdown) = html_to_markdown(&rendered.html, url.as_str(), opts.readability);
     let word_count = markdown.split_whitespace().count();
 
     if word_count < opts.min_words {
@@ -54,8 +55,25 @@ pub async fn fetch_page(url_str: &str, opts: &FetchOptions) -> Result<PageConten
         title,
         markdown,
         word_count,
-        status,
+        status: rendered.status,
     })
+}
+
+fn build_backend(opts: &FetchOptions) -> Result<Box<dyn RenderBackend>, NetError> {
+    match &opts.render {
+        RenderMode::Static => Ok(Box::new(StaticBackend::new(&opts.user_agent)?)),
+        RenderMode::Browser { wait_for } => {
+            let account_id = opts
+                .cf_account_id
+                .clone()
+                .ok_or(NetError::MissingApiKey { provider: "cloudflare-browser" })?;
+            let api_token = opts
+                .cf_api_token
+                .clone()
+                .ok_or(NetError::MissingApiKey { provider: "cloudflare-browser" })?;
+            Ok(Box::new(CfBrowserBackend::new(account_id, api_token, wait_for.clone())?))
+        }
+    }
 }
 
 /// Convert HTML to markdown, optionally using readability extraction first.
@@ -159,5 +177,19 @@ mod tests {
         let opts = FetchOptions::default();
         assert!(opts.readability);
         assert_eq!(opts.min_words, 50);
+        assert!(matches!(opts.render, RenderMode::Static));
+    }
+
+    #[test]
+    fn build_backend_browser_without_creds_errors() {
+        let opts = FetchOptions {
+            render: RenderMode::Browser { wait_for: None },
+            ..Default::default()
+        };
+        match build_backend(&opts) {
+            Err(NetError::MissingApiKey { provider: "cloudflare-browser" }) => {}
+            Err(e) => panic!("expected MissingApiKey, got err: {e}"),
+            Ok(_) => panic!("expected MissingApiKey, got Ok"),
+        }
     }
 }
