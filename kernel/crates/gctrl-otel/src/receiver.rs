@@ -2350,6 +2350,84 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
+    /// Build a router with a configured-but-fake SyncConfig. The fake creds
+    /// would fail if the handler reached the D1 API, so any test using this
+    /// must only touch code paths that short-circuit before the network.
+    fn test_app_with_sync() -> Router {
+        let store = Arc::new(DuckDbStore::open(":memory:").unwrap());
+        let sqlite = Arc::new(SqliteStore::open(":memory:").expect("sqlite open"));
+        let sync_config = Arc::new(SyncConfig {
+            d1_database_id: "test-db-id".into(),
+            d1_account_id: "test-account-id".into(),
+            d1_api_token: "test-token".into(),
+            device_id: "test-device".into(),
+            ..SyncConfig::default()
+        });
+        create_router_dual_with_sync(store, sqlite, Some(sync_config))
+    }
+
+    #[tokio::test]
+    async fn test_sync_push_empty_sqlite_returns_zero_rows() {
+        // Configured sync + empty SQLite + explicit board tables → short-circuits
+        // inside push_table_to_d1 (list_unsynced_*.is_empty()) before any D1 call.
+        let app = test_app_with_sync();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/sync/push")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"tables":["board_projects","board_issues","board_comments","board_events"]}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["total_rows"], 0);
+        assert!(json["tables"].as_array().unwrap().is_empty());
+        assert!(json["files"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_sync_push_tables_filter_scopes_to_requested() {
+        // Passing only "board_projects" must not trigger a push for the other
+        // three board tables — short-circuits on empty list_unsynced_projects.
+        let app = test_app_with_sync();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/sync/push")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"tables":["board_projects"]}"#))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["total_rows"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_sync_push_malformed_json_returns_4xx() {
+        // axum's default Json extractor rejects invalid JSON with 4xx before
+        // the handler runs. Documents the contract for frontend callers.
+        let app = test_app_with_sync();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/sync/push")
+            .header("content-type", "application/json")
+            .body(Body::from("{not json"))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert!(
+            resp.status().is_client_error(),
+            "expected 4xx, got {}",
+            resp.status()
+        );
+    }
+
     #[tokio::test]
     async fn test_ingest_then_query() {
         let store = DuckDbStore::open(":memory:").unwrap();
