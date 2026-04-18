@@ -28,11 +28,19 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build workspace
-        run: cargo build --workspace
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: kernel
+
+      - name: Compile workspace + tests
+        run: cargo test --workspace --locked --no-run
 
       - name: Run tests
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
+
+      - name: Build kernel binary
+        run: cargo build --bin gctrld --locked
 
       # Upload the built kernel binary for the Playwright job
       - name: Upload kernel binary
