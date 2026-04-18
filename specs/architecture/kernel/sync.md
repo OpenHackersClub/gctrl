@@ -236,7 +236,7 @@ pub struct SyncConfig {
 }
 ```
 
-Credentials priority: CLI flags > env vars (`GCTL_R2_ACCESS_KEY_ID`, `GCTL_R2_SECRET_ACCESS_KEY`, `GCTL_D1_DATABASE_ID`, `GCTL_D1_ACCOUNT_ID`, `GCTL_D1_API_TOKEN`) > config file.
+Credentials priority: CLI flags > env vars (`GCTRL_R2_ACCESS_KEY_ID`, `GCTRL_R2_SECRET_ACCESS_KEY`, `GCTRL_D1_DATABASE_ID`, `GCTRL_D1_ACCOUNT_ID`, `GCTRL_D1_API_TOKEN`) > config file.
 
 ## 9. CLI Commands
 

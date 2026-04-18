@@ -13,7 +13,7 @@ export default defineConfig({
     port: 4200,
     proxy: {
       "/api": {
-        target: `http://localhost:${process.env.GCTL_KERNEL_PORT ?? "4318"}`,
+        target: `http://localhost:${process.env.GCTRL_KERNEL_PORT ?? "4318"}`,
         changeOrigin: true,
       },
     },

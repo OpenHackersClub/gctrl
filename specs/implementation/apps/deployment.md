@@ -213,7 +213,7 @@ Opportunities to move more CI work off Depot runners:
 cd apps/gctrl-board && pnpm dev
 
 # Vite proxies /api/* → http://localhost:4318 (kernel daemon)
-# Override kernel port: GCTL_KERNEL_PORT=5000 pnpm dev
+# Override kernel port: GCTRL_KERNEL_PORT=5000 pnpm dev
 ```
 
 For local D1 testing (without the Rust kernel):

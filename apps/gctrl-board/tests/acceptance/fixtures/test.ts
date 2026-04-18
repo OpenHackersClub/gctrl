@@ -109,7 +109,7 @@ export const test = base.extend<BoardFixtures>({
 
   kernel: async ({}, use) => {
     const previewUrl = process.env.PREVIEW_URL
-    const port = process.env.GCTL_KERNEL_PORT ?? "14318"
+    const port = process.env.GCTRL_KERNEL_PORT ?? "14318"
     const baseUrl = previewUrl ?? `http://localhost:${port}`
     const client = new KernelTestClient(baseUrl)
     if (previewUrl) {

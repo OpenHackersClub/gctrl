@@ -148,10 +148,19 @@ impl D1Client {
         }
     }
 
-    /// Push rows into D1 using INSERT OR REPLACE.
+    /// Upsert rows into D1 using `INSERT ... ON CONFLICT(id) DO UPDATE SET ...`.
     ///
-    /// `rows` — each row is a map of column→value. All rows must have the same columns.
-    /// Rows are sent in batches of 100 to stay within D1 statement limits.
+    /// `rows` — each row is a map of column→value. All rows must have the
+    /// same columns and must include an `id` column (the conflict target).
+    /// Rows are sent one-by-one inside a chunking loop of 100 to stay within
+    /// D1 statement limits.
+    ///
+    /// This deliberately avoids `INSERT OR REPLACE`, which deletes the old
+    /// row before inserting the new one — that cascades through
+    /// `FOREIGN KEY` references and causes `SQLITE_CONSTRAINT_FOREIGNKEY`
+    /// when child rows exist (e.g. re-pushing a `projects` row while
+    /// `issues` still reference it). `DO UPDATE` mutates in place, leaving
+    /// child FKs intact.
     pub async fn batch_upsert(
         &self,
         table: &str,
@@ -164,11 +173,7 @@ impl D1Client {
         validate_table_name(table)?;
 
         let cols: Vec<String> = rows[0].keys().cloned().collect();
-        let placeholders = cols.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-        let col_list = cols.join(", ");
-        let sql = format!(
-            "INSERT OR REPLACE INTO {table} ({col_list}) VALUES ({placeholders})"
-        );
+        let sql = build_upsert_sql(table, &cols);
 
         let mut total_written = 0u64;
         for chunk in rows.chunks(100) {
@@ -249,6 +254,34 @@ impl D1Client {
     }
 }
 
+/// Build an `INSERT ... ON CONFLICT(id) DO UPDATE SET ...` statement.
+///
+/// We avoid `INSERT OR REPLACE`, which deletes the old row before inserting
+/// and cascades through FOREIGN KEY references (breaking re-pushes of parent
+/// rows while child rows exist). `DO UPDATE` mutates in place.
+///
+/// Degenerate case: if `id` is the only column, emit `DO NOTHING` since there
+/// is nothing else to update.
+fn build_upsert_sql(table: &str, cols: &[String]) -> String {
+    let col_list = cols.join(", ");
+    let placeholders = vec!["?"; cols.len()].join(", ");
+    let update_set = cols
+        .iter()
+        .filter(|c| c.as_str() != "id")
+        .map(|c| format!("{c} = excluded.{c}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if update_set.is_empty() {
+        format!(
+            "INSERT INTO {table} ({col_list}) VALUES ({placeholders}) ON CONFLICT(id) DO NOTHING"
+        )
+    } else {
+        format!(
+            "INSERT INTO {table} ({col_list}) VALUES ({placeholders}) ON CONFLICT(id) DO UPDATE SET {update_set}"
+        )
+    }
+}
+
 /// Validate table name against the D1 syncable allowlist (SQL injection guard).
 pub fn validate_table_name(table: &str) -> Result<(), SyncError> {
     if D1_SYNCABLE_TABLES.contains(&table) {
@@ -319,6 +352,29 @@ mod tests {
         assert_eq!(
             client.query_url(),
             "https://api.cloudflare.com/client/v4/accounts/acct123/d1/database/db456/query"
+        );
+    }
+
+    #[test]
+    fn build_upsert_sql_uses_on_conflict_do_update() {
+        let sql = build_upsert_sql(
+            "projects",
+            &["id".into(), "name".into(), "key".into()],
+        );
+        assert!(sql.starts_with("INSERT INTO projects (id, name, key) VALUES (?, ?, ?)"));
+        assert!(sql.contains("ON CONFLICT(id) DO UPDATE SET"));
+        assert!(sql.contains("name = excluded.name"));
+        assert!(sql.contains("key = excluded.key"));
+        assert!(!sql.contains("id = excluded.id"));
+        assert!(!sql.contains("INSERT OR REPLACE"));
+    }
+
+    #[test]
+    fn build_upsert_sql_id_only_falls_back_to_do_nothing() {
+        let sql = build_upsert_sql("tasks", &["id".into()]);
+        assert_eq!(
+            sql,
+            "INSERT INTO tasks (id) VALUES (?) ON CONFLICT(id) DO NOTHING"
         );
     }
 }
