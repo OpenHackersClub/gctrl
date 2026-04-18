@@ -10,7 +10,7 @@ use std::sync::Mutex;
 
 use rusqlite::{params, Connection};
 use gctrl_core::{
-    GctlError, Result,
+    GctlError, Result, Task,
     InboxAction, InboxActionFilter, InboxMessage, InboxMessageFilter, InboxThread,
     PersonaDefinition, PersonaReviewRule,
     context::{ContextEntry, ContextEntryId, ContextFilter, ContextKind, ContextSource},
@@ -82,6 +82,22 @@ CREATE TABLE IF NOT EXISTS board_events (
     device_id   TEXT NOT NULL DEFAULT '',
     updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
     synced      INTEGER NOT NULL DEFAULT 0
+)
+"#;
+
+// Scheduler primitive: Tasks are promoted from Issues on transition to
+// `in_progress`. See specs/implementation/kernel/session-trigger.md §Tier 1.
+const CREATE_TASKS: &str = r#"
+CREATE TABLE IF NOT EXISTS tasks (
+    id                  TEXT PRIMARY KEY,
+    issue_id            TEXT,
+    project_key         TEXT NOT NULL,
+    agent_kind          TEXT NOT NULL,
+    orchestrator_claim  TEXT NOT NULL DEFAULT 'Unclaimed',
+    attempt             INTEGER NOT NULL DEFAULT 0,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    FOREIGN KEY (issue_id) REFERENCES board_issues(id) ON DELETE SET NULL
 )
 "#;
 
@@ -240,6 +256,9 @@ const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_board_events_updated ON board_events(updated_at)",
     "CREATE INDEX IF NOT EXISTS idx_board_comments_synced ON board_comments(synced)",
     "CREATE INDEX IF NOT EXISTS idx_board_comments_updated ON board_comments(updated_at)",
+    // Tasks indexes — promote lookup by issue, Orchestrator dispatch queue
+    "CREATE INDEX IF NOT EXISTS idx_tasks_issue ON tasks(issue_id)",
+    "CREATE INDEX IF NOT EXISTS idx_tasks_claim ON tasks(orchestrator_claim)",
     // Persona indexes
     "CREATE INDEX IF NOT EXISTS idx_persona_definitions_name ON persona_definitions(name)",
     "CREATE INDEX IF NOT EXISTS idx_persona_review_rules_type ON persona_review_rules(pr_type)",
@@ -313,6 +332,7 @@ impl SqliteStore {
             CREATE_BOARD_ISSUES,
             CREATE_BOARD_EVENTS,
             CREATE_BOARD_COMMENTS,
+            CREATE_TASKS,
             CREATE_PERSONA_DEFINITIONS,
             CREATE_PERSONA_REVIEW_RULES,
             CREATE_INBOX_MESSAGES,
@@ -569,7 +589,7 @@ impl SqliteStore {
 
         // Compute transition path: direct if valid, otherwise auto-transit forward
         let path = if current.can_transition_to(&target) {
-            vec![target]
+            vec![target.clone()]
         } else if let Some(fwd) = current.forward_path_to(&target) {
             fwd
         } else {
@@ -604,7 +624,101 @@ impl SqliteStore {
             prev_str = step_str.to_string();
         }
 
+        // Auto-promote the Issue to a Task when the caller is moving it into
+        // `in_progress`. The Orchestrator polls `tasks` (not `board_issues`)
+        // so this row is the trigger for agentic dispatch.
+        if target == gctrl_core::IssueStatus::InProgress {
+            let _ = Self::promote_issue_to_task_inner(&conn, id, "claude-code")?;
+        }
+
         Ok(())
+    }
+
+    /// Promote an Issue to a Task. Idempotent while the Task is non-terminal —
+    /// repeated calls return the existing Task row.
+    ///
+    /// Spec: specs/implementation/kernel/session-trigger.md §Tier 1.
+    pub fn promote_issue_to_task(&self, issue_id: &str, agent_kind: &str) -> Result<Task> {
+        let conn = self.conn.lock().unwrap();
+        Self::promote_issue_to_task_inner(&conn, issue_id, agent_kind)
+    }
+
+    fn promote_issue_to_task_inner(conn: &Connection, issue_id: &str, agent_kind: &str) -> Result<Task> {
+        // Reuse the existing Task if one is still non-terminal.
+        let existing = Self::find_nonterminal_task_for_issue(conn, issue_id)?;
+        if let Some(task) = existing {
+            return Ok(task);
+        }
+
+        // Look up the project key via board_issues -> board_projects.
+        let project_key: String = conn
+            .query_row(
+                "SELECT bp.key FROM board_issues bi
+                 JOIN board_projects bp ON bi.project_id = bp.id
+                 WHERE bi.id = ?1",
+                [issue_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(format!("issue not found: {} ({})", issue_id, e)))?;
+
+        let task_id = format!("TASK-{}", uuid::Uuid::new_v4().simple());
+        let now = chrono::Utc::now();
+        let now_s = now.to_rfc3339();
+        conn.execute(
+            "INSERT INTO tasks (id, issue_id, project_key, agent_kind, orchestrator_claim, attempt, created_at, updated_at)
+             VALUES (?, ?, ?, ?, 'Unclaimed', 0, ?, ?)",
+            params![task_id, issue_id, project_key, agent_kind, now_s, now_s],
+        )
+        .map_err(|e| GctlError::Storage(e.to_string()))?;
+
+        Ok(Task {
+            id: task_id,
+            issue_id: Some(issue_id.to_string()),
+            project_key,
+            agent_kind: agent_kind.to_string(),
+            orchestrator_claim: Task::CLAIM_UNCLAIMED.to_string(),
+            attempt: 0,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    fn find_nonterminal_task_for_issue(conn: &Connection, issue_id: &str) -> Result<Option<Task>> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, issue_id, project_key, agent_kind, orchestrator_claim, attempt, created_at, updated_at
+                 FROM tasks WHERE issue_id = ?1 ORDER BY created_at",
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map([issue_id], row_to_task)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        for row in rows {
+            let task = row.map_err(|e| GctlError::Storage(e.to_string()))?;
+            if Task::is_nonterminal_claim(&task.orchestrator_claim) {
+                return Ok(Some(task));
+            }
+        }
+        Ok(None)
+    }
+
+    /// List all Task rows linked to an Issue, ordered by creation time.
+    pub fn list_tasks_for_issue(&self, issue_id: &str) -> Result<Vec<Task>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, issue_id, project_key, agent_kind, orchestrator_claim, attempt, created_at, updated_at
+                 FROM tasks WHERE issue_id = ?1 ORDER BY created_at",
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map([issue_id], row_to_task)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut tasks = Vec::new();
+        for row in rows {
+            tasks.push(row.map_err(|e| GctlError::Storage(e.to_string()))?);
+        }
+        Ok(tasks)
     }
 
     pub fn assign_board_issue(&self, id: &str, assignee_id: &str, assignee_name: &str, assignee_type: &str) -> Result<()> {
@@ -1723,6 +1837,25 @@ impl SqliteStore {
 // ═══════════════════════════════════════════════════════════════
 // Row mapping helpers
 // ═══════════════════════════════════════════════════════════════
+
+fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
+    let created_at_str: String = row.get(6)?;
+    let updated_at_str: String = row.get(7)?;
+    Ok(Task {
+        id: row.get(0)?,
+        issue_id: row.get(1)?,
+        project_key: row.get(2)?,
+        agent_kind: row.get(3)?,
+        orchestrator_claim: row.get(4)?,
+        attempt: row.get(5)?,
+        created_at: chrono::DateTime::parse_from_rfc3339(&created_at_str)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now()),
+        updated_at: chrono::DateTime::parse_from_rfc3339(&updated_at_str)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now()),
+    })
+}
 
 fn row_to_board_issue(row: &rusqlite::Row<'_>) -> rusqlite::Result<gctrl_core::BoardIssue> {
     let status_str: String = row.get(4)?;
