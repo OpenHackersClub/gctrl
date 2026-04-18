@@ -13,6 +13,8 @@ pub struct GctlConfig {
     pub sync: SyncConfig,
     #[serde(default)]
     pub guardrails: GuardrailsConfig,
+    #[serde(default)]
+    pub net: NetConfig,
 }
 
 impl Default for GctlConfig {
@@ -23,6 +25,7 @@ impl Default for GctlConfig {
             proxy: ProxyConfig::default(),
             sync: SyncConfig::default(),
             guardrails: GuardrailsConfig::default(),
+            net: NetConfig::default(),
         }
     }
 }
@@ -145,6 +148,33 @@ impl SyncConfig {
         }
         cfg.enabled = cfg.d1_enabled();
         cfg
+    }
+}
+
+/// External network-driver credentials (Brave Search, Cloudflare Browser Rendering).
+/// Populated from env vars at daemon startup; missing fields return 503 from the
+/// matching HTTP route.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NetConfig {
+    #[serde(default)]
+    pub brave_api_key: Option<String>,
+    #[serde(default)]
+    pub cf_account_id: Option<String>,
+    #[serde(default)]
+    pub cf_api_token: Option<String>,
+}
+
+impl NetConfig {
+    pub fn from_env() -> Self {
+        Self {
+            brave_api_key: std::env::var("BRAVE_SEARCH_API_KEY").ok().filter(|s| !s.is_empty()),
+            cf_account_id: std::env::var("CF_ACCOUNT_ID").ok().filter(|s| !s.is_empty()),
+            cf_api_token: std::env::var("CF_API_TOKEN").ok().filter(|s| !s.is_empty()),
+        }
+    }
+
+    pub fn cf_browser_enabled(&self) -> bool {
+        self.cf_account_id.is_some() && self.cf_api_token.is_some()
     }
 }
 

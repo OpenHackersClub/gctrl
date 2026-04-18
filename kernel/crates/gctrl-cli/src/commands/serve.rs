@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use gctrl_core::SyncConfig;
+use gctrl_core::{NetConfig, SyncConfig};
 use gctrl_storage::{DuckDbStore, SqliteStore};
 
 use super::watch;
@@ -35,10 +35,19 @@ pub async fn run(host: String, port: u16, db_path: &str, board_dir: Option<PathB
         None
     };
 
-    let router = gctrl_otel::create_router_dual_with_sync(
+    let net_config = NetConfig::from_env();
+    if net_config.brave_api_key.is_some() {
+        tracing::info!("Brave Search enabled");
+    }
+    if net_config.cf_browser_enabled() {
+        tracing::info!("Cloudflare Browser Rendering enabled");
+    }
+
+    let router = gctrl_otel::create_router_full(
         Arc::clone(&store),
         Arc::clone(&sqlite),
         sync_config,
+        Arc::new(net_config),
     );
     let addr = format!("{host}:{port}");
     tracing::info!("gctrl OTel receiver listening on {addr}");

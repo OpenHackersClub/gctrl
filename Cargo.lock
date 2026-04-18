@@ -1358,6 +1358,8 @@ dependencies = [
 name = "gctrl-net"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "base64 0.22.1",
  "chrono",
  "dirs",
  "futures",
@@ -1385,10 +1387,12 @@ dependencies = [
  "duckdb",
  "gctrl-context",
  "gctrl-core",
+ "gctrl-net",
  "gctrl-storage",
  "gctrl-sync",
  "http 1.4.0",
  "http-body-util",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "thiserror",

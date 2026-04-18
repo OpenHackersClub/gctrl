@@ -20,6 +20,10 @@ readability = "0.3"
 scraper = "0.22"
 url = "2"
 
+# Render / search backends
+base64 = "0.22"
+async-trait = "0.1"
+
 # Async utilities
 futures = "0.3"
 

@@ -1,14 +1,24 @@
 /**
  * net — web scraping commands.
  *
- * Delegates to the gctrl Rust binary since gctrl-net has no HTTP API routes.
- * These are thin subprocess wrappers until kernel HTTP routes are added.
+ * Static fetch/crawl/list/show/compact delegate to the gctrl Rust binary.
+ * Browser-mode fetch routes through the kernel HTTP API
+ * (/api/net/fetch, which dispatches to Cloudflare Browser Rendering).
  */
 import { Command, Options, Args } from "@effect/cli"
-import { Console, Effect, Option } from "effect"
+import { Console, Effect, Option, Schema } from "effect"
 import { execFilePromise } from "../lib/exec"
+import { KernelClient } from "../services/KernelClient"
 
 const GCTRL_BIN = "gctrl"
+
+const PageContent = Schema.Struct({
+  url: Schema.String,
+  title: Schema.String,
+  markdown: Schema.String,
+  word_count: Schema.Number,
+  status: Schema.Number,
+})
 
 const runGctl = (args: string[]) =>
   Effect.gen(function* () {
@@ -27,11 +37,33 @@ const runGctl = (args: string[]) =>
 // --- fetch ---
 
 const fetchUrl = Args.text({ name: "url" })
+const renderMode = Options.choice("render", ["static", "browser"]).pipe(
+  Options.withDefault("static" as const),
+  Options.withDescription("Render backend: static (reqwest) | browser (Cloudflare Browser Rendering)")
+)
+const waitFor = Options.text("wait-for").pipe(
+  Options.optional,
+  Options.withDescription("CSS selector to wait for (browser render only)")
+)
 
 const fetchCommand = Command.make(
   "fetch",
-  { url: fetchUrl },
-  ({ url }) => runGctl(["net", "fetch", url])
+  { url: fetchUrl, render: renderMode, waitFor },
+  ({ url, render, waitFor }) =>
+    render === "browser"
+      ? Effect.gen(function* () {
+          const kernel = yield* KernelClient
+          const body: Record<string, unknown> = {
+            url,
+            render: { kind: "browser", wait_for: Option.getOrUndefined(waitFor) },
+          }
+          const page = yield* kernel.post("/api/net/fetch", body, PageContent)
+          yield* Console.log(`# ${page.title}`)
+          yield* Console.log(`<!-- url: ${page.url}  words: ${page.word_count}  status: ${page.status} -->`)
+          yield* Console.log("")
+          yield* Console.log(page.markdown)
+        })
+      : runGctl(["net", "fetch", url])
 )
 
 // --- crawl ---
