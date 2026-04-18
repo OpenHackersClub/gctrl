@@ -1,0 +1,24 @@
+{
+  "name": "uebermensch",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "biome lint tests/"
+  },
+  "dependencies": {
+    "@effect/schema": "^0.75.0",
+    "effect": "^3.14.0",
+    "gray-matter": "^4.0.3",
+    "yaml": "^2.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7",
+    "vitest": "^3.0.0"
+  }
+}
