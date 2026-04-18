@@ -589,7 +589,7 @@ impl SqliteStore {
 
         // Compute transition path: direct if valid, otherwise auto-transit forward
         let path = if current.can_transition_to(&target) {
-            vec![target.clone()]
+            vec![target]
         } else if let Some(fwd) = current.forward_path_to(&target) {
             fwd
         } else {
@@ -624,14 +624,32 @@ impl SqliteStore {
             prev_str = step_str.to_string();
         }
 
-        // Auto-promote the Issue to a Task when the caller is moving it into
-        // `in_progress`. The Orchestrator polls `tasks` (not `board_issues`)
-        // so this row is the trigger for agentic dispatch.
-        if target == gctrl_core::IssueStatus::InProgress {
-            let _ = Self::promote_issue_to_task_inner(&conn, id, "claude-code")?;
-        }
-
         Ok(())
+    }
+
+    /// Move an Issue and — if the target is `in_progress` — promote it to a
+    /// Task in the same transaction. Returns the resulting Task (or `None` for
+    /// non-`in_progress` transitions). `agent_kind` is chosen by the caller
+    /// (receiver.rs will resolve it from WORKFLOW.md in Tier 2).
+    ///
+    /// Spec: specs/implementation/kernel/session-trigger.md §Tier 1.
+    pub fn update_board_issue_status_and_promote(
+        &self,
+        id: &str,
+        status: &str,
+        agent_kind: &str,
+        actor_id: &str,
+        actor_name: &str,
+        actor_type: &str,
+    ) -> Result<Option<Task>> {
+        self.update_board_issue_status(id, status, actor_id, actor_name, actor_type)?;
+        if status == gctrl_core::IssueStatus::InProgress.as_str() {
+            let conn = self.conn.lock().unwrap();
+            let task = Self::promote_issue_to_task_inner(&conn, id, agent_kind)?;
+            Ok(Some(task))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Promote an Issue to a Task. Idempotent while the Task is non-terminal —
@@ -661,7 +679,7 @@ impl SqliteStore {
             )
             .map_err(|e| GctlError::Storage(format!("issue not found: {} ({})", issue_id, e)))?;
 
-        let task_id = format!("TASK-{}", uuid::Uuid::new_v4().simple());
+        let task_id = format!("TASK-{}", ulid::Ulid::new());
         let now = chrono::Utc::now();
         let now_s = now.to_rfc3339();
         conn.execute(

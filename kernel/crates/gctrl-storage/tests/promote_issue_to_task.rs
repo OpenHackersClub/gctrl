@@ -98,16 +98,44 @@ fn move_to_in_progress_promotes_linked_task() {
     let store = test_store();
     seed_project_and_issue(&store, "BACK", "BACK-3");
 
-    store
-        .update_board_issue_status("BACK-3", "in_progress", "actor-1", "Actor", "human")
+    let promoted = store
+        .update_board_issue_status_and_promote(
+            "BACK-3",
+            "in_progress",
+            "claude-code",
+            "actor-1",
+            "Actor",
+            "human",
+        )
         .expect("move");
 
+    let task = promoted.expect("move to in_progress must return the promoted Task");
+    assert_eq!(task.orchestrator_claim, "Unclaimed");
+    assert_eq!(task.issue_id.as_deref(), Some("BACK-3"));
+    assert_eq!(task.agent_kind, "claude-code");
+    assert!(task.id.starts_with("TASK-"), "task id must be TASK-<ULID>");
+
     let tasks = store.list_tasks_for_issue("BACK-3").expect("list");
-    assert_eq!(
-        tasks.len(),
-        1,
-        "moving to in_progress must auto-promote the Issue"
-    );
-    assert_eq!(tasks[0].orchestrator_claim, "Unclaimed");
-    assert_eq!(tasks[0].issue_id.as_deref(), Some("BACK-3"));
+    assert_eq!(tasks.len(), 1);
+}
+
+#[test]
+fn move_to_non_in_progress_does_not_promote() {
+    let store = test_store();
+    seed_project_and_issue(&store, "BACK", "BACK-4");
+
+    let promoted = store
+        .update_board_issue_status_and_promote(
+            "BACK-4",
+            "backlog",
+            "claude-code",
+            "actor-1",
+            "Actor",
+            "human",
+        )
+        .expect("move");
+
+    assert!(promoted.is_none(), "only in_progress transitions promote");
+    let tasks = store.list_tasks_for_issue("BACK-4").expect("list");
+    assert!(tasks.is_empty());
 }

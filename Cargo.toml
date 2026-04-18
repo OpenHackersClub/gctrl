@@ -56,6 +56,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # UUID
 uuid = { version = "1", features = ["v4", "serde"] }
 
+# ULID (for sortable, readable Task IDs)
+ulid = "1"
+
 # Arrow/Parquet (for R2 sync)
 arrow = "54"
 parquet = "54"
