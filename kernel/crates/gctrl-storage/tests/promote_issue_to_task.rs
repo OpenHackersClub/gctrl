@@ -64,7 +64,9 @@ fn promote_creates_single_task_for_unpromoted_issue() {
     let task = store
         .promote_issue_to_task("BACK-1", "claude-code")
         .expect("promote");
+    assert_eq!(task.id, "BACK-1.T1", "task id must be <ISSUE_ID>.T<N>, starting at 1");
     assert_eq!(task.issue_id.as_deref(), Some("BACK-1"));
+    assert_eq!(task.attempt_ordinal, 1);
     assert_eq!(task.agent_kind, "claude-code");
     assert_eq!(task.orchestrator_claim, "Unclaimed");
     assert_eq!(task.attempt, 0);
@@ -113,7 +115,8 @@ fn move_to_in_progress_promotes_linked_task() {
     assert_eq!(task.orchestrator_claim, "Unclaimed");
     assert_eq!(task.issue_id.as_deref(), Some("BACK-3"));
     assert_eq!(task.agent_kind, "claude-code");
-    assert!(task.id.starts_with("TASK-"), "task id must be TASK-<ULID>");
+    assert_eq!(task.id, "BACK-3.T1", "task id must be project-keyed <ISSUE_ID>.T<N>");
+    assert_eq!(task.attempt_ordinal, 1);
 
     let tasks = store.list_tasks_for_issue("BACK-3").expect("list");
     assert_eq!(tasks.len(), 1);
@@ -138,4 +141,33 @@ fn move_to_non_in_progress_does_not_promote() {
     assert!(promoted.is_none(), "only in_progress transitions promote");
     let tasks = store.list_tasks_for_issue("BACK-4").expect("list");
     assert!(tasks.is_empty());
+}
+
+#[test]
+fn promote_after_released_creates_new_task_with_next_ordinal() {
+    let store = test_store();
+    seed_project_and_issue(&store, "BACK", "BACK-5");
+
+    let first = store
+        .promote_issue_to_task("BACK-5", "claude-code")
+        .expect("promote 1");
+    assert_eq!(first.id, "BACK-5.T1");
+    assert_eq!(first.attempt_ordinal, 1);
+
+    // Orchestrator finishes and releases the Task (terminal claim state).
+    store
+        .update_task_claim(&first.id, "Released")
+        .expect("release");
+
+    // Fresh drag: should mint a new Task with the next ordinal, not reuse.
+    let second = store
+        .promote_issue_to_task("BACK-5", "claude-code")
+        .expect("promote 2");
+    assert_ne!(first.id, second.id, "Released must not be reused");
+    assert_eq!(second.id, "BACK-5.T2");
+    assert_eq!(second.attempt_ordinal, 2);
+    assert_eq!(second.orchestrator_claim, "Unclaimed");
+
+    let tasks = store.list_tasks_for_issue("BACK-5").expect("list");
+    assert_eq!(tasks.len(), 2, "audit history preserved across attempts");
 }

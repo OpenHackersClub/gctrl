@@ -92,12 +92,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     id                  TEXT PRIMARY KEY,
     issue_id            TEXT,
     project_key         TEXT NOT NULL,
+    attempt_ordinal     INTEGER NOT NULL,
     agent_kind          TEXT NOT NULL,
     orchestrator_claim  TEXT NOT NULL DEFAULT 'Unclaimed',
     attempt             INTEGER NOT NULL DEFAULT 0,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL,
-    FOREIGN KEY (issue_id) REFERENCES board_issues(id) ON DELETE SET NULL
+    FOREIGN KEY (issue_id) REFERENCES board_issues(id) ON DELETE SET NULL,
+    UNIQUE (issue_id, attempt_ordinal)
 )
 "#;
 
@@ -679,13 +681,22 @@ impl SqliteStore {
             )
             .map_err(|e| GctlError::Storage(format!("issue not found: {} ({})", issue_id, e)))?;
 
-        let task_id = format!("TASK-{}", ulid::Ulid::new());
+        // Next attempt ordinal for this Issue: max + 1 (starts at 1).
+        let next_ordinal: i32 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(attempt_ordinal), 0) + 1 FROM tasks WHERE issue_id = ?1",
+                [issue_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+
+        let task_id = format!("{}.T{}", issue_id, next_ordinal);
         let now = chrono::Utc::now();
         let now_s = now.to_rfc3339();
         conn.execute(
-            "INSERT INTO tasks (id, issue_id, project_key, agent_kind, orchestrator_claim, attempt, created_at, updated_at)
-             VALUES (?, ?, ?, ?, 'Unclaimed', 0, ?, ?)",
-            params![task_id, issue_id, project_key, agent_kind, now_s, now_s],
+            "INSERT INTO tasks (id, issue_id, project_key, attempt_ordinal, agent_kind, orchestrator_claim, attempt, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, 'Unclaimed', 0, ?, ?)",
+            params![task_id, issue_id, project_key, next_ordinal, agent_kind, now_s, now_s],
         )
         .map_err(|e| GctlError::Storage(e.to_string()))?;
 
@@ -693,6 +704,7 @@ impl SqliteStore {
             id: task_id,
             issue_id: Some(issue_id.to_string()),
             project_key,
+            attempt_ordinal: next_ordinal,
             agent_kind: agent_kind.to_string(),
             orchestrator_claim: Task::CLAIM_UNCLAIMED.to_string(),
             attempt: 0,
@@ -704,8 +716,8 @@ impl SqliteStore {
     fn find_nonterminal_task_for_issue(conn: &Connection, issue_id: &str) -> Result<Option<Task>> {
         let mut stmt = conn
             .prepare(
-                "SELECT id, issue_id, project_key, agent_kind, orchestrator_claim, attempt, created_at, updated_at
-                 FROM tasks WHERE issue_id = ?1 ORDER BY created_at",
+                "SELECT id, issue_id, project_key, attempt_ordinal, agent_kind, orchestrator_claim, attempt, created_at, updated_at
+                 FROM tasks WHERE issue_id = ?1 ORDER BY attempt_ordinal",
             )
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         let rows = stmt
@@ -720,13 +732,13 @@ impl SqliteStore {
         Ok(None)
     }
 
-    /// List all Task rows linked to an Issue, ordered by creation time.
+    /// List all Task rows linked to an Issue, ordered by attempt ordinal.
     pub fn list_tasks_for_issue(&self, issue_id: &str) -> Result<Vec<Task>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
-                "SELECT id, issue_id, project_key, agent_kind, orchestrator_claim, attempt, created_at, updated_at
-                 FROM tasks WHERE issue_id = ?1 ORDER BY created_at",
+                "SELECT id, issue_id, project_key, attempt_ordinal, agent_kind, orchestrator_claim, attempt, created_at, updated_at
+                 FROM tasks WHERE issue_id = ?1 ORDER BY attempt_ordinal",
             )
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         let rows = stmt
@@ -737,6 +749,23 @@ impl SqliteStore {
             tasks.push(row.map_err(|e| GctlError::Storage(e.to_string()))?);
         }
         Ok(tasks)
+    }
+
+    /// Update a Task's orchestrator claim state. Called by the Orchestrator
+    /// (Tier 3) as it moves through Unclaimed → Claimed → Running → Released.
+    pub fn update_task_claim(&self, task_id: &str, claim: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        let updated = conn
+            .execute(
+                "UPDATE tasks SET orchestrator_claim = ?1, updated_at = ?2 WHERE id = ?3",
+                params![claim, now, task_id],
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        if updated == 0 {
+            return Err(GctlError::Storage(format!("task not found: {}", task_id)));
+        }
+        Ok(())
     }
 
     pub fn assign_board_issue(&self, id: &str, assignee_id: &str, assignee_name: &str, assignee_type: &str) -> Result<()> {
@@ -1857,15 +1886,16 @@ impl SqliteStore {
 // ═══════════════════════════════════════════════════════════════
 
 fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
-    let created_at_str: String = row.get(6)?;
-    let updated_at_str: String = row.get(7)?;
+    let created_at_str: String = row.get(7)?;
+    let updated_at_str: String = row.get(8)?;
     Ok(Task {
         id: row.get(0)?,
         issue_id: row.get(1)?,
         project_key: row.get(2)?,
-        agent_kind: row.get(3)?,
-        orchestrator_claim: row.get(4)?,
-        attempt: row.get(5)?,
+        attempt_ordinal: row.get(3)?,
+        agent_kind: row.get(4)?,
+        orchestrator_claim: row.get(5)?,
+        attempt: row.get(6)?,
         created_at: chrono::DateTime::parse_from_rfc3339(&created_at_str)
             .map(|dt| dt.with_timezone(&chrono::Utc))
             .unwrap_or_else(|_| chrono::Utc::now()),

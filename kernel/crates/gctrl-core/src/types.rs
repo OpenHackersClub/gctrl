@@ -78,6 +78,7 @@ pub struct Task {
     pub id: String,
     pub issue_id: Option<String>,
     pub project_key: String,
+    pub attempt_ordinal: i32,
     pub agent_kind: String,
     pub orchestrator_claim: String,
     pub attempt: i32,
