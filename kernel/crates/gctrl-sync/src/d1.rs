@@ -260,12 +260,40 @@ pub fn validate_table_name(table: &str) -> Result<(), SyncError> {
     }
 }
 
-/// Tables synced via SQLite → D1 (OLTP workloads: board, tasks, memory).
+/// Tables as named in D1 (Cloudflare side). Used to validate SQL targets.
 ///
 /// All tables here MUST carry the sync contract columns:
 /// `id TEXT PRIMARY KEY`, `device_id TEXT`, `updated_at TEXT`, `synced INTEGER`.
 pub const D1_SYNCABLE_TABLES: &[&str] =
     &["projects", "issues", "comments", "issue_events", "tasks", "memory_entries"];
+
+/// Tables as named in the local SQLite store. These are what callers pass into
+/// `SyncEngine::push`. Routing uses this list; the D1 translator below maps
+/// each one to its D1-side name.
+pub const SQLITE_SYNCABLE_TABLES: &[&str] = &[
+    "board_projects",
+    "board_issues",
+    "board_comments",
+    "board_events",
+    "tasks",
+    "memory_entries",
+];
+
+/// Translate a SQLite table name to its D1 counterpart.
+///
+/// SQLite uses `board_*` prefixes (co-located with non-syncable tables in the
+/// same database). D1 uses unprefixed names because the board is its own
+/// database namespace. Tables that aren't board tables map to themselves.
+pub fn sqlite_to_d1_table(sqlite_table: &str) -> &str {
+    match sqlite_table {
+        "board_projects" => "projects",
+        "board_issues" => "issues",
+        "board_comments" => "comments",
+        "board_events" => "issue_events",
+        other => other,
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
