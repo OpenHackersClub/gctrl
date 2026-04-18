@@ -1,5 +1,6 @@
 import type {
   Issue,
+  MoveIssueResult,
   Project,
   Comment,
   IssueEvent,
@@ -73,7 +74,7 @@ export const api = {
       }),
 
     move: (id: string, status: string) =>
-      request<Issue>(`${BASE}/issues/${id}/move`, {
+      request<MoveIssueResult>(`${BASE}/issues/${id}/move`, {
         method: "POST",
         body: JSON.stringify({
           status,

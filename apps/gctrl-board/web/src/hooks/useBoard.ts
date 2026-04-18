@@ -65,9 +65,11 @@ export function useIssues(projectId: string | null) {
   const moveIssue = useCallback(
     async (issueId: string, newStatus: string) => {
       try {
-        const updated = await api.issues.move(issueId, newStatus)
-        setIssues((prev) => prev.map((i) => (i.id === issueId ? updated : i)))
-        return updated
+        const result = await api.issues.move(issueId, newStatus)
+        setIssues((prev) =>
+          prev.map((i) => (i.id === issueId ? result.issue : i))
+        )
+        return result
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Move failed"
         setError(msg)

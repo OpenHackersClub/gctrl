@@ -1034,17 +1034,46 @@ struct BoardMoveBody {
     actor_type: String,
 }
 
+/// Resolves the agent runtime kind for an Issue at dispatch time.
+///
+/// TODO(tier2.5): parse `agent.runtime` from `WORKFLOW.md` at the project
+/// filesystem root (see specs/architecture/session-trigger-from-board.md
+/// §"Agent resolution"). For now we hardcode the default runtime so the HTTP
+/// envelope contract is exercised end-to-end.
+fn resolve_agent_kind(_project_key: Option<&str>) -> String {
+    "claude-code".to_string()
+}
+
 async fn board_move_issue(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(body): Json<BoardMoveBody>,
 ) -> impl IntoResponse {
-    match state.sqlite.update_board_issue_status(&id, &body.status, &body.actor_id, &body.actor_name, &body.actor_type) {
-        Ok(()) => {
-            match state.sqlite.get_board_issue(&id) {
-                Ok(Some(issue)) => Json(serde_json::to_value(&issue).unwrap()).into_response(),
-                _ => StatusCode::OK.into_response(),
-            }
+    let agent_kind = resolve_agent_kind(None);
+    let promoted = state.sqlite.update_board_issue_status_and_promote(
+        &id,
+        &body.status,
+        &agent_kind,
+        &body.actor_id,
+        &body.actor_name,
+        &body.actor_type,
+    );
+    match promoted {
+        Ok(task_opt) => {
+            let issue_val = match state.sqlite.get_board_issue(&id) {
+                Ok(Some(issue)) => serde_json::to_value(&issue).unwrap_or(serde_json::Value::Null),
+                _ => serde_json::Value::Null,
+            };
+            let (task_id, dispatched) = match task_opt {
+                Some(task) => (serde_json::Value::String(task.id), true),
+                None => (serde_json::Value::Null, false),
+            };
+            Json(serde_json::json!({
+                "issue": issue_val,
+                "task_id": task_id,
+                "dispatched": dispatched,
+            }))
+            .into_response()
         }
         Err(e) => {
             let msg = e.to_string();
