@@ -44,6 +44,13 @@ gctrl/
 │   ├── gctrl-board/            # App: kanban (schemas, services, adapters)
 │   └── ...                    # Future: observe-eval, capacity
 │
+├── gctrl/                     # Issue-tracker markdown (dogfooded)
+│   ├── BOARD/                 #   one subdirectory per project key
+│   │   ├── BOARD-1.md         #   filename = issue key (matches frontmatter)
+│   │   └── ...
+│   └── INBOX/                 #   project key INBOX (intake)
+│       └── ...
+│
 ├── specs/                     # Architecture, design, and formal specs
 │   ├── architecture/          # System structure (kernel/shell/apps layers)
 │   └── implementation/        # Coding patterns, testing, repo structure
