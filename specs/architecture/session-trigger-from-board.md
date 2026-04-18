@@ -172,12 +172,16 @@ No new routes for Slice 1 — the existing `POST /api/board/issues/:id/move` rou
 ```json
 {
   "issue": { ... existing ... },
-  "task_id": "TASK-01HNABCDEFGH",
+  "task_id": "BACK-42.T1",
   "dispatched": true
 }
 ```
 
-`dispatched: false` returned when the Issue has no project-level agent config (i.e. WORKFLOW.md has no `agent:` section) — move still succeeds, just no session kicks off.
+Task IDs are project-keyed `<ISSUE_ID>.T<N>` (see [implementation/kernel/session-trigger.md §Task ID format](../implementation/kernel/session-trigger.md#task-id-format)).
+
+`dispatched: false` (with `task_id: null`) is returned when the Issue has no project-level agent config (i.e. WORKFLOW.md has no `agent:` section) — the move still succeeds, no Task row is created, and no session kicks off. This keeps the non-agentic flow a first-class path for human-only projects.
+
+Re-dragging an Issue whose latest Task is **`Released`** (terminal) creates a **new** Task with the next `.T<N>` ordinal. A drag while a non-terminal Task already exists reuses that Task, so rapid re-drags stay idempotent.
 
 ### Future routes (Slice 2+)
 

@@ -54,16 +54,18 @@ Implementation plan for the Slice 1 subset of [architecture/session-trigger-from
 ```sql
 -- tasks (new)
 CREATE TABLE IF NOT EXISTS tasks (
-    id                  VARCHAR PRIMARY KEY,      -- TASK-01HN...
+    id                  VARCHAR PRIMARY KEY,      -- project-keyed: "<ISSUE_ID>.T<N>" e.g. "BACK-42.T1"
     issue_id            VARCHAR,                  -- FK to board_issues.id, nullable (Tasks can exist without Issues)
     project_key         VARCHAR NOT NULL,
+    attempt_ordinal     INTEGER NOT NULL,         -- monotonic per issue_id; drives the T<N> suffix
     agent_kind          VARCHAR NOT NULL,         -- from WORKFLOW.md agent.runtime
     orchestrator_claim  VARCHAR NOT NULL DEFAULT 'Unclaimed',
                                                    -- Unclaimed | Claimed | Running | RetryQueued | Released
     attempt             INTEGER NOT NULL DEFAULT 0,
     created_at          VARCHAR NOT NULL,
     updated_at          VARCHAR NOT NULL,
-    FOREIGN KEY (issue_id) REFERENCES board_issues(id) ON DELETE SET NULL
+    FOREIGN KEY (issue_id) REFERENCES board_issues(id) ON DELETE SET NULL,
+    UNIQUE (issue_id, attempt_ordinal)
 );
 
 -- sessions: link to task
@@ -71,7 +73,14 @@ ALTER TABLE sessions ADD COLUMN task_id VARCHAR;  -- nullable for backward compa
 CREATE INDEX IF NOT EXISTS sessions_task_id_idx ON sessions(task_id);
 ```
 
-Promote-or-reuse rule: if a non-terminal (`Unclaimed`/`Claimed`/`Running`/`RetryQueued`) Task already exists for the Issue, reuse it; else insert a new row. Prevents duplicate dispatch when a user drags the same card to `in_progress` twice.
+### Task ID format
+
+Project-keyed: `<ISSUE_ID>.T<N>` where `N = max(attempt_ordinal for issue_id) + 1`, starting at `1`. Examples: `BACK-42.T1`, `BACK-42.T2`. Readable in logs/URLs and aligns with the human-addressable issue IDs the board already uses. IDs are stable — never renumbered when earlier attempts are released.
+
+### Promote-or-reuse rule
+
+- If a **non-terminal** (`Unclaimed` / `Claimed` / `Running` / `RetryQueued`) Task already exists for the Issue, reuse it. Prevents duplicate dispatch when a user drags the same card twice in quick succession.
+- If the latest Task for the Issue is **`Released`** (terminal for the claim cycle), promotion inserts a **new** row with `attempt_ordinal + 1`. Rationale: `Released` means "that attempt is done"; a fresh drag is a fresh intent, and a new Task gives the orchestrator a clean slate for claim/retry bookkeeping while preserving audit history of prior attempts.
 
 ---
 
@@ -137,10 +146,8 @@ Soak tests wait until real compute is wired — no value running the stub under 
 
 ---
 
-## Open Questions for Slice 1 Review
+## Resolved Decisions (for Slice 1)
 
-1. **Task ID format** — `TASK-01HN...` (ULID) vs. project-keyed like `BACK-42.T1`? Prefer ULID for uniqueness; project-keyed for readability.
-2. **WORKFLOW.md resolution** — if no agent section, `dispatched: false` and no Task created, or Task created but never claimed? Proposal: no Task created, so `list tasks` stays clean.
-3. **Reuse window** — if a Task is `Released` (terminal for the claim cycle), dragging again creates a new Task or reuses? Proposal: always new, since `Released` means "this attempt is done".
-
-Resolve these in the PR description / review comments before implementation lands.
+1. **Task ID format** — **project-keyed `<ISSUE_ID>.T<N>`** (see [Task ID format](#task-id-format)). Readable in logs and URLs; aligns with existing human-addressable Issue IDs. Uniqueness is enforced by the `(issue_id, attempt_ordinal)` unique constraint.
+2. **No `agent:` section in WORKFLOW.md** — **move succeeds, no Task created, `dispatched: false`** in the move response. Keeps `list tasks` free of never-dispatchable rows and makes the non-agentic workflow a first-class path for human-only projects.
+3. **Released-state reuse** — **always create a new Task** when the latest Task for an Issue is `Released`. Preserves attempt history and gives the orchestrator a clean claim/retry slate for each fresh drag. Only non-terminal Tasks (`Unclaimed` / `Claimed` / `Running` / `RetryQueued`) are reused.
