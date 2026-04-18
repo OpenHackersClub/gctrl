@@ -24,7 +24,7 @@ enum Commands {
         /// Host to bind to
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
-        /// Board markdown directory to watch for auto-import (e.g. board/)
+        /// Board markdown directory to watch for auto-import (e.g. gctrl/)
         #[arg(long)]
         board_dir: Option<String>,
         /// Disable board directory file watcher
@@ -436,8 +436,8 @@ async fn main() -> Result<()> {
                 board_dir
                     .map(std::path::PathBuf::from)
                     .or_else(|| {
-                        // Auto-detect: if ./board/ exists, watch it
-                        let default = std::path::PathBuf::from("board");
+                        // Auto-detect: if ./gctrl/ exists, watch it
+                        let default = std::path::PathBuf::from("gctrl");
                         if default.is_dir() { Some(default) } else { None }
                     })
                     .and_then(|p| p.canonicalize().ok())
