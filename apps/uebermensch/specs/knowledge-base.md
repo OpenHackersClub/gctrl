@@ -351,7 +351,7 @@ The deepdive MUST NOT edit the thesis body (body-below-frontmatter). Only the us
 
 ## kb-schema.md (shipped with profile)
 
-Full schema ships under `apps/uebermensch/vault.sample/kb-schema.md` — it's the single doc the `uber-ingest` LLM reads every ingest pass to know how to file pages. Vault may override with a local `$UBER_VAULT_DIR/kb-schema.md` (authored tier).
+Full schema is emitted into the vault at `$UBER_VAULT_DIR/kb-schema.md` by `gctrl uber vault init` — it's the single doc the `uber-ingest` LLM reads every ingest pass to know how to file pages. The user may edit this file (authored tier) to override classification rules.
 
 The file encodes:
 

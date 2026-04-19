@@ -6,7 +6,7 @@
 
 - Default path: `~/workspaces/debuggingfuture/uebermensch-profile` — overridable via `UBER_VAULT_DIR` (alias `UBER_PROFILE_DIR` retained for continuity).
 - The directory is a **git repository** the user owns *and* an **Obsidian vault** the user opens — one location, two hats.
-- A sample vault ships under `apps/uebermensch/vault.sample/` for bootstrap (`gctrl uber vault init --from-sample`).
+- `gctrl uber vault init` scaffolds an empty vault at `$UBER_VAULT_DIR` from the template (profile.md, topics.md, sources.md, theses/, prompts/, .gitignore).
 
 The identity (`identity.slug` × machine fingerprint) gates sync: each vault is keyed to one user identity; vault content MUST NOT leak between identities in shared storage. `identity.slug` is the canonical machine id — lowercase, `[a-z0-9-]+`, derived from `identity.name` at vault-init time (user may override). `identity.name` is the display name used in UI + generated markdown; it MAY contain spaces, mixed case, and non-ASCII.
 
@@ -98,7 +98,7 @@ Rule of thumb: if it renders as a page in Obsidian, it lives in the vault. If it
 
 - **Opening:** point Obsidian at `$UBER_VAULT_DIR`. The vault works out of the box with zero plugins.
 - **Graph view:** frontmatter + `[[wikilinks]]` light up Obsidian's native graph. Thesis pages act as hubs.
-- **Shipped `.obsidian/` defaults** (in `vault.sample`):
+- **Shipped `.obsidian/` defaults** (emitted by `gctrl uber vault init`):
   - `graph.json` — groups coloured by page_type (thesis=gold, source=grey, synthesis=blue, entity=green, topic=purple)
   - `appearance.json` — "Show frontmatter" on
   - `app.json` — `newFileLocation: folder, newFileFolderPath: inbox/`
@@ -220,19 +220,17 @@ After bootstrap, pulls are incremental and the daemon runs the push/pull protoco
 /.obsidian/plugins/*/data-*.json
 ```
 
-## Sample Vault
+## Vault Template
 
-`apps/uebermensch/vault.sample/` ships with:
+`gctrl uber vault init` emits this shape at `$UBER_VAULT_DIR`:
 
 - `profile.md`, `topics.md`, `sources.md` — minimal viable config (data in YAML frontmatter)
-- `theses/example-thesis.md` — one annotated thesis
-- `ME.md`, `projects.md`, `avoid.md` — stub
-- `prompts/` — copies of shipped defaults
+- `theses/` — empty
+- `ME.md`, `projects.md`, `avoid.md` — stubs
+- `prompts/` — shipped defaults
 - `.obsidian/` — default graph + appearance config
 - `.gitignore`
-- `README.md` — 10-line onboarding note
-
-`gctrl uber vault init --from-sample` copies it into `$UBER_VAULT_DIR`.
+- `README.md` — short onboarding note
 
 ## Schema
 

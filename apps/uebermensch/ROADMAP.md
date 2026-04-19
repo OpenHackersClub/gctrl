@@ -8,13 +8,13 @@
 
 | Task | Description | Priority | Depends On | Issue |
 |------|-------------|----------|------------|-------|
-| Vault scaffolding | `apps/uebermensch/vault.sample/` with `profile.md`, `topics.md`, `sources.md`, `theses/`, `prompts/`, `.obsidian/` defaults, `.gitignore` | P0 | — | TBD |
+| Vault scaffolding | Template vault shape — `profile.md`, `topics.md`, `sources.md`, `theses/`, `prompts/`, `.obsidian/` defaults, `.gitignore` — emitted by `gctrl uber vault init` | P0 | — | TBD |
 | Profile schema lock-in | Finalise profile+vault layout in `specs/profile.md`; commit sample vault | P0 | — | TBD |
 | Profile/Vault reader | Effect-TS `ProfileService` reading markdown + YAML frontmatter from `$UBER_VAULT_DIR` (authored tier) with schema validation; VaultWatcher fiber for `fs.watch` | P0 | Profile schema | TBD |
 | Kernel vault mount | Wire `gctrl-kb` with `context_root = $UBER_VAULT_DIR, wiki_subpath = "wiki"` so the kernel reads/writes wiki pages at the vault root. Retire the legacy `~/.local/share/gctrl/context/wiki` path for Uebermensch workspaces. | P0 | Profile/Vault reader | TBD |
 | `uber_*` storage migration | Add `uber_briefs` (with `vault_path`, `content_hash`, `failed_at`, `failed_reason`), `uber_brief_items`, `uber_deliveries`, `uber_alerts` to SQLite schema | P0 | — | TBD |
 | HTTP routes (kernel proxy) | Kernel-side `/api/uber/briefs` CRUD — resolves `vault_path` to markdown on read | P0 | Storage migration | TBD |
-| CLI: `gctrl uber vault init --from-sample` | Scaffold `$UBER_VAULT_DIR` from shipped sample, derive `identity.slug` from name | P0 | Vault scaffolding | TBD |
+| CLI: `gctrl uber vault init` | Scaffold an empty `$UBER_VAULT_DIR` from the template, derive `identity.slug` from name | P0 | Vault scaffolding | TBD |
 | CLI: `gctrl uber profile validate` | Round-trip parse + report on authored tier | P0 | Profile reader | TBD |
 | CLI: `gctrl uber brief` (vault + stdout) | Reads 24h of wiki pages, calls LLM via `driver-llm` (stub OK), writes `briefs/<date>.md` atomically to the vault, echoes markdown to stdout | P0 | Profile reader, driver-llm stub, Kernel vault mount | TBD |
 | driver-llm stub | `LlmPort` trait + stub adapter returning fixture data; real adapters in M1 | P0 | — | TBD |
