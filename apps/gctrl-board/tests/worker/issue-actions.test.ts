@@ -34,8 +34,14 @@ describe("Issue move (status transitions + events)", () => {
         )
         expect(moveRes.status).toBe(200)
 
-        const moved = (yield* moveRes.json) as Record<string, unknown>
-        expect(moved.status).toBe("in_progress")
+        const moved = (yield* moveRes.json) as {
+          issue: Record<string, unknown>
+          task_id: string | null
+          dispatched: boolean
+        }
+        expect(moved.issue.status).toBe("in_progress")
+        expect(moved.dispatched).toBe(false)
+        expect(moved.task_id).toBeNull()
 
         const eventsRes = yield* client.get(
           `${HOST}/api/board/issues/${issueId}/events`,

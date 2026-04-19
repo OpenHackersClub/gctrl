@@ -52,6 +52,12 @@ export interface Project {
   github_repo?: string
 }
 
+export interface MoveIssueResult {
+  issue: Issue
+  task_id: string | null
+  dispatched: boolean
+}
+
 export interface IssueEvent {
   id: string
   issue_id: string

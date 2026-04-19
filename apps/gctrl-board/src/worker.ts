@@ -239,7 +239,11 @@ const moveIssue: ApiHandler = (req, params) =>
     ])
 
     const row = yield* db.first("SELECT * FROM issues WHERE id = ?", params.id)
-    return jsonResponse(parseRow(row as Record<string, unknown>))
+    return jsonResponse({
+      issue: parseRow(row as Record<string, unknown>),
+      task_id: null,
+      dispatched: false,
+    })
   })
 
 const assignIssue: ApiHandler = (req, params) =>

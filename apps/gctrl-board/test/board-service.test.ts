@@ -85,7 +85,7 @@ const createMockKernel = () => {
           if (!issue) return yield* fail404("not found")
           issue.status = b.status
           issue.updated_at = new Date().toISOString()
-          return issue
+          return { issue, task_id: null, dispatched: false }
         }
         const assignMatch = path.match(/\/api\/board\/issues\/([^/]+)\/assign/)
         if (assignMatch) {

@@ -10,7 +10,7 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core"
-import type { Issue, IssueStatus } from "../types"
+import type { Issue, IssueStatus, MoveIssueResult } from "../types"
 import { STATUS_LABELS } from "../types"
 import { IssueCard } from "./IssueCard"
 
@@ -34,7 +34,7 @@ interface Props {
   issues: Issue[]
   loading: boolean
   hasProject: boolean
-  onMoveIssue: (issueId: string, newStatus: string) => Promise<Issue>
+  onMoveIssue: (issueId: string, newStatus: string) => Promise<MoveIssueResult>
   onSelectIssue: (issue: Issue) => void
 }
 

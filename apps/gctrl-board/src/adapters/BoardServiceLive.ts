@@ -133,7 +133,8 @@ export const BoardServiceLive = Layer.effect(
             actor_name: "gctrl-board",
             actor_type: "agent",
           })
-          return mapIssue(raw)
+          const envelope = raw as { issue: unknown }
+          return mapIssue(envelope.issue)
         }).pipe(
           Effect.catchTags({
             KernelError: (e): Effect.Effect<never, BoardError | IssueNotFoundError> =>
