@@ -97,6 +97,14 @@ jobs:
         run: pnpm test
         working-directory: shell/gctrl-shell
 
+      - name: Test — uebermensch
+        run: pnpm test
+        working-directory: apps/uebermensch
+
+      - name: Build — uebermensch
+        run: pnpm build
+        working-directory: apps/uebermensch
+
       - name: Test — board
         run: pnpm test
         working-directory: apps/gctrl-board
