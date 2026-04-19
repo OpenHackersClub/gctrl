@@ -67,7 +67,7 @@ Skill directories are scanned in order; the first match for a given `name` wins 
 | 2 | `~/.agents/skills/` | user | Per-developer extensions |
 | 3 | `./.claude/skills/` | project (compat) | Existing Claude Code skills |
 | 4 | `~/.claude/skills/` | user (compat) | Existing Claude Code skills |
-| 5 | `gctrl/skills/` | shipped | Repo-shipped skills (e.g. `/dispatch`, `/review`) |
+| 5 | `gctrl/utils/skills/` | shipped | Repo-shipped skills (e.g. `/dispatch`, `/review`). Nests under `gctrl/utils/` to reflect that skills are a subclass of utility; the leaf stays `skills` for agentskills host discovery. |
 
 **Override environment variable:** `GCTRL_SKILLS_PATH` — colon-separated list replacing the default order (same convention as `$PATH`).
 
@@ -213,7 +213,7 @@ M0 and M1 unlock the user-visible value; M2 is the correctness gate; M3 and M4 a
 
 ## 11. Examples
 
-### 11.1 A gctrl-shipped skill — `gctrl/skills/dispatch/SKILL.md`
+### 11.1 A gctrl-shipped skill — `gctrl/utils/skills/dispatch/SKILL.md`
 
 ```markdown
 ---

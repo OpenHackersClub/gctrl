@@ -351,7 +351,7 @@ Following the [agentskills](https://github.com/agentskills/agentskills) spec, **
 ~/.agents/skills/      # user-scope (per developer)
 ./.claude/skills/      # compatibility — project
 ~/.claude/skills/      # compatibility — user
-gctrl/skills/          # shipped with repo (e.g. /dispatch, /review)
+gctrl/utils/skills/    # shipped with repo (e.g. /dispatch, /review)
 ```
 
 **Unix mapping:**
