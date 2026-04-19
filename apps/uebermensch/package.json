@@ -2,15 +2,33 @@
   "name": "uebermensch",
   "version": "0.1.0",
   "type": "module",
+  "bin": {
+    "uber": "dist/bin/uber.js"
+  },
   "engines": {
     "node": ">=24"
   },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx src/bin/uber.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome lint src/"
+  },
   "dependencies": {
+    "@effect/cli": "^0.52.0",
+    "@effect/platform": "^0.72.0",
+    "@effect/platform-node": "^0.68.0",
     "@effect/schema": "^0.75.0",
-    "effect": "^3.14.0"
+    "effect": "^3.14.0",
+    "gray-matter": "^4.0.3"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^5.7"
+    "tsup": "^8.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7",
+    "vitest": "^3.0.0"
   }
 }

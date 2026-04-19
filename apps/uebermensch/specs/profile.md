@@ -4,7 +4,7 @@
 
 ## Location & Identity
 
-- Default path: `~/workspaces/debuggingfuture/uebermensch-profile` — overridable via `UBER_VAULT_DIR` (alias `UBER_PROFILE_DIR` retained for continuity).
+- Default path: `~/uebermensch-vault` — overridable via `UBER_VAULT_DIR` (alias `UBER_PROFILE_DIR` retained for continuity).
 - The directory is a **git repository** the user owns *and* an **Obsidian vault** the user opens — one location, two hats.
 - `gctrl uber vault init` scaffolds an empty vault at `$UBER_VAULT_DIR` from the template (profile.md, topics.md, sources.md, theses/, prompts/, .gitignore).
 

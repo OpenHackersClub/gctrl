@@ -1,0 +1,5 @@
+wiki/
+briefs/
+.gctrl-uber/
+.obsidian/workspace*.json
+.obsidian/plugins/*/data.json

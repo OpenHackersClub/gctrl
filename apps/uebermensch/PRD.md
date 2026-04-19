@@ -52,7 +52,7 @@ flowchart TB
 - **Table namespace:** `uber_*` (see Invariant #3 in [principles.md](../../specs/principles.md))
 - **Wiki infrastructure:** reuses `gctrl-kb` mounted at `$UBER_VAULT_DIR/wiki/` — see [knowledgebase.md](../../specs/architecture/kernel/knowledgebase.md)
 - **External data:** via kernel drivers only (LLM, Telegram, Discord, RSS, SEC, markets). App MUST NOT call external APIs directly — see [os.md § Dependency Direction](../../specs/architecture/os.md#dependency-direction-invariant)
-- **Vault = Profile:** `$UBER_VAULT_DIR` (default `~/workspaces/debuggingfuture/uebermensch-profile`) is both the portable profile git repo AND the Obsidian-mountable markdown vault. Briefs, wiki pages, and sources are plain markdown files. SQLite holds only an index (`vault_path` + `content_hash`). R2 sync makes the vault multi-device. See [specs/profile.md](specs/profile.md).
+- **Vault = Profile:** `$UBER_VAULT_DIR` (default `~/uebermensch-vault`) is both the portable profile git repo AND the Obsidian-mountable markdown vault. Briefs, wiki pages, and sources are plain markdown files. SQLite holds only an index (`vault_path` + `content_hash`). R2 sync makes the vault multi-device. See [specs/profile.md](specs/profile.md).
 - **Related apps:** subsumes the [researcher-market](../../specs/architecture/apps/researcher-market.md) and [researcher-agentic](../../specs/architecture/apps/researcher-agentic.md) patterns, adding daily briefings, action items, and multi-channel delivery
 
 ## Problem
@@ -203,7 +203,7 @@ Uebermensch is profile-parameterised. An ML researcher, policy wonk, or clinicia
 
 ### Vault (external, Obsidian-mountable)
 
-A single directory at `$UBER_VAULT_DIR` (default `~/workspaces/debuggingfuture/uebermensch-profile`) holding:
+A single directory at `$UBER_VAULT_DIR` (default `~/uebermensch-vault`) holding:
 
 - **Authored tier** (git-tracked): `profile.md`, `topics.md`, `sources.md`, `theses/<slug>.md`, `prompts/*.md`, `.obsidian/` — edited by the user in Obsidian or any editor.
 - **Generated tier** (gitignored, R2-synced): `wiki/**` (`wiki/sources/<slug>.md`, `wiki/synthesis/<slug>.md`, entities, topics, questions) + `briefs/<YYYY-MM-DD>.md` — written by the kernel + Uebermensch services.

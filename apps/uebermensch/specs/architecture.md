@@ -211,7 +211,7 @@ class ProfilePort extends Context.Tag("uber/ProfilePort")<ProfilePort, {
 }>() {}
 ```
 
-- `$UBER_VAULT_DIR` resolves to `~/workspaces/debuggingfuture/uebermensch-profile` by default but is overridable (legacy alias: `UBER_PROFILE_DIR`).
+- `$UBER_VAULT_DIR` resolves to `~/uebermensch-vault` by default but is overridable (legacy alias: `UBER_PROFILE_DIR`).
 - The vault is Obsidian-mountable — every file is CommonMark + YAML frontmatter; wikilinks are bare `[[slug]]`.
 - The app MUST fail-closed on a missing / invalid authored tier: no brief is produced, a clear error is surfaced to CLI + HTTP.
 - Authored-tier writes happen only via `gctrl uber profile migrate` (idempotent, with preview diff) or by the user in Obsidian / their editor / git. No service MAY write to the authored tier in response to LLM output.
