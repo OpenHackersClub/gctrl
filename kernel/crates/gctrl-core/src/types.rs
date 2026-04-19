@@ -63,6 +63,49 @@ pub struct Session {
     pub total_output_tokens: u64,
 }
 
+// --- Task (Scheduler) ---
+//
+// A Task is the Scheduler's unit of dispatchable work. Issues (app-level,
+// human-managed) are promoted to Tasks when they transition to `in_progress`
+// on the board. The Orchestrator only ever sees Tasks; it never reads Issues.
+//
+// `orchestrator_claim` is stored as a string — the full claim-state machine
+// (Unclaimed → Claimed → Running → RetryQueued → Released) lives in the
+// `gctrl-orch` crate and will land alongside the orchestrator stub.
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Task {
+    pub id: String,
+    pub issue_id: Option<String>,
+    pub project_key: String,
+    pub attempt_ordinal: i32,
+    pub agent_kind: String,
+    pub orchestrator_claim: String,
+    pub attempt: i32,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl Task {
+    pub const CLAIM_UNCLAIMED: &'static str = "Unclaimed";
+    pub const CLAIM_CLAIMED: &'static str = "Claimed";
+    pub const CLAIM_RUNNING: &'static str = "Running";
+    pub const CLAIM_RETRY_QUEUED: &'static str = "RetryQueued";
+    pub const CLAIM_RELEASED: &'static str = "Released";
+
+    /// Non-terminal claim states — a Task in any of these should be reused
+    /// when its Issue is re-promoted (idempotent drag-to-in_progress).
+    pub fn is_nonterminal_claim(claim: &str) -> bool {
+        matches!(
+            claim,
+            Self::CLAIM_UNCLAIMED
+                | Self::CLAIM_CLAIMED
+                | Self::CLAIM_RUNNING
+                | Self::CLAIM_RETRY_QUEUED
+        )
+    }
+}
+
 // --- Span ---
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

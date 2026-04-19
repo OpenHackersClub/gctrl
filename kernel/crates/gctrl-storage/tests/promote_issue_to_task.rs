@@ -1,20 +1,10 @@
 //! TDD contract tests for Issue → Task promotion on status move.
 //!
-//! These tests are **intentionally ignored** and compile against only the
-//! existing `SqliteStore` surface — they describe the contract from
-//! [specs/implementation/kernel/session-trigger.md §Tier 1] that a follow-up
-//! PR must satisfy.
-//!
-//! The implementer's job:
-//!   1. Remove the `#[ignore]` attribute on each test.
-//!   2. Implement `promote_issue_to_task` and `list_tasks_for_issue` on
-//!      `SqliteStore` per the spec.
-//!   3. Modify `update_board_issue_status` so that a transition to
-//!      `in_progress` promotes the Issue to a Task in the same transaction.
-//!   4. Replace each `unimplemented!()` below with the sketched assertions.
-//!
-//! Once the test panics turn into real assertions and those pass, commit.
-//! No new public API is added in this PR — the spec alone lands first.
+//! These tests describe the contract from
+//! [specs/implementation/kernel/session-trigger.md §Tier 1] that `SqliteStore`
+//! must satisfy. They are the RED half of the red-green cycle: they reference
+//! `promote_issue_to_task` and `list_tasks_for_issue`, which do not yet exist
+//! on `SqliteStore`. Expect a compile error until Tier 1 GREEN lands.
 
 use chrono::Utc;
 use gctrl_core::{BoardIssue, BoardProject, IssueStatus};
@@ -67,60 +57,117 @@ fn seed_project_and_issue(store: &SqliteStore, key: &str, issue_id: &str) {
 }
 
 #[test]
-#[ignore = "TDD pending — requires SqliteStore::promote_issue_to_task + list_tasks_for_issue (see specs/implementation/kernel/session-trigger.md §Tier 1, Red 1)"]
 fn promote_creates_single_task_for_unpromoted_issue() {
     let store = test_store();
     seed_project_and_issue(&store, "BACK", "BACK-1");
 
-    // let task = store.promote_issue_to_task("BACK-1", "claude-code").expect("promote");
-    // assert_eq!(task.issue_id.as_deref(), Some("BACK-1"));
-    // assert_eq!(task.agent_kind, "claude-code");
-    // assert_eq!(task.orchestrator_claim, "Unclaimed");
-    // assert_eq!(task.attempt, 0);
+    let task = store
+        .promote_issue_to_task("BACK-1", "claude-code")
+        .expect("promote");
+    assert_eq!(task.id, "BACK-1.T1", "task id must be <ISSUE_ID>.T<N>, starting at 1");
+    assert_eq!(task.issue_id.as_deref(), Some("BACK-1"));
+    assert_eq!(task.attempt_ordinal, 1);
+    assert_eq!(task.agent_kind, "claude-code");
+    assert_eq!(task.orchestrator_claim, "Unclaimed");
+    assert_eq!(task.attempt, 0);
 
-    // let tasks = store.list_tasks_for_issue("BACK-1").expect("list");
-    // assert_eq!(tasks.len(), 1, "exactly one Task row should exist");
-
-    unimplemented!(
-        "Implement SqliteStore::promote_issue_to_task + list_tasks_for_issue, \
-         then replace this panic with the commented assertions above."
-    );
+    let tasks = store.list_tasks_for_issue("BACK-1").expect("list");
+    assert_eq!(tasks.len(), 1, "exactly one Task row should exist");
 }
 
 #[test]
-#[ignore = "TDD pending — promote-or-reuse rule: repeated promotion must not duplicate (spec §Tier 1, Red 2)"]
 fn promote_reuses_existing_nonterminal_task() {
     let store = test_store();
     seed_project_and_issue(&store, "BACK", "BACK-2");
 
-    // let first = store.promote_issue_to_task("BACK-2", "claude-code").expect("promote 1");
-    // let second = store.promote_issue_to_task("BACK-2", "claude-code").expect("promote 2");
-    // assert_eq!(first.id, second.id, "second promote must reuse the existing task");
-    //
-    // let tasks = store.list_tasks_for_issue("BACK-2").expect("list");
-    // assert_eq!(tasks.len(), 1);
-
-    unimplemented!(
-        "Assert second promote returns the same Task id when the first Task is still non-terminal."
+    let first = store
+        .promote_issue_to_task("BACK-2", "claude-code")
+        .expect("promote 1");
+    let second = store
+        .promote_issue_to_task("BACK-2", "claude-code")
+        .expect("promote 2");
+    assert_eq!(
+        first.id, second.id,
+        "second promote must reuse the existing task while non-terminal"
     );
+
+    let tasks = store.list_tasks_for_issue("BACK-2").expect("list");
+    assert_eq!(tasks.len(), 1);
 }
 
 #[test]
-#[ignore = "TDD pending — moving Issue to in_progress must promote in the same transaction (spec §Tier 1, Red 3)"]
 fn move_to_in_progress_promotes_linked_task() {
     let store = test_store();
     seed_project_and_issue(&store, "BACK", "BACK-3");
 
-    store
-        .update_board_issue_status("BACK-3", "in_progress", "actor-1", "Actor", "human")
+    let promoted = store
+        .update_board_issue_status_and_promote(
+            "BACK-3",
+            "in_progress",
+            "claude-code",
+            "actor-1",
+            "Actor",
+            "human",
+        )
         .expect("move");
 
-    // let tasks = store.list_tasks_for_issue("BACK-3").expect("list");
-    // assert_eq!(tasks.len(), 1, "moving to in_progress must auto-promote the Issue");
-    // assert_eq!(tasks[0].orchestrator_claim, "Unclaimed");
+    let task = promoted.expect("move to in_progress must return the promoted Task");
+    assert_eq!(task.orchestrator_claim, "Unclaimed");
+    assert_eq!(task.issue_id.as_deref(), Some("BACK-3"));
+    assert_eq!(task.agent_kind, "claude-code");
+    assert_eq!(task.id, "BACK-3.T1", "task id must be project-keyed <ISSUE_ID>.T<N>");
+    assert_eq!(task.attempt_ordinal, 1);
 
-    unimplemented!(
-        "After implementation, uncomment the assertions — the move side-effect is \
-         the primary trigger for board drag-to-dispatch."
-    );
+    let tasks = store.list_tasks_for_issue("BACK-3").expect("list");
+    assert_eq!(tasks.len(), 1);
+}
+
+#[test]
+fn move_to_non_in_progress_does_not_promote() {
+    let store = test_store();
+    seed_project_and_issue(&store, "BACK", "BACK-4");
+
+    let promoted = store
+        .update_board_issue_status_and_promote(
+            "BACK-4",
+            "backlog",
+            "claude-code",
+            "actor-1",
+            "Actor",
+            "human",
+        )
+        .expect("move");
+
+    assert!(promoted.is_none(), "only in_progress transitions promote");
+    let tasks = store.list_tasks_for_issue("BACK-4").expect("list");
+    assert!(tasks.is_empty());
+}
+
+#[test]
+fn promote_after_released_creates_new_task_with_next_ordinal() {
+    let store = test_store();
+    seed_project_and_issue(&store, "BACK", "BACK-5");
+
+    let first = store
+        .promote_issue_to_task("BACK-5", "claude-code")
+        .expect("promote 1");
+    assert_eq!(first.id, "BACK-5.T1");
+    assert_eq!(first.attempt_ordinal, 1);
+
+    // Orchestrator finishes and releases the Task (terminal claim state).
+    store
+        .update_task_claim(&first.id, "Released")
+        .expect("release");
+
+    // Fresh drag: should mint a new Task with the next ordinal, not reuse.
+    let second = store
+        .promote_issue_to_task("BACK-5", "claude-code")
+        .expect("promote 2");
+    assert_ne!(first.id, second.id, "Released must not be reused");
+    assert_eq!(second.id, "BACK-5.T2");
+    assert_eq!(second.attempt_ordinal, 2);
+    assert_eq!(second.orchestrator_claim, "Unclaimed");
+
+    let tasks = store.list_tasks_for_issue("BACK-5").expect("list");
+    assert_eq!(tasks.len(), 2, "audit history preserved across attempts");
 }

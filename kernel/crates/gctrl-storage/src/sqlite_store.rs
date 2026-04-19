@@ -10,7 +10,7 @@ use std::sync::Mutex;
 
 use rusqlite::{params, Connection};
 use gctrl_core::{
-    GctlError, Result,
+    GctlError, Result, Task,
     InboxAction, InboxActionFilter, InboxMessage, InboxMessageFilter, InboxThread,
     PersonaDefinition, PersonaReviewRule,
     context::{ContextEntry, ContextEntryId, ContextFilter, ContextKind, ContextSource},
@@ -82,6 +82,24 @@ CREATE TABLE IF NOT EXISTS board_events (
     device_id   TEXT NOT NULL DEFAULT '',
     updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
     synced      INTEGER NOT NULL DEFAULT 0
+)
+"#;
+
+// Scheduler primitive: Tasks are promoted from Issues on transition to
+// `in_progress`. See specs/implementation/kernel/session-trigger.md §Tier 1.
+const CREATE_TASKS: &str = r#"
+CREATE TABLE IF NOT EXISTS tasks (
+    id                  TEXT PRIMARY KEY,
+    issue_id            TEXT,
+    project_key         TEXT NOT NULL,
+    attempt_ordinal     INTEGER NOT NULL,
+    agent_kind          TEXT NOT NULL,
+    orchestrator_claim  TEXT NOT NULL DEFAULT 'Unclaimed',
+    attempt             INTEGER NOT NULL DEFAULT 0,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    FOREIGN KEY (issue_id) REFERENCES board_issues(id) ON DELETE SET NULL,
+    UNIQUE (issue_id, attempt_ordinal)
 )
 "#;
 
@@ -240,6 +258,9 @@ const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_board_events_updated ON board_events(updated_at)",
     "CREATE INDEX IF NOT EXISTS idx_board_comments_synced ON board_comments(synced)",
     "CREATE INDEX IF NOT EXISTS idx_board_comments_updated ON board_comments(updated_at)",
+    // Tasks indexes — promote lookup by issue, Orchestrator dispatch queue
+    "CREATE INDEX IF NOT EXISTS idx_tasks_issue ON tasks(issue_id)",
+    "CREATE INDEX IF NOT EXISTS idx_tasks_claim ON tasks(orchestrator_claim)",
     // Persona indexes
     "CREATE INDEX IF NOT EXISTS idx_persona_definitions_name ON persona_definitions(name)",
     "CREATE INDEX IF NOT EXISTS idx_persona_review_rules_type ON persona_review_rules(pr_type)",
@@ -313,6 +334,7 @@ impl SqliteStore {
             CREATE_BOARD_ISSUES,
             CREATE_BOARD_EVENTS,
             CREATE_BOARD_COMMENTS,
+            CREATE_TASKS,
             CREATE_PERSONA_DEFINITIONS,
             CREATE_PERSONA_REVIEW_RULES,
             CREATE_INBOX_MESSAGES,
@@ -604,6 +626,145 @@ impl SqliteStore {
             prev_str = step_str.to_string();
         }
 
+        Ok(())
+    }
+
+    /// Move an Issue and — if the target is `in_progress` — promote it to a
+    /// Task in the same transaction. Returns the resulting Task (or `None` for
+    /// non-`in_progress` transitions). `agent_kind` is chosen by the caller
+    /// (receiver.rs will resolve it from WORKFLOW.md in Tier 2).
+    ///
+    /// Spec: specs/implementation/kernel/session-trigger.md §Tier 1.
+    pub fn update_board_issue_status_and_promote(
+        &self,
+        id: &str,
+        status: &str,
+        agent_kind: &str,
+        actor_id: &str,
+        actor_name: &str,
+        actor_type: &str,
+    ) -> Result<Option<Task>> {
+        self.update_board_issue_status(id, status, actor_id, actor_name, actor_type)?;
+        if status == gctrl_core::IssueStatus::InProgress.as_str() {
+            let conn = self.conn.lock().unwrap();
+            let task = Self::promote_issue_to_task_inner(&conn, id, agent_kind)?;
+            Ok(Some(task))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Promote an Issue to a Task. Idempotent while the Task is non-terminal —
+    /// repeated calls return the existing Task row.
+    ///
+    /// Spec: specs/implementation/kernel/session-trigger.md §Tier 1.
+    pub fn promote_issue_to_task(&self, issue_id: &str, agent_kind: &str) -> Result<Task> {
+        let conn = self.conn.lock().unwrap();
+        Self::promote_issue_to_task_inner(&conn, issue_id, agent_kind)
+    }
+
+    fn promote_issue_to_task_inner(conn: &Connection, issue_id: &str, agent_kind: &str) -> Result<Task> {
+        // Reuse the existing Task if one is still non-terminal.
+        let existing = Self::find_nonterminal_task_for_issue(conn, issue_id)?;
+        if let Some(task) = existing {
+            return Ok(task);
+        }
+
+        // Look up the project key via board_issues -> board_projects.
+        let project_key: String = conn
+            .query_row(
+                "SELECT bp.key FROM board_issues bi
+                 JOIN board_projects bp ON bi.project_id = bp.id
+                 WHERE bi.id = ?1",
+                [issue_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(format!("issue not found: {} ({})", issue_id, e)))?;
+
+        // Next attempt ordinal for this Issue: max + 1 (starts at 1).
+        let next_ordinal: i32 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(attempt_ordinal), 0) + 1 FROM tasks WHERE issue_id = ?1",
+                [issue_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+
+        let task_id = format!("{}.T{}", issue_id, next_ordinal);
+        let now = chrono::Utc::now();
+        let now_s = now.to_rfc3339();
+        conn.execute(
+            "INSERT INTO tasks (id, issue_id, project_key, attempt_ordinal, agent_kind, orchestrator_claim, attempt, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, 'Unclaimed', 0, ?, ?)",
+            params![task_id, issue_id, project_key, next_ordinal, agent_kind, now_s, now_s],
+        )
+        .map_err(|e| GctlError::Storage(e.to_string()))?;
+
+        Ok(Task {
+            id: task_id,
+            issue_id: Some(issue_id.to_string()),
+            project_key,
+            attempt_ordinal: next_ordinal,
+            agent_kind: agent_kind.to_string(),
+            orchestrator_claim: Task::CLAIM_UNCLAIMED.to_string(),
+            attempt: 0,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    fn find_nonterminal_task_for_issue(conn: &Connection, issue_id: &str) -> Result<Option<Task>> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, issue_id, project_key, attempt_ordinal, agent_kind, orchestrator_claim, attempt, created_at, updated_at
+                 FROM tasks WHERE issue_id = ?1 ORDER BY attempt_ordinal",
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map([issue_id], row_to_task)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        for row in rows {
+            let task = row.map_err(|e| GctlError::Storage(e.to_string()))?;
+            if Task::is_nonterminal_claim(&task.orchestrator_claim) {
+                return Ok(Some(task));
+            }
+        }
+        Ok(None)
+    }
+
+    /// List all Task rows linked to an Issue, ordered by attempt ordinal.
+    pub fn list_tasks_for_issue(&self, issue_id: &str) -> Result<Vec<Task>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, issue_id, project_key, attempt_ordinal, agent_kind, orchestrator_claim, attempt, created_at, updated_at
+                 FROM tasks WHERE issue_id = ?1 ORDER BY attempt_ordinal",
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map([issue_id], row_to_task)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut tasks = Vec::new();
+        for row in rows {
+            tasks.push(row.map_err(|e| GctlError::Storage(e.to_string()))?);
+        }
+        Ok(tasks)
+    }
+
+    /// Update a Task's orchestrator claim state. Called by the Orchestrator
+    /// (Tier 3) as it moves through Unclaimed → Claimed → Running → Released.
+    pub fn update_task_claim(&self, task_id: &str, claim: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        let updated = conn
+            .execute(
+                "UPDATE tasks SET orchestrator_claim = ?1, updated_at = ?2 WHERE id = ?3",
+                params![claim, now, task_id],
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        if updated == 0 {
+            return Err(GctlError::Storage(format!("task not found: {}", task_id)));
+        }
         Ok(())
     }
 
@@ -1723,6 +1884,26 @@ impl SqliteStore {
 // ═══════════════════════════════════════════════════════════════
 // Row mapping helpers
 // ═══════════════════════════════════════════════════════════════
+
+fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
+    let created_at_str: String = row.get(7)?;
+    let updated_at_str: String = row.get(8)?;
+    Ok(Task {
+        id: row.get(0)?,
+        issue_id: row.get(1)?,
+        project_key: row.get(2)?,
+        attempt_ordinal: row.get(3)?,
+        agent_kind: row.get(4)?,
+        orchestrator_claim: row.get(5)?,
+        attempt: row.get(6)?,
+        created_at: chrono::DateTime::parse_from_rfc3339(&created_at_str)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now()),
+        updated_at: chrono::DateTime::parse_from_rfc3339(&updated_at_str)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now()),
+    })
+}
 
 fn row_to_board_issue(row: &rusqlite::Row<'_>) -> rusqlite::Result<gctrl_core::BoardIssue> {
     let status_str: String = row.get(4)?;
