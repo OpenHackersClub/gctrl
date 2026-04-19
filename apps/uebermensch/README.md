@@ -28,7 +28,7 @@ pnpm install --filter uebermensch
 pnpm --filter uebermensch build
 
 # Set UBER_VAULT_DIR in the repo-root .env (dotenvx convention):
-#   UBER_VAULT_DIR=~/workspaces/debuggingfuture/uebermensch-profile
+#   UBER_VAULT_DIR=~/uebermensch-vault
 # Or scaffold a fresh vault from the bundled fixture:
 node apps/uebermensch/dist/bin/uber.js vault init ~/my-vault
 

@@ -146,7 +146,7 @@ Uebermensch runs in two modes:
 
 | Mode | Description | Primary target |
 |------|-------------|----------------|
-| **Local daemon + Obsidian vault** | Runs alongside the gctrl kernel on the user's machine. Reads the vault at `$UBER_VAULT_DIR` (default `~/workspaces/debuggingfuture/uebermensch-profile`). Obsidian opens the same directory — no ETL, no export step. Vault syncs to R2 via `sync.vault.uber` mount (see [profile.md § Sync (R2)](specs/profile.md#sync-r2)). | Default. Dev, single-user, multi-device via R2 pull. |
+| **Local daemon + Obsidian vault** | Runs alongside the gctrl kernel on the user's machine. Reads the vault at `$UBER_VAULT_DIR` (default `~/uebermensch-vault`). Obsidian opens the same directory — no ETL, no export step. Vault syncs to R2 via `sync.vault.uber` mount (see [profile.md § Sync (R2)](specs/profile.md#sync-r2)). | Default. Dev, single-user, multi-device via R2 pull. |
 | **Cloudflare Worker** (planned M4) | Runs as a Worker backed by D1 (`uber_*` index) + R2 (vault content). Profile's authored tier continues to git-sync from the external repo; the Worker serves read-only views of the R2-hosted vault. | Team/shared deploy. |
 
 Local daemon + vault is always the source of truth during development. Cloud deploy mirrors the pattern in [gctrl-board/WORKFLOW.md — Deployment](../gctrl-board/WORKFLOW.md#deployment) with the additional R2 vault mount.
