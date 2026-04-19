@@ -51,6 +51,7 @@ flowchart TB
     NetCrawl["net crawl"]
     NetCompact["net compact"]
     BrowserGoto["browser goto"]
+    Skills["skills\n(declarative; on PATH:\n./.agents/skills/)"]
   end
 
   subgraph Shell["SHELL (dispatcher)"]
@@ -339,6 +340,46 @@ Utilities are small tools that do one thing well and compose via stdin/stdout wh
 4. Support `--format json` for structured output
 5. Accept stdin and produce stdout where it makes sense
 
+### Skills — Declarative Utilities
+
+Following the [agentskills](https://github.com/agentskills/agentskills) spec, **skills are a subclass of utility**: single-purpose bundles of procedural knowledge that agents invoke by name. Where classic utilities (`gctrl net fetch`) are executables compiled into the shell, skills are **declarative** — `SKILL.md` files with YAML frontmatter (`name`, `description`, `allowed-tools`) that an agent reads and applies.
+
+**The `$PATH` for skills** (searched in order, first match wins):
+
+```
+./.agents/skills/      # project-scope (checked into repo)
+~/.agents/skills/      # user-scope (per developer)
+./.claude/skills/      # compatibility — project
+~/.claude/skills/      # compatibility — user
+gctrl/utils/skills/    # shipped with repo (e.g. /dispatch, /review)
+```
+
+**Unix mapping:**
+
+| Unix | gctrl skill |
+|---|---|
+| Executable on `$PATH` | `SKILL.md` in a skill dir |
+| manpage | `description` frontmatter |
+| filesystem ACL + kernel enforcement | `allowed-tools` + Guardrails |
+| `\|` pipe | tool-call output → next agent turn |
+| `which` / `command -v` | `gctrl skills list` |
+
+**Rules:**
+
+1. **The filesystem is the registry.** No DuckDB table, no driver, no sync. Discovery is a directory scan.
+2. **Kernel owns enforcement, not discovery.** `allowed-tools` is a hint on a file; the Guardrails primitive enforces it when the agent attempts a tool call — regardless of which skill activated.
+3. **Orchestrator injects the catalog.** At dispatch, the orchestrator scans skill dirs and injects `<available_skills>` into the agent prompt. This is *policy in the dispatcher*, not a new kernel service.
+4. **Skills ≠ personas.** Persona = *who* is acting; skill = *how to act*. A persona declares which skills it may activate. See [../team/personas.md](../team/personas.md).
+5. **Progressive disclosure.** Tier 1 (`name` + `description`, ~100 tokens) loads at session start; Tier 2 (full body, <5000 tokens) loads on activation; Tier 3 (referenced scripts/docs) loads on demand.
+
+**What this explicitly excludes from the kernel:**
+
+- No `gctrl-skills` kernel crate.
+- No `skills` DuckDB table (skill-activation telemetry lives in `spans` as an attribute).
+- No `/api/skills/*` HTTP surface on the kernel.
+
+See [skills.md](skills.md) for the full skill format, discovery order, orchestrator integration, and composition rules.
+
 ---
 
 ## 5. Drivers — Loadable Kernel Modules — **Planned**
@@ -453,6 +494,7 @@ When adding new functionality, use this guide to decide where it belongs:
 | Does it dispatch, route, or format I/O? | Yes | **Shell** |
 | Does it own state, have domain logic, and orchestrate multiple primitives? | Yes | **Native Application** |
 | Does it do one thing, compose via pipes, and have no domain model? | Yes | **Utility** |
+| Is it declarative procedural knowledge (Markdown + frontmatter) an agent reads by name? | Yes | **Skill** (a kind of utility) |
 | Is it an external tool that needs a kernel-level bridge to translate its API? | Yes | **Driver** (loadable kernel module) |
 
 When in doubt, start as a utility. Promote to an application only when the utility accumulates its own state and domain rules. External tools connect through drivers (loadable kernel modules) that live inside the kernel and communicate via kernel IPC, never through direct coupling.
