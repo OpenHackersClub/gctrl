@@ -4,7 +4,7 @@
 //! specs/architecture/session-trigger-from-board.md §HTTP):
 //!
 //! ```json
-//! { "issue": { ... }, "task_id": "TASK-...", "dispatched": true }
+//! { "issue": { ... }, "task_id": "<ISSUE_ID>.T<N>", "dispatched": true }
 //! ```
 //!
 //! - Moving to `in_progress` auto-promotes the Issue to a Task in the same
@@ -117,7 +117,7 @@ async fn move_to_in_progress_returns_task_id_and_dispatched_true() {
     let task_id = body["task_id"]
         .as_str()
         .unwrap_or_else(|| panic!("task_id missing: {body}"));
-    assert!(task_id.starts_with("TASK-"), "got: {task_id}");
+    assert_eq!(task_id, "BACK-42.T1", "task id must be <ISSUE_ID>.T<N>");
 
     assert_eq!(body["issue"]["id"], "BACK-42");
     assert_eq!(body["issue"]["status"], "in_progress");
