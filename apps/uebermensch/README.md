@@ -27,16 +27,22 @@ drivers) remains for a follow-up PR.
 pnpm install --filter uebermensch
 pnpm --filter uebermensch build
 
-# Point at any markdown vault (profile.md / topics.md / sources.md with YAML frontmatter)
-export UBER_VAULT_DIR=~/workspaces/debuggingfuture/uebermensch-profile
+# Point at any markdown vault — copy the example and edit
+cp apps/uebermensch/.env.example apps/uebermensch/.env
 
 # Or scaffold a fresh one from the bundled fixture
 node apps/uebermensch/dist/bin/uber.js vault init ~/my-vault
-export UBER_VAULT_DIR=~/my-vault
+echo "UBER_VAULT_DIR=~/my-vault" > apps/uebermensch/.env
 
 node apps/uebermensch/dist/bin/uber.js profile validate
 node apps/uebermensch/dist/bin/uber.js brief
 ```
+
+`UBER_VAULT_DIR` is resolved in this order:
+
+1. `UBER_VAULT_DIR` already set in the environment
+2. `.env` in the current working directory
+3. `~/.config/uebermensch/.env`
 
 ## Vault layout
 
