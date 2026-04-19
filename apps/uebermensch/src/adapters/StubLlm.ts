@@ -1,32 +1,70 @@
 import { Effect, Layer } from "effect"
+import { sha256 } from "../lib/hash.js"
 import { LlmService } from "../services/LlmService.js"
+import type { CuratedItem } from "../services/RendererService.js"
+
+const STUB_MODEL = "stub-llm@0.1"
+
+const renderPrompt = (
+  date: string,
+  profileName: string,
+  topics: ReadonlyArray<string>,
+  candidateIds: ReadonlyArray<string>,
+): string =>
+  [
+    "persona: uber-curator/stub",
+    `date: ${date}`,
+    `profile: ${profileName}`,
+    `topics: ${topics.join(",")}`,
+    `candidates: ${candidateIds.join(",")}`,
+  ].join("\n")
 
 export const StubLlmLive = Layer.succeed(LlmService, {
-  name: () => "stub-llm@0.1",
+  name: () => STUB_MODEL,
   generateBrief: (req) =>
     Effect.sync(() => {
-      const sorted = [...req.pages].sort((a, b) => b.mtime.getTime() - a.mtime.getTime())
-      const picked = sorted.slice(0, 5)
-      const items = picked.map((p, i) => {
-        const title = (p.frontmatter.title as string | undefined) ?? p.stem
+      const candidateIds = req.candidates.map((c) => c.id)
+      const prompt = renderPrompt(req.date, req.profileName, req.topics, candidateIds)
+      const promptHash = sha256(prompt)
+      const topCandidates = [...req.candidates]
+        .sort((a, b) => b.score - a.score)
+        .slice(0, req.maxItems)
+      const items: Array<CuratedItem> = topCandidates.map((c) => {
+        const title =
+          (c.page.frontmatter.title as string | undefined) ?? c.page.stem
+        const pageTopics = (c.page.frontmatter.topics as ReadonlyArray<string> | undefined) ?? []
+        const topic = pageTopics[0] ?? null
         return {
-          heading: `${i + 1}. ${title}`,
-          body: `Stub brief note on ${title} — based on [[${p.stem}]].`,
-          citations: [p.stem],
+          kind: "news",
+          title,
+          summary_md: `Stub summary for [[${c.page.stem}]].`,
+          topic,
+          thesis: null,
+          source_candidate_ids: [c.id],
+          suggested_action: null,
         }
       })
       if (items.length === 0) {
         items.push({
-          heading: "1. No recent activity",
-          body: "Stub brief: no pages changed in window.",
-          citations: [],
+          kind: "news",
+          title: "No activity",
+          summary_md: "No candidate pages in window.",
+          topic: null,
+          thesis: null,
+          source_candidate_ids: [],
+          suggested_action: null,
         })
       }
-      const covered = new Set<string>()
-      for (const p of picked) {
-        const topics = p.frontmatter.topics as ReadonlyArray<string> | undefined
-        if (topics) for (const t of topics) covered.add(t)
+      const topicsCovered = Array.from(
+        new Set(items.map((i) => i.topic).filter((t): t is string => t !== null)),
+      )
+      return {
+        items,
+        topicsCovered,
+        thesesCovered: [],
+        promptHash,
+        costUsd: 0,
+        model: STUB_MODEL,
       }
-      return { items, topicsCovered: [...covered] }
     }),
 })
