@@ -27,22 +27,19 @@ drivers) remains for a follow-up PR.
 pnpm install --filter uebermensch
 pnpm --filter uebermensch build
 
-# Point at any markdown vault — copy the example and edit
-cp apps/uebermensch/.env.example apps/uebermensch/.env
-
-# Or scaffold a fresh one from the bundled fixture
+# Set UBER_VAULT_DIR in the repo-root .env (dotenvx convention):
+#   UBER_VAULT_DIR=~/workspaces/debuggingfuture/uebermensch-profile
+# Or scaffold a fresh vault from the bundled fixture:
 node apps/uebermensch/dist/bin/uber.js vault init ~/my-vault
-echo "UBER_VAULT_DIR=~/my-vault" > apps/uebermensch/.env
 
-node apps/uebermensch/dist/bin/uber.js profile validate
-node apps/uebermensch/dist/bin/uber.js brief
+# Run via dotenvx so env vars from .env (or .env.vault in CI) are injected:
+pnpm env:run node apps/uebermensch/dist/bin/uber.js profile validate
+pnpm env:run node apps/uebermensch/dist/bin/uber.js brief
 ```
 
-`UBER_VAULT_DIR` is resolved in this order:
-
-1. `UBER_VAULT_DIR` already set in the environment
-2. `.env` in the current working directory
-3. `~/.config/uebermensch/.env`
+Env vars are loaded from the repo-root `.env` (plaintext, gitignored) or
+`.env.vault` (encrypted, committed) via `@dotenvx/dotenvx`. See the top-level
+`.env.example` for the full template.
 
 ## Vault layout
 
