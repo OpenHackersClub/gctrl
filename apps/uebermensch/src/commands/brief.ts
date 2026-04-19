@@ -1,5 +1,6 @@
 import { Command, Options } from "@effect/cli"
-import { Console, Effect, Option } from "effect"
+import { Console, Effect, type Layer, Option } from "effect"
+import { AnthropicLlmFromEnvLive } from "../adapters/AnthropicLlm.js"
 import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js"
 import { FileSystemVaultLive } from "../adapters/FileSystemVault.js"
 import { StrictRendererLive } from "../adapters/StrictRenderer.js"
@@ -32,6 +33,12 @@ const dryRunOpt = Options.boolean("dry-run").pipe(
 )
 
 const today = () => new Date().toISOString().slice(0, 10)
+
+const selectLlmLayer = (): Layer.Layer<import("../services/LlmService.js").LlmService> => {
+  const provider = (process.env.UBER_LLM_PROVIDER ?? "stub").toLowerCase()
+  if (provider === "anthropic") return AnthropicLlmFromEnvLive
+  return StubLlmLive
+}
 
 const itemsForFormat = (format: "long" | "short" | "digest"): number => {
   switch (format) {
@@ -122,7 +129,7 @@ export const brief = Command.make(
       yield* program.pipe(
         Effect.provide(FileSystemProfileLive(vaultDir)),
         Effect.provide(FileSystemVaultLive(vaultDir)),
-        Effect.provide(StubLlmLive),
+        Effect.provide(selectLlmLayer()),
         Effect.provide(StrictRendererLive),
       )
     }),

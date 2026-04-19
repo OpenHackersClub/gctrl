@@ -17,9 +17,9 @@ drivers) remains for a follow-up PR.
 | `src/` — profile reader, vault reader, stub LLM, CLI | Shipped (this PR) |
 | `uber profile validate` | Shipped |
 | `uber vault init` | Shipped (scaffolds from `tests/fixtures/vault/`) |
-| `uber brief` | Shipped (stub LLM → `briefs/<date>.md`) |
+| `uber brief` | Shipped — stub LLM by default, real Anthropic via `UBER_LLM_PROVIDER=anthropic` |
 | Kernel `uber_*` tables + `/api/uber/*` routes | Deferred to M0 follow-up |
-| Real LLM driver (Anthropic) | M1 |
+| Anthropic LLM adapter (`@anthropic-ai/sdk`, prompt caching on preamble) | Shipped (M1b) |
 
 ## Quickstart
 
@@ -40,6 +40,22 @@ pnpm env:run node apps/uebermensch/dist/bin/uber.js brief
 Env vars are loaded from the repo-root `.env` (plaintext, gitignored) or
 `.env.vault` (encrypted, committed) via `@dotenvx/dotenvx`. See the top-level
 `.env.example` for the full template.
+
+### LLM provider selection
+
+`uber brief` reads `UBER_LLM_PROVIDER` (default `stub`). Supported values:
+
+| Value | Behaviour | Required env |
+|-------|-----------|--------------|
+| `stub` | Deterministic extractive stub — emits top-N candidates as `[[slug]]` items. No network. | — |
+| `anthropic` | Real curator via `@anthropic-ai/sdk`. System preamble is cached with `cache_control: ephemeral`. | `ANTHROPIC_API_KEY` |
+
+Optional tuning for `anthropic`:
+
+| Var | Default | Notes |
+|-----|---------|-------|
+| `UBER_LLM_MODEL` | `claude-sonnet-4-6` | Any model ID the account can call |
+| `UBER_LLM_MAX_OUTPUT_TOKENS` | `4096` | Curator JSON is small; bump for long briefs |
 
 ## Vault layout
 

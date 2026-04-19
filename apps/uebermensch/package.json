@@ -17,6 +17,7 @@
     "lint": "biome lint src/"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.90.0",
     "@effect/cli": "^0.52.0",
     "@effect/platform": "^0.72.0",
     "@effect/platform-node": "^0.68.0",
