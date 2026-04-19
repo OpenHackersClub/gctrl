@@ -768,6 +768,60 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Atomic compare-and-swap on `orchestrator_claim`. Returns `true` iff
+    /// the row was in `from` and got moved to `to`. A `false` result means
+    /// another worker already claimed the task (or the task is gone).
+    ///
+    /// Safe to call concurrently — SQLite serializes the UPDATE and we trust
+    /// the rows-affected count. This is the race-free primitive the worker
+    /// uses for `Unclaimed → Claimed`; subsequent transitions (Claimed →
+    /// Running, Running → Released) are not contended but still go through
+    /// here so the state machine has one chokepoint.
+    ///
+    /// Mirrors `KernelSpec.Orchestrator.step` (kernel/specs-lean4/) — only
+    /// transitions verified there should ever be passed in.
+    pub fn try_transition_claim(&self, task_id: &str, from: &str, to: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        let updated = conn
+            .execute(
+                "UPDATE tasks SET orchestrator_claim = ?1, updated_at = ?2 \
+                 WHERE id = ?3 AND orchestrator_claim = ?4",
+                params![to, now, task_id, from],
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(updated == 1)
+    }
+
+    /// List tasks whose claim is `Unclaimed` and whose owning Issue is
+    /// dispatch-eligible (`status='in_progress'` and `assignee_type='agent'`).
+    /// Ordered oldest-first so workers drain the queue FIFO.
+    pub fn list_dispatchable_tasks(&self, limit: usize) -> Result<Vec<Task>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT t.id, t.issue_id, t.project_key, t.attempt_ordinal, \
+                        t.agent_kind, t.orchestrator_claim, t.attempt, \
+                        t.created_at, t.updated_at \
+                 FROM tasks t \
+                 INNER JOIN board_issues i ON i.id = t.issue_id \
+                 WHERE t.orchestrator_claim = 'Unclaimed' \
+                   AND i.status = 'in_progress' \
+                   AND i.assignee_type = 'agent' \
+                 ORDER BY t.created_at ASC \
+                 LIMIT ?1",
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map([limit as i64], row_to_task)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut tasks = Vec::new();
+        for row in rows {
+            tasks.push(row.map_err(|e| GctlError::Storage(e.to_string()))?);
+        }
+        Ok(tasks)
+    }
+
     pub fn assign_board_issue(&self, id: &str, assignee_id: &str, assignee_name: &str, assignee_type: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let now = chrono::Utc::now().to_rfc3339();

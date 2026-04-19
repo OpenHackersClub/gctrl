@@ -1299,6 +1299,7 @@ dependencies = [
  "gctrl-core",
  "gctrl-guardrails",
  "gctrl-net",
+ "gctrl-orch",
  "gctrl-otel",
  "gctrl-query",
  "gctrl-storage",
@@ -1376,6 +1377,23 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "gctrl-orch"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "gctrl-core",
+ "gctrl-storage",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

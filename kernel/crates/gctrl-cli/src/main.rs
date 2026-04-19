@@ -136,6 +136,9 @@ enum Commands {
     /// Import persona definitions from a markdown vault
     #[command(subcommand)]
     Personas(PersonasCmd),
+    /// Orchestrator — spawn agents for dispatch-eligible tasks
+    #[command(subcommand)]
+    Orch(OrchCmd),
 }
 
 #[derive(Subcommand)]
@@ -148,6 +151,34 @@ enum PersonasCmd {
     },
     /// List personas and review rules currently in the store
     List,
+}
+
+#[derive(Subcommand)]
+enum OrchCmd {
+    /// Run the worker loop (default: forever, polling every --interval s)
+    Run {
+        /// Do one drain pass then exit (instead of looping)
+        #[arg(long)]
+        once: bool,
+        /// Poll interval in seconds
+        #[arg(long, default_value = "5")]
+        interval: u64,
+        /// Max tasks to dispatch per drain pass
+        #[arg(long, default_value = "1")]
+        max_concurrent: usize,
+        /// Hard timeout for one agent run, in seconds
+        #[arg(long, default_value = "1800")]
+        timeout: u64,
+        /// Agent command (program + args). Prompt is sent on stdin.
+        #[arg(long, default_values_t = vec!["claude".to_string(), "-p".to_string()])]
+        agent: Vec<String>,
+        /// Working directory for the agent (default: current dir)
+        #[arg(long)]
+        working_dir: Option<std::path::PathBuf>,
+        /// Don't spawn anything — log what would happen, then release the claim
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -527,6 +558,11 @@ async fn main() -> Result<()> {
         Commands::Personas(cmd) => match cmd {
             PersonasCmd::Import { dir } => commands::personas::import(std::path::Path::new(&dir), &db_path),
             PersonasCmd::List => commands::personas::list(&db_path),
+        },
+        Commands::Orch(cmd) => match cmd {
+            OrchCmd::Run { once, interval, max_concurrent, timeout, agent, working_dir, dry_run } => {
+                commands::orch::run(&db_path, once, interval, max_concurrent, timeout, agent, working_dir, dry_run).await
+            }
         },
         Commands::Net(cmd) => match cmd {
             NetCmd::Fetch { url, no_readability, min_words } => {

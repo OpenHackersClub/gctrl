@@ -15,6 +15,7 @@ gctrl-guardrails = { path = "../gctrl-guardrails" }
 gctrl-query = { path = "../gctrl-query" }
 gctrl-net = { path = "../gctrl-net" }
 gctrl-context = { path = "../gctrl-context" }
+gctrl-orch = { path = "../gctrl-orch" }
 
 clap = { workspace = true }
 tokio = { workspace = true }
