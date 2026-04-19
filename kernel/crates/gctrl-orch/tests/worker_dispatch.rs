@@ -73,7 +73,7 @@ fn cat_config() -> OrchConfig {
         agent_cmd: vec!["cat".into()],
         working_dir: std::env::current_dir().unwrap(),
         poll_interval: Duration::from_millis(10),
-        max_concurrent: 4,
+        max_per_pass: 4,
         task_timeout: Duration::from_secs(5),
         dry_run: false,
     }
@@ -154,7 +154,7 @@ async fn second_worker_loses_race() {
 }
 
 #[tokio::test]
-async fn dry_run_releases_without_spawning() {
+async fn dry_run_returns_task_to_unclaimed() {
     let store = Arc::new(SqliteStore::open(":memory:").unwrap());
     let task = seed_dispatchable_issue(&store, "BACK-4");
 
@@ -171,10 +171,40 @@ async fn dry_run_releases_without_spawning() {
         }
     );
 
+    // Dry-run is non-destructive: the task lands back in Unclaimed so a
+    // real run can pick it up without re-promoting the issue.
     let tasks = store.list_tasks_for_issue("BACK-4").unwrap();
-    assert_eq!(tasks[0].orchestrator_claim, Task::CLAIM_RELEASED);
+    assert_eq!(tasks[0].orchestrator_claim, Task::CLAIM_UNCLAIMED);
 
     // No completion comment in dry-run mode.
     let comments = store.list_board_comments("BACK-4").unwrap();
     assert!(comments.iter().all(|c| c.author_id != "orch"));
+}
+
+#[tokio::test]
+async fn spawn_failure_transitions_to_released_not_retry() {
+    // Lean spec: `dispatchFailed` is Claimed→Released (not Claimed→RetryQueued).
+    // Verifies the split-phase spawn/await fix.
+    let store = Arc::new(SqliteStore::open(":memory:").unwrap());
+    let task = seed_dispatchable_issue(&store, "BACK-5");
+
+    let mut config = cat_config();
+    config.agent_cmd = vec!["this-binary-does-not-exist-12345".into()];
+    let worker = Worker::new(Arc::clone(&store), config);
+
+    let outcomes = worker.run_once().await.unwrap();
+    assert_eq!(
+        outcomes[0],
+        DispatchOutcome::Retried {
+            task_id: task.id.clone()
+        }
+    );
+
+    let tasks = store.list_tasks_for_issue("BACK-5").unwrap();
+    assert_eq!(
+        tasks[0].orchestrator_claim,
+        Task::CLAIM_RELEASED,
+        "spawn failure must land on Released per dispatchFailed; got {}",
+        tasks[0].orchestrator_claim
+    );
 }

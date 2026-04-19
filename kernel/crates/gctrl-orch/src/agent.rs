@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 
 #[derive(Debug, Error)]
 pub enum SpawnError {
@@ -25,18 +25,15 @@ pub struct AgentRun {
     pub exit_code: i32,
 }
 
-/// Spawn the agent binary and feed the prompt on stdin. stdout + stderr
-/// are captured so the worker can post them back as a completion comment.
-///
-/// The agent inherits the caller's env — OTEL_EXPORTER_OTLP_ENDPOINT,
-/// HTTP_PROXY etc. flow through so sessions automatically land in the
-/// kernel's OTel receiver without extra wiring.
-pub async fn run_agent(
+/// Start the subprocess and write the prompt to stdin. Returns the live
+/// child. Errors here are pre-`agentLaunched` in the Lean spec's language —
+/// the worker should transition `Claimed → Released` (dispatchFailed), not
+/// through `Running`.
+pub async fn spawn_agent(
     cmd: &[String],
     working_dir: &Path,
     prompt: &str,
-    timeout: Duration,
-) -> Result<AgentRun, SpawnError> {
+) -> Result<Child, SpawnError> {
     let (program, args) = cmd
         .split_first()
         .ok_or_else(|| SpawnError::Spawn(std::io::Error::other("empty agent command")))?;
@@ -54,12 +51,17 @@ pub async fn run_agent(
         stdin.shutdown().await?;
     }
 
+    Ok(child)
+}
+
+/// Wait for an already-spawned child. Errors here happen after
+/// `agentLaunched`, so the worker should transition `Running → RetryQueued`
+/// (agentExitAbnormal).
+pub async fn await_agent(child: Child, timeout: Duration) -> Result<AgentRun, SpawnError> {
     let result = match tokio::time::timeout(timeout, child.wait_with_output()).await {
         Ok(r) => r?,
         Err(_) => {
-            // tokio::process kills the child when dropped on timeout, but
-            // we can't retrieve it now because wait_with_output consumed it.
-            // We *do* return Timeout so the caller transitions to RetryQueued.
+            // tokio::process kills the child when dropped on timeout.
             return Err(SpawnError::Timeout(timeout));
         }
     };
@@ -73,6 +75,20 @@ pub async fn run_agent(
         stderr: String::from_utf8_lossy(&result.stderr).into_owned(),
         exit_code: exit,
     })
+}
+
+/// Convenience: spawn then await in one call. Error phase is not
+/// distinguished — the worker uses `spawn_agent` + `await_agent` directly
+/// so it can route `SpawnError::Spawn` to `dispatchFailed`.
+#[cfg(test)]
+pub async fn run_agent(
+    cmd: &[String],
+    working_dir: &Path,
+    prompt: &str,
+    timeout: Duration,
+) -> Result<AgentRun, SpawnError> {
+    let child = spawn_agent(cmd, working_dir, prompt).await?;
+    await_agent(child, timeout).await
 }
 
 #[cfg(test)]

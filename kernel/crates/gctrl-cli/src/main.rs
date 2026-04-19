@@ -164,8 +164,8 @@ enum OrchCmd {
         #[arg(long, default_value = "5")]
         interval: u64,
         /// Max tasks to dispatch per drain pass
-        #[arg(long, default_value = "1")]
-        max_concurrent: usize,
+        #[arg(long = "max-per-pass", alias = "max-concurrent", default_value = "1")]
+        max_per_pass: usize,
         /// Hard timeout for one agent run, in seconds
         #[arg(long, default_value = "1800")]
         timeout: u64,
@@ -560,8 +560,8 @@ async fn main() -> Result<()> {
             PersonasCmd::List => commands::personas::list(&db_path),
         },
         Commands::Orch(cmd) => match cmd {
-            OrchCmd::Run { once, interval, max_concurrent, timeout, agent, working_dir, dry_run } => {
-                commands::orch::run(&db_path, once, interval, max_concurrent, timeout, agent, working_dir, dry_run).await
+            OrchCmd::Run { once, interval, max_per_pass, timeout, agent, working_dir, dry_run } => {
+                commands::orch::run(&db_path, once, interval, max_per_pass, timeout, agent, working_dir, dry_run).await
             }
         },
         Commands::Net(cmd) => match cmd {

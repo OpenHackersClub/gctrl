@@ -4,9 +4,14 @@ use anyhow::Result;
 use gctrl_core::{BoardComment, Task};
 use gctrl_storage::SqliteStore;
 
-use crate::agent::{self, SpawnError};
+use crate::agent;
 use crate::config::OrchConfig;
 use crate::prompt;
+
+/// Cap on the agent stdout we echo into a completion comment. A real
+/// `claude -p` session can produce tens of thousands of lines; we keep
+/// the tail and flag truncation so the board stays readable.
+const COMPLETION_COMMENT_MAX_BYTES: usize = 50_000;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum DispatchOutcome {
@@ -30,14 +35,14 @@ impl Worker {
         Self { store, config }
     }
 
-    /// One drain pass: pick up to `max_concurrent` dispatchable tasks and
+    /// One drain pass: pick up to `max_per_pass` dispatchable tasks and
     /// run them sequentially. Sequential is fine for MVP — agents are I/O
     /// bound waiting on LLM calls, not CPU bound, and one-at-a-time keeps
     /// the repo's working tree predictable.
     pub async fn run_once(&self) -> Result<Vec<DispatchOutcome>> {
         let tasks = self
             .store
-            .list_dispatchable_tasks(self.config.max_concurrent)?;
+            .list_dispatchable_tasks(self.config.max_per_pass)?;
         if tasks.is_empty() {
             tracing::debug!("orch: no dispatchable tasks");
             return Ok(vec![]);
@@ -92,39 +97,50 @@ impl Worker {
                 task_id = %task.id,
                 issue_id = %issue_id,
                 prompt_chars = prompt.len(),
-                "orch: dry-run, releasing claim"
+                "orch: dry-run, returning task to Unclaimed"
             );
-            // Release the claim so subsequent non-dry runs can pick it up.
-            self.store.try_transition_claim(
-                &task.id,
-                Task::CLAIM_CLAIMED,
-                Task::CLAIM_RELEASED,
-            )?;
+            // Non-destructive: put it back in the queue so a real run picks
+            // it up. The CAS target is Unclaimed — same pool list_dispatchable
+            // filters on.
+            self.strict_transition(&task.id, Task::CLAIM_CLAIMED, Task::CLAIM_UNCLAIMED)?;
             return Ok(DispatchOutcome::DryRun {
                 task_id: task.id.clone(),
             });
         }
 
-        // Claimed → Running (agentLaunched). Spawn the agent; if spawn
-        // itself fails we'll go Claimed → Released via the error arm below.
-        self.store.try_transition_claim(
-            &task.id,
-            Task::CLAIM_CLAIMED,
-            Task::CLAIM_RUNNING,
-        )?;
-
-        let run = agent::run_agent(
+        // Spawn first, *then* transition Claimed → Running. This matches the
+        // Lean spec: `dispatchFailed` (Claimed → Released) vs `agentLaunched`
+        // (Claimed → Running) vs `agentExitAbnormal` (Running → RetryQueued).
+        let child = match agent::spawn_agent(
             &self.config.agent_cmd,
             &self.config.working_dir,
             &prompt,
-            self.config.task_timeout,
         )
-        .await;
+        .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let body = format!("## Agent run failed (spawn)\n\n{e}");
+                self.post_completion_comment(issue_id, &body, false)?;
+                self.strict_transition(
+                    &task.id,
+                    Task::CLAIM_CLAIMED,
+                    Task::CLAIM_RELEASED,
+                )?;
+                tracing::warn!(task_id = %task.id, err = %e, "orch: dispatchFailed");
+                return Ok(DispatchOutcome::Retried {
+                    task_id: task.id.clone(),
+                });
+            }
+        };
 
-        match run {
+        // agentLaunched.
+        self.strict_transition(&task.id, Task::CLAIM_CLAIMED, Task::CLAIM_RUNNING)?;
+
+        match agent::await_agent(child, self.config.task_timeout).await {
             Ok(result) => {
                 self.post_completion_comment(issue_id, &result.stdout, true)?;
-                self.store.try_transition_claim(
+                self.strict_transition(
                     &task.id,
                     Task::CLAIM_RUNNING,
                     Task::CLAIM_RELEASED,
@@ -137,13 +153,9 @@ impl Worker {
             Err(e) => {
                 let body = format!("## Agent run failed\n\n{e}");
                 self.post_completion_comment(issue_id, &body, false)?;
-                let from = match &e {
-                    SpawnError::Spawn(_) => Task::CLAIM_CLAIMED,
-                    _ => Task::CLAIM_RUNNING,
-                };
-                self.store.try_transition_claim(
+                self.strict_transition(
                     &task.id,
-                    from,
+                    Task::CLAIM_RUNNING,
                     Task::CLAIM_RETRY_QUEUED,
                 )?;
                 tracing::warn!(task_id = %task.id, err = %e, "orch: retry-queued");
@@ -154,14 +166,30 @@ impl Worker {
         }
     }
 
+    /// Non-contended transitions after the initial CAS win. We still route
+    /// through `try_transition_claim` so the single chokepoint property holds,
+    /// but we *expect* this to succeed — if it doesn't, something outside the
+    /// worker is mutating the row and the state machine is compromised.
+    fn strict_transition(&self, task_id: &str, from: &str, to: &str) -> Result<()> {
+        let ok = self.store.try_transition_claim(task_id, from, to)?;
+        if !ok {
+            anyhow::bail!(
+                "orch: expected transition {from}→{to} on {task_id} but CAS failed — \
+                 row was mutated externally"
+            );
+        }
+        Ok(())
+    }
+
     fn post_completion_comment(&self, issue_id: &str, body: &str, ok: bool) -> Result<()> {
         let heading = if ok {
             "## Agent run completed"
         } else {
             "## Agent run failed"
         };
+        let body = truncate_tail(body, COMPLETION_COMMENT_MAX_BYTES);
         let full = if body.trim_start().starts_with("## ") {
-            body.to_string()
+            body.into_owned()
         } else {
             format!("{heading}\n\n{body}")
         };
@@ -177,5 +205,43 @@ impl Worker {
         };
         self.store.insert_board_comment(&comment)?;
         Ok(())
+    }
+}
+
+/// Keep the last `max_bytes` of `body`, prepending a truncation marker if
+/// anything was dropped. Agent stdout tends to end with the useful summary,
+/// so tail-truncation preserves what reviewers care about.
+fn truncate_tail(body: &str, max_bytes: usize) -> std::borrow::Cow<'_, str> {
+    if body.len() <= max_bytes {
+        return std::borrow::Cow::Borrowed(body);
+    }
+    let dropped = body.len() - max_bytes;
+    // Find a char boundary at-or-after the cut point so we don't slice mid-UTF-8.
+    let mut cut = body.len() - max_bytes;
+    while cut < body.len() && !body.is_char_boundary(cut) {
+        cut += 1;
+    }
+    std::borrow::Cow::Owned(format!(
+        "_[truncated {dropped} bytes from the head]_\n\n{}",
+        &body[cut..]
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_tail_is_noop_when_under_limit() {
+        let out = truncate_tail("short", 100);
+        assert_eq!(out, "short");
+    }
+
+    #[test]
+    fn truncate_tail_keeps_end_with_marker() {
+        let body: String = "x".repeat(1000) + "TAIL";
+        let out = truncate_tail(&body, 100);
+        assert!(out.starts_with("_[truncated"));
+        assert!(out.ends_with("TAIL"));
     }
 }

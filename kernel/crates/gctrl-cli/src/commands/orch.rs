@@ -11,7 +11,7 @@ pub async fn run(
     db_path: &str,
     once: bool,
     interval_secs: u64,
-    max_concurrent: usize,
+    max_per_pass: usize,
     timeout_secs: u64,
     agent: Vec<String>,
     working_dir: Option<PathBuf>,
@@ -30,7 +30,7 @@ pub async fn run(
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from(".")),
         poll_interval: Duration::from_secs(interval_secs),
-        max_concurrent,
+        max_per_pass,
         task_timeout: Duration::from_secs(timeout_secs),
         dry_run,
     };
@@ -39,7 +39,7 @@ pub async fn run(
         sqlite = %sqlite_path,
         agent = ?config.agent_cmd,
         interval_s = interval_secs,
-        max_concurrent,
+        max_per_pass,
         timeout_s = timeout_secs,
         dry_run,
         "orch: starting"
