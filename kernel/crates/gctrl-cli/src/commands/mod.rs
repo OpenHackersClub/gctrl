@@ -11,6 +11,7 @@ pub mod analytics_spans;
 pub mod auto_score;
 pub mod check;
 pub mod net;
+pub mod personas;
 pub mod prompt;
 pub mod query;
 pub mod score;

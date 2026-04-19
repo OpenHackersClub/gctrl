@@ -133,6 +133,21 @@ enum Commands {
     /// Project management and kanban
     #[command(subcommand)]
     Board(BoardCmd),
+    /// Import persona definitions from a markdown vault
+    #[command(subcommand)]
+    Personas(PersonasCmd),
+}
+
+#[derive(Subcommand)]
+enum PersonasCmd {
+    /// Import personas and review rules from a vault directory
+    Import {
+        /// Vault directory (default: gctrl/personas)
+        #[arg(long, default_value = "gctrl/personas")]
+        dir: String,
+    },
+    /// List personas and review rules currently in the store
+    List,
 }
 
 #[derive(Subcommand)]
@@ -508,6 +523,10 @@ async fn main() -> Result<()> {
                 commands::board::assign_issue(&id, &name, &r#type, &db_path)
             }
             BoardCmd::Comment { id, body, by } => commands::board::comment(&id, &body, &by, &db_path),
+        },
+        Commands::Personas(cmd) => match cmd {
+            PersonasCmd::Import { dir } => commands::personas::import(std::path::Path::new(&dir), &db_path),
+            PersonasCmd::List => commands::personas::list(&db_path),
         },
         Commands::Net(cmd) => match cmd {
             NetCmd::Fetch { url, no_readability, min_words } => {

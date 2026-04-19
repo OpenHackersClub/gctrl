@@ -263,7 +263,7 @@ pub fn export_markdown_dir(
 
 // ── Internal helpers ──
 
-fn split_frontmatter(content: &str) -> Result<(String, String)> {
+pub(crate) fn split_frontmatter(content: &str) -> Result<(String, String)> {
     let trimmed = content.trim_start();
     if !trimmed.starts_with("---") {
         return Ok((String::new(), content.to_string()));
@@ -279,7 +279,7 @@ fn split_frontmatter(content: &str) -> Result<(String, String)> {
     Ok((frontmatter, body))
 }
 
-fn parse_yaml_frontmatter(yaml_str: &str) -> Result<HashMap<String, serde_json::Value>> {
+pub(crate) fn parse_yaml_frontmatter(yaml_str: &str) -> Result<HashMap<String, serde_json::Value>> {
     if yaml_str.is_empty() {
         return Ok(HashMap::new());
     }
