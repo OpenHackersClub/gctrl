@@ -1,11 +1,13 @@
 import { Command, Options } from "@effect/cli"
 import { Console, Effect, Option } from "effect"
+import { FileBudgetLedgerLive } from "../adapters/FileBudgetLedger.js"
 import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js"
 import { FileSystemVaultLive } from "../adapters/FileSystemVault.js"
 import { StrictRendererLive } from "../adapters/StrictRenderer.js"
 import { StubLlmLive } from "../adapters/StubLlm.js"
 import { selectCandidates } from "../lib/candidates.js"
 import { resolveVaultDir } from "../lib/env.js"
+import { BudgetService } from "../services/BudgetService.js"
 import { LlmService } from "../services/LlmService.js"
 import { ProfileService } from "../services/ProfileService.js"
 import { RendererService } from "../services/RendererService.js"
@@ -57,7 +59,17 @@ export const brief = Command.make(
         const vaultSvc = yield* VaultService
         const llm = yield* LlmService
         const renderer = yield* RendererService
+        const budget = yield* BudgetService
         const profile = yield* profileSvc.load()
+
+        const limits = {
+          dailyUsd: profile.profile.budgets.daily_usd,
+          perBriefUsd: profile.profile.budgets.per_brief_usd,
+        }
+        const snap = yield* budget.checkBefore(date, limits)
+        yield* Console.log(
+          `  budget: spent $${snap.spentTodayUsd.toFixed(4)} / $${limits.dailyUsd.toFixed(2)} today; per_brief cap $${limits.perBriefUsd.toFixed(2)}`,
+        )
 
         const pages = yield* vaultSvc.recentlyChanged(sinceHours)
         yield* Console.log(`  ${pages.length} page(s) changed in last ${sinceHours}h`)
@@ -88,6 +100,20 @@ export const brief = Command.make(
           thesesSlugs: [],
           candidates,
           maxItems,
+        })
+
+        if (response.costUsd > limits.perBriefUsd) {
+          yield* Console.error(
+            `✗ brief cost $${response.costUsd.toFixed(4)} exceeded per_brief_usd cap $${limits.perBriefUsd.toFixed(2)}; not writing`,
+          )
+          return
+        }
+
+        yield* budget.record({
+          date,
+          costUsd: response.costUsd,
+          promptHash: response.promptHash,
+          model: response.model,
         })
 
         const vaultSlugs = yield* vaultSvc.listSlugs()
@@ -122,6 +148,7 @@ export const brief = Command.make(
       yield* program.pipe(
         Effect.provide(FileSystemProfileLive(vaultDir)),
         Effect.provide(FileSystemVaultLive(vaultDir)),
+        Effect.provide(FileBudgetLedgerLive(vaultDir)),
         Effect.provide(StubLlmLive),
         Effect.provide(StrictRendererLive),
       )
