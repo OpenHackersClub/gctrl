@@ -11,6 +11,7 @@ members = [
     "kernel/crates/gctrl-net",
     "kernel/crates/gctrl-sync",
     "kernel/crates/gctrl-context",
+    "kernel/crates/gctrl-orch",
 ]
 
 [workspace.package]
