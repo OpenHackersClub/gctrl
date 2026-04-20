@@ -95,4 +95,28 @@ export const FileSystemVaultLive = (vaultDir: string) =>
         catch: (e) =>
           new VaultError({ message: `write brief failed: ${String(e)}`, path: vaultDir }),
       }),
+    writeSource: (slug, content, options) =>
+      Effect.tryPromise({
+        try: async () => {
+          const relPath = `wiki/sources/${slug}.md`
+          const absPath = join(vaultDir, relPath)
+          let existed = false
+          try {
+            await stat(absPath)
+            existed = true
+          } catch {
+            existed = false
+          }
+          if (existed && !options?.overwrite) {
+            throw new Error(`source page already exists: ${relPath}`)
+          }
+          const tmpPath = `${absPath}.tmp-${process.pid}-${Date.now()}`
+          await mkdir(join(vaultDir, "wiki", "sources"), { recursive: true })
+          await writeFile(tmpPath, content, "utf8")
+          await rename(tmpPath, absPath)
+          return { absPath, relPath, contentHash: hashContent(content), existed }
+        },
+        catch: (e) =>
+          new VaultError({ message: `write source failed: ${String(e)}`, path: vaultDir }),
+      }),
   })
