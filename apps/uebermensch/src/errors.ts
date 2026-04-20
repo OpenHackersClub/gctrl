@@ -3,6 +3,9 @@ import { Schema } from "effect"
 export class VaultError extends Schema.TaggedError<VaultError>()("VaultError", {
   message: Schema.String,
   path: Schema.optional(Schema.String),
+  kind: Schema.optional(
+    Schema.Literal("not_found", "collision", "io_failure", "parse_failure"),
+  ),
 }) {}
 
 export class ProfileError extends Schema.TaggedError<ProfileError>()("ProfileError", {
@@ -22,4 +25,10 @@ export class CitationError extends Schema.TaggedError<CitationError>()("Citation
   kind: Schema.Literal("typed_prefix", "unresolved", "fabricated_source"),
   link: Schema.optional(Schema.String),
   itemIndex: Schema.optional(Schema.Number),
+}) {}
+
+export class IngestError extends Schema.TaggedError<IngestError>()("IngestError", {
+  message: Schema.String,
+  kind: Schema.Literal("fetch_failed", "extract_failed", "low_quality", "collision", "io_failure"),
+  url: Schema.optional(Schema.String),
 }) {}
