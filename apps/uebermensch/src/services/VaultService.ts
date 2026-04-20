@@ -21,6 +21,7 @@ export interface VaultServiceShape {
   readonly recentlyChanged: (
     sinceHours: number,
   ) => Effect.Effect<ReadonlyArray<WikiPage>, VaultError>
+  readonly listSlugs: () => Effect.Effect<ReadonlySet<string>, VaultError>
   readonly writeBrief: (
     date: string,
     content: string,

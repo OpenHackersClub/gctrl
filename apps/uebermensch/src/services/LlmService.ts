@@ -1,23 +1,24 @@
 import { Context, type Effect } from "effect"
 import type { LlmError } from "../errors.js"
-import type { WikiPage } from "./VaultService.js"
-
-export type BriefItem = {
-  readonly heading: string
-  readonly body: string
-  readonly citations: ReadonlyArray<string>
-}
+import type { CandidateRef } from "../lib/candidates.js"
+import type { CuratedItem } from "./RendererService.js"
 
 export type BriefRequest = {
   readonly date: string
   readonly profileName: string
-  readonly pages: ReadonlyArray<WikiPage>
   readonly topics: ReadonlyArray<string>
+  readonly thesesSlugs: ReadonlyArray<string>
+  readonly candidates: ReadonlyArray<CandidateRef>
+  readonly maxItems: number
 }
 
 export type BriefResponse = {
-  readonly items: ReadonlyArray<BriefItem>
+  readonly items: ReadonlyArray<CuratedItem>
   readonly topicsCovered: ReadonlyArray<string>
+  readonly thesesCovered: ReadonlyArray<string>
+  readonly promptHash: string
+  readonly costUsd: number
+  readonly model: string
 }
 
 export interface LlmServiceShape {

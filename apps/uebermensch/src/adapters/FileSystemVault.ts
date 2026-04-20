@@ -70,6 +70,17 @@ export const FileSystemVaultLive = (vaultDir: string) =>
         catch: (e) =>
           new VaultError({ message: `recent scan failed: ${String(e)}`, path: vaultDir }),
       }),
+    listSlugs: () =>
+      Effect.tryPromise({
+        try: async () => {
+          const files = await walkMarkdown(vaultDir, ["wiki", "theses", "briefs"])
+          const slugs = new Set<string>()
+          for (const f of files) slugs.add(basename(f.abs, ".md"))
+          return slugs as ReadonlySet<string>
+        },
+        catch: (e) =>
+          new VaultError({ message: `list slugs failed: ${String(e)}`, path: vaultDir }),
+      }),
     writeBrief: (date, content) =>
       Effect.tryPromise({
         try: async () => {
