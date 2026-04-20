@@ -23,3 +23,9 @@ export class CitationError extends Schema.TaggedError<CitationError>()("Citation
   link: Schema.optional(Schema.String),
   itemIndex: Schema.optional(Schema.Number),
 }) {}
+
+export class IngestError extends Schema.TaggedError<IngestError>()("IngestError", {
+  message: Schema.String,
+  kind: Schema.Literal("fetch_failed", "extract_failed", "low_quality", "collision", "io_failure"),
+  url: Schema.optional(Schema.String),
+}) {}
