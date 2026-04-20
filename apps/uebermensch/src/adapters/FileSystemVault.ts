@@ -96,27 +96,51 @@ export const FileSystemVaultLive = (vaultDir: string) =>
           new VaultError({ message: `write brief failed: ${String(e)}`, path: vaultDir }),
       }),
     writeSource: (slug, content, options) =>
-      Effect.tryPromise({
-        try: async () => {
-          const relPath = `wiki/sources/${slug}.md`
-          const absPath = join(vaultDir, relPath)
-          let existed = false
-          try {
-            await stat(absPath)
-            existed = true
-          } catch {
-            existed = false
-          }
-          if (existed && !options?.overwrite) {
-            throw new Error(`source page already exists: ${relPath}`)
-          }
-          const tmpPath = `${absPath}.tmp-${process.pid}-${Date.now()}`
-          await mkdir(join(vaultDir, "wiki", "sources"), { recursive: true })
-          await writeFile(tmpPath, content, "utf8")
-          await rename(tmpPath, absPath)
-          return { absPath, relPath, contentHash: hashContent(content), existed }
-        },
-        catch: (e) =>
-          new VaultError({ message: `write source failed: ${String(e)}`, path: vaultDir }),
+      Effect.gen(function* () {
+        const relPath = `wiki/sources/${slug}.md`
+        const absPath = join(vaultDir, relPath)
+
+        const existed = yield* Effect.tryPromise({
+          try: async () => {
+            try {
+              await stat(absPath)
+              return true
+            } catch {
+              return false
+            }
+          },
+          catch: (e) =>
+            new VaultError({
+              message: `stat failed: ${String(e)}`,
+              path: absPath,
+              kind: "io_failure",
+            }),
+        })
+
+        if (existed && !options?.overwrite) {
+          return yield* Effect.fail(
+            new VaultError({
+              message: `source page already exists: ${relPath}`,
+              path: absPath,
+              kind: "collision",
+            }),
+          )
+        }
+
+        return yield* Effect.tryPromise({
+          try: async () => {
+            const tmpPath = `${absPath}.tmp-${process.pid}-${Date.now()}`
+            await mkdir(join(vaultDir, "wiki", "sources"), { recursive: true })
+            await writeFile(tmpPath, content, "utf8")
+            await rename(tmpPath, absPath)
+            return { absPath, relPath, contentHash: hashContent(content), existed }
+          },
+          catch: (e) =>
+            new VaultError({
+              message: `write source failed: ${String(e)}`,
+              path: absPath,
+              kind: "io_failure",
+            }),
+        })
       }),
   })

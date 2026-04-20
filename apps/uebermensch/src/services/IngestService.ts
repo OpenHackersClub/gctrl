@@ -1,5 +1,5 @@
 import { Context, type Effect } from "effect"
-import type { IngestError, VaultError } from "../errors.js"
+import type { IngestError } from "../errors.js"
 
 export type IngestUrlRequest = {
   readonly url: string
@@ -23,7 +23,7 @@ export type IngestedSource = {
 export interface IngestServiceShape {
   readonly ingestUrl: (
     req: IngestUrlRequest,
-  ) => Effect.Effect<IngestedSource, IngestError | VaultError>
+  ) => Effect.Effect<IngestedSource, IngestError>
 }
 
 export class IngestService extends Context.Tag("uebermensch/IngestService")<

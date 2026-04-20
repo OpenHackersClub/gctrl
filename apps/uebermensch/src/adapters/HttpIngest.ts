@@ -1,5 +1,5 @@
 import { Context, Effect, Layer } from "effect"
-import { IngestError } from "../errors.js"
+import { IngestError, type VaultError } from "../errors.js"
 import { domainKebab, extractFromHtml, slugForSource } from "../lib/html-extract.js"
 import { sha256 } from "../lib/hash.js"
 import { IngestService } from "../services/IngestService.js"
@@ -16,6 +16,13 @@ export class HttpIngestConfigTag extends Context.Tag("uebermensch/HttpIngestConf
 >() {}
 
 const DEFAULT_UA = "uebermensch-ingest/0.1 (+https://github.com/OpenHackersClub/gctrl)"
+const MAX_BODY_CHARS = 8000
+
+const ingestErr = (kind: IngestError["kind"], url: string, message: string): IngestError =>
+  new IngestError({ kind, url, message })
+
+const vaultToIngest = (url: string) => (e: VaultError): IngestError =>
+  ingestErr(e.kind === "collision" ? "collision" : "io_failure", url, e.message)
 
 const classifyTopics = (
   text: string,
@@ -57,8 +64,8 @@ const renderFrontmatter = (fields: Record<string, unknown>): string => {
 }
 
 const renderSourceBody = (title: string, url: string, text: string): string => {
-  const MAX_BODY_CHARS = 8000
-  const truncated = text.length > MAX_BODY_CHARS ? `${text.slice(0, MAX_BODY_CHARS)}\n\n…(truncated)` : text
+  const truncated =
+    text.length > MAX_BODY_CHARS ? `${text.slice(0, MAX_BODY_CHARS)}\n\n…(truncated)` : text
   return [`# ${title}`, "", `Source: <${url}>`, "", truncated, ""].join("\n")
 }
 
@@ -74,53 +81,36 @@ export const HttpIngestLive = Layer.effect(
       ingestUrl: (req) =>
         Effect.gen(function* () {
           const fetchedAt = new Date().toISOString()
+
           const response = yield* Effect.tryPromise({
             try: () => doFetch(req.url, { headers: { "user-agent": userAgent } }),
-            catch: (e) =>
-              new IngestError({
-                message: `fetch failed: ${String(e)}`,
-                kind: "fetch_failed",
-                url: req.url,
-              }),
-          })
-          if (!response.ok) {
-            return yield* Effect.fail(
-              new IngestError({
-                message: `fetch returned ${response.status}`,
-                kind: "fetch_failed",
-                url: req.url,
-              }),
-            )
-          }
+            catch: (e) => ingestErr("fetch_failed", req.url, `fetch failed: ${String(e)}`),
+          }).pipe(
+            Effect.filterOrFail(
+              (r) => r.ok,
+              (r) => ingestErr("fetch_failed", req.url, `fetch returned ${r.status}`),
+            ),
+          )
+
           const html = yield* Effect.tryPromise({
             try: () => response.text(),
-            catch: (e) =>
-              new IngestError({
-                message: `read body failed: ${String(e)}`,
-                kind: "fetch_failed",
-                url: req.url,
-              }),
+            catch: (e) => ingestErr("fetch_failed", req.url, `read body failed: ${String(e)}`),
           })
 
           const extracted = yield* Effect.try({
             try: () => extractFromHtml(html),
-            catch: (e) =>
-              new IngestError({
-                message: `extract failed: ${String(e)}`,
-                kind: "extract_failed",
-                url: req.url,
-              }),
-          })
-
-          if (extracted.wordCount < req.minWordCount) {
-            return yield* Effect.fail(
-              new IngestError({
-                message: `word_count ${extracted.wordCount} < min ${req.minWordCount}`,
-                kind: "low_quality",
-                url: req.url,
-              }),
-            )
-          }
+            catch: (e) => ingestErr("extract_failed", req.url, `extract failed: ${String(e)}`),
+          }).pipe(
+            Effect.filterOrFail(
+              (x) => x.wordCount >= req.minWordCount,
+              (x) =>
+                ingestErr(
+                  "low_quality",
+                  req.url,
+                  `word_count ${x.wordCount} < min ${req.minWordCount}`,
+                ),
+            ),
+          )
 
           const slug = slugForSource(req.url, req.date)
           const domain = domainKebab(req.url).replace(/-/g, ".")
@@ -150,7 +140,9 @@ export const HttpIngestLive = Layer.effect(
           })
           const full = `${frontmatter}\n\n${body}`
 
-          const written = yield* vault.writeSource(slug, full, { overwrite: req.overwrite })
+          const written = yield* vault
+            .writeSource(slug, full, { overwrite: req.overwrite })
+            .pipe(Effect.catchTag("VaultError", (e) => Effect.fail(vaultToIngest(req.url)(e))))
 
           return {
             slug,

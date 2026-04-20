@@ -3,6 +3,9 @@ import { Schema } from "effect"
 export class VaultError extends Schema.TaggedError<VaultError>()("VaultError", {
   message: Schema.String,
   path: Schema.optional(Schema.String),
+  kind: Schema.optional(
+    Schema.Literal("not_found", "collision", "io_failure", "parse_failure"),
+  ),
 }) {}
 
 export class ProfileError extends Schema.TaggedError<ProfileError>()("ProfileError", {

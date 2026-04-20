@@ -1,7 +1,7 @@
 import { mkdtemp, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Effect, Exit, Layer } from "effect"
+import { Cause, Effect, Exit, Layer, Option } from "effect"
 import matter from "gray-matter"
 import { describe, expect, it } from "vitest"
 import { FileSystemVaultLive } from "../src/adapters/FileSystemVault.js"
@@ -110,8 +110,8 @@ describe("HttpIngest adapter", () => {
         <p>Markets responded with a sharp move in tech equities.</p>
       </article></body></html>`
     const exit = await runIngest(dir, mkFetch(200, html))
-    expect(exit._tag).toBe("Success")
-    if (exit._tag !== "Success") return
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (!Exit.isSuccess(exit)) return
     const res = exit.value
     expect(res.slug).toBe("2026-04-20--example-com")
     expect(res.relPath).toBe("wiki/sources/2026-04-20--example-com.md")
@@ -129,44 +129,48 @@ describe("HttpIngest adapter", () => {
     expect(parsed.content).toContain("Big Story About AI")
   })
 
+  const failureKind = <E extends { kind?: string }>(exit: Exit.Exit<unknown, E>): string | null =>
+    Exit.match(exit, {
+      onSuccess: () => null,
+      onFailure: (cause) =>
+        Option.match(Cause.failureOption(cause), {
+          onNone: () => null,
+          onSome: (e) => e.kind ?? null,
+        }),
+    })
+
   it("rejects below-threshold content with kind=low_quality", async () => {
     const dir = await mkdtemp(join(tmpdir(), "uber-ingest-"))
     const html = `<html><body><p>tiny</p></body></html>`
     const exit = await runIngest(dir, mkFetch(200, html))
-    expect(exit._tag).toBe("Failure")
-    if (exit._tag === "Failure") {
-      const err = Exit.match(exit, {
-        onFailure: (c) => JSON.stringify(c),
-        onSuccess: () => "",
-      })
-      expect(err).toContain("low_quality")
-    }
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(failureKind(exit)).toBe("low_quality")
   })
 
   it("maps non-200 to kind=fetch_failed", async () => {
     const dir = await mkdtemp(join(tmpdir(), "uber-ingest-"))
     const exit = await runIngest(dir, mkFetch(500, "boom"))
-    expect(exit._tag).toBe("Failure")
-    if (exit._tag === "Failure") {
-      expect(JSON.stringify(exit.cause)).toContain("fetch_failed")
-    }
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(failureKind(exit)).toBe("fetch_failed")
   })
 
   it("refuses to overwrite existing source unless --overwrite", async () => {
     const dir = await mkdtemp(join(tmpdir(), "uber-ingest-"))
     const html = `<html><head><title>T</title></head><body><article>${"word ".repeat(50)}</article></body></html>`
     const first = await runIngest(dir, mkFetch(200, html))
-    expect(first._tag).toBe("Success")
+    expect(Exit.isSuccess(first)).toBe(true)
     const second = await runIngest(dir, mkFetch(200, html))
-    expect(second._tag).toBe("Failure")
+    expect(Exit.isFailure(second)).toBe(true)
+    expect(failureKind(second)).toBe("collision")
 
     const overwrite = await runIngest(dir, mkFetch(200, html), { ...seedReq, overwrite: true })
-    expect(overwrite._tag).toBe("Success")
+    expect(Exit.isSuccess(overwrite)).toBe(true)
   })
 
-  it("IngestError is tagged correctly", () => {
+  it("IngestError carries kind + url as schema fields", () => {
     const err = new IngestError({ message: "x", kind: "fetch_failed", url: "u" })
-    expect(err._tag).toBe("IngestError")
+    expect(err).toBeInstanceOf(IngestError)
     expect(err.kind).toBe("fetch_failed")
+    expect(err.url).toBe("u")
   })
 })
