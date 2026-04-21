@@ -37,6 +37,24 @@ const stripFrontmatter = (md: string): string => {
   return md.slice(end + 5).replace(/^\n+/, "")
 }
 
+const ITEM_HEADING = /^## \d+\. /m
+
+const splitBrief = (content: string, max: number): ReadonlyArray<string> => {
+  const body = stripFrontmatter(content)
+  if (!ITEM_HEADING.test(body)) return splitChunks(body, max)
+  const withoutH1 = body.replace(/^#\s+[^\n]*\n+/, "")
+  const parts = withoutH1
+    .split(/(?=^## \d+\. )/m)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+  const out: Array<string> = []
+  for (const p of parts) {
+    if (p.length <= max) out.push(p)
+    else for (const c of splitChunks(p, max)) out.push(c)
+  }
+  return out
+}
+
 const resolveEnvRef = (targetRef: string, prefix: string): string | null => {
   if (!targetRef.startsWith(prefix)) return null
   const rest = targetRef.slice(prefix.length)
@@ -108,8 +126,7 @@ const sendTelegram = (input: DeliverInput): Effect.Effect<DeliveryResult, Delive
         }),
       )
     }
-    const body = stripFrontmatter(input.content)
-    const chunks = splitChunks(body, TG_MAX)
+    const chunks = splitBrief(input.content, TG_MAX)
     const externalIds: Array<string> = []
     for (let i = 0; i < chunks.length; i++) {
       const prefix = chunks.length > 1 ? `(${i + 1}/${chunks.length})\n` : ""
@@ -146,8 +163,7 @@ const sendDiscord = (input: DeliverInput): Effect.Effect<DeliveryResult, Deliver
         }),
       )
     }
-    const body = stripFrontmatter(input.content)
-    const chunks = splitChunks(body, DC_MAX)
+    const chunks = splitBrief(input.content, DC_MAX)
     for (let i = 0; i < chunks.length; i++) {
       const prefix = chunks.length > 1 ? `(${i + 1}/${chunks.length})\n` : ""
       const content = input.silent ? `@silent ${prefix}${chunks[i]}` : `${prefix}${chunks[i]}`
@@ -196,4 +212,4 @@ export const HttpDelivererLive = Layer.succeed(DelivererService, {
   },
 })
 
-export const _internal = { splitChunks, stripFrontmatter, resolveEnvRef, kernelBase }
+export const _internal = { splitChunks, splitBrief, stripFrontmatter, resolveEnvRef, kernelBase }

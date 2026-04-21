@@ -172,6 +172,34 @@ async fn discord_send_rejects_non_webhook_url() {
 }
 
 #[tokio::test]
+async fn llm_messages_returns_503_without_api_key() {
+    // Guard: isolate from any ambient ANTHROPIC_API_KEY in the test env.
+    // SAFETY: tests in this crate run single-threaded by default; no concurrent env mutation.
+    let prev = std::env::var("ANTHROPIC_API_KEY").ok();
+    unsafe {
+        std::env::remove_var("ANTHROPIC_API_KEY");
+    }
+    let app = router_with(NetConfig::default());
+    let (status, body) = post_json(
+        &app,
+        "/api/llm/messages",
+        serde_json::json!({
+            "model": "claude-opus-4-7",
+            "max_tokens": 16,
+            "messages": [{ "role": "user", "content": "hi" }],
+        }),
+    )
+    .await;
+    if let Some(v) = prev {
+        unsafe {
+            std::env::set_var("ANTHROPIC_API_KEY", v);
+        }
+    }
+    assert_eq!(status, 503);
+    assert!(body.contains("ANTHROPIC_API_KEY"));
+}
+
+#[tokio::test]
 async fn net_fetch_browser_returns_503_without_cf_creds() {
     let app = router_with(NetConfig::default());
     let (status, body) = post_json(

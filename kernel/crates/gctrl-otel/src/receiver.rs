@@ -152,6 +152,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         // Messaging drivers (LKM — outbound to Telegram Bot API and Discord webhooks)
         .route("/api/telegram/send", post(telegram_send))
         .route("/api/discord/send", post(discord_send))
+        // LLM driver (LKM — outbound to Anthropic Messages API)
+        .route("/api/llm/messages", post(llm_messages))
         // Search driver (Brave Search API)
         .route("/api/search/web", post(search_web))
         .route("/api/search/news", post(search_news))
@@ -2649,6 +2651,49 @@ async fn discord_send(
         Err(e) => (
             StatusCode::BAD_GATEWAY,
             format!("discord request failed: {e}"),
+        )
+            .into_response(),
+    }
+}
+
+// --- LLM Driver (LKM — outbound to Anthropic Messages API) ---
+
+async fn llm_messages(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let Ok(key) = std::env::var("ANTHROPIC_API_KEY") else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "ANTHROPIC_API_KEY not configured",
+        )
+            .into_response();
+    };
+    match state
+        .http_client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            if status.is_success() {
+                match serde_json::from_str::<serde_json::Value>(&text) {
+                    Ok(v) => Json(v).into_response(),
+                    Err(_) => (StatusCode::BAD_GATEWAY, text).into_response(),
+                }
+            } else {
+                (messaging_upstream_status(status), text).into_response()
+            }
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            format!("anthropic request failed: {e}"),
         )
             .into_response(),
     }

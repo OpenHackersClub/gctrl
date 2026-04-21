@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { HttpDelivererLive, _internal } from "../src/adapters/HttpDeliverer.js"
 import { DelivererService } from "../src/services/DelivererService.js"
 
-const { splitChunks, stripFrontmatter, resolveEnvRef, kernelBase } = _internal
+const { splitChunks, splitBrief, stripFrontmatter, resolveEnvRef, kernelBase } = _internal
 
 describe("HttpDeliverer pure helpers", () => {
   it("splits long content on line boundaries", () => {
@@ -40,6 +40,59 @@ describe("HttpDeliverer pure helpers", () => {
     process.env.GCTRL_KERNEL_URL = "http://kernel.local:4318/"
     expect(kernelBase()).toBe("http://kernel.local:4318")
     process.env.GCTRL_KERNEL_URL = prev
+  })
+})
+
+describe("splitBrief (item-boundary chunking)", () => {
+  const sampleBrief = [
+    "---",
+    "page_type: brief",
+    "slug: brief-2026-04-22",
+    "---",
+    "",
+    "# Daily brief — 2026-04-22",
+    "",
+    "## 1. First item",
+    "",
+    "Summary of first item with [[some-page]].",
+    "",
+    "## 2. Second item",
+    "",
+    "Summary of second item.",
+    "",
+    "## 3. Third item",
+    "",
+    "Summary of third item.",
+  ].join("\n")
+
+  it("splits a brief into one chunk per numbered item", () => {
+    const chunks = splitBrief(sampleBrief, 3800)
+    expect(chunks).toHaveLength(3)
+    expect(chunks[0]).toMatch(/^## 1\. First item/)
+    expect(chunks[1]).toMatch(/^## 2\. Second item/)
+    expect(chunks[2]).toMatch(/^## 3\. Third item/)
+  })
+
+  it("drops frontmatter and the top-level H1", () => {
+    const chunks = splitBrief(sampleBrief, 3800)
+    for (const c of chunks) {
+      expect(c).not.toContain("page_type: brief")
+      expect(c).not.toContain("# Daily brief")
+    }
+  })
+
+  it("falls back to byte-chunking when no item headings are present", () => {
+    const raw = "plain markdown with no item headings at all, just prose"
+    expect(splitBrief(raw, 3800)).toEqual([raw])
+  })
+
+  it("sub-chunks an overlong item on line boundaries", () => {
+    const bigLines = Array.from({ length: 100 }, (_, i) => `line ${i}`).join("\n")
+    const md = `## 1. Big item\n\n${bigLines}\n\n## 2. Small item\n\nhi`
+    const chunks = splitBrief(md, 200)
+    expect(chunks.length).toBeGreaterThan(2)
+    for (const c of chunks) expect(c.length).toBeLessThanOrEqual(200)
+    expect(chunks[chunks.length - 1]).toMatch(/^## 2\. Small item/)
   })
 })
 

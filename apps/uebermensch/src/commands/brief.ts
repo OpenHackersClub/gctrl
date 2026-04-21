@@ -2,6 +2,7 @@ import { Command, Options } from "@effect/cli"
 import { Console, Effect, Option } from "effect"
 import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js"
 import { FileSystemVaultLive } from "../adapters/FileSystemVault.js"
+import { KernelLlmLive } from "../adapters/KernelLlm.js"
 import { StrictRendererLive } from "../adapters/StrictRenderer.js"
 import { StubLlmLive } from "../adapters/StubLlm.js"
 import { selectCandidates } from "../lib/candidates.js"
@@ -31,6 +32,13 @@ const dryRunOpt = Options.boolean("dry-run").pipe(
   Options.withDefault(false),
 )
 
+const llmOpt = Options.choice("llm", ["kernel", "stub"]).pipe(
+  Options.withDescription(
+    "LLM backend: 'kernel' (real Claude via kernel /api/llm/messages) or 'stub'",
+  ),
+  Options.withDefault("kernel" as const),
+)
+
 const today = () => new Date().toISOString().slice(0, 10)
 
 const itemsForFormat = (format: "long" | "short" | "digest"): number => {
@@ -46,12 +54,18 @@ const itemsForFormat = (format: "long" | "short" | "digest"): number => {
 
 export const brief = Command.make(
   "brief",
-  { sinceHoursOpt, dateOpt, maxItemsOpt, dryRunOpt },
-  ({ sinceHoursOpt: sinceHours, dateOpt: dateOptVal, maxItemsOpt: maxItemsOptVal, dryRunOpt: dryRun }) =>
+  { sinceHoursOpt, dateOpt, maxItemsOpt, dryRunOpt, llmOpt },
+  ({
+    sinceHoursOpt: sinceHours,
+    dateOpt: dateOptVal,
+    maxItemsOpt: maxItemsOptVal,
+    dryRunOpt: dryRun,
+    llmOpt: llmKind,
+  }) =>
     Effect.gen(function* () {
       const vaultDir = yield* resolveVaultDir()
       const date = Option.getOrElse(dateOptVal, today)
-      yield* Console.log(`generating brief for ${date} from ${vaultDir}`)
+      yield* Console.log(`generating brief for ${date} from ${vaultDir} (llm=${llmKind})`)
       const program = Effect.gen(function* () {
         const profileSvc = yield* ProfileService
         const vaultSvc = yield* VaultService
@@ -119,10 +133,11 @@ export const brief = Command.make(
         yield* Console.log("")
         yield* Console.log(rendered.markdown)
       })
+      const llmLayer = llmKind === "stub" ? StubLlmLive : KernelLlmLive
       yield* program.pipe(
         Effect.provide(FileSystemProfileLive(vaultDir)),
         Effect.provide(FileSystemVaultLive(vaultDir)),
-        Effect.provide(StubLlmLive),
+        Effect.provide(llmLayer),
         Effect.provide(StrictRendererLive),
       )
     }),
