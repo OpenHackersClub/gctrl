@@ -47,8 +47,21 @@ pub async fn spawn_agent(
         .spawn()?;
 
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(prompt.as_bytes()).await?;
-        stdin.shutdown().await?;
+        // A child that exits before reading its input (e.g. `sh -c "exit 1"`)
+        // closes the pipe out from under us. That's not a spawn failure —
+        // the process is already launched and its exit code should drive the
+        // retry decision. Swallow BrokenPipe here so `await_agent` sees the
+        // real exit status instead of us reporting dispatchFailed.
+        if let Err(e) = stdin.write_all(prompt.as_bytes()).await {
+            if e.kind() != std::io::ErrorKind::BrokenPipe {
+                return Err(SpawnError::Spawn(e));
+            }
+        }
+        if let Err(e) = stdin.shutdown().await {
+            if e.kind() != std::io::ErrorKind::BrokenPipe {
+                return Err(SpawnError::Spawn(e));
+            }
+        }
     }
 
     Ok(child)
@@ -138,6 +151,27 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, SpawnError::Timeout(_)));
+    }
+
+    #[tokio::test]
+    async fn child_that_exits_before_reading_stdin_reports_nonzero_not_spawn() {
+        // Regression: a child that closes stdin before we finish writing
+        // (sh -c "exit 1" on a fast Linux runner) used to bubble up as
+        // SpawnError::Spawn(BrokenPipe), which the Worker routes to
+        // dispatchFailed → Released instead of Running → RetryQueued.
+        let prompt: String = "x".repeat(256 * 1024);
+        let err = run_agent(
+            &["sh".into(), "-c".into(), "exit 1".into()],
+            Path::new("."),
+            &prompt,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, SpawnError::NonZero(1)),
+            "expected NonZero(1), got {err:?}"
+        );
     }
 
     #[tokio::test]
