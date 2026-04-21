@@ -135,6 +135,43 @@ async fn net_fetch_static_works_without_cf_creds() {
 }
 
 #[tokio::test]
+async fn telegram_send_returns_503_without_token() {
+    // Guard: isolate from any ambient TELEGRAM_BOT_TOKEN in the test env.
+    // SAFETY: tests in this crate run single-threaded by default; no concurrent env mutation.
+    let prev = std::env::var("TELEGRAM_BOT_TOKEN").ok();
+    unsafe {
+        std::env::remove_var("TELEGRAM_BOT_TOKEN");
+    }
+    let app = router_with(NetConfig::default());
+    let (status, body) = post_json(
+        &app,
+        "/api/telegram/send",
+        serde_json::json!({ "chat_id": "123", "text": "hi" }),
+    )
+    .await;
+    if let Some(v) = prev {
+        unsafe {
+            std::env::set_var("TELEGRAM_BOT_TOKEN", v);
+        }
+    }
+    assert_eq!(status, 503);
+    assert!(body.contains("TELEGRAM_BOT_TOKEN"));
+}
+
+#[tokio::test]
+async fn discord_send_rejects_non_webhook_url() {
+    let app = router_with(NetConfig::default());
+    let (status, body) = post_json(
+        &app,
+        "/api/discord/send",
+        serde_json::json!({ "webhook_url": "https://example.com/evil", "content": "hi" }),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert!(body.contains("discord.com/api/webhooks"));
+}
+
+#[tokio::test]
 async fn net_fetch_browser_returns_503_without_cf_creds() {
     let app = router_with(NetConfig::default());
     let (status, body) = post_json(

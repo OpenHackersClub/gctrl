@@ -4,10 +4,11 @@ import { Effect } from "effect"
 import { brief } from "../commands/brief.js"
 import { ingest } from "../commands/ingest.js"
 import { profile } from "../commands/profile-validate.js"
+import { send } from "../commands/send.js"
 import { vault } from "../commands/vault.js"
 
 const root = Command.make("uber").pipe(
-  Command.withSubcommands([vault, profile, brief, ingest]),
+  Command.withSubcommands([vault, profile, brief, ingest, send]),
   Command.withDescription("uebermensch Chief-of-Staff CLI"),
 )
 

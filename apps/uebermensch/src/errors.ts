@@ -32,3 +32,11 @@ export class IngestError extends Schema.TaggedError<IngestError>()("IngestError"
   kind: Schema.Literal("fetch_failed", "extract_failed", "low_quality", "collision", "io_failure"),
   url: Schema.optional(Schema.String),
 }) {}
+
+export class DeliveryError extends Schema.TaggedError<DeliveryError>()("DeliveryError", {
+  message: Schema.String,
+  channel: Schema.optional(Schema.String),
+  driver: Schema.optional(Schema.String),
+  kind: Schema.Literal("config", "unreachable", "rate_limited", "invalid", "io_failure"),
+  status: Schema.optional(Schema.Number),
+}) {}
