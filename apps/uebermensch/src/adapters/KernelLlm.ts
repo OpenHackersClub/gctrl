@@ -10,9 +10,9 @@ import {
 } from "../services/LlmService.js";
 import type { CuratedItem } from "../services/RendererService.js";
 
-const MODEL = "claude-opus-4-7";
-const INPUT_COST_PER_MTOK = 5.0;
-const OUTPUT_COST_PER_MTOK = 25.0;
+const DEFAULT_MODEL = "claude-opus-4-7";
+const ANTHROPIC_INPUT_COST_PER_MTOK = 5.0;
+const ANTHROPIC_OUTPUT_COST_PER_MTOK = 25.0;
 const MAX_CANDIDATE_EXCERPT = 2000;
 const DEFAULT_MAX_TOKENS = 16000;
 
@@ -23,6 +23,10 @@ const SUMMARY_INPUT_COST_PER_MTOK = 1.0;
 const SUMMARY_OUTPUT_COST_PER_MTOK = 5.0;
 const SUMMARY_MAX_TOKENS = 800;
 const SUMMARY_INPUT_CHARS_CAP = 12000;
+
+const modelFor = (): string => process.env.UBER_LLM_MODEL ?? DEFAULT_MODEL;
+
+const isWorkersAiModel = (model: string): boolean => model.startsWith("@cf/");
 
 const kernelBase = (): string =>
   (process.env.GCTRL_KERNEL_URL ?? "http://127.0.0.1:4318").replace(/\/+$/, "");
@@ -117,6 +121,19 @@ type AnthropicResponse = {
   readonly model?: string;
 };
 
+type OpenAiChatResponse = {
+  readonly choices?: ReadonlyArray<{ readonly message?: { readonly content?: string } }>;
+  readonly usage?: { readonly prompt_tokens?: number; readonly completion_tokens?: number };
+  readonly model?: string;
+};
+
+type NormalizedResponse = {
+  readonly text: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly model: string;
+};
+
 const extractJson = (text: string): string | null => {
   const fenced = text.match(/```json\s*([\s\S]*?)```/);
   if (fenced) return fenced[1].trim();
@@ -137,28 +154,118 @@ const classifyKernelStatus = (status: number): LlmError["kind"] => {
   return "invalid";
 };
 
-const postMessages = (body: unknown): Effect.Effect<AnthropicResponse, LlmError> =>
+const tokensCost = (
+  inputTokens: number,
+  outputTokens: number,
+  inputRate: number,
+  outputRate: number,
+): number => (inputTokens * inputRate + outputTokens * outputRate) / 1_000_000;
+
+const postAnthropic = (
+  model: string,
+  system: string,
+  userPrompt: string,
+  maxTokens: number,
+  thinking: boolean,
+): Effect.Effect<NormalizedResponse, LlmError> =>
   Effect.tryPromise({
     try: async () => {
+      const body: Record<string, unknown> = {
+        model,
+        max_tokens: maxTokens,
+        system,
+        messages: [{ role: "user", content: userPrompt }],
+      };
+      if (thinking) body.thinking = { type: "adaptive" };
       const res = await fetch(`${kernelBase()}/api/llm/messages`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
-      const text = await res.text();
+      const raw = await res.text();
       if (!res.ok) {
         throw llmErr(
           classifyKernelStatus(res.status),
-          `kernel /api/llm/messages HTTP ${res.status}: ${text.slice(0, 500)}`,
+          `kernel /api/llm/messages HTTP ${res.status}: ${raw.slice(0, 500)}`,
         );
       }
-      return text.length > 0 ? (JSON.parse(text) as AnthropicResponse) : ({} as AnthropicResponse);
+      const parsed = (raw.length > 0 ? JSON.parse(raw) : {}) as AnthropicResponse;
+      const textBlock = (parsed.content ?? []).find(
+        (b): b is { type: string; text: string } =>
+          b.type === "text" && typeof b.text === "string",
+      );
+      if (!textBlock) {
+        throw llmErr("invalid", "kernel response missing text content block");
+      }
+      return {
+        text: textBlock.text,
+        inputTokens: parsed.usage?.input_tokens ?? 0,
+        outputTokens: parsed.usage?.output_tokens ?? 0,
+        model: parsed.model ?? model,
+      };
     },
     catch: (e) =>
       e instanceof LlmError
         ? e
         : llmErr("unavailable", `kernel /api/llm/messages fetch failed: ${String(e)}`),
   });
+
+const postWorkersAi = (
+  model: string,
+  system: string,
+  userPrompt: string,
+  maxTokens: number,
+): Effect.Effect<NormalizedResponse, LlmError> =>
+  Effect.tryPromise({
+    try: async () => {
+      const body = {
+        model,
+        max_tokens: maxTokens,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: userPrompt },
+        ],
+      };
+      const res = await fetch(`${kernelBase()}/api/llm/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const raw = await res.text();
+      if (!res.ok) {
+        throw llmErr(
+          classifyKernelStatus(res.status),
+          `kernel /api/llm/completions HTTP ${res.status}: ${raw.slice(0, 500)}`,
+        );
+      }
+      const parsed = (raw.length > 0 ? JSON.parse(raw) : {}) as OpenAiChatResponse;
+      const content = parsed.choices?.[0]?.message?.content;
+      if (typeof content !== "string") {
+        throw llmErr("invalid", "kernel response missing choices[0].message.content string");
+      }
+      return {
+        text: content,
+        inputTokens: parsed.usage?.prompt_tokens ?? 0,
+        outputTokens: parsed.usage?.completion_tokens ?? 0,
+        model: parsed.model ?? model,
+      };
+    },
+    catch: (e) =>
+      e instanceof LlmError
+        ? e
+        : llmErr("unavailable", `kernel /api/llm/completions fetch failed: ${String(e)}`),
+  });
+
+const postLlm = (
+  model: string,
+  system: string,
+  userPrompt: string,
+  maxTokens: number,
+  thinking: boolean,
+): Effect.Effect<NormalizedResponse, LlmError> =>
+  isWorkersAiModel(model)
+    ? postWorkersAi(model, system, userPrompt, maxTokens)
+    : postAnthropic(model, system, userPrompt, maxTokens, thinking);
 
 const REPORT_SYSTEM_PROMPT = `You are uebermensch-researcher, a chief-of-staff analyst that produces a weekly research report grouped by research interest.
 
@@ -290,26 +397,14 @@ const normalizeInsights = (raw: string): string => {
 };
 
 export const KernelLlmLive = Layer.succeed(LlmService, {
-  name: () => `kernel-llm@${MODEL}`,
+  name: () => `kernel-llm@${modelFor()}`,
   generateBrief: (req) =>
     Effect.gen(function* () {
+      const model = modelFor();
       const userPrompt = buildUserPrompt(req);
       const promptHash = sha256(`${SYSTEM_PROMPT}\n---\n${userPrompt}`);
-      const body = {
-        model: MODEL,
-        max_tokens: DEFAULT_MAX_TOKENS,
-        thinking: { type: "adaptive" },
-        system: SYSTEM_PROMPT,
-        messages: [{ role: "user", content: userPrompt }],
-      };
-      const res = yield* postMessages(body);
-      const textBlock = (res.content ?? []).find(
-        (b): b is { type: string; text: string } => b.type === "text" && typeof b.text === "string",
-      );
-      if (!textBlock) {
-        return yield* Effect.fail(llmErr("invalid", "kernel response missing text content block"));
-      }
-      const raw = extractJson(textBlock.text);
+      const res = yield* postLlm(model, SYSTEM_PROMPT, userPrompt, DEFAULT_MAX_TOKENS, true);
+      const raw = extractJson(res.text);
       if (raw === null) {
         return yield* Effect.fail(
           llmErr("invalid", "kernel response text did not contain a JSON object"),
@@ -326,10 +421,14 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
       const decoded = yield* Schema.decodeUnknown(LlmOutputSchema)(parsed).pipe(
         Effect.mapError((e) => llmErr("invalid", `kernel response schema mismatch: ${String(e)}`)),
       );
-      const costUsd =
-        ((res.usage?.input_tokens ?? 0) * INPUT_COST_PER_MTOK +
-          (res.usage?.output_tokens ?? 0) * OUTPUT_COST_PER_MTOK) /
-        1_000_000;
+      const costUsd = isWorkersAiModel(res.model)
+        ? 0
+        : tokensCost(
+            res.inputTokens,
+            res.outputTokens,
+            ANTHROPIC_INPUT_COST_PER_MTOK,
+            ANTHROPIC_OUTPUT_COST_PER_MTOK,
+          );
       const items: ReadonlyArray<CuratedItem> = decoded.items.map((i) => ({
         kind: i.kind,
         title: i.title,
@@ -345,28 +444,22 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
         thesesCovered: decoded.thesesCovered,
         promptHash,
         costUsd,
-        model: res.model ?? MODEL,
+        model: res.model,
       };
     }),
   generateReport: (req) =>
     Effect.gen(function* () {
+      const model = modelFor();
       const userPrompt = buildReportUserPrompt(req);
       const promptHash = sha256(`${REPORT_SYSTEM_PROMPT}\n---\n${userPrompt}`);
-      const body = {
-        model: MODEL,
-        max_tokens: DEFAULT_MAX_TOKENS,
-        thinking: { type: "adaptive" },
-        system: REPORT_SYSTEM_PROMPT,
-        messages: [{ role: "user", content: userPrompt }],
-      };
-      const res = yield* postMessages(body);
-      const textBlock = (res.content ?? []).find(
-        (b): b is { type: string; text: string } => b.type === "text" && typeof b.text === "string",
+      const res = yield* postLlm(
+        model,
+        REPORT_SYSTEM_PROMPT,
+        userPrompt,
+        DEFAULT_MAX_TOKENS,
+        true,
       );
-      if (!textBlock) {
-        return yield* Effect.fail(llmErr("invalid", "kernel response missing text content block"));
-      }
-      const raw = extractJson(textBlock.text);
+      const raw = extractJson(res.text);
       if (raw === null) {
         return yield* Effect.fail(
           llmErr("invalid", "kernel response text did not contain a JSON object"),
@@ -383,10 +476,14 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
       const decoded = yield* Schema.decodeUnknown(ReportOutputSchema)(parsed).pipe(
         Effect.mapError((e) => llmErr("invalid", `kernel response schema mismatch: ${String(e)}`)),
       );
-      const costUsd =
-        ((res.usage?.input_tokens ?? 0) * INPUT_COST_PER_MTOK +
-          (res.usage?.output_tokens ?? 0) * OUTPUT_COST_PER_MTOK) /
-        1_000_000;
+      const costUsd = isWorkersAiModel(res.model)
+        ? 0
+        : tokensCost(
+            res.inputTokens,
+            res.outputTokens,
+            ANTHROPIC_INPUT_COST_PER_MTOK,
+            ANTHROPIC_OUTPUT_COST_PER_MTOK,
+          );
       const sections: ReadonlyArray<ReportSection> = decoded.sections.map((s) => ({
         interestSlug: s.interestSlug,
         summary_md: s.summary_md,
@@ -404,7 +501,7 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
         sections,
         promptHash,
         costUsd,
-        model: res.model ?? MODEL,
+        model: res.model,
       };
     }),
   summarizeSource: (req) =>
@@ -415,34 +512,30 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
           : req.text;
       const userPrompt = buildSummaryUserPrompt(req.title, req.url, req.topics, capped);
       const promptHash = sha256(`${SUMMARY_SYSTEM_PROMPT}\n---\n${userPrompt}`);
-      const body = {
-        model: SUMMARY_MODEL,
-        max_tokens: SUMMARY_MAX_TOKENS,
-        system: SUMMARY_SYSTEM_PROMPT,
-        messages: [{ role: "user", content: userPrompt }],
-      };
-      const res = yield* postMessages(body);
-      const textBlock = (res.content ?? []).find(
-        (b): b is { type: string; text: string } => b.type === "text" && typeof b.text === "string",
+      const res = yield* postLlm(
+        SUMMARY_MODEL,
+        SUMMARY_SYSTEM_PROMPT,
+        userPrompt,
+        SUMMARY_MAX_TOKENS,
+        false,
       );
-      if (!textBlock) {
-        return yield* Effect.fail(
-          llmErr("invalid", "kernel summarize response missing text content block"),
-        );
-      }
-      const insightsMd = normalizeInsights(textBlock.text);
+      const insightsMd = normalizeInsights(res.text);
       if (insightsMd.length === 0) {
         return yield* Effect.fail(llmErr("invalid", "kernel summarize returned empty insights"));
       }
-      const costUsd =
-        ((res.usage?.input_tokens ?? 0) * SUMMARY_INPUT_COST_PER_MTOK +
-          (res.usage?.output_tokens ?? 0) * SUMMARY_OUTPUT_COST_PER_MTOK) /
-        1_000_000;
+      const costUsd = isWorkersAiModel(res.model)
+        ? 0
+        : tokensCost(
+            res.inputTokens,
+            res.outputTokens,
+            SUMMARY_INPUT_COST_PER_MTOK,
+            SUMMARY_OUTPUT_COST_PER_MTOK,
+          );
       return {
         insightsMd,
         promptHash,
         costUsd,
-        model: res.model ?? SUMMARY_MODEL,
+        model: res.model,
       };
     }),
 });
@@ -459,6 +552,9 @@ export const _internal = {
   SYSTEM_PROMPT,
   REPORT_SYSTEM_PROMPT,
   SUMMARY_SYSTEM_PROMPT,
-  MODEL,
+  MODEL: DEFAULT_MODEL,
+  DEFAULT_MODEL,
   SUMMARY_MODEL,
+  modelFor,
+  isWorkersAiModel,
 };
