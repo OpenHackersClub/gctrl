@@ -1,12 +1,12 @@
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { Command, Options } from "@effect/cli"
-import { Console, Effect, Option, Schema } from "effect"
+import { Console, Effect, Option } from "effect"
 import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js"
 import { HttpDelivererLive } from "../adapters/HttpDeliverer.js"
-import { DeliveryError, VaultError } from "../errors.js"
-import { resolveVaultDir } from "../lib/env.js"
-import { Channel } from "../schemas.js"
+import { VaultError } from "../errors.js"
+import { resolveChannels } from "../lib/channels.js"
+import { publicBriefUrl, resolveVaultDir } from "../lib/env.js"
 import { DelivererService } from "../services/DelivererService.js"
 import { ProfileService } from "../services/ProfileService.js"
 
@@ -26,51 +26,6 @@ const dryRunOpt = Options.boolean("dry-run").pipe(
 )
 
 const today = () => new Date().toISOString().slice(0, 10)
-
-type ResolvedChannel = {
-  readonly name: string
-  readonly driver: string
-  readonly targetRef: string
-  readonly silent: boolean
-}
-
-const resolveChannels = (
-  channelsRaw: Record<string, unknown>,
-  only: string | null,
-): Effect.Effect<ReadonlyArray<ResolvedChannel>, DeliveryError> =>
-  Effect.gen(function* () {
-    const resolved: Array<ResolvedChannel> = []
-    for (const [name, raw] of Object.entries(channelsRaw)) {
-      if (only !== null && name !== only) continue
-      const decoded = yield* Schema.decodeUnknown(Channel)(raw).pipe(
-        Effect.mapError(
-          (e) =>
-            new DeliveryError({
-              message: `channel ${name} invalid: ${String(e)}`,
-              channel: name,
-              kind: "config",
-            }),
-        ),
-      )
-      if (!decoded.enabled && only === null) continue
-      resolved.push({
-        name,
-        driver: decoded.driver,
-        targetRef: decoded.target_ref,
-        silent: decoded.silent ?? false,
-      })
-    }
-    if (only !== null && resolved.length === 0) {
-      return yield* Effect.fail(
-        new DeliveryError({
-          message: `no channel named "${only}" in profile.md`,
-          channel: only,
-          kind: "config",
-        }),
-      )
-    }
-    return resolved
-  })
 
 export const send = Command.make(
   "send",
@@ -113,6 +68,8 @@ export const send = Command.make(
           return
         }
 
+        const briefUrl = publicBriefUrl(date)
+        const deliveryContent = briefUrl ? `🌐 ${briefUrl}\n\n${content}` : content
         for (const ch of channels) {
           const result = yield* deliverer
             .send({
@@ -120,7 +77,7 @@ export const send = Command.make(
               driver: ch.driver,
               targetRef: ch.targetRef,
               silent: ch.silent,
-              content,
+              content: deliveryContent,
               briefDate: date,
             })
             .pipe(

@@ -2,7 +2,12 @@ import { Effect, Layer, Schema } from "effect"
 import { LlmError } from "../errors.js"
 import type { CandidateRef } from "../lib/candidates.js"
 import { sha256 } from "../lib/hash.js"
-import { LlmService, type BriefRequest } from "../services/LlmService.js"
+import {
+  LlmService,
+  type BriefRequest,
+  type ReportRequest,
+  type ReportSection,
+} from "../services/LlmService.js"
 import type { CuratedItem } from "../services/RendererService.js"
 
 const MODEL = "claude-opus-4-7"
@@ -147,6 +152,93 @@ const postMessages = (body: unknown): Effect.Effect<AnthropicResponse, LlmError>
         : llmErr("unavailable", `kernel /api/llm/messages fetch failed: ${String(e)}`),
   })
 
+const REPORT_SYSTEM_PROMPT = `You are uebermensch-researcher, a chief-of-staff analyst that produces a weekly research report grouped by research interest.
+
+OUTPUT CONTRACT:
+- Output MUST be a single JSON object wrapped in a triple-backtick json fenced block. No prose outside the fence.
+- Shape: { "sections": ReportSection[] }
+- ReportSection: {
+    "interestSlug": string,  // MUST match one of the provided interest slugs
+    "summary_md": string,    // 3–6 sentence overview of the week for this interest; may cite candidates via [[stem]]
+    "items": CuratedItem[]   // up to maxItemsPerInterest per section
+  }
+- CuratedItem: {
+    "kind": "news" | "update" | "action" | "alert",
+    "title": string,
+    "summary_md": string,
+    "topic": string | null,
+    "thesis": string | null,
+    "source_candidate_ids": string[],
+    "suggested_action": string | null
+  }
+
+CITATION RULES (strict — report generation will FAIL if violated):
+- Every \`[[link]]\` in any \`summary_md\` MUST match a candidate's \`stem\` field exactly.
+- Do NOT use typed-prefix links like \`[[source:x]]\` or \`[[thesis:x]]\` — bare stems only.
+- \`source_candidate_ids\` MUST be a subset of the provided candidate \`id\` values for THAT interest section. Never fabricate.
+CURATION RULES:
+- Produce one section per provided interest, in the order given. Use the exact interestSlug.
+- For each section, use ONLY the candidates listed under that interest.
+- summary_md in each item: 2–4 sentences, substantive and concrete, derived from candidate excerpts. No hedging.
+- Merge near-duplicate candidates into one item referencing multiple sources.
+- topic: the single most relevant topic slug for that interest, or null.
+- Produce at most maxItemsPerInterest items per section; prefer high-scored candidates aligned with the interest's question.
+
+INSIGHT-ONLY RULES (strict — enforced by reviewer):
+- Write substantive insight only. NEVER describe what is absent, thin, missing, or quiet in the candidate pool.
+- BANNED phrases and patterns: "No direct X...", "No fresh X...", "appeared in the candidate set", "This week was quiet for...", "Candidate pool was thin...", "Most items were only indirectly relevant...", "Reference pages were also indexed but carry no new information", "Treat this week as a quiet one for...".
+- If a section has no candidates OR no substantive signal, return {"interestSlug": slug, "summary_md": "", "items": []} — the renderer will drop empty sections. Do NOT apologize or meta-commentate.
+- If the candidate pool contains only adjacent signal (no direct hit on the interest's question), lead with the adjacent signal as a concrete claim. Example: "BHP–China iron ore deal resets seaborne pricing relevant to Japanese steelmaker input costs." Do NOT frame it as "No direct X but adjacent Y...".
+- No "Suggested action" lines about expanding ingestion, adding feeds, or describing the system itself. Actions must target the substantive domain (markets, policy, company behavior).`
+
+const reportCandidateBlock = (c: CandidateRef): string => candidateBlock(c)
+
+const buildReportUserPrompt = (req: ReportRequest): string => {
+  const lines: Array<string> = []
+  lines.push(`period: ${req.periodLabel}`)
+  lines.push(`periodStart: ${req.periodStart}`)
+  lines.push(`periodEnd: ${req.periodEnd}`)
+  lines.push(`profile: ${req.profileName}`)
+  lines.push(`maxItemsPerInterest: ${req.maxItemsPerInterest}`)
+  lines.push("")
+  lines.push("interests:")
+  for (const it of req.interests) {
+    lines.push(`- slug: ${it.slug}`)
+    lines.push(`  title: ${it.title}`)
+    if (it.question) lines.push(`  question: ${it.question}`)
+    lines.push(`  topics: [${it.topics.join(", ")}]`)
+    if (it.notes) {
+      lines.push(`  notes: |`)
+      for (const line of it.notes.split("\n")) lines.push(`    ${line}`)
+    }
+    lines.push(`  candidates:`)
+    if (it.candidates.length === 0) {
+      lines.push(`    (none)`)
+    } else {
+      for (const c of it.candidates) {
+        const block = reportCandidateBlock(c)
+          .split("\n")
+          .map((l) => `  ${l}`)
+          .join("\n")
+        lines.push(block)
+      }
+    }
+  }
+  lines.push("")
+  lines.push("Return ONLY a fenced ```json block with the schema above.")
+  return lines.join("\n")
+}
+
+const ReportSectionSchema = Schema.Struct({
+  interestSlug: Schema.String,
+  summary_md: Schema.String,
+  items: Schema.Array(ItemSchema),
+})
+
+const ReportOutputSchema = Schema.Struct({
+  sections: Schema.Array(ReportSectionSchema),
+})
+
 export const KernelLlmLive = Layer.succeed(LlmService, {
   name: () => `kernel-llm@${MODEL}`,
   generateBrief: (req) =>
@@ -209,13 +301,80 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
         model: res.model ?? MODEL,
       }
     }),
+  generateReport: (req) =>
+    Effect.gen(function* () {
+      const userPrompt = buildReportUserPrompt(req)
+      const promptHash = sha256(`${REPORT_SYSTEM_PROMPT}\n---\n${userPrompt}`)
+      const body = {
+        model: MODEL,
+        max_tokens: DEFAULT_MAX_TOKENS,
+        thinking: { type: "adaptive" },
+        system: REPORT_SYSTEM_PROMPT,
+        messages: [{ role: "user", content: userPrompt }],
+      }
+      const res = yield* postMessages(body)
+      const textBlock = (res.content ?? []).find(
+        (b): b is { type: string; text: string } =>
+          b.type === "text" && typeof b.text === "string",
+      )
+      if (!textBlock) {
+        return yield* Effect.fail(
+          llmErr("invalid", "kernel response missing text content block"),
+        )
+      }
+      const raw = extractJson(textBlock.text)
+      if (raw === null) {
+        return yield* Effect.fail(
+          llmErr("invalid", "kernel response text did not contain a JSON object"),
+        )
+      }
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(raw)
+      } catch (e) {
+        return yield* Effect.fail(
+          llmErr("invalid", `kernel response JSON parse failed: ${String(e)}`),
+        )
+      }
+      const decoded = yield* Schema.decodeUnknown(ReportOutputSchema)(parsed).pipe(
+        Effect.mapError((e) =>
+          llmErr("invalid", `kernel response schema mismatch: ${String(e)}`),
+        ),
+      )
+      const costUsd =
+        ((res.usage?.input_tokens ?? 0) * INPUT_COST_PER_MTOK +
+          (res.usage?.output_tokens ?? 0) * OUTPUT_COST_PER_MTOK) /
+        1_000_000
+      const sections: ReadonlyArray<ReportSection> = decoded.sections.map((s) => ({
+        interestSlug: s.interestSlug,
+        summary_md: s.summary_md,
+        items: s.items.map((i) => ({
+          kind: i.kind,
+          title: i.title,
+          summary_md: i.summary_md,
+          topic: i.topic,
+          thesis: i.thesis,
+          source_candidate_ids: i.source_candidate_ids,
+          suggested_action: i.suggested_action,
+        })),
+      }))
+      return {
+        sections,
+        promptHash,
+        costUsd,
+        model: res.model ?? MODEL,
+      }
+    }),
 })
 
 export const _internal = {
   buildUserPrompt,
+  buildReportUserPrompt,
   extractJson,
   kernelBase,
   LlmOutputSchema,
+  ReportOutputSchema,
   SYSTEM_PROMPT,
+  REPORT_SYSTEM_PROMPT,
   MODEL,
 }

@@ -22,6 +22,24 @@ export type WrittenSource = {
   readonly existed: boolean
 }
 
+export type WrittenReport = {
+  readonly absPath: string
+  readonly relPath: string
+  readonly contentHash: string
+}
+
+export type ResearchInterest = {
+  readonly slug: string
+  readonly title: string
+  readonly question: string | null
+  readonly topics: ReadonlyArray<string>
+  readonly sources: ReadonlyArray<string>
+  readonly horizon: "short" | "long" | "both" | null
+  readonly weight: number | null
+  readonly notes: string
+  readonly relPath: string
+}
+
 export interface VaultServiceShape {
   readonly root: () => string
   readonly listWikiPages: () => Effect.Effect<ReadonlyArray<WikiPage>, VaultError>
@@ -29,6 +47,10 @@ export interface VaultServiceShape {
     sinceHours: number,
   ) => Effect.Effect<ReadonlyArray<WikiPage>, VaultError>
   readonly listSlugs: () => Effect.Effect<ReadonlySet<string>, VaultError>
+  readonly listResearchInterests: () => Effect.Effect<
+    ReadonlyArray<ResearchInterest>,
+    VaultError
+  >
   readonly writeBrief: (
     date: string,
     content: string,
@@ -38,6 +60,10 @@ export interface VaultServiceShape {
     content: string,
     options?: { readonly overwrite?: boolean },
   ) => Effect.Effect<WrittenSource, VaultError>
+  readonly writeReport: (
+    slug: string,
+    content: string,
+  ) => Effect.Effect<WrittenReport, VaultError>
 }
 
 export class VaultService extends Context.Tag("uebermensch/VaultService")<

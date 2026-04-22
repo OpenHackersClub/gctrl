@@ -79,3 +79,13 @@ export const SourceEntry = Schema.Struct({
 export const SourcesConfig = Schema.Struct({
   sources: Schema.Array(SourceEntry).pipe(Schema.minItems(1)),
 })
+
+export const ResearchInterestFrontmatter = Schema.Struct({
+  slug: Slug,
+  title: Schema.String,
+  question: Schema.optional(Schema.String),
+  topics: Schema.Array(Slug).pipe(Schema.minItems(1)),
+  sources: Schema.optional(Schema.Array(Slug)),
+  horizon: Schema.optional(Schema.Literal("short", "long", "both")),
+  weight: Schema.optional(Schema.Number),
+})

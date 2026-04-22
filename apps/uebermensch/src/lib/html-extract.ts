@@ -76,4 +76,27 @@ export const domainKebab = (url: string): string => {
   return host.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
 }
 
-export const slugForSource = (url: string, date: string): string => `${date}--${domainKebab(url)}`
+const kebab = (s: string): string =>
+  s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
+
+// Short, stable, deterministic 8-char hash of the URL for disambiguation.
+const urlHashShort = (url: string): string => {
+  let h = 2166136261 >>> 0 // FNV-1a 32-bit
+  for (let i = 0; i < url.length; i += 1) {
+    h ^= url.charCodeAt(i)
+    h = Math.imul(h, 16777619) >>> 0
+  }
+  return h.toString(16).padStart(8, "0")
+}
+
+export const pathStem = (url: string): string => {
+  const u = new URL(url)
+  const parts = u.pathname.split("/").filter(Boolean)
+  const last = parts[parts.length - 1] ?? ""
+  const noExt = last.replace(/\.[a-z0-9]{1,6}$/i, "")
+  const stem = kebab(noExt).slice(0, 40)
+  return stem || urlHashShort(url)
+}
+
+export const slugForSource = (url: string, date: string): string =>
+  `${date}--${domainKebab(url)}--${pathStem(url)}`

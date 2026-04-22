@@ -33,8 +33,41 @@ export type RenderResult = {
   readonly totalClaims: number
 }
 
+export type ReportSectionInput = {
+  readonly interestSlug: string
+  readonly interestTitle: string
+  readonly interestQuestion: string | null
+  readonly summary_md: string
+  readonly items: ReadonlyArray<CuratedItem>
+  readonly candidates: ReadonlyArray<CandidateRef>
+}
+
+export type ReportRenderInput = {
+  readonly periodLabel: string
+  readonly periodStart: string
+  readonly periodEnd: string
+  readonly generator: string
+  readonly model: string
+  readonly promptHash: string
+  readonly costUsd: number
+  readonly profileName: string
+  readonly sections: ReadonlyArray<ReportSectionInput>
+  readonly vaultSlugs: ReadonlySet<string>
+}
+
+export type ReportRenderResult = {
+  readonly markdown: string
+  readonly sectionCount: number
+  readonly itemCount: number
+  readonly citedClaims: number
+  readonly totalClaims: number
+}
+
 export interface RendererServiceShape {
   readonly render: (input: RenderInput) => Effect.Effect<RenderResult, CitationError>
+  readonly renderReport: (
+    input: ReportRenderInput,
+  ) => Effect.Effect<ReportRenderResult, CitationError>
 }
 
 export class RendererService extends Context.Tag("uebermensch/RendererService")<

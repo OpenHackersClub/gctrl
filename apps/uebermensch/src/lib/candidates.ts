@@ -45,6 +45,11 @@ const spamPenalty = (page: WikiPage): number => {
   return Math.max(0, 1 - score)
 }
 
+const paywallPenalty = (page: WikiPage): number => {
+  const q = page.frontmatter.quality as { paywalled?: boolean } | undefined
+  return q?.paywalled === true ? 0.5 : 1.0
+}
+
 const thesisBoost = (
   page: WikiPage,
   thesesSlugs: ReadonlyArray<string>,
@@ -74,7 +79,13 @@ export const scorePrior = (
 ): number => {
   const base = topicWeightFor(page, topics)
   if (base === 0) return 0
-  return base * recencyDecay(page, now) * spamPenalty(page) * thesisBoost(page, thesesSlugs)
+  return (
+    base *
+    recencyDecay(page, now) *
+    spamPenalty(page) *
+    paywallPenalty(page) *
+    thesisBoost(page, thesesSlugs)
+  )
 }
 
 export const selectCandidates = (input: CandidateInput): ReadonlyArray<CandidateRef> => {

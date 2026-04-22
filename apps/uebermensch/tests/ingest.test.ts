@@ -59,10 +59,19 @@ describe("slug + domain helpers", () => {
     expect(domainKebab("https://www.Anthropic.COM/news/claude")).toBe("anthropic-com")
     expect(domainKebab("https://blog.example.co.uk/post")).toBe("blog-example-co-uk")
   })
-  it("slugForSource combines date + domain", () => {
-    expect(slugForSource("https://www.anthropic.com/news/x", "2026-04-20")).toBe(
-      "2026-04-20--anthropic-com",
+  it("slugForSource combines date + domain + path stem", () => {
+    expect(slugForSource("https://www.anthropic.com/news/claude-4-7", "2026-04-20")).toBe(
+      "2026-04-20--anthropic-com--claude-4-7",
     )
+  })
+  it("slugForSource disambiguates two paths on the same domain + date", () => {
+    const a = slugForSource("https://en.wikipedia.org/wiki/Bank_of_Japan", "2026-04-22")
+    const b = slugForSource("https://en.wikipedia.org/wiki/Aging_of_Japan", "2026-04-22")
+    expect(a).not.toBe(b)
+  })
+  it("slugForSource falls back to URL hash when path is empty", () => {
+    const s = slugForSource("https://example.com/", "2026-04-20")
+    expect(s).toMatch(/^2026-04-20--example-com--[0-9a-f]{8}$/)
   })
 })
 
@@ -113,8 +122,8 @@ describe("HttpIngest adapter", () => {
     expect(Exit.isSuccess(exit)).toBe(true)
     if (!Exit.isSuccess(exit)) return
     const res = exit.value
-    expect(res.slug).toBe("2026-04-20--example-com")
-    expect(res.relPath).toBe("wiki/sources/2026-04-20--example-com.md")
+    expect(res.slug).toBe("2026-04-20--example-com--big-story")
+    expect(res.relPath).toBe("wiki/sources/2026-04-20--example-com--big-story.md")
     expect(res.title).toBe("Big Story About AI")
     expect(res.contentHash).toMatch(/^sha256:[0-9a-f]{64}$/)
     expect([...res.topicsMatched].sort()).toEqual(["ai", "markets"])
@@ -122,7 +131,7 @@ describe("HttpIngest adapter", () => {
     const onDisk = await readFile(join(dir, res.relPath), "utf8")
     const parsed = matter(onDisk)
     expect(parsed.data.page_type).toBe("source")
-    expect(parsed.data.slug).toBe("2026-04-20--example-com")
+    expect(parsed.data.slug).toBe("2026-04-20--example-com--big-story")
     expect(parsed.data.url).toBe(seedReq.url)
     expect(parsed.data.domain).toBe("example.com")
     expect((parsed.data.quality as { word_count: number }).word_count).toBeGreaterThan(10)
