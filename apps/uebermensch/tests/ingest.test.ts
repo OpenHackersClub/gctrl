@@ -9,9 +9,10 @@ import {
   HttpIngestConfigTag,
   HttpIngestLive,
 } from "../src/adapters/HttpIngest.js"
-import { IngestError } from "../src/errors.js"
-import { domainKebab, extractFromHtml, slugForSource } from "../src/lib/html-extract.js"
+import { IngestError, LlmError } from "../src/errors.js"
+import { cleanBoilerplate, domainKebab, extractFromHtml, slugForSource } from "../src/lib/html-extract.js"
 import { IngestService } from "../src/services/IngestService.js"
+import { LlmService } from "../src/services/LlmService.js"
 
 describe("html-extract", () => {
   it("pulls title from <title> and strips scripts/styles", () => {
@@ -51,6 +52,64 @@ describe("html-extract", () => {
     const html = `<html><body><article><p>Tom &amp; Jerry &#8212; &quot;pals&quot;</p></article></body></html>`
     expect(extractFromHtml(html).text).toContain('Tom & Jerry')
     expect(extractFromHtml(html).text).toContain('"pals"')
+  })
+
+  it("drops nav/header/footer/aside content so UI chrome does not leak in", () => {
+    const html = `<html><body>
+      <header><nav><a href="/">home</a><a href="/reports">reports</a></nav></header>
+      <article>
+        <p>The real lede of the article is here and is substantive.</p>
+        <p>A second paragraph with actual reporting from the ground.</p>
+      </article>
+      <aside>Add as preferred on Google</aside>
+      <footer>ShareSave</footer>
+    </body></html>`
+    const out = extractFromHtml(html)
+    expect(out.text).toContain("real lede")
+    expect(out.text).not.toMatch(/home\s+reports/i)
+    expect(out.text).not.toMatch(/add as preferred on google/i)
+    expect(out.text).not.toMatch(/sharesave/i)
+  })
+
+  it("strips BBC-style chrome lines embedded in article body", () => {
+    const html = `<html><body><article>
+      <p>Headline Re-Stated</p>
+      <p>1 day ago</p>
+      <p>ShareSave</p>
+      <p>Add as preferred on Google</p>
+      <p>AFP via Getty Images</p>
+      <p>The substantive first paragraph of the article explains the policy shift.</p>
+      <p>AFP via Getty Images</p>
+      <p>A second paragraph with more context about what is actually happening.</p>
+      <p>Asia</p>
+      <p>Japan</p>
+    </article></body></html>`
+    const out = extractFromHtml(html)
+    expect(out.text).toContain("substantive first paragraph")
+    expect(out.text).toContain("more context")
+    expect(out.text).not.toMatch(/^ShareSave$/m)
+    expect(out.text).not.toMatch(/^1 day ago/im)
+    expect(out.text).not.toMatch(/add as preferred on google/i)
+    expect(out.text).not.toMatch(/afp via getty images/i)
+    // trailing single-word tags should be pruned
+    expect(out.text.trim().endsWith("Japan")).toBe(false)
+    expect(out.text.trim().endsWith("Asia")).toBe(false)
+  })
+})
+
+describe("cleanBoilerplate", () => {
+  it("collapses adjacent duplicate lines", () => {
+    const input = "Photo\nPhoto\nThe real first paragraph carries on normally."
+    expect(cleanBoilerplate(input)).not.toMatch(/Photo\nPhoto/)
+  })
+
+  it("keeps real quoted lines even when short", () => {
+    const input = [
+      "\"We must keep going,\" said the senator.",
+      "Quote ends here but discussion continues in follow-up reporting.",
+    ].join("\n")
+    const out = cleanBoilerplate(input)
+    expect(out).toContain("keep going")
   })
 })
 
@@ -181,5 +240,108 @@ describe("HttpIngest adapter", () => {
     expect(err).toBeInstanceOf(IngestError)
     expect(err.kind).toBe("fetch_failed")
     expect(err.url).toBe("u")
+  })
+})
+
+describe("HttpIngest with summarization", () => {
+  const fakeLlmLayer = (insights: string, calls: { count: number }) =>
+    Layer.succeed(LlmService, {
+      name: () => "fake-llm",
+      generateBrief: () => Effect.die("not used"),
+      generateReport: () => Effect.die("not used"),
+      summarizeSource: () =>
+        Effect.sync(() => {
+          calls.count += 1
+          return {
+            insightsMd: insights,
+            promptHash: "sha256:deadbeef",
+            costUsd: 0.0001,
+            model: "fake-llm@1",
+          }
+        }),
+    })
+
+  const runIngestWithLlm = async (
+    vaultDir: string,
+    fakeFetch: typeof fetch,
+    llmLayer: Layer.Layer<LlmService>,
+    req: typeof seedReq & { summarize: boolean },
+  ) => {
+    const ingestLayer = HttpIngestLive.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          FileSystemVaultLive(vaultDir),
+          Layer.succeed(HttpIngestConfigTag, { fetch: fakeFetch }),
+        ),
+      ),
+    )
+    return Effect.runPromiseExit(
+      Effect.gen(function* () {
+        const svc = yield* IngestService
+        return yield* svc.ingestUrl(req)
+      }).pipe(Effect.provide(Layer.mergeAll(ingestLayer, llmLayer))),
+    )
+  }
+
+  it("replaces body with LLM insights when summarize=true", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "uber-ingest-sum-"))
+    const longBody = `<p>${"sentence about Tokyo arms exports. ".repeat(40)}</p>`
+    const html = `<html><head><title>Arms Exports</title></head><body><article>${longBody}</article></body></html>`
+    const calls = { count: 0 }
+    const insights =
+      "## Key Insights\n\n- Japan lifted arms-export restrictions to 17 partner countries.\n- The move targets lethal weapons for the first time.\n"
+    const exit = await runIngestWithLlm(
+      dir,
+      mkFetch(200, html),
+      fakeLlmLayer(insights, calls),
+      { ...seedReq, summarize: true },
+    )
+    expect(Exit.isSuccess(exit)).toBe(true)
+    expect(calls.count).toBe(1)
+    if (!Exit.isSuccess(exit)) return
+    const res = exit.value
+    expect(res.bodySource).toBe("llm_insights")
+    expect(res.summaryModel).toBe("fake-llm@1")
+
+    const onDisk = await readFile(join(dir, res.relPath), "utf8")
+    const parsed = matter(onDisk)
+    expect(parsed.content).toContain("Key Insights")
+    expect(parsed.content).toContain("17 partner countries")
+    expect(parsed.content).not.toContain("sentence about Tokyo arms exports")
+    expect((parsed.data.quality as { body_source: string }).body_source).toBe("llm_insights")
+    expect((parsed.data.summary as { model: string }).model).toBe("fake-llm@1")
+  })
+
+  it("falls back to extracted body when LLM fails", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "uber-ingest-sum-"))
+    const html = `<html><head><title>T</title></head><body><article>${"word ".repeat(50)}</article></body></html>`
+    const failingLlm = Layer.succeed(LlmService, {
+      name: () => "broken-llm",
+      generateBrief: () => Effect.die("not used"),
+      generateReport: () => Effect.die("not used"),
+      summarizeSource: () =>
+        Effect.fail(new LlmError({ message: "upstream 503", kind: "unavailable" })),
+    })
+    const exit = await runIngestWithLlm(dir, mkFetch(200, html), failingLlm, {
+      ...seedReq,
+      summarize: true,
+    })
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (!Exit.isSuccess(exit)) return
+    expect(exit.value.bodySource).toBe("extracted")
+  })
+
+  it("skips LLM entirely when summarize=false", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "uber-ingest-sum-"))
+    const html = `<html><head><title>T</title></head><body><article>${"word ".repeat(50)}</article></body></html>`
+    const calls = { count: 0 }
+    const exit = await runIngestWithLlm(
+      dir,
+      mkFetch(200, html),
+      fakeLlmLayer("## Key Insights\n- x", calls),
+      { ...seedReq, summarize: false },
+    )
+    expect(Exit.isSuccess(exit)).toBe(true)
+    expect(calls.count).toBe(0)
   })
 })
