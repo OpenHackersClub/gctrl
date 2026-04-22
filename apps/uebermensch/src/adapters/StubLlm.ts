@@ -1,6 +1,6 @@
 import { Effect, Layer } from "effect";
 import { sha256 } from "../lib/hash.js";
-import { LlmService, type ReportSection } from "../services/LlmService.js";
+import { LlmService } from "../services/LlmService.js";
 import type { CuratedItem } from "../services/RendererService.js";
 
 const STUB_MODEL = "stub-llm@0.1";
@@ -69,43 +69,62 @@ export const StubLlmLive = Layer.succeed(LlmService, {
       const promptHash = sha256(`stub-summarize\n${req.url}\n${req.text}`);
       return { insightsMd, promptHash, costUsd: 0, model: STUB_MODEL };
     }),
-  generateReport: (req) =>
+  generateInterestReport: (req) =>
     Effect.sync(() => {
-      const candidateIds = req.interests.flatMap((it) => it.candidates.map((c) => c.id));
+      const it = req.interest;
       const prompt = [
         "persona: uber-researcher/stub",
         `period: ${req.periodLabel}`,
         `profile: ${req.profileName}`,
-        `interests: ${req.interests.map((i) => i.slug).join(",")}`,
-        `candidates: ${candidateIds.join(",")}`,
+        `interest: ${it.slug}`,
+        `candidates: ${it.candidates.map((c) => c.id).join(",")}`,
       ].join("\n");
       const promptHash = sha256(prompt);
-      const sections: Array<ReportSection> = req.interests.map((it) => {
-        const top = [...it.candidates]
-          .sort((a, b) => b.score - a.score)
-          .slice(0, req.maxItemsPerInterest);
-        const items: Array<CuratedItem> = top.map((c) => {
-          const title = (c.page.frontmatter.title as string | undefined) ?? c.page.stem;
-          const pageTopics = (c.page.frontmatter.topics as ReadonlyArray<string> | undefined) ?? [];
-          const topic = pageTopics[0] ?? null;
-          return {
-            kind: "news",
-            title,
-            summary_md: `Stub summary for [[${c.page.stem}]].`,
-            topic,
-            thesis: null,
-            source_candidate_ids: [c.id],
-            suggested_action: null,
-          };
-        });
-        const summary_md =
-          items.length === 0
-            ? `No new candidates this week for ${it.title}.`
-            : `Stub weekly overview for ${it.title} covering ${items.length} item(s).`;
-        return { interestSlug: it.slug, summary_md, items };
+      const top = [...it.candidates].sort((a, b) => b.score - a.score).slice(0, req.maxItems);
+      const items: Array<CuratedItem> = top.map((c) => {
+        const title = (c.page.frontmatter.title as string | undefined) ?? c.page.stem;
+        const pageTopics = (c.page.frontmatter.topics as ReadonlyArray<string> | undefined) ?? [];
+        const topic = pageTopics[0] ?? null;
+        return {
+          kind: "news",
+          title,
+          summary_md: `Stub summary for [[${c.page.stem}]].`,
+          topic,
+          thesis: null,
+          source_candidate_ids: [c.id],
+          suggested_action: null,
+        };
       });
+      const citedStems = top.map((c) => `[[${c.page.stem}]]`).join(", ");
+      const analysis_md =
+        top.length === 0
+          ? ""
+          : [
+              "### Thesis",
+              "",
+              `Stub thesis for ${it.title}.`,
+              "",
+              "### Key developments",
+              "",
+              `Stub key developments citing ${citedStems}.`,
+              "",
+              "### Cross-currents",
+              "",
+              "Stub cross-currents.",
+              "",
+              "### Implications",
+              "",
+              "Stub implications.",
+              "",
+              "### Open questions",
+              "",
+              "- Stub open question 1",
+              "- Stub open question 2",
+            ].join("\n");
       return {
-        sections,
+        interestSlug: it.slug,
+        analysis_md,
+        items,
         promptHash,
         costUsd: 0,
         model: STUB_MODEL,

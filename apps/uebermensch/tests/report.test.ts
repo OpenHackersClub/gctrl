@@ -10,7 +10,7 @@ import { selectCandidates } from "../src/lib/candidates.js"
 import { LlmService } from "../src/services/LlmService.js"
 import {
   RendererService,
-  type ReportSectionInput,
+  type ReportIndexEntry,
 } from "../src/services/RendererService.js"
 import { VaultService } from "../src/services/VaultService.js"
 
@@ -20,7 +20,7 @@ const seedPage = async (root: string, rel: string, frontmatter: string, body: st
   await writeFile(full, `---\n${frontmatter}---\n\n${body}\n`, "utf8")
 }
 
-describe("weekly report (research interests + stub LLM + strict renderer)", () => {
+describe("weekly report (per-interest deep analysis + stub LLM + strict renderer)", () => {
   let vaultDir: string
 
   beforeEach(async () => {
@@ -51,7 +51,7 @@ describe("weekly report (research interests + stub LLM + strict renderer)", () =
     )
   })
 
-  it("lists interests, scopes candidates per interest, and renders a report", async () => {
+  it("generates one deep-analysis report file per interest + a weekly index", async () => {
     const program = Effect.gen(function* () {
       const vault = yield* VaultService
       const llm = yield* LlmService
@@ -91,57 +91,126 @@ describe("weekly report (research interests + stub LLM + strict renderer)", () =
       // Each interest sees only its own candidate.
       for (const ii of inputs) expect(ii.candidates).toHaveLength(1)
 
-      const response = yield* llm.generateReport({
-        periodLabel: "2026-W17",
-        periodStart: "2026-04-15",
-        periodEnd: "2026-04-22",
-        profileName: "Test",
-        interests: inputs,
-        maxItemsPerInterest: 3,
-      })
-      expect(response.sections).toHaveLength(2)
+      const vaultSlugs = yield* vault.listSlugs()
 
-      const bySlug = new Map(response.sections.map((s) => [s.interestSlug, s]))
-      const sections: Array<ReportSectionInput> = inputs.map((ii) => {
-        const s = bySlug.get(ii.slug)!
-        return {
+      const written: Array<{
+        readonly interestSlug: string
+        readonly reportSlug: string
+        readonly relPath: string
+        readonly itemCount: number
+      }> = []
+      const entries: Array<ReportIndexEntry> = []
+
+      for (const ii of inputs) {
+        const response = yield* llm.generateInterestReport({
+          periodLabel: "2026-W17",
+          periodStart: "2026-04-15",
+          periodEnd: "2026-04-22",
+          profileName: "Test",
+          interest: ii,
+          maxItems: 3,
+        })
+        expect(response.interestSlug).toBe(ii.slug)
+        expect(response.analysis_md).toContain("### Thesis")
+        expect(response.items).toHaveLength(1)
+
+        const rendered = yield* renderer.renderInterestReport({
+          periodLabel: "2026-W17",
+          periodStart: "2026-04-15",
+          periodEnd: "2026-04-22",
+          generator: llm.name(),
+          model: response.model,
+          promptHash: response.promptHash,
+          costUsd: response.costUsd,
+          profileName: "Test",
           interestSlug: ii.slug,
           interestTitle: ii.title,
           interestQuestion: ii.question,
-          summary_md: s.summary_md,
-          items: s.items,
+          interestTopics: ii.topics,
+          analysis_md: response.analysis_md,
+          items: response.items,
           candidates: ii.candidates,
-        }
-      })
+          vaultSlugs,
+        })
+        expect(rendered.slug).toBe(`2026-W17--${ii.slug}`)
 
-      const vaultSlugs = yield* vault.listSlugs()
-      const rendered = yield* renderer.renderReport({
+        const w = yield* vault.writeReport(rendered.slug, rendered.markdown)
+        written.push({
+          interestSlug: ii.slug,
+          reportSlug: rendered.slug,
+          relPath: w.relPath,
+          itemCount: rendered.itemCount,
+        })
+        entries.push({
+          interestSlug: ii.slug,
+          interestTitle: ii.title,
+          interestQuestion: ii.question,
+          reportSlug: rendered.slug,
+          publicUrl: null,
+          itemCount: rendered.itemCount,
+          headline: response.analysis_md.slice(0, 80),
+        })
+      }
+
+      const indexRendered = yield* renderer.renderReportIndex({
         periodLabel: "2026-W17",
         periodStart: "2026-04-15",
         periodEnd: "2026-04-22",
         generator: llm.name(),
-        model: response.model,
-        promptHash: response.promptHash,
-        costUsd: response.costUsd,
+        model: "stub-llm@0.1",
+        totalCostUsd: 0,
         profileName: "Test",
-        sections,
-        vaultSlugs,
+        entries,
       })
-      return yield* vault.writeReport("2026-W17", rendered.markdown)
+      expect(indexRendered.slug).toBe("2026-W17")
+      const writtenIndex = yield* vault.writeReport(
+        indexRendered.slug,
+        indexRendered.markdown,
+      )
+
+      return { written, writtenIndex }
     }).pipe(
       Effect.provide(
         Layer.mergeAll(FileSystemVaultLive(vaultDir), StubLlmLive, StrictRendererLive),
       ),
     )
 
-    const written = await Effect.runPromise(program)
-    expect(written.relPath).toBe("reports/2026-W17.md")
-    const onDisk = await readFile(join(vaultDir, written.relPath), "utf8")
-    expect(onDisk).toContain("page_type: report")
-    expect(onDisk).toContain("slug: report-2026-W17")
-    expect(onDisk).toContain("[[2026-04-22--wikipedia-boj]]")
-    expect(onDisk).toContain("[[2026-04-22--wikipedia-2026-senate]]")
-    expect(onDisk).toContain("## Japan macro")
-    expect(onDisk).toContain("## US 2026 midterms")
+    const result = await Effect.runPromise(program)
+
+    expect(result.writtenIndex.relPath).toBe("reports/2026-W17.md")
+    const indexOnDisk = await readFile(
+      join(vaultDir, result.writtenIndex.relPath),
+      "utf8",
+    )
+    expect(indexOnDisk).toContain("page_type: report_index")
+    expect(indexOnDisk).toContain('slug: report-2026-W17')
+    expect(indexOnDisk).toContain("interest_count: 2")
+    expect(indexOnDisk).toContain("Japan macro")
+    expect(indexOnDisk).toContain("US 2026 midterms")
+
+    expect(result.written.map((w) => w.reportSlug).sort()).toEqual([
+      "2026-W17--japan-macro",
+      "2026-W17--us-midterms-2026",
+    ])
+
+    const jpOnDisk = await readFile(
+      join(vaultDir, "reports/2026-W17--japan-macro.md"),
+      "utf8",
+    )
+    expect(jpOnDisk).toContain("page_type: report")
+    expect(jpOnDisk).toContain('slug: report-2026-W17--japan-macro')
+    expect(jpOnDisk).toContain('interest_slug: "japan-macro"')
+    expect(jpOnDisk).toContain("### Thesis")
+    expect(jpOnDisk).toContain("[[2026-04-22--wikipedia-boj]]")
+    // The other interest's source must NOT appear in this file.
+    expect(jpOnDisk).not.toContain("[[2026-04-22--wikipedia-2026-senate]]")
+
+    const usOnDisk = await readFile(
+      join(vaultDir, "reports/2026-W17--us-midterms-2026.md"),
+      "utf8",
+    )
+    expect(usOnDisk).toContain('interest_slug: "us-midterms-2026"')
+    expect(usOnDisk).toContain("[[2026-04-22--wikipedia-2026-senate]]")
+    expect(usOnDisk).not.toContain("[[2026-04-22--wikipedia-boj]]")
   })
 })

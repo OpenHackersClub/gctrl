@@ -13,13 +13,13 @@ import { publicReportUrl, resolveVaultDir } from "../lib/env.js"
 import { DelivererService } from "../services/DelivererService.js"
 import {
   LlmService,
+  type InterestReportResponse,
   type ReportInterestInput,
-  type ReportSection,
 } from "../services/LlmService.js"
 import { ProfileService } from "../services/ProfileService.js"
 import {
   RendererService,
-  type ReportSectionInput,
+  type ReportIndexEntry,
 } from "../services/RendererService.js"
 import { SyncService } from "../services/SyncService.js"
 import {
@@ -41,23 +41,30 @@ const dateOpt = Options.text("date").pipe(
 )
 
 const maxItemsOpt = Options.integer("max-items-per-interest").pipe(
-  Options.withDescription("Cap items per research interest section"),
+  Options.withDescription("Cap evidence items per interest report"),
   Options.withDefault(5),
 )
 
+const concurrencyOpt = Options.integer("concurrency").pipe(
+  Options.withDescription("Concurrent LLM calls across interests"),
+  Options.withDefault(3),
+)
+
 const dryRunOpt = Options.boolean("dry-run").pipe(
-  Options.withDescription("Do not write the report file or send; print to stdout"),
+  Options.withDescription("Do not write the report files or send; print to stdout"),
   Options.withDefault(false),
 )
 
 const sendOpt = Options.boolean("send").pipe(
-  Options.withDescription("After generating, deliver to enabled telegram/discord channels"),
+  Options.withDescription(
+    "After generating, deliver the index to enabled telegram/discord channels",
+  ),
   Options.withDefault(false),
 )
 
 const syncOpt = Options.boolean("sync").pipe(
   Options.withDescription(
-    "After writing, upload report + briefs + wiki/sources to R2 (auto-on when --send and UBER_PUBLIC_BASE_URL are set)",
+    "After writing, upload reports + briefs + wiki/sources to R2 (auto-on when --send and UBER_PUBLIC_BASE_URL are set)",
   ),
   Options.withDefault(false),
 )
@@ -120,13 +127,34 @@ const weightedTopicsFor = (
     .map((t) => ({ slug: t.slug, weight: t.weight * boost }))
 }
 
+// First paragraph of analysis_md (the Thesis section body), trimmed for index headlines.
+const thesisHeadline = (analysis_md: string): string | null => {
+  const trimmed = analysis_md.trim()
+  if (trimmed.length === 0) return null
+  const match = trimmed.match(/###\s+Thesis\s*\n+([\s\S]*?)(?=\n###\s|$)/)
+  const block = (match ? match[1] : trimmed).trim()
+  if (block.length === 0) return null
+  const firstPara = block.split(/\n\s*\n/, 1)[0].trim()
+  return firstPara.length > 0 ? firstPara : null
+}
+
 export const report = Command.make(
   "report",
-  { sinceDaysOpt, dateOpt, maxItemsOpt, dryRunOpt, sendOpt, syncOpt, llmOpt },
+  {
+    sinceDaysOpt,
+    dateOpt,
+    maxItemsOpt,
+    concurrencyOpt,
+    dryRunOpt,
+    sendOpt,
+    syncOpt,
+    llmOpt,
+  },
   ({
     sinceDaysOpt: sinceDays,
     dateOpt: dateOptVal,
     maxItemsOpt: maxItems,
+    concurrencyOpt: concurrency,
     dryRunOpt: dryRun,
     sendOpt: doSend,
     syncOpt: doSyncOpt,
@@ -140,7 +168,7 @@ export const report = Command.make(
       const periodEnd = anchor
       const periodStart = toYmd(addDays(anchorDate, -sinceDays))
       yield* Console.log(
-        `generating weekly report ${periodLabel} (${periodStart} → ${periodEnd}) from ${vaultDir} (llm=${llmKind})`,
+        `generating weekly reports ${periodLabel} (${periodStart} → ${periodEnd}) from ${vaultDir} (llm=${llmKind}, concurrency=${concurrency})`,
       )
 
       const program = Effect.gen(function* () {
@@ -209,68 +237,138 @@ export const report = Command.make(
         })
 
         for (const ii of interestInputs) {
-          yield* Console.log(
-            `    ${ii.slug}: ${ii.candidates.length} candidate(s)`,
-          )
+          yield* Console.log(`    ${ii.slug}: ${ii.candidates.length} candidate(s)`)
         }
 
-        const response = yield* llm.generateReport({
-          periodLabel,
-          periodStart,
-          periodEnd,
-          profileName: profile.profile.identity.name,
-          interests: interestInputs,
-          maxItemsPerInterest: maxItems,
-        })
-
-        // Merge by slug so renderer has access to candidates per section.
-        const sectionBySlug = new Map<string, ReportSection>()
-        for (const s of response.sections) sectionBySlug.set(s.interestSlug, s)
-
-        const rendererSections: Array<ReportSectionInput> = interestInputs
-          .map((ii) => {
-            const s = sectionBySlug.get(ii.slug)
-            return {
-              interestSlug: ii.slug,
-              interestTitle: ii.title,
-              interestQuestion: ii.question,
-              summary_md: s?.summary_md?.trim() ?? "",
-              items: s?.items ?? [],
-              candidates: ii.candidates,
-            }
-          })
-          // Insight-only: drop sections the LLM chose to leave empty.
-          .filter((s) => s.summary_md.length > 0 || s.items.length > 0)
-
         const vaultSlugs = yield* vaultSvc.listSlugs()
-        const rendered = yield* renderer.renderReport({
+
+        // One LLM call per interest, run with bounded concurrency.
+        const responses: ReadonlyArray<{
+          readonly input: (typeof interestInputs)[number]
+          readonly response: InterestReportResponse
+        }> = yield* Effect.all(
+          interestInputs.map((ii) =>
+            Effect.gen(function* () {
+              yield* Console.log(`  → ${ii.slug}: requesting deep analysis ...`)
+              const response = yield* llm.generateInterestReport({
+                periodLabel,
+                periodStart,
+                periodEnd,
+                profileName: profile.profile.identity.name,
+                interest: ii,
+                maxItems,
+              })
+              return { input: ii, response }
+            }),
+          ),
+          { concurrency },
+        )
+
+        // Render per-interest reports; drop empty ones (insight-only).
+        type Written = {
+          readonly interest: (typeof interestInputs)[number]
+          readonly response: InterestReportResponse
+          readonly markdown: string
+          readonly reportSlug: string
+          readonly relPath: string | null
+          readonly itemCount: number
+          readonly citedClaims: number
+          readonly totalClaims: number
+        }
+        const written: Array<Written> = []
+        let totalCost = 0
+        for (const { input: ii, response } of responses) {
+          totalCost += response.costUsd
+          const analysisTrim = response.analysis_md.trim()
+          if (analysisTrim.length === 0 && response.items.length === 0) {
+            yield* Console.log(
+              `  ${ii.slug}: empty (no substantive signal) — skipping write`,
+            )
+            continue
+          }
+          const rendered = yield* renderer.renderInterestReport({
+            periodLabel,
+            periodStart,
+            periodEnd,
+            generator: llm.name(),
+            model: response.model,
+            promptHash: response.promptHash,
+            costUsd: response.costUsd,
+            profileName: profile.profile.identity.name,
+            interestSlug: ii.slug,
+            interestTitle: ii.title,
+            interestQuestion: ii.question,
+            interestTopics: ii.topics,
+            analysis_md: response.analysis_md,
+            items: response.items,
+            candidates: ii.candidates,
+            vaultSlugs,
+          })
+          let relPath: string | null = null
+          if (!dryRun) {
+            const w = yield* vaultSvc.writeReport(rendered.slug, rendered.markdown)
+            relPath = w.relPath
+            yield* Console.log(
+              `  ✓ ${w.relPath} (${w.contentHash}) — ${rendered.itemCount} item(s), ${rendered.citedClaims}/${rendered.totalClaims} claims cited`,
+            )
+          }
+          written.push({
+            interest: ii,
+            response,
+            markdown: rendered.markdown,
+            reportSlug: rendered.slug,
+            relPath,
+            itemCount: rendered.itemCount,
+            citedClaims: rendered.citedClaims,
+            totalClaims: rendered.totalClaims,
+          })
+        }
+
+        // Build the weekly index (one entry per surviving interest report).
+        const entries: Array<ReportIndexEntry> = written.map((w) => ({
+          interestSlug: w.interest.slug,
+          interestTitle: w.interest.title,
+          interestQuestion: w.interest.question,
+          reportSlug: w.reportSlug,
+          publicUrl: publicReportUrl(w.reportSlug),
+          itemCount: w.itemCount,
+          headline: thesisHeadline(w.response.analysis_md),
+        }))
+        const indexModel =
+          written.length > 0 ? written[0].response.model : llm.name()
+        const indexRendered = yield* renderer.renderReportIndex({
           periodLabel,
           periodStart,
           periodEnd,
           generator: llm.name(),
-          model: response.model,
-          promptHash: response.promptHash,
-          costUsd: response.costUsd,
+          model: indexModel,
+          totalCostUsd: totalCost,
           profileName: profile.profile.identity.name,
-          sections: rendererSections,
-          vaultSlugs,
+          entries,
         })
 
         if (dryRun) {
           yield* Console.log("(dry-run — not writing)")
           yield* Console.log("")
-          yield* Console.log(rendered.markdown)
+          yield* Console.log(indexRendered.markdown)
+          for (const w of written) {
+            yield* Console.log("")
+            yield* Console.log(`--- ${w.reportSlug} ---`)
+            yield* Console.log(w.markdown)
+          }
           return
         }
 
-        const written = yield* vaultSvc.writeReport(periodLabel, rendered.markdown)
+        const writtenIndex = yield* vaultSvc.writeReport(
+          indexRendered.slug,
+          indexRendered.markdown,
+        )
         yield* Console.log(
-          `✓ wrote ${written.relPath} (${written.contentHash}) — ${rendered.sectionCount} section(s), ${rendered.itemCount} item(s), ${rendered.citedClaims}/${rendered.totalClaims} claims cited`,
+          `✓ ${writtenIndex.relPath} (${writtenIndex.contentHash}) — ${indexRendered.interestCount} interest report(s), $${totalCost.toFixed(4)} total`,
         )
 
-        const reportUrl = publicReportUrl(periodLabel)
-        // Auto-sync when sending, so the URL in the delivered message resolves.
-        const doSync = doSyncOpt || (doSend && reportUrl !== null)
+        const indexUrl = publicReportUrl(periodLabel)
+        const doSync = doSyncOpt || (doSend && indexUrl !== null)
         if (doSync) {
           yield* Console.log(`syncing vault → R2 ...`)
           const syncResult = yield* Effect.serviceOption(SyncService).pipe(
@@ -305,13 +403,13 @@ export const report = Command.make(
 
         if (!doSend) {
           yield* Console.log("")
-          yield* Console.log(rendered.markdown)
+          yield* Console.log(indexRendered.markdown)
           return
         }
 
-        const deliveryContent = reportUrl
-          ? `🌐 ${reportUrl}\n\n${rendered.markdown}`
-          : rendered.markdown
+        const deliveryContent = indexUrl
+          ? `🌐 ${indexUrl}\n\n${indexRendered.markdown}`
+          : indexRendered.markdown
 
         const deliverer = yield* DelivererService
         const channels = yield* resolveChannels(
@@ -357,6 +455,6 @@ export const report = Command.make(
     }),
 ).pipe(
   Command.withDescription(
-    "Generate a weekly research report from research/ interests (optionally --send to channels)",
+    "Generate deep weekly research reports (one file per interest) from research/ (optionally --send the index to channels)",
   ),
 )
