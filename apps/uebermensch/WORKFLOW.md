@@ -170,7 +170,7 @@ Secrets MUST live in kernel driver configs, NOT in the Uebermensch app or profil
 
 | Secret | Consumer driver |
 |--------|----------------|
-| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | `driver-llm` |
+| `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_AI_GATEWAY_ID` (default provider) — `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` only if bypassing the Gateway | `driver-llm` |
 | `TELEGRAM_BOT_TOKEN` | `driver-telegram` |
 | `DISCORD_BOT_TOKEN` / `DISCORD_WEBHOOK_URL` | `driver-discord` |
 | `KALSHI_API_KEY` (optional) | `driver-markets` |

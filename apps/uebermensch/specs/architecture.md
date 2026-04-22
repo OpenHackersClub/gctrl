@@ -44,7 +44,7 @@ flowchart TB
   end
   subgraph L0["L0 — External"]
     Prof2["$UBER_VAULT_DIR\n(Obsidian vault, git + R2)"]
-    A["Anthropic / OpenAI"]
+    A["Cloudflare AI Gateway\n(→ Workers AI / Anthropic / OpenAI)"]
     TgX["Telegram"]
     DcX["Discord"]
     RssX["RSS feeds"]
@@ -294,7 +294,7 @@ Uebermensch exchanges state with gctrl-board via kernel IPC events + HTTP API, N
 | Daily budget exceeded | Guardrail `Deny` | Next LLM call blocked; open inbox alert; daily brief skipped if pre-brief budget is already spent |
 | Profile invalid | `ProfileService` decode error | All Uebermensch endpoints return 503 with error message; CLI exits non-zero with error pointing at file+line |
 | Wiki lint broken | Uebermensch queries `gctrl kb lint` | Degraded: brief still produced; warnings surface in app eval dashboard |
-| No candidates for brief | Empty candidate set | Brief rendered with "no new items in tracked topics" note + scrape-health summary |
+| No candidates for brief | Empty candidate set | Brief rendered with zero items (no placeholder/process commentary in body). A scrape-health alert surfaces in `uber_alerts` (out-of-band) so the user knows ingest is quiet without polluting the brief itself. |
 
 ## 10. Security
 

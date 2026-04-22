@@ -44,17 +44,6 @@ export const StubLlmLive = Layer.succeed(LlmService, {
           suggested_action: null,
         }
       })
-      if (items.length === 0) {
-        items.push({
-          kind: "news",
-          title: "No activity",
-          summary_md: "No candidate pages in window.",
-          topic: null,
-          thesis: null,
-          source_candidate_ids: [],
-          suggested_action: null,
-        })
-      }
       const topicsCovered = Array.from(
         new Set(items.map((i) => i.topic).filter((t): t is string => t !== null)),
       )

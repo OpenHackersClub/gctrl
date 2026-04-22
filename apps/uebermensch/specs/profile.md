@@ -411,13 +411,13 @@ Frontmatter:
 ```yaml
 personas:
   uber-curator:
-    model: "claude-opus-4-7"
+    model: "@cf/google/gemma-4-26b-a4b-it"  # routed via Cloudflare AI Gateway
     prompt_path: "prompts/uber-curator.md"
   uber-ingest:
     model: "claude-haiku-4-5"
     prompt_path: "prompts/uber-ingest.md"
   uber-deepdive:
-    model: "claude-opus-4-7"
+    model: "@cf/google/gemma-4-26b-a4b-it"  # routed via Cloudflare AI Gateway
     prompt_path: "prompts/uber-deepdive.md"
   uber-evaluator:
     model: "claude-haiku-4-5"
