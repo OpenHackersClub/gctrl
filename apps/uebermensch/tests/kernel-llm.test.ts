@@ -5,7 +5,8 @@ import type { CandidateRef } from "../src/lib/candidates.js"
 import { LlmService } from "../src/services/LlmService.js"
 import type { WikiPage } from "../src/services/VaultService.js"
 
-const { extractJson, buildUserPrompt, kernelBase, MODEL } = _internal
+const { extractJson, buildUserPrompt, kernelBase, MODEL, SUMMARY_MODEL, normalizeInsights } =
+  _internal
 
 const page = (stem: string, body: string, topics: ReadonlyArray<string> = []): WikiPage => ({
   relPath: `wiki/sources/${stem}.md`,
@@ -158,6 +159,55 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
       }).pipe(Effect.provide(KernelLlmLive)),
     )
     expect(Exit.isFailure(exit)).toBe(true)
+  })
+
+  it("summarizeSource posts to kernel with SUMMARY_MODEL and returns insights", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          model: SUMMARY_MODEL,
+          usage: { input_tokens: 500, output_tokens: 200 },
+          content: [
+            {
+              type: "text",
+              text: "Here you go:\n\n## Key Insights\n\n- Tokyo lifted restrictions.\n- Sales now cover 17 allies.\n",
+            },
+          ],
+        }),
+    })
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+
+    const res = await Effect.runPromise(
+      Effect.gen(function* () {
+        const llm = yield* LlmService
+        return yield* llm.summarizeSource({
+          title: "Arms Exports",
+          url: "https://example.com/arms",
+          text: "long article body ".repeat(100),
+          topics: ["japan-politics"],
+        })
+      }).pipe(Effect.provide(KernelLlmLive)),
+    )
+
+    expect(res.model).toBe(SUMMARY_MODEL)
+    expect(res.insightsMd.startsWith("## Key Insights")).toBe(true)
+    expect(res.insightsMd).toContain("17 allies")
+    // 500 * $1/M + 200 * $5/M = $0.0005 + $0.001 = $0.0015
+    expect(res.costUsd).toBeCloseTo(0.0015, 6)
+
+    const [, init] = fetchMock.mock.calls[0]!
+    const body = JSON.parse((init as { body: string }).body)
+    expect(body.model).toBe(SUMMARY_MODEL)
+    expect(body.system).toContain("uebermensch-ingest")
+    expect(body.messages[0].content).toContain("Arms Exports")
+  })
+
+  it("normalizeInsights strips preamble before the heading", () => {
+    const out = normalizeInsights("Here are your insights:\n\n## Key Insights\n\n- one\n- two\n")
+    expect(out.startsWith("## Key Insights")).toBe(true)
+    expect(out).not.toMatch(/Here are your insights/)
   })
 
   it("fails with invalid when response text has no JSON", async () => {
