@@ -34,7 +34,7 @@ flowchart TB
     Sync["Sync\n(vault → R2, index → D1)"]
   end
   subgraph Drivers["Drivers (LKMs, feature-gated)"]
-    Llm["driver-llm\n(Anthropic/OpenAI)"]
+    Llm["driver-llm\n(Cloudflare AI Gateway)"]
     Tg["driver-telegram"]
     Dc["driver-discord"]
     Rss["driver-rss"]
@@ -243,7 +243,7 @@ Full spec in [specs/eval.md](specs/eval.md).
 
 | Driver | Purpose | Kernel interface | Status |
 |--------|---------|------------------|--------|
-| `driver-llm` | Unified LLM interface (Anthropic, OpenAI) — every call = Session + spans | `LlmPort` (new) | Planned (blocks M0) |
+| `driver-llm` | Unified LLM interface — default provider **Cloudflare AI Gateway** (default model `@cf/google/gemma-4-26b-a4b-it`); Anthropic/OpenAI still reachable via the Gateway's upstream routing. Every call = Session + spans | `LlmPort` (new) | Planned (blocks M0) |
 | `driver-telegram` | Bot webhook + send API | `MessagingPort` (new) | Planned (blocks M2) |
 | `driver-discord` | Webhook + slash commands | `MessagingPort` | Planned (blocks M2) |
 | `driver-rss` | Scheduled RSS polling → source ingest | `SourcePort` (new) | Planned (blocks M1) |
