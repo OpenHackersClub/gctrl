@@ -1,10 +1,15 @@
 import { createHash } from "node:crypto"
 import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises"
 import { basename, extname, join, relative } from "node:path"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Schema } from "effect"
 import matter from "gray-matter"
 import { VaultError } from "../errors.js"
-import { VaultService, type WikiPage } from "../services/VaultService.js"
+import { ResearchInterestFrontmatter } from "../schemas.js"
+import {
+  VaultService,
+  type ResearchInterest,
+  type WikiPage,
+} from "../services/VaultService.js"
 
 const hashContent = (s: string) =>
   `sha256:${createHash("sha256").update(s, "utf8").digest("hex")}`
@@ -73,7 +78,12 @@ export const FileSystemVaultLive = (vaultDir: string) =>
     listSlugs: () =>
       Effect.tryPromise({
         try: async () => {
-          const files = await walkMarkdown(vaultDir, ["wiki", "theses", "briefs"])
+          const files = await walkMarkdown(vaultDir, [
+            "wiki",
+            "theses",
+            "briefs",
+            "reports",
+          ])
           const slugs = new Set<string>()
           for (const f of files) slugs.add(basename(f.abs, ".md"))
           return slugs as ReadonlySet<string>
@@ -94,6 +104,72 @@ export const FileSystemVaultLive = (vaultDir: string) =>
         },
         catch: (e) =>
           new VaultError({ message: `write brief failed: ${String(e)}`, path: vaultDir }),
+      }),
+    listResearchInterests: () =>
+      Effect.gen(function* () {
+        const files = yield* Effect.tryPromise({
+          try: () => walkMarkdown(vaultDir, ["research"]),
+          catch: (e) =>
+            new VaultError({
+              message: `list research failed: ${String(e)}`,
+              path: vaultDir,
+              kind: "io_failure",
+            }),
+        })
+        const out: Array<ResearchInterest> = []
+        for (const f of files) {
+          const raw = yield* Effect.tryPromise({
+            try: () => readFile(f.abs, "utf8"),
+            catch: (e) =>
+              new VaultError({
+                message: `read research file failed: ${String(e)}`,
+                path: f.abs,
+                kind: "io_failure",
+              }),
+          })
+          const parsed = matter(raw)
+          const data = (parsed.data ?? {}) as Record<string, unknown>
+          const decoded = yield* Schema.decodeUnknown(ResearchInterestFrontmatter)(data).pipe(
+            Effect.mapError(
+              (e) =>
+                new VaultError({
+                  message: `research interest ${f.rel} invalid: ${String(e)}`,
+                  path: f.abs,
+                  kind: "parse_failure",
+                }),
+            ),
+          )
+          out.push({
+            slug: decoded.slug,
+            title: decoded.title,
+            question: decoded.question ?? null,
+            topics: decoded.topics,
+            sources: decoded.sources ?? [],
+            horizon: decoded.horizon ?? null,
+            weight: decoded.weight ?? null,
+            notes: parsed.content.trim(),
+            relPath: f.rel,
+          })
+        }
+        return out
+      }),
+    writeReport: (slug, content) =>
+      Effect.tryPromise({
+        try: async () => {
+          const relPath = `reports/${slug}.md`
+          const absPath = join(vaultDir, relPath)
+          const tmpPath = `${absPath}.tmp-${process.pid}-${Date.now()}`
+          await mkdir(join(vaultDir, "reports"), { recursive: true })
+          await writeFile(tmpPath, content, "utf8")
+          await rename(tmpPath, absPath)
+          return { absPath, relPath, contentHash: hashContent(content) }
+        },
+        catch: (e) =>
+          new VaultError({
+            message: `write report failed: ${String(e)}`,
+            path: vaultDir,
+            kind: "io_failure",
+          }),
       }),
     writeSource: (slug, content, options) =>
       Effect.gen(function* () {

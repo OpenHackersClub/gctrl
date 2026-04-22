@@ -135,6 +135,103 @@ async fn net_fetch_static_works_without_cf_creds() {
 }
 
 #[tokio::test]
+async fn telegram_send_returns_503_without_token() {
+    // Guard: isolate from any ambient TELEGRAM_BOT_TOKEN in the test env.
+    // SAFETY: tests in this crate run single-threaded by default; no concurrent env mutation.
+    let prev = std::env::var("TELEGRAM_BOT_TOKEN").ok();
+    unsafe {
+        std::env::remove_var("TELEGRAM_BOT_TOKEN");
+    }
+    let app = router_with(NetConfig::default());
+    let (status, body) = post_json(
+        &app,
+        "/api/telegram/send",
+        serde_json::json!({ "chat_id": "123", "text": "hi" }),
+    )
+    .await;
+    if let Some(v) = prev {
+        unsafe {
+            std::env::set_var("TELEGRAM_BOT_TOKEN", v);
+        }
+    }
+    assert_eq!(status, 503);
+    assert!(body.contains("TELEGRAM_BOT_TOKEN"));
+}
+
+#[tokio::test]
+async fn discord_send_rejects_non_webhook_url() {
+    let app = router_with(NetConfig::default());
+    let (status, body) = post_json(
+        &app,
+        "/api/discord/send",
+        serde_json::json!({ "webhook_url": "https://example.com/evil", "content": "hi" }),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert!(body.contains("discord.com/api/webhooks"));
+}
+
+#[tokio::test]
+async fn llm_messages_fails_closed_without_gateway_config() {
+    // Guard: isolate from any ambient CF/Anthropic creds in the test env.
+    // SAFETY: tests in this crate run single-threaded by default; no concurrent env mutation.
+    let prev_acct = std::env::var("CLOUDFLARE_ACCOUNT_ID").ok();
+    let prev_gw = std::env::var("CLOUDFLARE_AI_GATEWAY_ID").ok();
+    let prev_gw_tok = std::env::var("CLOUDFLARE_AI_GATEWAY_TOKEN").ok();
+    let prev_anth = std::env::var("ANTHROPIC_API_KEY").ok();
+    unsafe {
+        std::env::remove_var("CLOUDFLARE_ACCOUNT_ID");
+        std::env::remove_var("CLOUDFLARE_AI_GATEWAY_ID");
+        std::env::remove_var("CLOUDFLARE_AI_GATEWAY_TOKEN");
+        std::env::remove_var("ANTHROPIC_API_KEY");
+    }
+    let app = router_with(NetConfig::default());
+    let probe_body = serde_json::json!({
+        "model": "claude-opus-4-7",
+        "max_tokens": 16,
+        "messages": [{ "role": "user", "content": "hi" }],
+    });
+
+    // 1. Missing CLOUDFLARE_ACCOUNT_ID → 503
+    let (status, body) = post_json(&app, "/api/llm/messages", probe_body.clone()).await;
+    assert_eq!(status, 503);
+    assert!(body.contains("CLOUDFLARE_ACCOUNT_ID"));
+
+    // 2. Account id set but missing gateway id → 503
+    unsafe { std::env::set_var("CLOUDFLARE_ACCOUNT_ID", "acct-test") };
+    let (status, body) = post_json(&app, "/api/llm/messages", probe_body.clone()).await;
+    assert_eq!(status, 503);
+    assert!(body.contains("CLOUDFLARE_AI_GATEWAY_ID"));
+
+    // 3. Account + gateway set but no auth → 503
+    unsafe { std::env::set_var("CLOUDFLARE_AI_GATEWAY_ID", "gw-test") };
+    let (status, body) = post_json(&app, "/api/llm/messages", probe_body).await;
+    assert_eq!(status, 503);
+    assert!(
+        body.contains("ANTHROPIC_API_KEY") && body.contains("CLOUDFLARE_AI_GATEWAY_TOKEN"),
+        "body was: {body}"
+    );
+
+    // Restore ambient env.
+    unsafe {
+        std::env::remove_var("CLOUDFLARE_ACCOUNT_ID");
+        std::env::remove_var("CLOUDFLARE_AI_GATEWAY_ID");
+        if let Some(v) = prev_acct {
+            std::env::set_var("CLOUDFLARE_ACCOUNT_ID", v);
+        }
+        if let Some(v) = prev_gw {
+            std::env::set_var("CLOUDFLARE_AI_GATEWAY_ID", v);
+        }
+        if let Some(v) = prev_gw_tok {
+            std::env::set_var("CLOUDFLARE_AI_GATEWAY_TOKEN", v);
+        }
+        if let Some(v) = prev_anth {
+            std::env::set_var("ANTHROPIC_API_KEY", v);
+        }
+    }
+}
+
+#[tokio::test]
 async fn net_fetch_browser_returns_503_without_cf_creds() {
     let app = router_with(NetConfig::default());
     let (status, body) = post_json(

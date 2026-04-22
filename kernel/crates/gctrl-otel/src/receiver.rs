@@ -149,6 +149,11 @@ fn build_router(state: Arc<AppState>) -> Router {
         // Wrangler driver (LKM — delegates to native `wrangler` CLI)
         .route("/api/wrangler/whoami", get(wrangler_whoami))
         .route("/api/wrangler/exec", post(wrangler_exec_passthrough))
+        // Messaging drivers (LKM — outbound to Telegram Bot API and Discord webhooks)
+        .route("/api/telegram/send", post(telegram_send))
+        .route("/api/discord/send", post(discord_send))
+        // LLM driver (LKM — outbound to Anthropic Messages API)
+        .route("/api/llm/messages", post(llm_messages))
         // Search driver (Brave Search API)
         .route("/api/search/web", post(search_web))
         .route("/api/search/news", post(search_news))
@@ -2540,6 +2545,191 @@ async fn net_screenshot(
         }))
         .into_response(),
         Err(e) => (net_error_status(&e), e.to_string()).into_response(),
+    }
+}
+
+// --- Messaging Drivers (LKM — outbound to Telegram Bot API + Discord webhooks) ---
+
+#[derive(Deserialize)]
+struct TelegramSendBody {
+    chat_id: String,
+    text: String,
+    #[serde(default)]
+    disable_notification: bool,
+}
+
+#[derive(Deserialize)]
+struct DiscordSendBody {
+    webhook_url: String,
+    content: String,
+}
+
+fn messaging_upstream_status(status: reqwest::StatusCode) -> StatusCode {
+    match status.as_u16() {
+        429 => StatusCode::TOO_MANY_REQUESTS,
+        400 | 401 | 403 | 404 => StatusCode::BAD_REQUEST,
+        s if s >= 500 => StatusCode::BAD_GATEWAY,
+        _ => StatusCode::BAD_GATEWAY,
+    }
+}
+
+async fn telegram_send(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<TelegramSendBody>,
+) -> impl IntoResponse {
+    let Ok(token) = std::env::var("TELEGRAM_BOT_TOKEN") else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "TELEGRAM_BOT_TOKEN not configured",
+        )
+            .into_response();
+    };
+    let url = format!("https://api.telegram.org/bot{token}/sendMessage");
+    let payload = serde_json::json!({
+        "chat_id": body.chat_id,
+        "text": body.text,
+        "disable_notification": body.disable_notification,
+    });
+    match state.http_client.post(&url).json(&payload).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            if status.is_success() {
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+                let message_id = parsed
+                    .get("result")
+                    .and_then(|r| r.get("message_id"))
+                    .and_then(|m| m.as_i64());
+                Json(serde_json::json!({
+                    "ok": true,
+                    "message_id": message_id,
+                }))
+                .into_response()
+            } else {
+                (messaging_upstream_status(status), text).into_response()
+            }
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            format!("telegram request failed: {e}"),
+        )
+            .into_response(),
+    }
+}
+
+async fn discord_send(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<DiscordSendBody>,
+) -> impl IntoResponse {
+    if !body.webhook_url.starts_with("https://discord.com/api/webhooks/")
+        && !body.webhook_url.starts_with("https://discordapp.com/api/webhooks/")
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            "webhook_url must be a discord.com/api/webhooks/... URL",
+        )
+            .into_response();
+    }
+    let payload = serde_json::json!({ "content": body.content });
+    match state
+        .http_client
+        .post(&body.webhook_url)
+        .json(&payload)
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            let status = resp.status();
+            if status.is_success() {
+                Json(serde_json::json!({ "ok": true })).into_response()
+            } else {
+                let text = resp.text().await.unwrap_or_default();
+                (messaging_upstream_status(status), text).into_response()
+            }
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            format!("discord request failed: {e}"),
+        )
+            .into_response(),
+    }
+}
+
+// --- LLM Driver (LKM — outbound via Cloudflare AI Gateway) ---
+//
+// Forwards Anthropic-shape `/v1/messages` payloads through Cloudflare AI Gateway
+// for centralized observability, caching, and optional managed provider keys.
+//
+// Required env:
+//   CLOUDFLARE_ACCOUNT_ID        — CF account owning the gateway
+//   CLOUDFLARE_AI_GATEWAY_ID     — slug of the AI Gateway
+// At least one of:
+//   ANTHROPIC_API_KEY                — BYOK mode, forwarded as `x-api-key`
+//   CLOUDFLARE_AI_GATEWAY_TOKEN      — Authenticated-Gateway mode, forwarded as
+//                                      `cf-aig-authorization: Bearer …`
+//                                      (gateway injects its managed Anthropic
+//                                      key — no Anthropic key needed locally)
+
+async fn llm_messages(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let Ok(account_id) = std::env::var("CLOUDFLARE_ACCOUNT_ID") else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "CLOUDFLARE_ACCOUNT_ID not configured",
+        )
+            .into_response();
+    };
+    let Ok(gateway_id) = std::env::var("CLOUDFLARE_AI_GATEWAY_ID") else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "CLOUDFLARE_AI_GATEWAY_ID not configured",
+        )
+            .into_response();
+    };
+    let anthropic_key = std::env::var("ANTHROPIC_API_KEY").ok();
+    let gateway_token = std::env::var("CLOUDFLARE_AI_GATEWAY_TOKEN").ok();
+    if anthropic_key.is_none() && gateway_token.is_none() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "one of ANTHROPIC_API_KEY (BYOK) or CLOUDFLARE_AI_GATEWAY_TOKEN (managed) must be set",
+        )
+            .into_response();
+    }
+    let url = format!(
+        "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/anthropic/v1/messages"
+    );
+    let mut req = state
+        .http_client
+        .post(&url)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json");
+    if let Some(k) = anthropic_key {
+        req = req.header("x-api-key", k);
+    }
+    if let Some(t) = gateway_token {
+        req = req.header("cf-aig-authorization", format!("Bearer {t}"));
+    }
+    match req.json(&body).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            if status.is_success() {
+                match serde_json::from_str::<serde_json::Value>(&text) {
+                    Ok(v) => Json(v).into_response(),
+                    Err(_) => (StatusCode::BAD_GATEWAY, text).into_response(),
+                }
+            } else {
+                (messaging_upstream_status(status), text).into_response()
+            }
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            format!("ai gateway request failed: {e}"),
+        )
+            .into_response(),
     }
 }
 

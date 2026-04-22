@@ -1,6 +1,6 @@
 import { Effect, Layer } from "effect"
 import { sha256 } from "../lib/hash.js"
-import { LlmService } from "../services/LlmService.js"
+import { LlmService, type ReportSection } from "../services/LlmService.js"
 import type { CuratedItem } from "../services/RendererService.js"
 
 const STUB_MODEL = "stub-llm@0.1"
@@ -62,6 +62,50 @@ export const StubLlmLive = Layer.succeed(LlmService, {
         items,
         topicsCovered,
         thesesCovered: [],
+        promptHash,
+        costUsd: 0,
+        model: STUB_MODEL,
+      }
+    }),
+  generateReport: (req) =>
+    Effect.sync(() => {
+      const candidateIds = req.interests.flatMap((it) => it.candidates.map((c) => c.id))
+      const prompt = [
+        "persona: uber-researcher/stub",
+        `period: ${req.periodLabel}`,
+        `profile: ${req.profileName}`,
+        `interests: ${req.interests.map((i) => i.slug).join(",")}`,
+        `candidates: ${candidateIds.join(",")}`,
+      ].join("\n")
+      const promptHash = sha256(prompt)
+      const sections: Array<ReportSection> = req.interests.map((it) => {
+        const top = [...it.candidates]
+          .sort((a, b) => b.score - a.score)
+          .slice(0, req.maxItemsPerInterest)
+        const items: Array<CuratedItem> = top.map((c) => {
+          const title =
+            (c.page.frontmatter.title as string | undefined) ?? c.page.stem
+          const pageTopics =
+            (c.page.frontmatter.topics as ReadonlyArray<string> | undefined) ?? []
+          const topic = pageTopics[0] ?? null
+          return {
+            kind: "news",
+            title,
+            summary_md: `Stub summary for [[${c.page.stem}]].`,
+            topic,
+            thesis: null,
+            source_candidate_ids: [c.id],
+            suggested_action: null,
+          }
+        })
+        const summary_md =
+          items.length === 0
+            ? `No new candidates this week for ${it.title}.`
+            : `Stub weekly overview for ${it.title} covering ${items.length} item(s).`
+        return { interestSlug: it.slug, summary_md, items }
+      })
+      return {
+        sections,
         promptHash,
         costUsd: 0,
         model: STUB_MODEL,
