@@ -2656,29 +2656,63 @@ async fn discord_send(
     }
 }
 
-// --- LLM Driver (LKM — outbound to Anthropic Messages API) ---
+// --- LLM Driver (LKM — outbound via Cloudflare AI Gateway) ---
+//
+// Forwards Anthropic-shape `/v1/messages` payloads through Cloudflare AI Gateway
+// for centralized observability, caching, and optional managed provider keys.
+//
+// Required env:
+//   CLOUDFLARE_ACCOUNT_ID        — CF account owning the gateway
+//   CLOUDFLARE_AI_GATEWAY_ID     — slug of the AI Gateway
+// At least one of:
+//   ANTHROPIC_API_KEY                — BYOK mode, forwarded as `x-api-key`
+//   CLOUDFLARE_AI_GATEWAY_TOKEN      — Authenticated-Gateway mode, forwarded as
+//                                      `cf-aig-authorization: Bearer …`
+//                                      (gateway injects its managed Anthropic
+//                                      key — no Anthropic key needed locally)
 
 async fn llm_messages(
     State(state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let Ok(key) = std::env::var("ANTHROPIC_API_KEY") else {
+    let Ok(account_id) = std::env::var("CLOUDFLARE_ACCOUNT_ID") else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            "ANTHROPIC_API_KEY not configured",
+            "CLOUDFLARE_ACCOUNT_ID not configured",
         )
             .into_response();
     };
-    match state
+    let Ok(gateway_id) = std::env::var("CLOUDFLARE_AI_GATEWAY_ID") else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "CLOUDFLARE_AI_GATEWAY_ID not configured",
+        )
+            .into_response();
+    };
+    let anthropic_key = std::env::var("ANTHROPIC_API_KEY").ok();
+    let gateway_token = std::env::var("CLOUDFLARE_AI_GATEWAY_TOKEN").ok();
+    if anthropic_key.is_none() && gateway_token.is_none() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "one of ANTHROPIC_API_KEY (BYOK) or CLOUDFLARE_AI_GATEWAY_TOKEN (managed) must be set",
+        )
+            .into_response();
+    }
+    let url = format!(
+        "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/anthropic/v1/messages"
+    );
+    let mut req = state
         .http_client
-        .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", key)
+        .post(&url)
         .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await
-    {
+        .header("content-type", "application/json");
+    if let Some(k) = anthropic_key {
+        req = req.header("x-api-key", k);
+    }
+    if let Some(t) = gateway_token {
+        req = req.header("cf-aig-authorization", format!("Bearer {t}"));
+    }
+    match req.json(&body).send().await {
         Ok(resp) => {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
@@ -2693,7 +2727,7 @@ async fn llm_messages(
         }
         Err(e) => (
             StatusCode::BAD_GATEWAY,
-            format!("anthropic request failed: {e}"),
+            format!("ai gateway request failed: {e}"),
         )
             .into_response(),
     }

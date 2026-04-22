@@ -172,31 +172,63 @@ async fn discord_send_rejects_non_webhook_url() {
 }
 
 #[tokio::test]
-async fn llm_messages_returns_503_without_api_key() {
-    // Guard: isolate from any ambient ANTHROPIC_API_KEY in the test env.
+async fn llm_messages_fails_closed_without_gateway_config() {
+    // Guard: isolate from any ambient CF/Anthropic creds in the test env.
     // SAFETY: tests in this crate run single-threaded by default; no concurrent env mutation.
-    let prev = std::env::var("ANTHROPIC_API_KEY").ok();
+    let prev_acct = std::env::var("CLOUDFLARE_ACCOUNT_ID").ok();
+    let prev_gw = std::env::var("CLOUDFLARE_AI_GATEWAY_ID").ok();
+    let prev_gw_tok = std::env::var("CLOUDFLARE_AI_GATEWAY_TOKEN").ok();
+    let prev_anth = std::env::var("ANTHROPIC_API_KEY").ok();
     unsafe {
+        std::env::remove_var("CLOUDFLARE_ACCOUNT_ID");
+        std::env::remove_var("CLOUDFLARE_AI_GATEWAY_ID");
+        std::env::remove_var("CLOUDFLARE_AI_GATEWAY_TOKEN");
         std::env::remove_var("ANTHROPIC_API_KEY");
     }
     let app = router_with(NetConfig::default());
-    let (status, body) = post_json(
-        &app,
-        "/api/llm/messages",
-        serde_json::json!({
-            "model": "claude-opus-4-7",
-            "max_tokens": 16,
-            "messages": [{ "role": "user", "content": "hi" }],
-        }),
-    )
-    .await;
-    if let Some(v) = prev {
-        unsafe {
+    let probe_body = serde_json::json!({
+        "model": "claude-opus-4-7",
+        "max_tokens": 16,
+        "messages": [{ "role": "user", "content": "hi" }],
+    });
+
+    // 1. Missing CLOUDFLARE_ACCOUNT_ID → 503
+    let (status, body) = post_json(&app, "/api/llm/messages", probe_body.clone()).await;
+    assert_eq!(status, 503);
+    assert!(body.contains("CLOUDFLARE_ACCOUNT_ID"));
+
+    // 2. Account id set but missing gateway id → 503
+    unsafe { std::env::set_var("CLOUDFLARE_ACCOUNT_ID", "acct-test") };
+    let (status, body) = post_json(&app, "/api/llm/messages", probe_body.clone()).await;
+    assert_eq!(status, 503);
+    assert!(body.contains("CLOUDFLARE_AI_GATEWAY_ID"));
+
+    // 3. Account + gateway set but no auth → 503
+    unsafe { std::env::set_var("CLOUDFLARE_AI_GATEWAY_ID", "gw-test") };
+    let (status, body) = post_json(&app, "/api/llm/messages", probe_body).await;
+    assert_eq!(status, 503);
+    assert!(
+        body.contains("ANTHROPIC_API_KEY") && body.contains("CLOUDFLARE_AI_GATEWAY_TOKEN"),
+        "body was: {body}"
+    );
+
+    // Restore ambient env.
+    unsafe {
+        std::env::remove_var("CLOUDFLARE_ACCOUNT_ID");
+        std::env::remove_var("CLOUDFLARE_AI_GATEWAY_ID");
+        if let Some(v) = prev_acct {
+            std::env::set_var("CLOUDFLARE_ACCOUNT_ID", v);
+        }
+        if let Some(v) = prev_gw {
+            std::env::set_var("CLOUDFLARE_AI_GATEWAY_ID", v);
+        }
+        if let Some(v) = prev_gw_tok {
+            std::env::set_var("CLOUDFLARE_AI_GATEWAY_TOKEN", v);
+        }
+        if let Some(v) = prev_anth {
             std::env::set_var("ANTHROPIC_API_KEY", v);
         }
     }
-    assert_eq!(status, 503);
-    assert!(body.contains("ANTHROPIC_API_KEY"));
 }
 
 #[tokio::test]
