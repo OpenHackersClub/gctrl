@@ -235,15 +235,13 @@ export const R2SyncLive = Layer.effect(
   }),
 )
 
-export const R2SyncConfigFromEnv = Layer.effect(
-  R2SyncConfigTag,
-  Effect.gen(function* () {
-    const bucket = process.env.R2_BUCKET ?? "gctrl-vault"
-    const concurrency = Number(process.env.R2_SYNC_CONCURRENCY ?? "3")
-    const cfg: R2SyncConfig = {
-      bucket,
-      concurrency: Number.isFinite(concurrency) && concurrency > 0 ? concurrency : 3,
-    }
-    return cfg
-  }),
-)
+const configFromEnv = (): R2SyncConfig => {
+  const bucket = process.env.R2_BUCKET ?? "gctrl-vault"
+  const concurrency = Number(process.env.R2_SYNC_CONCURRENCY ?? "3")
+  return {
+    bucket,
+    concurrency: Number.isFinite(concurrency) && concurrency > 0 ? concurrency : 3,
+  }
+}
+
+export const R2SyncConfigFromEnv = Layer.sync(R2SyncConfigTag, configFromEnv)

@@ -72,10 +72,10 @@ interface Route {
 const defineRoute = (method: string, path: string, handler: ApiHandler): Route => {
   const paramNames: string[] = []
   const pattern = new RegExp(
-    "^" + path.replace(/:([^/]+)/g, (_, name) => {
+    `^${path.replace(/:([^/]+)/g, (_, name) => {
       paramNames.push(name)
       return "([^/]+)"
-    }) + "$"
+    })}$`,
   )
   return { method, pattern, paramNames, handler }
 }

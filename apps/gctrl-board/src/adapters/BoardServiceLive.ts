@@ -5,12 +5,7 @@
  */
 import { Effect, Layer } from "effect"
 import { BoardService } from "../services/BoardService.js"
-import {
-  BoardError,
-  IssueNotFoundError,
-  KernelError,
-  KernelUnavailableError,
-} from "../services/errors.js"
+import { BoardError, IssueNotFoundError } from "../services/errors.js"
 import { KernelClient } from "./KernelClient.js"
 import type { Issue, IssueId, IssueStatus, IssueFilter, CreateIssueInput, Assignee, Project } from "../schema/index.js"
 

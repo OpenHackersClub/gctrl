@@ -7,7 +7,7 @@
  * Uses @effect/platform HttpClient with typed TaggedErrors and Effect.catchTags.
  */
 import { Context, Effect, Layer } from "effect"
-import { HttpClient, HttpClientResponse, HttpBody } from "@effect/platform"
+import { HttpBody, HttpClient } from "@effect/platform"
 import { KernelError, KernelUnavailableError } from "../services/errors.js"
 
 export class KernelClient extends Context.Tag("KernelClient")<
