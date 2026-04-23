@@ -197,7 +197,8 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
     // 500 * $1/M + 200 * $5/M = $0.0005 + $0.001 = $0.0015
     expect(res.costUsd).toBeCloseTo(0.0015, 6)
 
-    const [, init] = fetchMock.mock.calls[0]!
+    const [url, init] = fetchMock.mock.calls[0]!
+    expect(url).toBe(`${kernelBase()}/api/llm/messages`)
     const body = JSON.parse((init as { body: string }).body)
     expect(body.model).toBe(SUMMARY_MODEL)
     expect(body.system).toContain("uebermensch-ingest")
@@ -208,6 +209,82 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
     const out = normalizeInsights("Here are your insights:\n\n## Key Insights\n\n- one\n- two\n")
     expect(out.startsWith("## Key Insights")).toBe(true)
     expect(out).not.toMatch(/Here are your insights/)
+  })
+
+  it("routes @cf/* models to /api/llm/completions with OpenAI-compat body + response", async () => {
+    const prevModel = process.env.UBER_LLM_MODEL
+    process.env.UBER_LLM_MODEL = "@cf/google/gemma-4-26b-a4b-it"
+    const openaiJson = {
+      model: "@cf/google/gemma-4-26b-a4b-it",
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content:
+              '```json\n' +
+              JSON.stringify({
+                items: [
+                  {
+                    kind: "news",
+                    title: "Gemma rendered",
+                    summary_md: "Cite [[2026-04-18--foo]].",
+                    topic: "alpha",
+                    thesis: null,
+                    source_candidate_ids: ["cand-0000"],
+                    suggested_action: null,
+                  },
+                ],
+                topicsCovered: ["alpha"],
+                thesesCovered: [],
+              }) +
+              "\n```",
+          },
+        },
+      ],
+      usage: { prompt_tokens: 100, completion_tokens: 200 },
+    }
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(openaiJson),
+    })
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+
+    try {
+      const res = await Effect.runPromise(
+        Effect.gen(function* () {
+          const llm = yield* LlmService
+          return yield* llm.generateBrief({
+            date: "2026-04-22",
+            profileName: "Test",
+            topics: ["alpha"],
+            thesesSlugs: [],
+            candidates: [candidate("cand-0000", "2026-04-18--foo", "Foo body text.", ["alpha"])],
+            maxItems: 3,
+          })
+        }).pipe(Effect.provide(KernelLlmLive)),
+      )
+      expect(res.items).toHaveLength(1)
+      expect(res.items[0].title).toBe("Gemma rendered")
+      expect(res.model).toBe("@cf/google/gemma-4-26b-a4b-it")
+      // Workers AI cost tracking deferred — reported as 0 until per-model rates land.
+      expect(res.costUsd).toBe(0)
+      expect(fetchMock).toHaveBeenCalledOnce()
+      const [url, init] = fetchMock.mock.calls[0]!
+      expect(url).toBe(`${kernelBase()}/api/llm/completions`)
+      const body = JSON.parse((init as { body: string }).body)
+      expect(body.model).toBe("@cf/google/gemma-4-26b-a4b-it")
+      expect(body.thinking).toBeUndefined()
+      expect(body.messages[0]).toEqual({
+        role: "system",
+        content: expect.stringContaining("uebermensch-curator"),
+      })
+      expect(body.messages[1].role).toBe("user")
+      expect(body.messages[1].content).toContain("cand-0000")
+    } finally {
+      if (prevModel === undefined) delete process.env.UBER_LLM_MODEL
+      else process.env.UBER_LLM_MODEL = prevModel
+    }
   })
 
   it("fails with invalid when response text has no JSON", async () => {

@@ -10,8 +10,15 @@ use gctrl_otel::create_router_full;
 use gctrl_storage::{DuckDbStore, SqliteStore};
 use http::Request;
 use http_body_util::BodyExt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use tower::ServiceExt;
+
+/// Serializes tests that mutate process env vars (otherwise they race in parallel
+/// and clobber each other's CLOUDFLARE_* / *_API_KEY state).
+fn env_mutex() -> &'static Mutex<()> {
+    static M: OnceLock<Mutex<()>> = OnceLock::new();
+    M.get_or_init(|| Mutex::new(()))
+}
 
 fn router_with(net_config: NetConfig) -> axum::Router {
     let store = Arc::new(DuckDbStore::open(":memory:").unwrap());
@@ -173,8 +180,8 @@ async fn discord_send_rejects_non_webhook_url() {
 
 #[tokio::test]
 async fn llm_messages_fails_closed_without_gateway_config() {
+    let _guard = env_mutex().lock().unwrap();
     // Guard: isolate from any ambient CF/Anthropic creds in the test env.
-    // SAFETY: tests in this crate run single-threaded by default; no concurrent env mutation.
     let prev_acct = std::env::var("CLOUDFLARE_ACCOUNT_ID").ok();
     let prev_gw = std::env::var("CLOUDFLARE_AI_GATEWAY_ID").ok();
     let prev_gw_tok = std::env::var("CLOUDFLARE_AI_GATEWAY_TOKEN").ok();
@@ -227,6 +234,57 @@ async fn llm_messages_fails_closed_without_gateway_config() {
         }
         if let Some(v) = prev_anth {
             std::env::set_var("ANTHROPIC_API_KEY", v);
+        }
+    }
+}
+
+#[tokio::test]
+async fn llm_completions_fails_closed_without_gateway_config() {
+    let _guard = env_mutex().lock().unwrap();
+    // Isolate from any ambient CF creds in the test env.
+    let prev_acct = std::env::var("CLOUDFLARE_ACCOUNT_ID").ok();
+    let prev_gw = std::env::var("CLOUDFLARE_AI_GATEWAY_ID").ok();
+    let prev_cf_tok = std::env::var("CF_API_TOKEN").ok();
+    unsafe {
+        std::env::remove_var("CLOUDFLARE_ACCOUNT_ID");
+        std::env::remove_var("CLOUDFLARE_AI_GATEWAY_ID");
+        std::env::remove_var("CF_API_TOKEN");
+    }
+    let app = router_with(NetConfig::default());
+    let probe_body = serde_json::json!({
+        "model": "@cf/google/gemma-4-26b-a4b-it",
+        "messages": [{ "role": "user", "content": "hi" }],
+    });
+
+    // 1. Missing CLOUDFLARE_ACCOUNT_ID → 503
+    let (status, body) = post_json(&app, "/api/llm/completions", probe_body.clone()).await;
+    assert_eq!(status, 503);
+    assert!(body.contains("CLOUDFLARE_ACCOUNT_ID"));
+
+    // 2. Account id set but missing gateway id → 503
+    unsafe { std::env::set_var("CLOUDFLARE_ACCOUNT_ID", "acct-test") };
+    let (status, body) = post_json(&app, "/api/llm/completions", probe_body.clone()).await;
+    assert_eq!(status, 503);
+    assert!(body.contains("CLOUDFLARE_AI_GATEWAY_ID"));
+
+    // 3. Account + gateway set but no CF_API_TOKEN → 503
+    unsafe { std::env::set_var("CLOUDFLARE_AI_GATEWAY_ID", "gw-test") };
+    let (status, body) = post_json(&app, "/api/llm/completions", probe_body).await;
+    assert_eq!(status, 503);
+    assert!(body.contains("CF_API_TOKEN"), "body was: {body}");
+
+    // Restore ambient env.
+    unsafe {
+        std::env::remove_var("CLOUDFLARE_ACCOUNT_ID");
+        std::env::remove_var("CLOUDFLARE_AI_GATEWAY_ID");
+        if let Some(v) = prev_acct {
+            std::env::set_var("CLOUDFLARE_ACCOUNT_ID", v);
+        }
+        if let Some(v) = prev_gw {
+            std::env::set_var("CLOUDFLARE_AI_GATEWAY_ID", v);
+        }
+        if let Some(v) = prev_cf_tok {
+            std::env::set_var("CF_API_TOKEN", v);
         }
     }
 }

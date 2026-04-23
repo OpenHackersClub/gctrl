@@ -152,8 +152,11 @@ fn build_router(state: Arc<AppState>) -> Router {
         // Messaging drivers (LKM — outbound to Telegram Bot API and Discord webhooks)
         .route("/api/telegram/send", post(telegram_send))
         .route("/api/discord/send", post(discord_send))
-        // LLM driver (LKM — outbound to Anthropic Messages API)
+        // LLM driver (LKM — outbound via Cloudflare AI Gateway)
+        // /messages  → Anthropic-shape upstream (Claude models)
+        // /completions → Workers AI OpenAI-compat upstream (e.g. @cf/google/gemma-*)
         .route("/api/llm/messages", post(llm_messages))
+        .route("/api/llm/completions", post(llm_completions))
         // Search driver (Brave Search API)
         .route("/api/search/web", post(search_web))
         .route("/api/search/news", post(search_news))
@@ -2712,6 +2715,71 @@ async fn llm_messages(
     if let Some(t) = gateway_token {
         req = req.header("cf-aig-authorization", format!("Bearer {t}"));
     }
+    match req.json(&body).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            if status.is_success() {
+                match serde_json::from_str::<serde_json::Value>(&text) {
+                    Ok(v) => Json(v).into_response(),
+                    Err(_) => (StatusCode::BAD_GATEWAY, text).into_response(),
+                }
+            } else {
+                (messaging_upstream_status(status), text).into_response()
+            }
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            format!("ai gateway request failed: {e}"),
+        )
+            .into_response(),
+    }
+}
+
+// --- LLM Driver: Workers AI (OpenAI-compat Chat Completions) ---
+//
+// Forwards OpenAI-shape Chat Completions payloads through Cloudflare AI Gateway
+// to Cloudflare Workers AI models (e.g. `@cf/google/gemma-4-26b-a4b-it`).
+//
+// Required env:
+//   CLOUDFLARE_ACCOUNT_ID        — CF account owning the gateway
+//   CLOUDFLARE_AI_GATEWAY_ID     — slug of the AI Gateway
+//   CF_API_TOKEN                 — Cloudflare API token with Workers AI read
+//                                  scope, forwarded as `Authorization: Bearer …`
+
+async fn llm_completions(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let Ok(account_id) = std::env::var("CLOUDFLARE_ACCOUNT_ID") else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "CLOUDFLARE_ACCOUNT_ID not configured",
+        )
+            .into_response();
+    };
+    let Ok(gateway_id) = std::env::var("CLOUDFLARE_AI_GATEWAY_ID") else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "CLOUDFLARE_AI_GATEWAY_ID not configured",
+        )
+            .into_response();
+    };
+    let Ok(api_token) = std::env::var("CF_API_TOKEN") else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "CF_API_TOKEN not configured",
+        )
+            .into_response();
+    };
+    let url = format!(
+        "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/workers-ai/v1/chat/completions"
+    );
+    let req = state
+        .http_client
+        .post(&url)
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {api_token}"));
     match req.json(&body).send().await {
         Ok(resp) => {
             let status = resp.status();
