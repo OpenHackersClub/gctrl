@@ -215,7 +215,7 @@ page_type: question
 slug: how-do-prediction-market-makers-profit
 title: "How do prediction-market makers profit?"
 asked_at: 2026-04-10T22:14:00+08:00
-filed_from: cli                    # cli | inbox | chat
+filed_from: cli                    # cli | inbox | chat | sinkin
 answered: true
 topics: [prediction-market]
 sources_cited: [<source-slug>, ...]
@@ -275,7 +275,7 @@ Runs as `gctrl kb lint --persona uber`. Surfaces via app eval dashboard + inbox 
 | `thesis-review-stale` | `last_reviewed_at` older than `horizon_months / 6` | warn |
 | `source-cited-once` | A source page never cited by any synthesis or brief | info |
 | `orphan-company` | A company page with 0 inbound links | info |
-| `synthesis-unparented` | A synthesis page with missing/invalid `parent:` frontmatter | error |
+| `synthesis-unparented` | A synthesis page with missing/invalid `parent:` frontmatter AND `generator != "uber-sinkin"` | error |
 | `market-without-thesis` | A market page with empty `linked_thesis` | warn |
 | `contradicts-unresolved` | A `contradicts` link sits between two pages with matching `updated_at` within 7 days | warn |
 
