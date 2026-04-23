@@ -19,6 +19,7 @@ flowchart TB
       Del["DelivererService"]
       Ev["EvaluatorService"]
       Prof["ProfileService"]
+      SI["SinkInService"]
     end
   end
   subgraph L3["L3 — Shell"]
@@ -77,6 +78,7 @@ Dependencies MUST flow inward only (see [principles.md § Architectural Invarian
 | External data ingestion | L1 drivers | `driver-rss`, `driver-sec`, `driver-markets` | Pull on schedule; kernel owns secrets |
 | Brief curation | L4 | `CuratorService` + `BriefingService` | Orchestrates: query kb → rank → summarise → render |
 | Brief delivery | L4 | `DelivererService` | Renders per channel, writes `uber_deliveries` |
+| Wiki introspection | L4 | `SinkInService` | Weekly: surveys wiki → gaps → questions + connections; also powers `gctrl uber query` |
 | Eval (automated + human) | L4 + L2 | `EvaluatorService` + kernel `scores` table | Auto-runs after each brief |
 | Cost budget enforcement | L2 | `Guardrails` policies | Daily budget = profile value; violation pauses sessions |
 | Sync | L2 extension | `gctrl-sync` | `uber_*` SQLite → D1 (index); entire `$UBER_VAULT_DIR` → R2 (content, bidirectional) |
@@ -187,6 +189,7 @@ apps/uebermensch/
       curator.ts         # CuratorService (LLM rank + summarise)
       deliverer.ts       # DelivererService (channel fan-out + idempotency)
       evaluator.ts       # EvaluatorService (auto + human scores)
+      sinkin.ts          # SinkInService (wiki gap pass, answer pass, query filing)
     entrypoints/
       api/               # HTTP routes on app port
       cli/               # gctrl uber * command impls

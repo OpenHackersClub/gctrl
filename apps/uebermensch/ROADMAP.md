@@ -97,6 +97,25 @@
 
 **Done when:** An intentional prompt regression is flagged in the next brief's eval alert; a second device running the Worker reads the index from D1 and renders the brief markdown from R2 identically to the local daemon.
 
+## M5: SinkIn — Planned
+
+**Goal:** The wiki introspects on itself weekly — surfacing knowledge gaps as filed Question pages, answering what it can from existing content, and noticing cross-cutting connections that no single ingest pass saw.
+
+| Task | Description | Priority | Depends On | Issue |
+|------|-------------|----------|------------|-------|
+| `SinkInService` scaffold | Effect-TS service with gap-pass + answer-pass + file-pages stages; connected to `KbPort` + `LlmPort` | P0 | M1 | TBD |
+| `uber-sinkin` prompt templates | `prompts/sinkin-gap.md` + `prompts/sinkin-answer.md`; prompt-injection sentinels; gap cap enforcement | P0 | SinkInService scaffold | TBD |
+| `uber_sinkin_sessions` table | SQLite table tracking per-session cost, scope, gap/connection counts | P0 | M0 storage migration | TBD |
+| `gctrl uber sinkin` CLI | Run scheduled SinkIn; `--topic`, `--thesis`, `--dry-run` flags; session report to stdout | P0 | SinkInService | TBD |
+| `gctrl uber query` CLI | Answer a user question from the wiki; `--file` flag files as Question page | P0 | SinkInService | TBD |
+| `gctrl uber questions` CLI | List Question pages by status (`answered` / open) | P1 | SinkInService | TBD |
+| Scheduler: `uber.sinkin` | Weekly cron registered at daemon start from `profile.sinkin.cron` | P0 | SinkInService, M1 Scheduler wiring | TBD |
+| Lint exemption: `synthesis-unparented` | Guard already updated in `knowledge-base.md` — wire it in the lint runner | P0 | M1 KB lint | TBD |
+| `sinkin.cron` in profile schema | Add `sinkin:` block to profile YAML schema + `ProfileService` decode | P1 | M0 Profile schema | TBD |
+| App UI: Questions view | List unanswered questions; answer-from-wiki button; file result | P2 | M2 App web UI | TBD |
+
+**Done when:** A weekly SinkIn run files ≥1 Question page and ≥1 Connection synthesis page against a vault with ≥10 source pages; `gctrl uber query "..."` answers a question from the wiki and optionally files it; all pages render correctly in Obsidian with resolved `[[slug]]` links.
+
 ## Backlog (unprioritized)
 
 1. LLM-as-judge with rubric per dimension (accuracy, depth, freshness)
