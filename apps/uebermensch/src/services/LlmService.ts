@@ -45,6 +45,8 @@ export type InterestReportResponse = {
   readonly items: ReadonlyArray<CuratedItem>;
   readonly promptHash: string;
   readonly costUsd: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
   readonly model: string;
 };
 

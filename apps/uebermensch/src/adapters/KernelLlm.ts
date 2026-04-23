@@ -494,6 +494,8 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
         items,
         promptHash,
         costUsd,
+        inputTokens: res.inputTokens,
+        outputTokens: res.outputTokens,
         model: res.model,
       };
     }),

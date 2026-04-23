@@ -127,6 +127,8 @@ export const StubLlmLive = Layer.succeed(LlmService, {
         items,
         promptHash,
         costUsd: 0,
+        inputTokens: 0,
+        outputTokens: 0,
         model: STUB_MODEL,
       };
     }),

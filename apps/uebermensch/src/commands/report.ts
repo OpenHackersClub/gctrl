@@ -45,9 +45,18 @@ const maxItemsOpt = Options.integer("max-items-per-interest").pipe(
   Options.withDefault(5),
 )
 
+const envConcurrency = (): number => {
+  const raw = process.env.UBER_REPORT_CONCURRENCY
+  if (!raw) return 3
+  const n = Number.parseInt(raw, 10)
+  return Number.isFinite(n) && n > 0 ? n : 3
+}
+
 const concurrencyOpt = Options.integer("concurrency").pipe(
-  Options.withDescription("Concurrent LLM calls across interests"),
-  Options.withDefault(3),
+  Options.withDescription(
+    "Concurrent LLM calls across interests (default 3, overridable via UBER_REPORT_CONCURRENCY)",
+  ),
+  Options.withDefault(envConcurrency()),
 )
 
 const dryRunOpt = Options.boolean("dry-run").pipe(
@@ -128,10 +137,11 @@ const weightedTopicsFor = (
 }
 
 // First paragraph of analysis_md (the Thesis section body), trimmed for index headlines.
+// Matches any markdown heading level so occasional model drift (## / #### Thesis) still works.
 const thesisHeadline = (analysis_md: string): string | null => {
   const trimmed = analysis_md.trim()
   if (trimmed.length === 0) return null
-  const match = trimmed.match(/###\s+Thesis\s*\n+([\s\S]*?)(?=\n###\s|$)/)
+  const match = trimmed.match(/^#{2,4}\s+Thesis\s*\n+([\s\S]*?)(?=\n#{2,4}\s|$)/m)
   const block = (match ? match[1] : trimmed).trim()
   if (block.length === 0) return null
   const firstPara = block.split(/\n\s*\n/, 1)[0].trim()
@@ -311,6 +321,9 @@ export const report = Command.make(
             yield* Console.log(
               `  ✓ ${w.relPath} (${w.contentHash}) — ${rendered.itemCount} item(s), ${rendered.citedClaims}/${rendered.totalClaims} claims cited`,
             )
+            yield* Console.log(
+              `    cost: $${response.costUsd.toFixed(4)} (in=${response.inputTokens}t out=${response.outputTokens}t model=${response.model})`,
+            )
           }
           written.push({
             interest: ii,
@@ -404,6 +417,13 @@ export const report = Command.make(
         if (!doSend) {
           yield* Console.log("")
           yield* Console.log(indexRendered.markdown)
+          return
+        }
+
+        if (written.length === 0) {
+          yield* Console.log(
+            "  no interests produced substantive signal — skipping delivery",
+          )
           return
         }
 
