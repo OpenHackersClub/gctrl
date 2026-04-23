@@ -1,4 +1,5 @@
 import type {
+  AcceptanceRollup,
   Issue,
   MoveIssueResult,
   Project,
@@ -120,6 +121,8 @@ export const api = {
     events: (id: string) => request<IssueEvent[]>(`${BASE}/issues/${id}/events`),
 
     comments: (id: string) => request<Comment[]>(`${BASE}/issues/${id}/comments`),
+
+    acceptance: (id: string) => request<AcceptanceRollup>(`${BASE}/issues/${id}/acceptance`),
 
     linkSession: (
       id: string,

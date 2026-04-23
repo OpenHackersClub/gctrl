@@ -1,9 +1,11 @@
+pub mod acceptance;
 pub mod config;
 pub mod context;
 pub mod error;
 pub mod memory;
 pub mod types;
 
+pub use acceptance::*;
 pub use config::*;
 pub use context::*;
 pub use error::*;

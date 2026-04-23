@@ -134,9 +134,9 @@ impl SpanStatus {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SpanType {
-    Generation,  // LLM API call
-    Span,        // Tool execution or logical grouping
-    Event,       // Point-in-time marker (no duration)
+    Generation, // LLM API call
+    Span,       // Tool execution or logical grouping
+    Event,      // Point-in-time marker (no duration)
 }
 
 impl SpanType {
@@ -347,12 +347,12 @@ pub struct SyncManifest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Score {
     pub id: String,
-    pub target_type: String,  // "session", "span", "generation"
+    pub target_type: String, // "session", "span", "generation"
     pub target_id: String,
     pub name: String,
     pub value: f64,
     pub comment: Option<String>,
-    pub source: String,  // "human", "auto", "model"
+    pub source: String, // "human", "auto", "model"
     pub scored_by: Option<String>,
     pub created_at: DateTime<Utc>,
 }
@@ -548,6 +548,11 @@ pub struct BoardIssue {
     /// Gantt scheduling: planned due date as `YYYY-MM-DD` (project-local).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub due_date: Option<String>,
+    /// Markdown checklist of acceptance tests. Parsed by
+    /// `parse_acceptance_criteria` to seed `board_acceptance_checks` when the
+    /// issue promotes to in_progress.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance_criteria: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

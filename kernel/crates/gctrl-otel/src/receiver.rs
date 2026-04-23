@@ -132,10 +132,16 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/sessions/stream", get(stream_sessions))
         .route("/api/sessions/{session_id}/stream", get(stream_session))
         // Auto-score and session lifecycle
-        .route("/api/sessions/{session_id}/auto-score", post(auto_score_session))
+        .route(
+            "/api/sessions/{session_id}/auto-score",
+            post(auto_score_session),
+        )
         .route("/api/sessions/{session_id}/end", post(end_session))
         .route("/api/sessions/{session_id}/loops", get(detect_loops))
-        .route("/api/sessions/{session_id}/cost-breakdown", get(session_cost_breakdown))
+        .route(
+            "/api/sessions/{session_id}/cost-breakdown",
+            get(session_cost_breakdown),
+        )
         // Context management
         .route("/api/context", get(context_list).post(context_upsert))
         .route("/api/context/compact", get(context_compact))
@@ -143,8 +149,14 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/context/{id}", get(context_get).delete(context_delete))
         .route("/api/context/{id}/content", get(context_content))
         // Board application
-        .route("/api/board/projects", get(board_list_projects).post(board_create_project))
-        .route("/api/board/issues", get(board_list_issues).post(board_create_issue))
+        .route(
+            "/api/board/projects",
+            get(board_list_projects).post(board_create_project),
+        )
+        .route(
+            "/api/board/issues",
+            get(board_list_issues).post(board_create_issue),
+        )
         .route("/api/board/issues/{id}", get(board_get_issue))
         .route("/api/board/issues/{id}/move", post(board_move_issue))
         .route("/api/board/issues/{id}/assign", post(board_assign_issue))
@@ -154,11 +166,19 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/board/issues/{id}/link-session", post(board_link_session))
         .route("/api/board/issues/{id}/schedule", patch(board_schedule_issue))
         .route("/api/board/projects/{id}/gantt", get(board_gantt_for_project))
+        .route("/api/board/issues/{id}/acceptance", get(board_acceptance_rollup))
+        .route(
+            "/api/board/issues/{id}/acceptance/checks/{idx}",
+            post(board_acceptance_report),
+        )
         .route("/api/board/import", post(board_import_markdown))
         .route("/api/board/export", post(board_export_markdown))
         .route("/api/board/projects/{id}/github", post(board_link_github))
         // GitHub driver (LKM — delegates to native `gh` CLI)
-        .route("/api/github/issues", get(gh_list_issues).post(gh_create_issue))
+        .route(
+            "/api/github/issues",
+            get(gh_list_issues).post(gh_create_issue),
+        )
         .route("/api/github/issues/{number}", get(gh_get_issue))
         .route("/api/github/prs", get(gh_list_prs))
         .route("/api/github/prs/{number}", get(gh_get_pr))
@@ -188,17 +208,29 @@ fn build_router(state: Arc<AppState>) -> Router {
         // Persona management (kernel extension)
         .route("/api/personas", get(persona_list).post(persona_upsert))
         .route("/api/personas/seed", post(persona_seed))
-        .route("/api/personas/review-rules", get(persona_review_rules_list).post(persona_review_rules_upsert))
-        .route("/api/personas/{id}", get(persona_get).delete(persona_delete))
+        .route(
+            "/api/personas/review-rules",
+            get(persona_review_rules_list).post(persona_review_rules_upsert),
+        )
+        .route(
+            "/api/personas/{id}",
+            get(persona_get).delete(persona_delete),
+        )
         // Team composition
         .route("/api/team/recommend", post(team_recommend))
         .route("/api/team/render", post(team_render))
         // Inbox application
-        .route("/api/inbox/messages", get(inbox_list_messages).post(inbox_create_message))
+        .route(
+            "/api/inbox/messages",
+            get(inbox_list_messages).post(inbox_create_message),
+        )
         .route("/api/inbox/messages/{id}", get(inbox_get_message))
         .route("/api/inbox/threads", get(inbox_list_threads))
         .route("/api/inbox/threads/{id}", get(inbox_get_thread))
-        .route("/api/inbox/actions", get(inbox_list_actions).post(inbox_create_action))
+        .route(
+            "/api/inbox/actions",
+            get(inbox_list_actions).post(inbox_create_action),
+        )
         .route("/api/inbox/batch-action", post(inbox_batch_action))
         .route("/api/inbox/stats", get(inbox_stats))
         // Sync (SQLite → D1 push)
@@ -213,7 +245,10 @@ fn build_router(state: Arc<AppState>) -> Router {
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let storage = state.store.get_health_info().unwrap_or(serde_json::json!({}));
+    let storage = state
+        .store
+        .get_health_info()
+        .unwrap_or(serde_json::json!({}));
     Json(serde_json::json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
@@ -238,7 +273,11 @@ async fn list_sessions(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListParams>,
 ) -> impl IntoResponse {
-    match state.store.list_sessions_filtered(params.limit, params.agent.as_deref(), params.status.as_deref()) {
+    match state.store.list_sessions_filtered(
+        params.limit,
+        params.agent.as_deref(),
+        params.status.as_deref(),
+    ) {
         Ok(sessions) => Json(serde_json::to_value(&sessions).unwrap()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -248,9 +287,16 @@ async fn get_session(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
-    match state.store.get_session(&gctrl_core::SessionId(session_id.clone())) {
+    match state
+        .store
+        .get_session(&gctrl_core::SessionId(session_id.clone()))
+    {
         Ok(Some(session)) => Json(serde_json::to_value(&session).unwrap()).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, format!("session {session_id} not found")).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            format!("session {session_id} not found"),
+        )
+            .into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -272,23 +318,37 @@ async fn get_trace_tree(
     let sid = gctrl_core::SessionId(session_id.clone());
     let session = match state.store.get_session(&sid) {
         Ok(Some(s)) => s,
-        Ok(None) => return (StatusCode::NOT_FOUND, format!("session {session_id} not found")).into_response(),
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                format!("session {session_id} not found"),
+            )
+                .into_response()
+        }
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
     let spans = match state.store.query_spans(&sid) {
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
-    let scores = state.store.get_scores("session", &session_id).unwrap_or_default();
-    let tags = state.store.get_tags("session", &session_id).unwrap_or_default();
+    let scores = state
+        .store
+        .get_scores("session", &session_id)
+        .unwrap_or_default();
+    let tags = state
+        .store
+        .get_tags("session", &session_id)
+        .unwrap_or_default();
 
     // Build tree: root spans (no parent) with children nested
-    let root_spans: Vec<&gctrl_core::Span> = spans.iter()
+    let root_spans: Vec<&gctrl_core::Span> = spans
+        .iter()
         .filter(|s| s.parent_span_id.is_none())
         .collect();
 
     let build_node = |span: &gctrl_core::Span| -> serde_json::Value {
-        let children: Vec<serde_json::Value> = spans.iter()
+        let children: Vec<serde_json::Value> = spans
+            .iter()
             .filter(|s| s.parent_span_id.as_ref().map(|p| &p.0) == Some(&span.span_id.0))
             .map(|child| {
                 serde_json::json!({
@@ -460,7 +520,9 @@ async fn auto_score_session(
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
     match state.store.auto_score_session(&session_id) {
-        Ok(scores) => (StatusCode::OK, Json(serde_json::to_value(&scores).unwrap())).into_response(),
+        Ok(scores) => {
+            (StatusCode::OK, Json(serde_json::to_value(&scores).unwrap())).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -481,7 +543,10 @@ async fn end_session(
             // Auto-score on session end
             let _ = state.store.auto_score_session(&session_id);
             // Check for error loops
-            let loops = state.store.detect_error_loops(&session_id, 3).unwrap_or_default();
+            let loops = state
+                .store
+                .detect_error_loops(&session_id, 3)
+                .unwrap_or_default();
             if !loops.is_empty() {
                 // Create a loop detection score
                 let loop_score = gctrl_core::Score {
@@ -505,7 +570,8 @@ async fn end_session(
                 "session_id": session_id,
                 "status": status,
                 "loops_detected": loops.len(),
-            })).into_response()
+            }))
+            .into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -520,7 +586,8 @@ async fn detect_loops(
             "session_id": session_id,
             "loops": loops,
             "count": loops.len(),
-        })).into_response(),
+        }))
+        .into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -535,7 +602,8 @@ async fn session_cost_breakdown(
             "breakdown": breakdown.iter().map(|(m, c, i, o, n)| serde_json::json!({
                 "model": m, "cost_usd": c, "input_tokens": i, "output_tokens": o, "span_count": n
             })).collect::<Vec<_>>(),
-        })).into_response(),
+        }))
+        .into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -587,7 +655,8 @@ async fn analytics_scores(
             "total": pass + fail,
             "pass_rate": if pass + fail > 0 { pass as f64 / (pass + fail) as f64 } else { 0.0 },
             "avg_value": avg,
-        })).into_response(),
+        }))
+        .into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -617,8 +686,14 @@ async fn create_score(
     Json(payload): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let score = gctrl_core::Score {
-        id: payload["id"].as_str().unwrap_or(&uuid::Uuid::new_v4().to_string()).to_string(),
-        target_type: payload["target_type"].as_str().unwrap_or("session").to_string(),
+        id: payload["id"]
+            .as_str()
+            .unwrap_or(&uuid::Uuid::new_v4().to_string())
+            .to_string(),
+        target_type: payload["target_type"]
+            .as_str()
+            .unwrap_or("session")
+            .to_string(),
         target_id: payload["target_id"].as_str().unwrap_or("").to_string(),
         name: payload["name"].as_str().unwrap_or("").to_string(),
         value: payload["value"].as_f64().unwrap_or(0.0),
@@ -628,7 +703,11 @@ async fn create_score(
         created_at: chrono::Utc::now(),
     };
     match state.store.insert_score(&score) {
-        Ok(()) => (StatusCode::CREATED, Json(serde_json::json!({"id": score.id}))).into_response(),
+        Ok(()) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({"id": score.id})),
+        )
+            .into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -638,8 +717,14 @@ async fn create_tag(
     Json(payload): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let tag = gctrl_core::Tag {
-        id: payload["id"].as_str().unwrap_or(&uuid::Uuid::new_v4().to_string()).to_string(),
-        target_type: payload["target_type"].as_str().unwrap_or("session").to_string(),
+        id: payload["id"]
+            .as_str()
+            .unwrap_or(&uuid::Uuid::new_v4().to_string())
+            .to_string(),
+        target_type: payload["target_type"]
+            .as_str()
+            .unwrap_or("session")
+            .to_string(),
         target_id: payload["target_id"].as_str().unwrap_or("").to_string(),
         key: payload["key"].as_str().unwrap_or("").to_string(),
         value: payload["value"].as_str().unwrap_or("").to_string(),
@@ -677,7 +762,12 @@ async fn ingest_traces(
     let mut started_emit: Vec<gctrl_core::Session> = Vec::new();
     for span in &spans {
         if seen_sessions.insert(span.session_id.0.clone()) {
-            if state.store.get_session(&span.session_id).unwrap_or(None).is_none() {
+            if state
+                .store
+                .get_session(&span.session_id)
+                .unwrap_or(None)
+                .is_none()
+            {
                 let session = gctrl_core::Session {
                     id: span.session_id.clone(),
                     workspace_id: gctrl_core::WorkspaceId("default".into()),
@@ -730,7 +820,10 @@ async fn ingest_traces(
             // Check alert rules
             if let Ok(rules) = state.store.list_alert_rules() {
                 for session_id_str in &seen_sessions {
-                    if let Ok(Some(session)) = state.store.get_session(&gctrl_core::SessionId(session_id_str.clone())) {
+                    if let Ok(Some(session)) = state
+                        .store
+                        .get_session(&gctrl_core::SessionId(session_id_str.clone()))
+                    {
                         for rule in &rules {
                             let should_fire = match rule.condition_type.as_str() {
                                 "session_cost" => session.total_cost_usd > rule.threshold,
@@ -744,7 +837,11 @@ async fn ingest_traces(
                                     timestamp: chrono::Utc::now(),
                                     message: format!(
                                         "[{}] {}: session {} cost ${:.2} exceeds threshold ${:.2}",
-                                        rule.action, rule.name, session_id_str, session.total_cost_usd, rule.threshold
+                                        rule.action,
+                                        rule.name,
+                                        session_id_str,
+                                        session.total_cost_usd,
+                                        rule.threshold
                                     ),
                                     acknowledged: false,
                                 };
@@ -792,10 +889,17 @@ async fn context_list(
     Query(params): Query<ContextListParams>,
 ) -> impl IntoResponse {
     let Some(ref ctx) = state.context else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "context manager not initialized").into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "context manager not initialized",
+        )
+            .into_response();
     };
     let filter = gctrl_core::context::ContextFilter {
-        kind: params.kind.as_deref().and_then(gctrl_core::context::ContextKind::from_str),
+        kind: params
+            .kind
+            .as_deref()
+            .and_then(gctrl_core::context::ContextKind::from_str),
         tag: params.tag,
         source: params.source,
         search: params.search,
@@ -821,23 +925,51 @@ struct ContextUpsertBody {
     source_ref: Option<String>,
 }
 
-fn default_context_kind() -> String { "document".into() }
-fn default_context_source() -> String { "human".into() }
+fn default_context_kind() -> String {
+    "document".into()
+}
+fn default_context_source() -> String {
+    "human".into()
+}
 
 async fn context_upsert(
     State(state): State<Arc<AppState>>,
     Json(body): Json<ContextUpsertBody>,
 ) -> impl IntoResponse {
     let Some(ref ctx) = state.context else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "context manager not initialized").into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "context manager not initialized",
+        )
+            .into_response();
     };
     let kind = match gctrl_core::context::ContextKind::from_str(&body.kind) {
         Some(k) => k,
-        None => return (StatusCode::BAD_REQUEST, format!("invalid kind: {}", body.kind)).into_response(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("invalid kind: {}", body.kind),
+            )
+                .into_response()
+        }
     };
-    let source = gctrl_core::context::ContextSource::from_parts(&body.source_type, body.source_ref.as_deref());
-    match ctx.upsert(&kind, &body.path, &body.title, &body.content, &source, &body.tags) {
-        Ok(entry) => (StatusCode::CREATED, Json(serde_json::to_value(&entry).unwrap())).into_response(),
+    let source = gctrl_core::context::ContextSource::from_parts(
+        &body.source_type,
+        body.source_ref.as_deref(),
+    );
+    match ctx.upsert(
+        &kind,
+        &body.path,
+        &body.title,
+        &body.content,
+        &source,
+        &body.tags,
+    ) {
+        Ok(entry) => (
+            StatusCode::CREATED,
+            Json(serde_json::to_value(&entry).unwrap()),
+        )
+            .into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -847,7 +979,11 @@ async fn context_get(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let Some(ref ctx) = state.context else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "context manager not initialized").into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "context manager not initialized",
+        )
+            .into_response();
     };
     match ctx.get(&id).or_else(|_| ctx.get_by_path(&id)) {
         Ok(entry) => Json(serde_json::to_value(&entry).unwrap()).into_response(),
@@ -860,9 +996,16 @@ async fn context_content(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let Some(ref ctx) = state.context else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "context manager not initialized").into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "context manager not initialized",
+        )
+            .into_response();
     };
-    match ctx.read_content(&id).or_else(|_| ctx.read_content_by_path(&id)) {
+    match ctx
+        .read_content(&id)
+        .or_else(|_| ctx.read_content_by_path(&id))
+    {
         Ok(content) => content.into_response(),
         Err(_) => (StatusCode::NOT_FOUND, format!("not found: {}", id)).into_response(),
     }
@@ -873,7 +1016,11 @@ async fn context_delete(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let Some(ref ctx) = state.context else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "context manager not initialized").into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "context manager not initialized",
+        )
+            .into_response();
     };
     match ctx.remove(&id).or_else(|_| ctx.remove_by_path(&id)) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -892,10 +1039,17 @@ async fn context_compact(
     Query(params): Query<ContextCompactParams>,
 ) -> impl IntoResponse {
     let Some(ref ctx) = state.context else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "context manager not initialized").into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "context manager not initialized",
+        )
+            .into_response();
     };
     let filter = gctrl_core::context::ContextFilter {
-        kind: params.kind.as_deref().and_then(gctrl_core::context::ContextKind::from_str),
+        kind: params
+            .kind
+            .as_deref()
+            .and_then(gctrl_core::context::ContextKind::from_str),
         tag: params.tag,
         ..Default::default()
     };
@@ -907,7 +1061,11 @@ async fn context_compact(
 
 async fn context_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let Some(ref ctx) = state.context else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "context manager not initialized").into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "context manager not initialized",
+        )
+            .into_response();
     };
     match ctx.stats() {
         Ok(stats) => Json(serde_json::to_value(&stats).unwrap()).into_response(),
@@ -936,7 +1094,10 @@ async fn memory_list(
     Query(params): Query<MemoryListParams>,
 ) -> impl IntoResponse {
     let filter = gctrl_core::memory::MemoryFilter {
-        memory_type: params.memory_type.as_deref().and_then(gctrl_core::memory::MemoryType::from_str),
+        memory_type: params
+            .memory_type
+            .as_deref()
+            .and_then(gctrl_core::memory::MemoryType::from_str),
         tag: params.tag,
         search: params.search,
         limit: Some(params.limit),
@@ -971,7 +1132,13 @@ async fn memory_upsert(
 ) -> impl IntoResponse {
     let memory_type = match gctrl_core::memory::MemoryType::from_str(&body.memory_type) {
         Some(t) => t,
-        None => return (StatusCode::BAD_REQUEST, format!("invalid type: {}", body.memory_type)).into_response(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("invalid type: {}", body.memory_type),
+            )
+                .into_response()
+        }
     };
     if body.name.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "name is required").into_response();
@@ -983,7 +1150,8 @@ async fn memory_upsert(
     let now = chrono::Utc::now();
     let entry = gctrl_core::memory::MemoryEntry {
         id: gctrl_core::memory::MemoryEntryId(
-            body.id.unwrap_or_else(|| format!("mem-{}", uuid::Uuid::new_v4())),
+            body.id
+                .unwrap_or_else(|| format!("mem-{}", uuid::Uuid::new_v4())),
         ),
         memory_type,
         name: body.name,
@@ -997,7 +1165,11 @@ async fn memory_upsert(
     };
 
     match state.sqlite.upsert_memory(&entry) {
-        Ok(_) => (StatusCode::CREATED, Json(serde_json::to_value(&entry).unwrap())).into_response(),
+        Ok(_) => (
+            StatusCode::CREATED,
+            Json(serde_json::to_value(&entry).unwrap()),
+        )
+            .into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -1051,11 +1223,22 @@ async fn board_create_project(
         github_repo: None,
     };
     match state.sqlite.create_board_project(&project) {
-        Ok(()) => (StatusCode::CREATED, Json(serde_json::to_value(&project).unwrap())).into_response(),
+        Ok(()) => (
+            StatusCode::CREATED,
+            Json(serde_json::to_value(&project).unwrap()),
+        )
+            .into_response(),
         Err(e) => {
             let msg = e.to_string();
-            if msg.contains("Duplicate key") || msg.contains("Constraint Error") || msg.contains("UNIQUE constraint failed") {
-                (StatusCode::CONFLICT, format!("project with key '{}' already exists", project.key)).into_response()
+            if msg.contains("Duplicate key")
+                || msg.contains("Constraint Error")
+                || msg.contains("UNIQUE constraint failed")
+            {
+                (
+                    StatusCode::CONFLICT,
+                    format!("project with key '{}' already exists", project.key),
+                )
+                    .into_response()
             } else {
                 (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
             }
@@ -1080,13 +1263,14 @@ async fn board_link_github(
     Path(id): Path<String>,
     Json(body): Json<BoardLinkGithubBody>,
 ) -> impl IntoResponse {
-    match state.sqlite.update_board_project_github_repo(&id, &body.github_repo) {
-        Ok(()) => {
-            match state.sqlite.get_board_project(&id) {
-                Ok(Some(project)) => Json(serde_json::to_value(&project).unwrap()).into_response(),
-                _ => (StatusCode::NOT_FOUND, "project not found".to_string()).into_response(),
-            }
-        }
+    match state
+        .sqlite
+        .update_board_project_github_repo(&id, &body.github_repo)
+    {
+        Ok(()) => match state.sqlite.get_board_project(&id) {
+            Ok(Some(project)) => Json(serde_json::to_value(&project).unwrap()).into_response(),
+            _ => (StatusCode::NOT_FOUND, "project not found".to_string()).into_response(),
+        },
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -1111,10 +1295,16 @@ struct BoardCreateIssueBody {
     github_issue_number: Option<u32>,
     #[serde(default)]
     github_url: Option<String>,
+    #[serde(default)]
+    acceptance_criteria: Option<String>,
 }
 
-fn default_priority() -> String { "none".into() }
-fn default_human() -> String { "human".into() }
+fn default_priority() -> String {
+    "none".into()
+}
+fn default_human() -> String {
+    "human".into()
+}
 
 async fn board_create_issue(
     State(state): State<Arc<AppState>>,
@@ -1123,7 +1313,9 @@ async fn board_create_issue(
     // Auto-generate ID from project key + counter
     let counter = match state.sqlite.increment_project_counter(&body.project_id) {
         Ok(c) => c,
-        Err(e) => return (StatusCode::BAD_REQUEST, format!("project not found: {}", e)).into_response(),
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!("project not found: {}", e)).into_response()
+        }
     };
     let project = match state.sqlite.get_board_project(&body.project_id) {
         Ok(Some(p)) => p,
@@ -1160,10 +1352,15 @@ async fn board_create_issue(
         github_url: body.github_url,
         start_date: None,
         due_date: None,
+        acceptance_criteria: body.acceptance_criteria,
     };
 
     match state.sqlite.insert_board_issue(&issue) {
-        Ok(()) => (StatusCode::CREATED, Json(serde_json::to_value(&issue).unwrap())).into_response(),
+        Ok(()) => (
+            StatusCode::CREATED,
+            Json(serde_json::to_value(&issue).unwrap()),
+        )
+            .into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -1178,7 +1375,9 @@ struct BoardIssueListParams {
     limit: usize,
 }
 
-fn default_issue_limit() -> usize { 50 }
+fn default_issue_limit() -> usize {
+    50
+}
 
 async fn board_list_issues(
     State(state): State<Arc<AppState>>,
@@ -1284,13 +1483,16 @@ async fn board_assign_issue(
     Path(id): Path<String>,
     Json(body): Json<BoardAssignBody>,
 ) -> impl IntoResponse {
-    match state.sqlite.assign_board_issue(&id, &body.assignee_id, &body.assignee_name, &body.assignee_type) {
-        Ok(()) => {
-            match state.sqlite.get_board_issue(&id) {
-                Ok(Some(issue)) => Json(serde_json::to_value(&issue).unwrap()).into_response(),
-                _ => StatusCode::OK.into_response(),
-            }
-        }
+    match state.sqlite.assign_board_issue(
+        &id,
+        &body.assignee_id,
+        &body.assignee_name,
+        &body.assignee_type,
+    ) {
+        Ok(()) => match state.sqlite.get_board_issue(&id) {
+            Ok(Some(issue)) => Json(serde_json::to_value(&issue).unwrap()).into_response(),
+            _ => StatusCode::OK.into_response(),
+        },
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -1322,7 +1524,11 @@ async fn board_add_comment(
         session_id: body.session_id,
     };
     match state.sqlite.insert_board_comment(&comment) {
-        Ok(()) => (StatusCode::CREATED, Json(serde_json::to_value(&comment).unwrap())).into_response(),
+        Ok(()) => (
+            StatusCode::CREATED,
+            Json(serde_json::to_value(&comment).unwrap()),
+        )
+            .into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -1361,7 +1567,10 @@ async fn board_link_session(
     Path(id): Path<String>,
     Json(body): Json<BoardLinkSessionBody>,
 ) -> impl IntoResponse {
-    match state.sqlite.link_session_to_issue(&id, &body.session_id, body.cost_usd, body.tokens) {
+    match state
+        .sqlite
+        .link_session_to_issue(&id, &body.session_id, body.cost_usd, body.tokens)
+    {
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -1487,6 +1696,57 @@ async fn board_gantt_for_project(
     }
 }
 
+async fn board_acceptance_rollup(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.sqlite.acceptance_rollup(&id) {
+        Ok(rollup) => Json(serde_json::to_value(&rollup).unwrap()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct BoardAcceptanceReportBody {
+    status: String,
+    #[serde(default)]
+    output: Option<String>,
+    #[serde(default)]
+    session_id: Option<String>,
+}
+
+async fn board_acceptance_report(
+    State(state): State<Arc<AppState>>,
+    Path((id, idx)): Path<(String, i64)>,
+    Json(body): Json<BoardAcceptanceReportBody>,
+) -> impl IntoResponse {
+    let Some(status) = gctrl_core::AcceptanceStatus::from_str(&body.status) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "invalid status '{}' (expected pending|running|pass|fail)",
+                body.status
+            ),
+        )
+            .into_response();
+    };
+    match state.sqlite.upsert_acceptance_result(
+        &id,
+        idx,
+        status,
+        body.output.as_deref(),
+        body.session_id.as_deref(),
+    ) {
+        Ok(true) => StatusCode::OK.into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            format!("no check at idx {idx} for issue {id}"),
+        )
+            .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
 #[derive(Deserialize)]
 struct BoardImportBody {
     path: String,
@@ -1498,7 +1758,11 @@ async fn board_import_markdown(
 ) -> impl IntoResponse {
     let dir = std::path::Path::new(&body.path);
     if !dir.is_dir() {
-        return (StatusCode::BAD_REQUEST, format!("not a directory: {}", body.path)).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("not a directory: {}", body.path),
+        )
+            .into_response();
     }
 
     let projects = match state.sqlite.list_board_projects() {
@@ -1579,7 +1843,9 @@ struct GhRepoQuery {
     branch: Option<String>,
 }
 
-fn default_gh_limit() -> usize { 10 }
+fn default_gh_limit() -> usize {
+    10
+}
 
 /// Run `gh` CLI and return stdout as JSON Value.
 async fn gh_exec(args: &[&str]) -> Result<serde_json::Value, (StatusCode, String)> {
@@ -1587,7 +1853,12 @@ async fn gh_exec(args: &[&str]) -> Result<serde_json::Value, (StatusCode, String
         .args(args)
         .output()
         .await
-        .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, format!("gh CLI not available: {e}")))?;
+        .map_err(|e| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("gh CLI not available: {e}"),
+            )
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1595,18 +1866,28 @@ async fn gh_exec(args: &[&str]) -> Result<serde_json::Value, (StatusCode, String
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str(&stdout)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("gh JSON parse error: {e}")))
+    serde_json::from_str(&stdout).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("gh JSON parse error: {e}"),
+        )
+    })
 }
 
 async fn gh_list_issues(Query(q): Query<GhRepoQuery>) -> impl IntoResponse {
     let limit_str = q.limit.to_string();
     match gh_exec(&[
-        "issue", "list",
-        "--repo", &q.repo,
-        "--limit", &limit_str,
-        "--json", "number,title,state,author,labels,createdAt,url,body",
-    ]).await {
+        "issue",
+        "list",
+        "--repo",
+        &q.repo,
+        "--limit",
+        &limit_str,
+        "--json",
+        "number,title,state,author,labels,createdAt,url,body",
+    ])
+    .await
+    {
         Ok(val) => {
             // gh returns labels as [{name:"x"}], flatten to ["x"]
             let issues = normalize_gh_issues(val);
@@ -1616,16 +1897,19 @@ async fn gh_list_issues(Query(q): Query<GhRepoQuery>) -> impl IntoResponse {
     }
 }
 
-async fn gh_get_issue(
-    Path(number): Path<u64>,
-    Query(q): Query<GhRepoQuery>,
-) -> impl IntoResponse {
+async fn gh_get_issue(Path(number): Path<u64>, Query(q): Query<GhRepoQuery>) -> impl IntoResponse {
     let num_str = number.to_string();
     match gh_exec(&[
-        "issue", "view", &num_str,
-        "--repo", &q.repo,
-        "--json", "number,title,state,author,labels,createdAt,url,body",
-    ]).await {
+        "issue",
+        "view",
+        &num_str,
+        "--repo",
+        &q.repo,
+        "--json",
+        "number,title,state,author,labels,createdAt,url,body",
+    ])
+    .await
+    {
         Ok(val) => {
             let issue = normalize_gh_issue(val);
             Json(issue).into_response()
@@ -1648,9 +1932,12 @@ async fn gh_create_issue(
     Json(input): Json<GhCreateIssueBody>,
 ) -> impl IntoResponse {
     let mut args = vec![
-        "issue".to_string(), "create".to_string(),
-        "--repo".to_string(), q.repo.clone(),
-        "--title".to_string(), input.title.clone(),
+        "issue".to_string(),
+        "create".to_string(),
+        "--repo".to_string(),
+        q.repo.clone(),
+        "--title".to_string(),
+        input.title.clone(),
     ];
     if let Some(ref body) = input.body {
         args.push("--body".to_string());
@@ -1676,7 +1963,9 @@ async fn gh_create_issue(
             let stdout = String::from_utf8_lossy(&out.stdout);
             // gh issue create prints the URL on success, parse issue number from it
             let url = stdout.trim().to_string();
-            let number = url.rsplit('/').next()
+            let number = url
+                .rsplit('/')
+                .next()
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(0);
 
@@ -1693,20 +1982,34 @@ async fn gh_create_issue(
         }
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            (StatusCode::BAD_GATEWAY, format!("gh issue create failed: {stderr}")).into_response()
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("gh issue create failed: {stderr}"),
+            )
+                .into_response()
         }
-        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, format!("gh CLI not available: {e}")).into_response(),
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("gh CLI not available: {e}"),
+        )
+            .into_response(),
     }
 }
 
 async fn gh_list_prs(Query(q): Query<GhRepoQuery>) -> impl IntoResponse {
     let limit_str = q.limit.to_string();
     match gh_exec(&[
-        "pr", "list",
-        "--repo", &q.repo,
-        "--limit", &limit_str,
-        "--json", "number,title,state,author,headRefName,url",
-    ]).await {
+        "pr",
+        "list",
+        "--repo",
+        &q.repo,
+        "--limit",
+        &limit_str,
+        "--json",
+        "number,title,state,author,headRefName,url",
+    ])
+    .await
+    {
         Ok(val) => {
             let prs = normalize_gh_prs(val);
             Json(prs).into_response()
@@ -1715,16 +2018,19 @@ async fn gh_list_prs(Query(q): Query<GhRepoQuery>) -> impl IntoResponse {
     }
 }
 
-async fn gh_get_pr(
-    Path(number): Path<u64>,
-    Query(q): Query<GhRepoQuery>,
-) -> impl IntoResponse {
+async fn gh_get_pr(Path(number): Path<u64>, Query(q): Query<GhRepoQuery>) -> impl IntoResponse {
     let num_str = number.to_string();
     match gh_exec(&[
-        "pr", "view", &num_str,
-        "--repo", &q.repo,
-        "--json", "number,title,state,author,headRefName,url",
-    ]).await {
+        "pr",
+        "view",
+        &num_str,
+        "--repo",
+        &q.repo,
+        "--json",
+        "number,title,state,author,headRefName,url",
+    ])
+    .await
+    {
         Ok(val) => {
             let pr = normalize_gh_pr(val);
             Json(pr).into_response()
@@ -1736,10 +2042,14 @@ async fn gh_get_pr(
 async fn gh_list_runs(Query(q): Query<GhRepoQuery>) -> impl IntoResponse {
     let limit_str = q.limit.to_string();
     let mut args = vec![
-        "run", "list",
-        "--repo", &q.repo,
-        "--limit", &limit_str,
-        "--json", "databaseId,name,status,conclusion,headBranch,url",
+        "run",
+        "list",
+        "--repo",
+        &q.repo,
+        "--limit",
+        &limit_str,
+        "--json",
+        "databaseId,name,status,conclusion,headBranch,url",
     ];
     let branch_val;
     if let Some(ref b) = q.branch {
@@ -1756,16 +2066,19 @@ async fn gh_list_runs(Query(q): Query<GhRepoQuery>) -> impl IntoResponse {
     }
 }
 
-async fn gh_get_run(
-    Path(run_id): Path<u64>,
-    Query(q): Query<GhRepoQuery>,
-) -> impl IntoResponse {
+async fn gh_get_run(Path(run_id): Path<u64>, Query(q): Query<GhRepoQuery>) -> impl IntoResponse {
     let id_str = run_id.to_string();
     match gh_exec(&[
-        "run", "view", &id_str,
-        "--repo", &q.repo,
-        "--json", "databaseId,name,status,conclusion,headBranch,url",
-    ]).await {
+        "run",
+        "view",
+        &id_str,
+        "--repo",
+        &q.repo,
+        "--json",
+        "databaseId,name,status,conclusion,headBranch,url",
+    ])
+    .await
+    {
         Ok(val) => {
             let run = normalize_gh_run(val);
             Json(run).into_response()
@@ -1795,8 +2108,13 @@ fn normalize_gh_issue(mut v: serde_json::Value) -> serde_json::Value {
         // labels: [{name: "x"}] → ["x"]
         if let Some(labels) = obj.get("labels").cloned() {
             if let Some(arr) = labels.as_array() {
-                let flat: Vec<serde_json::Value> = arr.iter()
-                    .filter_map(|l| l.get("name").and_then(|n| n.as_str()).map(|s| serde_json::Value::String(s.into())))
+                let flat: Vec<serde_json::Value> = arr
+                    .iter()
+                    .filter_map(|l| {
+                        l.get("name")
+                            .and_then(|n| n.as_str())
+                            .map(|s| serde_json::Value::String(s.into()))
+                    })
                     .collect();
                 obj.insert("labels".into(), serde_json::Value::Array(flat));
             }
@@ -1919,9 +2237,17 @@ async fn wrangler_whoami() -> impl IntoResponse {
         }
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            (StatusCode::BAD_GATEWAY, format!("wrangler whoami failed: {stderr}")).into_response()
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("wrangler whoami failed: {stderr}"),
+            )
+                .into_response()
         }
-        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, format!("wrangler CLI not available: {e}")).into_response(),
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("wrangler CLI not available: {e}"),
+        )
+            .into_response(),
     }
 }
 
@@ -2029,7 +2355,11 @@ async fn persona_upsert(
         source_hash: body.source_hash,
     };
     match state.sqlite.upsert_persona(&persona) {
-        Ok(true) => (StatusCode::CREATED, Json(serde_json::to_value(&persona).unwrap())).into_response(),
+        Ok(true) => (
+            StatusCode::CREATED,
+            Json(serde_json::to_value(&persona).unwrap()),
+        )
+            .into_response(),
         Ok(false) => Json(serde_json::to_value(&persona).unwrap()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -2116,7 +2446,11 @@ async fn persona_review_rules_upsert(
         persona_ids: body.persona_ids,
     };
     match state.sqlite.upsert_review_rule(&rule) {
-        Ok(_) => (StatusCode::CREATED, Json(serde_json::to_value(&rule).unwrap())).into_response(),
+        Ok(_) => (
+            StatusCode::CREATED,
+            Json(serde_json::to_value(&rule).unwrap()),
+        )
+            .into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -2201,7 +2535,8 @@ async fn team_render(
     Json(body): Json<TeamRenderBody>,
 ) -> impl IntoResponse {
     let mut agents = Vec::new();
-    let context_str = body.context
+    let context_str = body
+        .context
         .as_ref()
         .map(|c| serde_json::to_string_pretty(c).unwrap_or_default())
         .unwrap_or_default();
@@ -2220,7 +2555,10 @@ async fn team_render(
                     }
                 }
                 if !persona.review_focus.is_empty() {
-                    prompt.push_str(&format!("\n## Your Review Focus\n{}\n", persona.review_focus));
+                    prompt.push_str(&format!(
+                        "\n## Your Review Focus\n{}\n",
+                        persona.review_focus
+                    ));
                 }
                 agents.push(gctrl_core::RenderedPersonaPrompt {
                     persona_id: persona.id,
@@ -2229,7 +2567,11 @@ async fn team_render(
                 });
             }
             Ok(None) => {
-                return (StatusCode::NOT_FOUND, format!("persona '{}' not found", pid)).into_response();
+                return (
+                    StatusCode::NOT_FOUND,
+                    format!("persona '{}' not found", pid),
+                )
+                    .into_response();
             }
             Err(e) => {
                 return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
@@ -2272,22 +2614,44 @@ struct InboxCreateMessageBody {
     project_key: Option<String>,
 }
 
-fn default_inbox_urgency() -> String { "medium".into() }
-fn default_inbox_context() -> serde_json::Value { serde_json::json!({}) }
+fn default_inbox_urgency() -> String {
+    "medium".into()
+}
+fn default_inbox_context() -> serde_json::Value {
+    serde_json::json!({})
+}
 
 async fn inbox_create_message(
     State(state): State<Arc<AppState>>,
     Json(body): Json<InboxCreateMessageBody>,
 ) -> impl IntoResponse {
     // Validate enum fields
-    const VALID_KINDS: &[&str] = &["permission_request", "budget_warning", "budget_exceeded", "agent_question", "clarification", "review_request", "eval_request", "status_update", "custom"];
+    const VALID_KINDS: &[&str] = &[
+        "permission_request",
+        "budget_warning",
+        "budget_exceeded",
+        "agent_question",
+        "clarification",
+        "review_request",
+        "eval_request",
+        "status_update",
+        "custom",
+    ];
     const VALID_URGENCIES: &[&str] = &["critical", "high", "medium", "low", "info"];
 
     if !VALID_KINDS.contains(&body.kind.as_str()) {
-        return (StatusCode::BAD_REQUEST, format!("invalid kind: {}", body.kind)).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("invalid kind: {}", body.kind),
+        )
+            .into_response();
     }
     if !VALID_URGENCIES.contains(&body.urgency.as_str()) {
-        return (StatusCode::BAD_REQUEST, format!("invalid urgency: {}", body.urgency)).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("invalid urgency: {}", body.urgency),
+        )
+            .into_response();
     }
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -2295,14 +2659,22 @@ async fn inbox_create_message(
     // Resolve or create thread
     let thread_id = if let Some(tid) = body.thread_id {
         tid
-    } else if let (Some(ct), Some(cr)) = (body.context_type.as_deref(), body.context_ref.as_deref()) {
+    } else if let (Some(ct), Some(cr)) = (body.context_type.as_deref(), body.context_ref.as_deref())
+    {
         let title = body.thread_title.as_deref().unwrap_or(cr);
-        match state.sqlite.get_or_create_inbox_thread(ct, cr, title, body.project_key.as_deref()) {
+        match state
+            .sqlite
+            .get_or_create_inbox_thread(ct, cr, title, body.project_key.as_deref())
+        {
             Ok(t) => t.id,
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
     } else {
-        return (StatusCode::BAD_REQUEST, "either thread_id or (context_type + context_ref) required".to_string()).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            "either thread_id or (context_type + context_ref) required".to_string(),
+        )
+            .into_response();
     };
 
     let msg = gctrl_core::InboxMessage {
@@ -2325,7 +2697,11 @@ async fn inbox_create_message(
     };
 
     match state.sqlite.create_inbox_message(&msg) {
-        Ok(()) => (StatusCode::CREATED, Json(serde_json::to_value(&msg).unwrap())).into_response(),
+        Ok(()) => (
+            StatusCode::CREATED,
+            Json(serde_json::to_value(&msg).unwrap()),
+        )
+            .into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -2352,7 +2728,9 @@ struct InboxMessageListParams {
     limit: usize,
 }
 
-fn default_inbox_limit() -> usize { 50 }
+fn default_inbox_limit() -> usize {
+    50
+}
 
 async fn inbox_list_messages(
     State(state): State<Arc<AppState>>,
@@ -2379,7 +2757,9 @@ async fn inbox_get_thread(
 ) -> impl IntoResponse {
     let thread = match state.sqlite.get_inbox_thread(&id) {
         Ok(Some(t)) => t,
-        Ok(None) => return (StatusCode::NOT_FOUND, format!("thread not found: {}", id)).into_response(),
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, format!("thread not found: {}", id)).into_response()
+        }
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
     // Include messages for the thread (shell expects InboxThreadWithMessages)
@@ -2411,7 +2791,11 @@ async fn inbox_list_threads(
     State(state): State<Arc<AppState>>,
     Query(params): Query<InboxThreadListParams>,
 ) -> impl IntoResponse {
-    match state.sqlite.list_inbox_threads(params.project.as_deref(), params.has_pending, Some(params.limit)) {
+    match state.sqlite.list_inbox_threads(
+        params.project.as_deref(),
+        params.has_pending,
+        Some(params.limit),
+    ) {
         Ok(threads) => Json(serde_json::to_value(&threads).unwrap()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -2431,27 +2815,53 @@ struct InboxCreateActionBody {
     actor_name: String,
 }
 
-fn default_inbox_actor_id() -> String { "default".into() }
-fn default_inbox_actor_name() -> String { "human".into() }
+fn default_inbox_actor_id() -> String {
+    "default".into()
+}
+fn default_inbox_actor_name() -> String {
+    "human".into()
+}
 
 async fn inbox_create_action(
     State(state): State<Arc<AppState>>,
     Json(body): Json<InboxCreateActionBody>,
 ) -> impl IntoResponse {
-    const VALID_ACTIONS: &[&str] = &["approve", "deny", "acknowledge", "defer", "delegate", "escalate", "reply"];
+    const VALID_ACTIONS: &[&str] = &[
+        "approve",
+        "deny",
+        "acknowledge",
+        "defer",
+        "delegate",
+        "escalate",
+        "reply",
+    ];
     if !VALID_ACTIONS.contains(&body.action_type.as_str()) {
-        return (StatusCode::BAD_REQUEST, format!("invalid action_type: {}", body.action_type)).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("invalid action_type: {}", body.action_type),
+        )
+            .into_response();
     }
     if let Some(ref reason) = body.reason {
         if reason.len() > 2000 {
-            return (StatusCode::BAD_REQUEST, "reason exceeds 2000 character limit").into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                "reason exceeds 2000 character limit",
+            )
+                .into_response();
         }
     }
 
     // Look up message to get thread_id
     let msg = match state.sqlite.get_inbox_message(&body.message_id) {
         Ok(Some(m)) => m,
-        Ok(None) => return (StatusCode::NOT_FOUND, format!("message not found: {}", body.message_id)).into_response(),
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                format!("message not found: {}", body.message_id),
+            )
+                .into_response()
+        }
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
 
@@ -2468,7 +2878,11 @@ async fn inbox_create_action(
     };
 
     match state.sqlite.create_inbox_action(&action) {
-        Ok(()) => (StatusCode::CREATED, Json(serde_json::to_value(&action).unwrap())).into_response(),
+        Ok(()) => (
+            StatusCode::CREATED,
+            Json(serde_json::to_value(&action).unwrap()),
+        )
+            .into_response(),
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("expected 'pending'") {
@@ -2499,13 +2913,29 @@ async fn inbox_batch_action(
     if body.message_ids.len() > 100 {
         return (StatusCode::BAD_REQUEST, "batch size exceeds limit of 100").into_response();
     }
-    const VALID_ACTIONS: &[&str] = &["approve", "deny", "acknowledge", "defer", "delegate", "escalate", "reply"];
+    const VALID_ACTIONS: &[&str] = &[
+        "approve",
+        "deny",
+        "acknowledge",
+        "defer",
+        "delegate",
+        "escalate",
+        "reply",
+    ];
     if !VALID_ACTIONS.contains(&body.action_type.as_str()) {
-        return (StatusCode::BAD_REQUEST, format!("invalid action_type: {}", body.action_type)).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("invalid action_type: {}", body.action_type),
+        )
+            .into_response();
     }
     if let Some(ref reason) = body.reason {
         if reason.len() > 2000 {
-            return (StatusCode::BAD_REQUEST, "reason exceeds 2000 character limit").into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                "reason exceeds 2000 character limit",
+            )
+                .into_response();
         }
     }
 
@@ -2734,8 +3164,12 @@ struct NetFetchBody {
     min_words: usize,
 }
 
-fn default_readability() -> bool { true }
-fn default_min_words() -> usize { 50 }
+fn default_readability() -> bool {
+    true
+}
+fn default_min_words() -> usize {
+    50
+}
 
 async fn net_fetch(
     State(state): State<Arc<AppState>>,
@@ -2768,10 +3202,18 @@ fn cf_backend_from_state(
     wait_for: Option<String>,
 ) -> Result<gctrl_net::CfBrowserBackend, axum::response::Response> {
     let account_id = state.net_config.cf_account_id.clone().ok_or_else(|| {
-        (StatusCode::SERVICE_UNAVAILABLE, "CF_ACCOUNT_ID not configured").into_response()
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "CF_ACCOUNT_ID not configured",
+        )
+            .into_response()
     })?;
     let api_token = state.net_config.cf_api_token.clone().ok_or_else(|| {
-        (StatusCode::SERVICE_UNAVAILABLE, "CF_API_TOKEN not configured").into_response()
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "CF_API_TOKEN not configured",
+        )
+            .into_response()
     })?;
     Ok(gctrl_net::CfBrowserBackend::with_client(
         state.http_client.clone(),
@@ -2789,7 +3231,9 @@ async fn net_render(
         Ok(b) => b,
         Err(resp) => return resp,
     };
-    match <gctrl_net::CfBrowserBackend as gctrl_net::RenderBackend>::render(&backend, &body.url).await {
+    match <gctrl_net::CfBrowserBackend as gctrl_net::RenderBackend>::render(&backend, &body.url)
+        .await
+    {
         Ok(rendered) => Json(serde_json::json!({
             "url": rendered.url,
             "status": rendered.status,
@@ -2816,7 +3260,10 @@ async fn net_scrape(
         Ok(b) => b,
         Err(resp) => return resp,
     };
-    match backend.scrape(&body.url, body.elements, body.wait_for).await {
+    match backend
+        .scrape(&body.url, body.elements, body.wait_for)
+        .await
+    {
         Ok(v) => Json(v).into_response(),
         Err(e) => (net_error_status(&e), e.to_string()).into_response(),
     }
@@ -3394,7 +3841,10 @@ mod tests {
     #[tokio::test]
     async fn test_analytics_cost_empty() {
         let app = test_app();
-        let req = Request::builder().uri("/api/analytics/cost").body(Body::empty()).unwrap();
+        let req = Request::builder()
+            .uri("/api/analytics/cost")
+            .body(Body::empty())
+            .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = resp.into_body().collect().await.unwrap().to_bytes();
@@ -3405,7 +3855,10 @@ mod tests {
     #[tokio::test]
     async fn test_analytics_latency_empty() {
         let app = test_app();
-        let req = Request::builder().uri("/api/analytics/latency").body(Body::empty()).unwrap();
+        let req = Request::builder()
+            .uri("/api/analytics/latency")
+            .body(Body::empty())
+            .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
     }
@@ -3466,17 +3919,19 @@ mod tests {
     async fn test_analytics_scores_query() {
         let store = DuckDbStore::open(":memory:").unwrap();
         // Insert a score directly
-        store.insert_score(&gctrl_core::Score {
-            id: "s1".into(),
-            target_type: "session".into(),
-            target_id: "sess1".into(),
-            name: "tests_pass".into(),
-            value: 1.0,
-            comment: None,
-            source: "auto".into(),
-            scored_by: None,
-            created_at: chrono::Utc::now(),
-        }).unwrap();
+        store
+            .insert_score(&gctrl_core::Score {
+                id: "s1".into(),
+                target_type: "session".into(),
+                target_id: "sess1".into(),
+                name: "tests_pass".into(),
+                value: 1.0,
+                comment: None,
+                source: "auto".into(),
+                scored_by: None,
+                created_at: chrono::Utc::now(),
+            })
+            .unwrap();
 
         let app = create_router(store);
         let req = Request::builder()
@@ -3494,7 +3949,10 @@ mod tests {
     #[tokio::test]
     async fn test_health_detailed() {
         let app = test_app();
-        let req = Request::builder().uri("/health").body(Body::empty()).unwrap();
+        let req = Request::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = resp.into_body().collect().await.unwrap().to_bytes();
@@ -3508,18 +3966,20 @@ mod tests {
     #[tokio::test]
     async fn test_session_cost_breakdown_endpoint() {
         let store = DuckDbStore::open(":memory:").unwrap();
-        store.insert_session(&gctrl_core::Session {
-            id: gctrl_core::SessionId("s1".into()),
-            workspace_id: gctrl_core::WorkspaceId("ws1".into()),
-            device_id: gctrl_core::DeviceId("dev1".into()),
-            agent_name: "claude".into(),
-            started_at: chrono::Utc::now(),
-            ended_at: None,
-            status: gctrl_core::SessionStatus::Active,
-            total_cost_usd: 0.0,
-            total_input_tokens: 0,
-            total_output_tokens: 0,
-        }).unwrap();
+        store
+            .insert_session(&gctrl_core::Session {
+                id: gctrl_core::SessionId("s1".into()),
+                workspace_id: gctrl_core::WorkspaceId("ws1".into()),
+                device_id: gctrl_core::DeviceId("dev1".into()),
+                agent_name: "claude".into(),
+                started_at: chrono::Utc::now(),
+                ended_at: None,
+                status: gctrl_core::SessionStatus::Active,
+                total_cost_usd: 0.0,
+                total_input_tokens: 0,
+                total_output_tokens: 0,
+            })
+            .unwrap();
 
         let app = create_router(store);
         let req = Request::builder()
@@ -4017,7 +4477,10 @@ Getting User settings...
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(json["stdout"].as_str().unwrap().contains("hello from cli_exec"));
+        assert!(json["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("hello from cli_exec"));
         assert_eq!(json["exitCode"], 0);
         assert!(json["durationMs"].is_number());
     }
@@ -4025,7 +4488,10 @@ Getting User settings...
     #[tokio::test]
     async fn test_cli_exec_nonzero_exit_still_200() {
         // `false` exits 1 without spawning failure — envelope should carry the code.
-        let body = CliExecBody { args: vec![], cwd: None };
+        let body = CliExecBody {
+            args: vec![],
+            cwd: None,
+        };
         let resp = cli_exec("false", body).await;
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
@@ -4035,7 +4501,10 @@ Getting User settings...
 
     #[tokio::test]
     async fn test_cli_exec_missing_binary_502() {
-        let body = CliExecBody { args: vec![], cwd: None };
+        let body = CliExecBody {
+            args: vec![],
+            cwd: None,
+        };
         let resp = cli_exec("gctrl-definitely-not-a-binary-xyz", body).await;
         assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
     }

@@ -197,7 +197,25 @@ CREATE TABLE IF NOT EXISTS board_issues (
     github_issue_number INTEGER,
     github_url      VARCHAR,
     start_date      VARCHAR,
-    due_date        VARCHAR
+    due_date        VARCHAR,
+    acceptance_criteria VARCHAR
+)
+"#;
+
+pub const CREATE_BOARD_ACCEPTANCE_CHECKS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS board_acceptance_checks (
+    id                VARCHAR PRIMARY KEY,
+    issue_id          VARCHAR NOT NULL,
+    check_idx         INTEGER NOT NULL,
+    kind              VARCHAR NOT NULL,
+    command           VARCHAR NOT NULL,
+    status            VARCHAR NOT NULL DEFAULT 'pending',
+    last_session_id   VARCHAR,
+    last_run_at       VARCHAR,
+    output            VARCHAR,
+    created_at        VARCHAR NOT NULL,
+    updated_at        VARCHAR NOT NULL,
+    UNIQUE(issue_id, check_idx)
 )
 "#;
 
@@ -339,6 +357,8 @@ pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_board_issues_parent ON board_issues(parent_id)",
     "CREATE INDEX IF NOT EXISTS idx_board_events_issue ON board_events(issue_id)",
     "CREATE INDEX IF NOT EXISTS idx_board_comments_issue ON board_comments(issue_id)",
+    "CREATE INDEX IF NOT EXISTS idx_board_acceptance_checks_issue ON board_acceptance_checks(issue_id)",
+    "CREATE INDEX IF NOT EXISTS idx_board_acceptance_checks_status ON board_acceptance_checks(status)",
     // Persona indexes
     "CREATE INDEX IF NOT EXISTS idx_persona_definitions_name ON persona_definitions(name)",
     "CREATE INDEX IF NOT EXISTS idx_persona_review_rules_type ON persona_review_rules(pr_type)",
@@ -370,6 +390,7 @@ pub fn all_migrations() -> Vec<&'static str> {
         CREATE_CONTEXT_ENTRIES_TABLE,
         CREATE_BOARD_PROJECTS_TABLE,
         CREATE_BOARD_ISSUES_TABLE,
+        CREATE_BOARD_ACCEPTANCE_CHECKS_TABLE,
         CREATE_BOARD_EVENTS_TABLE,
         CREATE_BOARD_COMMENTS_TABLE,
         CREATE_PERSONA_DEFINITIONS_TABLE,

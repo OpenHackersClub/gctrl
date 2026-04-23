@@ -1,18 +1,59 @@
-use gctrl_core::{BoardComment, BoardIssue};
+use gctrl_core::{AcceptanceCheck, BoardComment, BoardIssue};
 
-/// Pick the freshest dispatch comment posted by gctrl-board when the Issue
-/// moved to `in_progress`. The board UI posts them with a distinctive
-/// `## Agent:` section — we key off that so regular chat comments don't
-/// get mistaken for an agent brief.
+/// Build the full brief the agent sees on stdin.
 ///
-/// Falls back to building a minimal prompt from title+description if no
-/// dispatch comment is found — lets `gctrld board move ... in_progress`
-/// work even without a persona match.
-pub fn build_prompt(issue: &BoardIssue, comments: &[BoardComment]) -> String {
-    if let Some(dispatch) = latest_dispatch_comment(comments) {
-        return dispatch.body.clone();
+/// Layers (concatenated in order):
+/// 1. The persona body — freshest `## Agent:` dispatch comment from the
+///    board UI, or a minimal fallback if none exists.
+/// 2. A `## Acceptance Tests` section (only if `checks` is non-empty)
+///    listing each check and the HTTP callback URL the agent must POST
+///    results to.
+pub fn build_prompt(
+    issue: &BoardIssue,
+    comments: &[BoardComment],
+    checks: &[AcceptanceCheck],
+    kernel_base_url: &str,
+) -> String {
+    let base = latest_dispatch_comment(comments)
+        .map(|c| c.body.clone())
+        .unwrap_or_else(|| fallback_prompt(issue));
+    if checks.is_empty() {
+        return base;
     }
-    fallback_prompt(issue)
+    let mut out = base;
+    if !out.ends_with("\n\n") {
+        if out.ends_with('\n') {
+            out.push('\n');
+        } else {
+            out.push_str("\n\n");
+        }
+    }
+    out.push_str(&render_acceptance_section(issue, checks, kernel_base_url));
+    out
+}
+
+fn render_acceptance_section(
+    issue: &BoardIssue,
+    checks: &[AcceptanceCheck],
+    kernel_base_url: &str,
+) -> String {
+    let url = kernel_base_url.trim_end_matches('/');
+    let mut s = String::from("## Acceptance Tests\n\n");
+    s.push_str(&format!(
+        "Run each check below and report the result by POSTing to:\n\
+         `{url}/api/board/issues/{id}/acceptance/checks/<IDX>`\n\n\
+         Body: `{{\"status\":\"pass\"|\"fail\",\"output\":\"<trimmed stdout/stderr>\"}}`\n\n",
+        id = issue.id,
+    ));
+    for check in checks {
+        s.push_str(&format!(
+            "- [{idx}] {kind}: {cmd}\n",
+            idx = check.idx,
+            kind = check.kind.as_str(),
+            cmd = check.command,
+        ));
+    }
+    s
 }
 
 fn latest_dispatch_comment(comments: &[BoardComment]) -> Option<&BoardComment> {
@@ -39,7 +80,7 @@ fn fallback_prompt(issue: &BoardIssue) -> String {
 mod tests {
     use super::*;
     use chrono::{Duration, Utc};
-    use gctrl_core::{BoardIssue, IssueStatus};
+    use gctrl_core::{AcceptanceKind, BoardIssue, IssueStatus};
 
     fn issue() -> BoardIssue {
         let now = Utc::now();
@@ -72,6 +113,7 @@ mod tests {
             github_url: None,
             start_date: None,
             due_date: None,
+            acceptance_criteria: None,
         }
     }
 
@@ -95,14 +137,14 @@ mod tests {
             comment("c2", "## Agent: Engineer\nnew brief", 1),
             comment("c3", "regular human comment", 2),
         ];
-        let out = build_prompt(&issue(), &comments);
+        let out = build_prompt(&issue(), &comments, &[], "http://127.0.0.1:4318");
         assert!(out.contains("new brief"), "got: {out}");
         assert!(!out.contains("old brief"));
     }
 
     #[test]
     fn falls_back_to_title_and_description() {
-        let out = build_prompt(&issue(), &[]);
+        let out = build_prompt(&issue(), &[], &[], "http://127.0.0.1:4318");
         assert!(out.contains("BACK-1"));
         assert!(out.contains("Fix thing"));
         assert!(out.contains("describe"));
@@ -117,9 +159,65 @@ mod tests {
             author_type: "human".into(),
             ..comments[0].clone()
         };
-        let out = build_prompt(&issue(), &[human]);
+        let out = build_prompt(&issue(), &[human], &[], "http://127.0.0.1:4318");
         // Should fall back to title/description since no dispatch matches.
         assert!(out.contains("Fix thing"));
         assert!(!out.contains("human note"));
+    }
+
+    #[test]
+    fn appends_acceptance_section_with_callback_url() {
+        let checks = vec![
+            AcceptanceCheck {
+                idx: 0,
+                kind: AcceptanceKind::Shell,
+                command: "curl :8080/health → 200".into(),
+            },
+            AcceptanceCheck {
+                idx: 1,
+                kind: AcceptanceKind::Test,
+                command: "pnpm test foo.test.ts".into(),
+            },
+        ];
+        let out = build_prompt(&issue(), &[], &checks, "http://127.0.0.1:4318");
+        assert!(out.contains("## Acceptance Tests"));
+        assert!(out.contains("/api/board/issues/BACK-1/acceptance/checks/<IDX>"));
+        assert!(out.contains("- [0] shell: curl :8080/health → 200"));
+        assert!(out.contains("- [1] test: pnpm test foo.test.ts"));
+    }
+
+    #[test]
+    fn omits_acceptance_section_when_no_checks() {
+        let out = build_prompt(&issue(), &[], &[], "http://127.0.0.1:4318");
+        assert!(!out.contains("## Acceptance Tests"));
+    }
+
+    #[test]
+    fn acceptance_section_follows_dispatch_body() {
+        let comments = vec![comment("c1", "## Agent: Engineer\npersona brief body", 1)];
+        let checks = vec![AcceptanceCheck {
+            idx: 0,
+            kind: AcceptanceKind::Shell,
+            command: "echo ok".into(),
+        }];
+        let out = build_prompt(&issue(), &comments, &checks, "http://127.0.0.1:4318");
+        let persona_pos = out.find("persona brief body").expect("persona present");
+        let acceptance_pos = out.find("## Acceptance Tests").expect("acceptance present");
+        assert!(
+            persona_pos < acceptance_pos,
+            "acceptance must come after persona"
+        );
+    }
+
+    #[test]
+    fn trims_trailing_slash_from_kernel_url() {
+        let checks = vec![AcceptanceCheck {
+            idx: 0,
+            kind: AcceptanceKind::Shell,
+            command: "x".into(),
+        }];
+        let out = build_prompt(&issue(), &[], &checks, "http://127.0.0.1:4318/");
+        assert!(out.contains("http://127.0.0.1:4318/api/board/issues/BACK-1"));
+        assert!(!out.contains("4318//api"));
     }
 }

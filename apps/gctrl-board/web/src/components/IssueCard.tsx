@@ -1,4 +1,5 @@
 import type { Issue, Priority } from "../types"
+import { AcceptanceBadge } from "./AcceptanceBadge"
 
 const PRIORITY_COLORS: Record<Priority, string> = {
   urgent: "bg-rose-500",
@@ -92,6 +93,8 @@ export function IssueCard({ issue, onClick, isOverlay, isDragging }: Props) {
               ${issue.total_cost_usd.toFixed(2)}
             </span>
           )}
+
+          <AcceptanceBadge issueId={issue.id} />
 
           {issue.labels.map((label) => (
             <span

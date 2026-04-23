@@ -15,6 +15,45 @@ import { D1Client, D1Error, makeD1Client } from "./d1.js"
 interface Env {
   ASSETS: Fetcher
   DB: D1Database
+  /**
+   * Optional base URL for the gctrl kernel daemon. When set, the Worker
+   * proxies acceptance-rollup reads to the kernel (kernel is source of
+   * truth). Defaults to localhost for dev.
+   */
+  KERNEL_URL?: string
+}
+
+const KERNEL_URL_DEFAULT = "http://127.0.0.1:4318"
+
+const EMPTY_ROLLUP = {
+  total: 0,
+  passed: 0,
+  failed: 0,
+  pending: 0,
+  running: 0,
+  checks: [],
+}
+
+/**
+ * Proxy `GET /api/board/issues/:id/acceptance` to the kernel. Kernel owns
+ * the acceptance_checks table; the Worker is a read facade. Falls back to
+ * an empty rollup when the kernel is unreachable so the UI can keep rendering.
+ */
+async function proxyAcceptanceRollup(id: string, env: Env): Promise<Response> {
+  const base = (env.KERNEL_URL ?? KERNEL_URL_DEFAULT).replace(/\/$/, "")
+  try {
+    const upstream = await fetch(`${base}/api/board/issues/${id}/acceptance`)
+    const body = await upstream.text()
+    return new Response(body, {
+      status: upstream.status,
+      headers: {
+        "Content-Type": upstream.headers.get("Content-Type") ?? "application/json",
+        "Access-Control-Allow-Origin": "*",
+      },
+    })
+  } catch {
+    return jsonResponse(EMPTY_ROLLUP)
+  }
 }
 
 // ── HTTP helpers ──
@@ -543,6 +582,15 @@ export default {
             "Access-Control-Allow-Headers": "Content-Type",
           },
         })
+      }
+
+      // Kernel-proxy routes (kernel is source of truth) — handle before the
+      // D1-backed matchRoute so we don't fall through to "not found".
+      if (request.method === "GET") {
+        const acc = url.pathname.match(
+          /^\/api\/board\/issues\/([^/]+)\/acceptance$/,
+        )
+        if (acc) return proxyAcceptanceRollup(acc[1], env)
       }
 
       const effect = matchRoute(request, url.pathname)
