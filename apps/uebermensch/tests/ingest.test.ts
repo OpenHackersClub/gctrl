@@ -248,7 +248,7 @@ describe("HttpIngest with summarization", () => {
     Layer.succeed(LlmService, {
       name: () => "fake-llm",
       generateBrief: () => Effect.die("not used"),
-      generateReport: () => Effect.die("not used"),
+      generateInterestReport: () => Effect.die("not used"),
       summarizeSource: () =>
         Effect.sync(() => {
           calls.count += 1
@@ -318,7 +318,7 @@ describe("HttpIngest with summarization", () => {
     const failingLlm = Layer.succeed(LlmService, {
       name: () => "broken-llm",
       generateBrief: () => Effect.die("not used"),
-      generateReport: () => Effect.die("not used"),
+      generateInterestReport: () => Effect.die("not used"),
       summarizeSource: () =>
         Effect.fail(new LlmError({ message: "upstream 503", kind: "unavailable" })),
     })

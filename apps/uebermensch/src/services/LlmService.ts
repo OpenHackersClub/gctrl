@@ -30,25 +30,23 @@ export type ReportInterestInput = {
   readonly candidates: ReadonlyArray<CandidateRef>;
 };
 
-export type ReportRequest = {
+export type InterestReportRequest = {
   readonly periodLabel: string;
   readonly periodStart: string;
   readonly periodEnd: string;
   readonly profileName: string;
-  readonly interests: ReadonlyArray<ReportInterestInput>;
-  readonly maxItemsPerInterest: number;
+  readonly interest: ReportInterestInput;
+  readonly maxItems: number;
 };
 
-export type ReportSection = {
+export type InterestReportResponse = {
   readonly interestSlug: string;
-  readonly summary_md: string;
+  readonly analysis_md: string;
   readonly items: ReadonlyArray<CuratedItem>;
-};
-
-export type ReportResponse = {
-  readonly sections: ReadonlyArray<ReportSection>;
   readonly promptHash: string;
   readonly costUsd: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
   readonly model: string;
 };
 
@@ -69,7 +67,9 @@ export type SourceSummaryResponse = {
 export interface LlmServiceShape {
   readonly name: () => string;
   readonly generateBrief: (req: BriefRequest) => Effect.Effect<BriefResponse, LlmError>;
-  readonly generateReport: (req: ReportRequest) => Effect.Effect<ReportResponse, LlmError>;
+  readonly generateInterestReport: (
+    req: InterestReportRequest,
+  ) => Effect.Effect<InterestReportResponse, LlmError>;
   readonly summarizeSource: (
     req: SourceSummaryRequest,
   ) => Effect.Effect<SourceSummaryResponse, LlmError>;

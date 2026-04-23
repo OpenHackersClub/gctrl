@@ -4,9 +4,8 @@ import type { CandidateRef } from "../lib/candidates.js";
 import { sha256 } from "../lib/hash.js";
 import {
   type BriefRequest,
+  type InterestReportRequest,
   LlmService,
-  type ReportRequest,
-  type ReportSection,
 } from "../services/LlmService.js";
 import type { CuratedItem } from "../services/RendererService.js";
 
@@ -267,20 +266,27 @@ const postLlm = (
     ? postWorkersAi(model, system, userPrompt, maxTokens)
     : postAnthropic(model, system, userPrompt, maxTokens, thinking);
 
-const REPORT_SYSTEM_PROMPT = `You are uebermensch-researcher, a chief-of-staff analyst that produces a weekly research report grouped by research interest.
+const REPORT_SYSTEM_PROMPT = `You are uebermensch-researcher, a chief-of-staff analyst. Your task is to produce a DEEP weekly research report for ONE research interest.
 
 OUTPUT CONTRACT:
 - Output MUST be a single JSON object wrapped in a triple-backtick json fenced block. No prose outside the fence.
-- Shape: { "sections": ReportSection[] }
-- ReportSection: {
-    "interestSlug": string,  // MUST match one of the provided interest slugs
-    "summary_md": string,    // 3–6 sentence overview of the week for this interest; may cite candidates via [[stem]]
-    "items": CuratedItem[]   // up to maxItemsPerInterest per section
-  }
+- Shape: { "analysis_md": string, "items": CuratedItem[] }
+- analysis_md: 600–1500 words of substantive long-form analysis, structured with level-3 markdown headers in this EXACT order:
+    ### Thesis
+    ### Key developments
+    ### Cross-currents
+    ### Implications
+    ### Open questions
+  - Thesis (1 short paragraph): the single most important claim of the week for this interest, stated sharply.
+  - Key developments (2–5 paragraphs): concrete, specific developments grounded in the candidate excerpts. Tight bullets are acceptable here, but prefer prose that synthesizes across candidates.
+  - Cross-currents (1–3 paragraphs): tensions, disagreements, or contradictions between sources; second-order effects; what is being priced in vs. not.
+  - Implications (1–3 paragraphs): what this means for the interest's question. Concrete, falsifiable, decision-relevant.
+  - Open questions (3–6 bullets): what would change the thesis, what to watch next, what evidence is missing.
+- items (0 to maxItems): discrete curated news/updates/actions/alerts surfaced as evidence alongside the analysis.
 - CuratedItem: {
     "kind": "news" | "update" | "action" | "alert",
     "title": string,
-    "summary_md": string,
+    "summary_md": string,   // 2–4 sentences, concrete
     "topic": string | null,
     "thesis": string | null,
     "source_candidate_ids": string[],
@@ -288,70 +294,59 @@ OUTPUT CONTRACT:
   }
 
 CITATION RULES (strict — report generation will FAIL if violated):
-- Every \`[[link]]\` in any \`summary_md\` MUST match a candidate's \`stem\` field exactly.
+- Every \`[[link]]\` in \`analysis_md\` or any item \`summary_md\` MUST match a candidate's \`stem\` field exactly.
 - Do NOT use typed-prefix links like \`[[source:x]]\` or \`[[thesis:x]]\` — bare stems only.
-- \`source_candidate_ids\` MUST be a subset of the provided candidate \`id\` values for THAT interest section. Never fabricate.
-CURATION RULES:
-- Produce one section per provided interest, in the order given. Use the exact interestSlug.
-- For each section, use ONLY the candidates listed under that interest.
-- summary_md in each item: 2–4 sentences, substantive and concrete, derived from candidate excerpts. No hedging.
-- Merge near-duplicate candidates into one item referencing multiple sources.
-- topic: the single most relevant topic slug for that interest, or null.
-- Produce at most maxItemsPerInterest items per section; prefer high-scored candidates aligned with the interest's question.
+- \`source_candidate_ids\` on each item MUST be a subset of the provided candidate \`id\` values. Never fabricate.
+- Aim for ≥ 1 \`[[stem]]\` citation per paragraph in "Key developments" and at least 2 across "Cross-currents" + "Implications".
+
+DEPTH RULES:
+- Prefer concrete, falsifiable claims over hedged restatements of candidate excerpts.
+- Synthesize across candidates: where do they agree, diverge, or contradict?
+- Name actors, numbers, dates, and mechanisms. Avoid generic macro prose.
+- Do NOT meta-describe the candidate pool ("the sources cover X", "based on these articles"). Write as a first-party analyst.
 
 INSIGHT-ONLY RULES (strict — enforced by reviewer):
 - Write substantive insight only. NEVER describe what is absent, thin, missing, or quiet in the candidate pool.
 - BANNED phrases and patterns: "No direct X...", "No fresh X...", "appeared in the candidate set", "This week was quiet for...", "Candidate pool was thin...", "Most items were only indirectly relevant...", "Reference pages were also indexed but carry no new information", "Treat this week as a quiet one for...".
-- If a section has no candidates OR no substantive signal, return {"interestSlug": slug, "summary_md": "", "items": []} — the renderer will drop empty sections. Do NOT apologize or meta-commentate.
-- If the candidate pool contains only adjacent signal (no direct hit on the interest's question), lead with the adjacent signal as a concrete claim. Example: "BHP–China iron ore deal resets seaborne pricing relevant to Japanese steelmaker input costs." Do NOT frame it as "No direct X but adjacent Y...".
+- If the candidate pool has no substantive signal at all (not even adjacent), return {"analysis_md": "", "items": []} — the caller will drop the empty report. Do NOT apologize or meta-commentate.
+- If the candidate pool contains only adjacent signal (no direct hit on the interest's question), lead the Thesis with the adjacent signal as a concrete claim. Do NOT frame it as "No direct X but adjacent Y...".
 - No "Suggested action" lines about expanding ingestion, adding feeds, or describing the system itself. Actions must target the substantive domain (markets, policy, company behavior).`;
 
 const reportCandidateBlock = (c: CandidateRef): string => candidateBlock(c);
 
-const buildReportUserPrompt = (req: ReportRequest): string => {
+const buildInterestReportUserPrompt = (req: InterestReportRequest): string => {
+  const it = req.interest;
   const lines: Array<string> = [];
   lines.push(`period: ${req.periodLabel}`);
   lines.push(`periodStart: ${req.periodStart}`);
   lines.push(`periodEnd: ${req.periodEnd}`);
   lines.push(`profile: ${req.profileName}`);
-  lines.push(`maxItemsPerInterest: ${req.maxItemsPerInterest}`);
+  lines.push(`maxItems: ${req.maxItems}`);
   lines.push("");
-  lines.push("interests:");
-  for (const it of req.interests) {
-    lines.push(`- slug: ${it.slug}`);
-    lines.push(`  title: ${it.title}`);
-    if (it.question) lines.push(`  question: ${it.question}`);
-    lines.push(`  topics: [${it.topics.join(", ")}]`);
-    if (it.notes) {
-      lines.push(`  notes: |`);
-      for (const line of it.notes.split("\n")) lines.push(`    ${line}`);
-    }
-    lines.push(`  candidates:`);
-    if (it.candidates.length === 0) {
-      lines.push(`    (none)`);
-    } else {
-      for (const c of it.candidates) {
-        const block = reportCandidateBlock(c)
-          .split("\n")
-          .map((l) => `  ${l}`)
-          .join("\n");
-        lines.push(block);
-      }
-    }
+  lines.push("interest:");
+  lines.push(`  slug: ${it.slug}`);
+  lines.push(`  title: ${it.title}`);
+  if (it.question) lines.push(`  question: ${it.question}`);
+  lines.push(`  topics: [${it.topics.join(", ")}]`);
+  if (it.notes) {
+    lines.push(`  notes: |`);
+    for (const line of it.notes.split("\n")) lines.push(`    ${line}`);
+  }
+  lines.push("");
+  lines.push("candidates:");
+  if (it.candidates.length === 0) {
+    lines.push("  (none)");
+  } else {
+    for (const c of it.candidates) lines.push(reportCandidateBlock(c));
   }
   lines.push("");
   lines.push("Return ONLY a fenced ```json block with the schema above.");
   return lines.join("\n");
 };
 
-const ReportSectionSchema = Schema.Struct({
-  interestSlug: Schema.String,
-  summary_md: Schema.String,
+const InterestReportOutputSchema = Schema.Struct({
+  analysis_md: Schema.String,
   items: Schema.Array(ItemSchema),
-});
-
-const ReportOutputSchema = Schema.Struct({
-  sections: Schema.Array(ReportSectionSchema),
 });
 
 const SUMMARY_SYSTEM_PROMPT = `You are uebermensch-ingest, an assistant that condenses a single news article into a compact set of key insights for a research wiki.
@@ -447,10 +442,10 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
         model: res.model,
       };
     }),
-  generateReport: (req) =>
+  generateInterestReport: (req) =>
     Effect.gen(function* () {
       const model = modelFor();
-      const userPrompt = buildReportUserPrompt(req);
+      const userPrompt = buildInterestReportUserPrompt(req);
       const promptHash = sha256(`${REPORT_SYSTEM_PROMPT}\n---\n${userPrompt}`);
       const res = yield* postLlm(
         model,
@@ -473,7 +468,7 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
           llmErr("invalid", `kernel response JSON parse failed: ${String(e)}`),
         );
       }
-      const decoded = yield* Schema.decodeUnknown(ReportOutputSchema)(parsed).pipe(
+      const decoded = yield* Schema.decodeUnknown(InterestReportOutputSchema)(parsed).pipe(
         Effect.mapError((e) => llmErr("invalid", `kernel response schema mismatch: ${String(e)}`)),
       );
       const costUsd = isWorkersAiModel(res.model)
@@ -484,23 +479,23 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
             ANTHROPIC_INPUT_COST_PER_MTOK,
             ANTHROPIC_OUTPUT_COST_PER_MTOK,
           );
-      const sections: ReadonlyArray<ReportSection> = decoded.sections.map((s) => ({
-        interestSlug: s.interestSlug,
-        summary_md: s.summary_md,
-        items: s.items.map((i) => ({
-          kind: i.kind,
-          title: i.title,
-          summary_md: i.summary_md,
-          topic: i.topic,
-          thesis: i.thesis,
-          source_candidate_ids: i.source_candidate_ids,
-          suggested_action: i.suggested_action,
-        })),
+      const items: ReadonlyArray<CuratedItem> = decoded.items.map((i) => ({
+        kind: i.kind,
+        title: i.title,
+        summary_md: i.summary_md,
+        topic: i.topic,
+        thesis: i.thesis,
+        source_candidate_ids: i.source_candidate_ids,
+        suggested_action: i.suggested_action,
       }));
       return {
-        sections,
+        interestSlug: req.interest.slug,
+        analysis_md: decoded.analysis_md,
+        items,
         promptHash,
         costUsd,
+        inputTokens: res.inputTokens,
+        outputTokens: res.outputTokens,
         model: res.model,
       };
     }),
@@ -542,12 +537,12 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
 
 export const _internal = {
   buildUserPrompt,
-  buildReportUserPrompt,
+  buildInterestReportUserPrompt,
   buildSummaryUserPrompt,
   extractJson,
   kernelBase,
   LlmOutputSchema,
-  ReportOutputSchema,
+  InterestReportOutputSchema,
   normalizeInsights,
   SYSTEM_PROMPT,
   REPORT_SYSTEM_PROMPT,
