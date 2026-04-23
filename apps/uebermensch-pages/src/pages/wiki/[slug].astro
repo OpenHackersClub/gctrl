@@ -1,0 +1,16 @@
+---
+import Shell from "../../layouts/Shell.astro"
+import { renderKey } from "../../lib/pages.ts"
+
+const result = await renderKey(Astro.locals.runtime.env.VAULT, "wiki/sources/", Astro.params.slug ?? "")
+Astro.response.status = result.status
+Astro.response.headers.set(
+  "Cache-Control",
+  result.status === 200
+    ? "public, s-maxage=86400, stale-while-revalidate=604800"
+    : "public, s-maxage=60",
+)
+---
+<Shell title={result.title}>
+  <Fragment set:html={result.bodyHtml} />
+</Shell>

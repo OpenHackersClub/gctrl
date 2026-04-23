@@ -1,10 +1,36 @@
 import { describe, expect, it } from "vitest"
-import { renderMarkdown, renderMetaFooter, rewriteWikilinks } from "../src/markdown.ts"
+import { renderMarkdown, renderMetaFooter, rewriteWikilinks, routeFor } from "../src/lib/markdown.ts"
+
+describe("routeFor", () => {
+  it("routes weekly report index stems to /reports/", () => {
+    expect(routeFor("2026-W17")).toBe("/reports/2026-W17")
+  })
+  it("routes per-interest weekly report stems to /reports/", () => {
+    expect(routeFor("2026-W17--japan-macro")).toBe("/reports/2026-W17--japan-macro")
+  })
+  it("routes bare date stems to /briefs/", () => {
+    expect(routeFor("2026-04-23")).toBe("/briefs/2026-04-23")
+  })
+  it("routes dated source stems to /wiki/", () => {
+    expect(routeFor("2026-04-22--wikipedia-boj")).toBe("/wiki/2026-04-22--wikipedia-boj")
+  })
+  it("routes bare entity stems to /wiki/", () => {
+    expect(routeFor("donald-trump")).toBe("/wiki/donald-trump")
+  })
+})
 
 describe("rewriteWikilinks", () => {
-  it("rewrites bare stems to /wiki/ links", () => {
+  it("rewrites wiki-source stems to /wiki/ links", () => {
     const out = rewriteWikilinks("See [[2026-04-22--wikipedia-boj]].")
     expect(out).toContain("[2026-04-22--wikipedia-boj](/wiki/2026-04-22--wikipedia-boj)")
+  })
+  it("rewrites weekly-report stems to /reports/ links", () => {
+    const out = rewriteWikilinks("Read [[2026-W17--japan-macro|Japan macro]].")
+    expect(out).toContain("[Japan macro](/reports/2026-W17--japan-macro)")
+  })
+  it("rewrites bare-date stems to /briefs/ links", () => {
+    const out = rewriteWikilinks("From [[2026-04-23]].")
+    expect(out).toContain("[2026-04-23](/briefs/2026-04-23)")
   })
   it("uses the label when provided", () => {
     const out = rewriteWikilinks("See [[my-note|the note]].")
