@@ -8,6 +8,15 @@ export type RenderedPage = {
 }
 
 const STEM_RE = /^[a-z0-9][a-z0-9._-]*$/i
+const WEEK_RE = /^\d{4}-W\d{2}(?:--.+)?$/
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+
+export const routeFor = (stem: string): string => {
+  const encoded = encodeURIComponent(stem)
+  if (WEEK_RE.test(stem)) return `/reports/${encoded}`
+  if (DATE_RE.test(stem)) return `/briefs/${encoded}`
+  return `/wiki/${encoded}`
+}
 
 export const escapeHtml = (s: string): string =>
   s
@@ -30,7 +39,7 @@ export const rewriteWikilinks = (md: string): string => {
             const stem = String(rawStem).trim()
             const label = rawLabel ? String(rawLabel).trim() : stem
             if (!STEM_RE.test(stem)) return raw
-            return `[${label}](/wiki/${encodeURIComponent(stem)})`
+            return `[${label}](${routeFor(stem)})`
           })
         })
         .join("")
