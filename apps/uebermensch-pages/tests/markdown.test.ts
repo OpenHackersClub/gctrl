@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { renderMarkdown, renderMetaFooter, rewriteWikilinks } from "../src/markdown.ts"
+import { renderMarkdown, renderMetaFooter, rewriteWikilinks } from "../src/lib/markdown.ts"
 
 describe("rewriteWikilinks", () => {
   it("rewrites bare stems to /wiki/ links", () => {

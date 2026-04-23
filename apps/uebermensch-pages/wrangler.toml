@@ -1,7 +1,11 @@
 name = "uebermensch-pages"
-main = "src/index.ts"
+main = "./dist/_worker.js/index.js"
 compatibility_date = "2026-04-01"
 compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
 
 [[r2_buckets]]
 binding = "VAULT"
