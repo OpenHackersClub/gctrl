@@ -22,7 +22,7 @@ jobs:
   # ── Preview deploy (PR) ──
   preview:
     name: Deploy preview
-    runs-on: depot-ubuntu-24.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     if: github.event_name == 'pull_request'
     permissions:
@@ -101,7 +101,7 @@ jobs:
   #    idle gaps between test files.
   acceptance:
     name: Acceptance (preview Worker)
-    runs-on: depot-ubuntu-24.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: [preview]
     if: github.event_name == 'pull_request'
@@ -170,7 +170,7 @@ jobs:
   # ── Production deploy (main) ──
   deploy:
     name: Deploy to Cloudflare Workers
-    runs-on: depot-ubuntu-24.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # Skip deploy if CI failed (workflow_run triggers on both success and failure)
     if: >-
