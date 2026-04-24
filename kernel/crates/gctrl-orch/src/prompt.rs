@@ -70,6 +70,8 @@ mod tests {
             source_path: None,
             github_issue_number: None,
             github_url: None,
+            start_date: None,
+            due_date: None,
         }
     }
 

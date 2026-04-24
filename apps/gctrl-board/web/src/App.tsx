@@ -3,6 +3,8 @@ import { useProjects, useIssues } from "./hooks/useBoard"
 import { useProjectRoute } from "./hooks/useProjectRoute"
 import { useRoute } from "./hooks/useRoute"
 import { KanbanBoard } from "./components/KanbanBoard"
+import { GanttBoard } from "./components/GanttBoard"
+import { useGantt } from "./hooks/useGantt"
 import { IssueDetailPanel } from "./components/IssueDetailPanel"
 import { CreateIssueDialog } from "./components/CreateIssueDialog"
 import { ProjectSelector } from "./components/ProjectSelector"
@@ -21,6 +23,7 @@ export function App() {
   const { route, navigate } = useRoute()
   const { projects, loading: projectsLoading, create: createProject } = useProjects()
   const { selectedProjectId, selectProject: setSelectedProjectId } = useProjectRoute(projects)
+  const boardView = route.page === "board" ? route.view : "kanban"
   const {
     issues,
     loading: issuesLoading,
@@ -28,6 +31,7 @@ export function App() {
     createIssue,
     refresh,
   } = useIssues(selectedProjectId)
+  const gantt = useGantt(boardView === "gantt" ? selectedProjectId : null)
   const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -251,6 +255,35 @@ export function App() {
                   onCreate={handleCreateProject}
                   loading={projectsLoading}
                 />
+                {selectedProject && (
+                  <>
+                    <div className="w-px h-5 bg-zinc-800" />
+                    <div className="flex gap-px bg-zinc-800/60 p-px">
+                      <button
+                        onClick={() => navigate(`/projects/${selectedProject.key}`)}
+                        data-testid="view-kanban"
+                        className={`px-2.5 py-1 text-[11px] font-mono tracking-wide cursor-pointer transition-colors ${
+                          boardView === "kanban"
+                            ? "bg-emerald-500/15 text-emerald-300"
+                            : "bg-zinc-900/60 text-zinc-500 hover:text-zinc-300"
+                        }`}
+                      >
+                        kanban
+                      </button>
+                      <button
+                        onClick={() => navigate(`/projects/${selectedProject.key}/gantt`)}
+                        data-testid="view-gantt"
+                        className={`px-2.5 py-1 text-[11px] font-mono tracking-wide cursor-pointer transition-colors ${
+                          boardView === "gantt"
+                            ? "bg-emerald-500/15 text-emerald-300"
+                            : "bg-zinc-900/60 text-zinc-500 hover:text-zinc-300"
+                        }`}
+                      >
+                        gantt
+                      </button>
+                    </div>
+                  </>
+                )}
               </>
             )}
           </div>
@@ -280,13 +313,28 @@ export function App() {
         {route.page === "board" ? (
           <>
             {/* ── Board ── */}
-            <KanbanBoard
-              issues={issues}
-              loading={issuesLoading}
-              hasProject={!!selectedProjectId}
-              onMoveIssue={handleMoveIssue}
-              onSelectIssue={setSelectedIssue}
-            />
+            {boardView === "gantt" ? (
+              <GanttBoard
+                data={gantt.data}
+                loading={gantt.loading}
+                hasProject={!!selectedProjectId}
+                onSelectIssue={(issueId) => {
+                  const issue = issues.find((i) => i.id === issueId)
+                  if (issue) setSelectedIssue(issue)
+                }}
+                onUpdateSchedule={gantt.updateSchedule}
+                onMoveStatus={gantt.moveStatus}
+                onError={(msg) => addToast(msg, "error")}
+              />
+            ) : (
+              <KanbanBoard
+                issues={issues}
+                loading={issuesLoading}
+                hasProject={!!selectedProjectId}
+                onMoveIssue={handleMoveIssue}
+                onSelectIssue={setSelectedIssue}
+              />
+            )}
 
             {/* ── Detail Panel ── */}
             {selectedIssue && (

@@ -41,7 +41,8 @@ export function useProjectRoute(projects: Project[]) {
       if (projectId) {
         const project = projects.find((p) => p.id === projectId)
         if (project) {
-          history.pushState(null, "", `/projects/${project.key}`)
+          const viewSuffix = window.location.pathname.endsWith("/gantt") ? "/gantt" : ""
+          history.pushState(null, "", `/projects/${project.key}${viewSuffix}`)
         }
       } else {
         history.pushState(null, "", "/")

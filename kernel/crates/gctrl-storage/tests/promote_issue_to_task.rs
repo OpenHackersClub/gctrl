@@ -52,6 +52,8 @@ fn seed_project_and_issue(store: &SqliteStore, key: &str, issue_id: &str) {
         source_path: None,
         github_issue_number: None,
         github_url: None,
+        start_date: None,
+        due_date: None,
     };
     store.insert_board_issue(&issue).expect("insert issue");
 }

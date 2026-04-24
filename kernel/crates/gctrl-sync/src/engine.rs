@@ -987,6 +987,7 @@ mod tests {
                 total_cost_usd: 0.0, total_tokens: 0, pr_numbers: vec![],
                 content_hash: None, source_path: None,
                 github_issue_number: None, github_url: None,
+                start_date: None, due_date: None,
             }).unwrap();
         }
 

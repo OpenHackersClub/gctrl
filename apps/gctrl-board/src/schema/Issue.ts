@@ -56,6 +56,10 @@ export const Issue = Schema.Struct({
   blocking: Schema.Array(IssueId),
   agentNotes: Schema.optional(Schema.String),
   acceptanceCriteria: Schema.Array(Schema.String),
+
+  // Gantt scheduling (optional, YYYY-MM-DD, project-local date-only)
+  startDate: Schema.optional(Schema.String),
+  dueDate: Schema.optional(Schema.String),
 })
 export type Issue = typeof Issue.Type
 

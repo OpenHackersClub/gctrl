@@ -52,6 +52,8 @@ fn make_issue(project_id: &str, id: &str) -> BoardIssue {
         source_path: None,
         github_issue_number: None,
         github_url: None,
+        start_date: None,
+        due_date: None,
     }
 }
 

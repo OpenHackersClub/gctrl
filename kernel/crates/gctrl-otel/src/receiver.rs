@@ -4,7 +4,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::{get, post},
+    routing::{get, patch, post},
     Json, Router,
 };
 use gctrl_context::ContextManager;
@@ -135,6 +135,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/board/issues/{id}/events", get(board_list_events))
         .route("/api/board/issues/{id}/comments", get(board_list_comments))
         .route("/api/board/issues/{id}/link-session", post(board_link_session))
+        .route("/api/board/issues/{id}/schedule", patch(board_schedule_issue))
+        .route("/api/board/projects/{id}/gantt", get(board_gantt_for_project))
         .route("/api/board/import", post(board_import_markdown))
         .route("/api/board/export", post(board_export_markdown))
         .route("/api/board/projects/{id}/github", post(board_link_github))
@@ -985,6 +987,8 @@ async fn board_create_issue(
         source_path: None,
         github_issue_number: body.github_issue_number,
         github_url: body.github_url,
+        start_date: None,
+        due_date: None,
     };
 
     match state.sqlite.insert_board_issue(&issue) {
@@ -1188,6 +1192,126 @@ async fn board_link_session(
 ) -> impl IntoResponse {
     match state.sqlite.link_session_to_issue(&id, &body.session_id, body.cost_usd, body.tokens) {
         Ok(()) => StatusCode::OK.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+// Gantt: schedule update + project timeline.
+
+/// Schedule body: `double_option` so we distinguish "field absent" (keep
+/// existing) from "field explicitly null" (clear). `None` = untouched,
+/// `Some(None)` = clear, `Some(Some(date))` = set.
+#[derive(Deserialize)]
+struct BoardScheduleBody {
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    start_date: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    due_date: Option<Option<String>>,
+    #[serde(default = "default_web_user")]
+    actor_id: String,
+    #[serde(default = "default_web_ui")]
+    actor_name: String,
+    #[serde(default = "default_human")]
+    actor_type: String,
+}
+
+fn default_web_user() -> String { "web-user".into() }
+fn default_web_ui() -> String { "Web UI".into() }
+
+fn deserialize_optional_field<'de, D>(de: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::<String>::deserialize(de)?))
+}
+
+fn is_yyyy_mm_dd(s: &str) -> bool {
+    if s.len() != 10 { return false; }
+    let b = s.as_bytes();
+    b[4] == b'-' && b[7] == b'-'
+        && b[0..4].iter().all(|c| c.is_ascii_digit())
+        && b[5..7].iter().all(|c| c.is_ascii_digit())
+        && b[8..10].iter().all(|c| c.is_ascii_digit())
+}
+
+async fn board_schedule_issue(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<BoardScheduleBody>,
+) -> impl IntoResponse {
+    if body.start_date.is_none() && body.due_date.is_none() {
+        return (StatusCode::BAD_REQUEST, "start_date or due_date required".to_string()).into_response();
+    }
+    if let Some(Some(ref s)) = body.start_date {
+        if !is_yyyy_mm_dd(s) {
+            return (StatusCode::BAD_REQUEST, "start_date must be YYYY-MM-DD".to_string()).into_response();
+        }
+    }
+    if let Some(Some(ref d)) = body.due_date {
+        if !is_yyyy_mm_dd(d) {
+            return (StatusCode::BAD_REQUEST, "due_date must be YYYY-MM-DD".to_string()).into_response();
+        }
+    }
+
+    match state.sqlite.schedule_board_issue(
+        &id,
+        body.start_date,
+        body.due_date,
+        &body.actor_id,
+        &body.actor_name,
+        &body.actor_type,
+    ) {
+        Ok(()) => match state.sqlite.get_board_issue(&id) {
+            Ok(Some(issue)) => Json(serde_json::to_value(&issue).unwrap()).into_response(),
+            Ok(None) => (StatusCode::NOT_FOUND, format!("issue not found: {}", id)).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        },
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("issue not found") {
+                (StatusCode::NOT_FOUND, msg).into_response()
+            } else if msg.contains("must be <=") {
+                (StatusCode::BAD_REQUEST, msg).into_response()
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
+            }
+        }
+    }
+}
+
+async fn board_gantt_for_project(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.sqlite.get_board_project(&id) {
+        Ok(Some(_)) => {}
+        Ok(None) => return (StatusCode::NOT_FOUND, format!("project not found: {}", id)).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+    match state.sqlite.gantt_for_project(&id) {
+        Ok((min, max, issues)) => {
+            // Emit a Gantt-tuned projection: narrower than full BoardIssue,
+            // matching the Worker's GET /gantt response shape.
+            let rows: Vec<serde_json::Value> = issues.iter().map(|i| {
+                serde_json::json!({
+                    "id": i.id,
+                    "project_id": i.project_id,
+                    "title": i.title,
+                    "status": i.status.as_str(),
+                    "priority": i.priority,
+                    "assignee_id": i.assignee_id,
+                    "assignee_name": i.assignee_name,
+                    "assignee_type": i.assignee_type,
+                    "parent_id": i.parent_id,
+                    "start_date": i.start_date,
+                    "due_date": i.due_date,
+                })
+            }).collect();
+            Json(serde_json::json!({
+                "range": { "min": min, "max": max },
+                "issues": rows,
+            })).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

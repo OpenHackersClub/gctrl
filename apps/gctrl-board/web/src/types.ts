@@ -42,6 +42,8 @@ export interface Issue {
   acceptance_criteria: string[]
   github_issue_number?: number
   github_url?: string
+  start_date?: string | null
+  due_date?: string | null
 }
 
 export interface Project {
@@ -56,6 +58,26 @@ export interface MoveIssueResult {
   issue: Issue
   task_id: string | null
   dispatched: boolean
+}
+
+/** Gantt summary row — narrower shape than Issue (what GET /gantt returns). */
+export interface GanttIssue {
+  id: string
+  project_id: string
+  title: string
+  status: IssueStatus
+  priority: Priority
+  assignee_id: string | null
+  assignee_name: string | null
+  assignee_type: AssigneeType | null
+  parent_id: string | null
+  start_date: string | null
+  due_date: string | null
+}
+
+export interface GanttView {
+  range: { min: string | null; max: string | null }
+  issues: GanttIssue[]
 }
 
 export interface IssueEvent {

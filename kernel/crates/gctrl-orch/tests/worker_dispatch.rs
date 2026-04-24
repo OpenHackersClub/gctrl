@@ -48,6 +48,8 @@ fn seed_dispatchable_issue(store: &SqliteStore, issue_id: &str) -> Task {
         source_path: None,
         github_issue_number: None,
         github_url: None,
+        start_date: None,
+        due_date: None,
     };
     store.insert_board_issue(&issue).unwrap();
 

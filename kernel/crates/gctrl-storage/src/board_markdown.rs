@@ -223,6 +223,8 @@ pub fn import_markdown_dir(
             source_path: Some(path.to_string_lossy().into_owned()),
             github_issue_number: None,
             github_url: None,
+            start_date: None,
+            due_date: None,
         };
 
         results.push((issue, id));
@@ -415,6 +417,8 @@ The rate limiting middleware stores tokens in plaintext.
             source_path: None,
             github_issue_number: None,
             github_url: None,
+            start_date: None,
+            due_date: None,
         };
 
         let md = issue_to_markdown(&issue, "BACK");
@@ -476,6 +480,8 @@ The rate limiting middleware stores tokens in plaintext.
             source_path: None,
             github_issue_number: None,
             github_url: None,
+            start_date: None,
+            due_date: None,
         }];
 
         // Export

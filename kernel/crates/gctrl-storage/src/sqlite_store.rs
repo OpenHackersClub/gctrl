@@ -64,6 +64,8 @@ CREATE TABLE IF NOT EXISTS board_issues (
     source_path     TEXT,
     github_issue_number INTEGER,
     github_url      TEXT,
+    start_date      TEXT,
+    due_date        TEXT,
     device_id       TEXT NOT NULL DEFAULT '',
     synced          INTEGER NOT NULL DEFAULT 0
 )
@@ -247,6 +249,8 @@ const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_board_issues_status ON board_issues(status)",
     "CREATE INDEX IF NOT EXISTS idx_board_issues_assignee ON board_issues(assignee_id)",
     "CREATE INDEX IF NOT EXISTS idx_board_issues_parent ON board_issues(parent_id)",
+    "CREATE INDEX IF NOT EXISTS idx_board_issues_start_date ON board_issues(start_date)",
+    "CREATE INDEX IF NOT EXISTS idx_board_issues_due_date ON board_issues(due_date)",
     "CREATE INDEX IF NOT EXISTS idx_board_events_issue ON board_events(issue_id)",
     "CREATE INDEX IF NOT EXISTS idx_board_comments_issue ON board_comments(issue_id)",
     // Board sync indexes
@@ -454,8 +458,8 @@ impl SqliteStore {
     pub fn insert_board_issue(&self, issue: &gctrl_core::BoardIssue) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO board_issues (id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url, device_id, synced)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            "INSERT INTO board_issues (id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url, start_date, due_date, device_id, synced)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
             params![
                 issue.id,
                 issue.project_id,
@@ -483,6 +487,8 @@ impl SqliteStore {
                 issue.source_path,
                 issue.github_issue_number.map(|n| n as i32),
                 issue.github_url,
+                issue.start_date,
+                issue.due_date,
                 self.device_id,
             ],
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
@@ -532,7 +538,7 @@ impl SqliteStore {
     pub fn get_board_issue(&self, id: &str) -> Result<Option<gctrl_core::BoardIssue>> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url FROM board_issues WHERE id = ?1",
+            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url, start_date, due_date FROM board_issues WHERE id = ?1",
             [id],
             row_to_board_issue,
         ).ok().map(Ok).transpose()
@@ -541,7 +547,7 @@ impl SqliteStore {
     pub fn list_board_issues(&self, filter: &gctrl_core::BoardIssueFilter) -> Result<Vec<gctrl_core::BoardIssue>> {
         let conn = self.conn.lock().unwrap();
         let mut sql = String::from(
-            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url FROM board_issues WHERE 1=1"
+            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url, start_date, due_date FROM board_issues WHERE 1=1"
         );
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         let mut idx = 1;
@@ -822,6 +828,100 @@ impl SqliteStore {
         Ok(tasks)
     }
 
+    /// Update `start_date` / `due_date` on an issue. Pass `None` for either
+    /// field to leave it untouched, `Some(None)` to clear, or `Some(Some(date))`
+    /// to set a new value. Emits a `scheduled` board event on success.
+    ///
+    /// Validates `start_date <= due_date` when both are set after the merge.
+    pub fn schedule_board_issue(
+        &self,
+        id: &str,
+        start_patch: Option<Option<String>>,
+        due_patch: Option<Option<String>>,
+        actor_id: &str,
+        actor_name: &str,
+        actor_type: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let (cur_start, cur_due): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT start_date, due_date FROM board_issues WHERE id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|e| GctlError::Storage(format!("issue not found: {} ({})", id, e)))?;
+
+        let next_start = match start_patch {
+            Some(v) => v,
+            None => cur_start,
+        };
+        let next_due = match due_patch {
+            Some(v) => v,
+            None => cur_due,
+        };
+
+        if let (Some(s), Some(d)) = (&next_start, &next_due) {
+            if s.as_str() > d.as_str() {
+                return Err(GctlError::Storage(
+                    "start_date must be <= due_date".to_string(),
+                ));
+            }
+        }
+
+        let now = chrono::Utc::now();
+        conn.execute(
+            "UPDATE board_issues SET start_date = ?1, due_date = ?2, updated_at = ?3, device_id = ?4, synced = 0 WHERE id = ?5",
+            params![next_start, next_due, now.to_rfc3339(), self.device_id, id],
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+
+        let event_id = uuid::Uuid::new_v4().to_string();
+        let data = serde_json::json!({
+            "start_date": next_start,
+            "due_date": next_due,
+        });
+        conn.execute(
+            "INSERT INTO board_events (id, issue_id, type, actor_id, actor_name, actor_type, timestamp, data, device_id, updated_at, synced)
+             VALUES (?, ?, 'scheduled', ?, ?, ?, ?, ?, ?, ?, 0)",
+            params![
+                event_id, id, actor_id, actor_name, actor_type,
+                now.to_rfc3339(),
+                serde_json::to_string(&data).unwrap_or_else(|_| "null".into()),
+                self.device_id, now.to_rfc3339(),
+            ],
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Return all issues for a project along with the raw min/max range
+    /// over scheduled dates (both `start_date` and `due_date` are scanned).
+    /// Unscheduled issues are included with `None` dates.
+    pub fn gantt_for_project(
+        &self,
+        project_id: &str,
+    ) -> Result<(Option<String>, Option<String>, Vec<gctrl_core::BoardIssue>)> {
+        let filter = gctrl_core::BoardIssueFilter {
+            project_id: Some(project_id.to_string()),
+            ..Default::default()
+        };
+        let issues = self.list_board_issues(&filter)?;
+        let mut min: Option<String> = None;
+        let mut max: Option<String> = None;
+        for i in &issues {
+            for v in [&i.start_date, &i.due_date] {
+                if let Some(s) = v {
+                    if min.as_deref().map_or(true, |m| s.as_str() < m) {
+                        min = Some(s.clone());
+                    }
+                    if max.as_deref().map_or(true, |m| s.as_str() > m) {
+                        max = Some(s.clone());
+                    }
+                }
+            }
+        }
+        Ok((min, max, issues))
+    }
+
     pub fn assign_board_issue(&self, id: &str, assignee_id: &str, assignee_name: &str, assignee_type: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let now = chrono::Utc::now().to_rfc3339();
@@ -965,7 +1065,7 @@ impl SqliteStore {
     pub fn list_unsynced_board_issues(&self, batch_size: usize) -> Result<Vec<gctrl_core::BoardIssue>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url FROM board_issues WHERE synced = 0 ORDER BY updated_at ASC LIMIT ?1",
+            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url, start_date, due_date FROM board_issues WHERE synced = 0 ORDER BY updated_at ASC LIMIT ?1",
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
         let rows = stmt.query_map([batch_size as i64], row_to_board_issue)
             .map_err(|e| GctlError::Storage(e.to_string()))?;
@@ -2000,6 +2100,8 @@ fn row_to_board_issue(row: &rusqlite::Row<'_>) -> rusqlite::Result<gctrl_core::B
         source_path: row.get(23)?,
         github_issue_number: { let v: Option<i32> = row.get(24)?; v.map(|n| n as u32) },
         github_url: row.get(25)?,
+        start_date: row.get(26)?,
+        due_date: row.get(27)?,
     })
 }
 
@@ -2229,6 +2331,8 @@ mod tests {
             source_path: None,
             github_issue_number: None,
             github_url: None,
+            start_date: None,
+            due_date: None,
         };
         store.insert_board_issue(&issue).unwrap();
 
@@ -2555,6 +2659,8 @@ mod tests {
             source_path: None,
             github_issue_number: None,
             github_url: None,
+            start_date: None,
+            due_date: None,
         }
     }
 

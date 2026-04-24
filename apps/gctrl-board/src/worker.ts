@@ -358,6 +358,102 @@ const linkSession: ApiHandler = (req, params) =>
     return noContent()
   })
 
+// Gantt — scheduling + project timeline
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+const isValidDate = (v: unknown): v is string =>
+  typeof v === "string" && DATE_RE.test(v)
+
+const scheduleIssue: ApiHandler = (req, params) =>
+  Effect.gen(function* () {
+    const body = (yield* Effect.tryPromise({
+      try: () => req.json(),
+      catch: () => new D1Error({ message: "Invalid JSON" }),
+    })) as { start_date?: string | null; due_date?: string | null }
+
+    const hasStart = Object.prototype.hasOwnProperty.call(body, "start_date")
+    const hasDue = Object.prototype.hasOwnProperty.call(body, "due_date")
+    if (!hasStart && !hasDue) {
+      return errorResponse("start_date or due_date required")
+    }
+
+    if (body.start_date != null && !isValidDate(body.start_date)) {
+      return errorResponse("start_date must be YYYY-MM-DD")
+    }
+    if (body.due_date != null && !isValidDate(body.due_date)) {
+      return errorResponse("due_date must be YYYY-MM-DD")
+    }
+
+    const db = yield* D1Client
+    const existing = yield* db.first<{ start_date: string | null; due_date: string | null }>(
+      "SELECT start_date, due_date FROM issues WHERE id = ?", params.id,
+    )
+    if (!existing) return errorResponse("Issue not found", 404)
+
+    // Merge: unspecified keys keep existing values
+    const nextStart = hasStart ? (body.start_date ?? null) : existing.start_date
+    const nextDue = hasDue ? (body.due_date ?? null) : existing.due_date
+
+    if (nextStart && nextDue && nextStart > nextDue) {
+      return errorResponse("start_date must be <= due_date")
+    }
+
+    const ts = new Date().toISOString()
+    yield* db.batch([
+      {
+        sql: "UPDATE issues SET start_date = ?, due_date = ?, updated_at = ? WHERE id = ?",
+        binds: [nextStart, nextDue, ts, params.id],
+      },
+      {
+        sql: "INSERT INTO issue_events (id, issue_id, event_type, actor_id, actor_name, actor_type, timestamp, data) VALUES (?, ?, 'scheduled', ?, ?, ?, ?, ?)",
+        binds: [
+          crypto.randomUUID(), params.id,
+          "web-user", "Web UI", "human", ts,
+          JSON.stringify({ start_date: nextStart, due_date: nextDue }),
+        ],
+      },
+    ])
+
+    const row = yield* db.first("SELECT * FROM issues WHERE id = ?", params.id)
+    return jsonResponse(parseRow(row as Record<string, unknown>))
+  })
+
+const projectGantt: ApiHandler = (_req, params) =>
+  Effect.gen(function* () {
+    const db = yield* D1Client
+    const project = yield* db.first<{ id: string }>(
+      "SELECT id FROM projects WHERE id = ?", params.id,
+    )
+    if (!project) return errorResponse("Project not found", 404)
+
+    const rows = yield* db.query(
+      `SELECT id, project_id, title, status, priority,
+              assignee_id, assignee_name, assignee_type,
+              parent_id, start_date, due_date
+       FROM issues WHERE project_id = ?
+       ORDER BY COALESCE(start_date, due_date) IS NULL, start_date, due_date, id`,
+      params.id,
+    )
+
+    // Raw min/max over scheduled dates — no zoom padding (client's job).
+    let min: string | null = null
+    let max: string | null = null
+    for (const r of rows) {
+      const s = (r.start_date as string | null) ?? null
+      const d = (r.due_date as string | null) ?? null
+      for (const v of [s, d]) {
+        if (!v) continue
+        if (min === null || v < min) min = v
+        if (max === null || v > max) max = v
+      }
+    }
+
+    return jsonResponse({
+      range: { min, max },
+      issues: rows,
+    })
+  })
+
 // Inbox stub
 
 const inboxStats: ApiHandler = () =>
@@ -405,6 +501,8 @@ const routes: Route[] = [
   defineRoute("GET", "/api/board/issues/:id/comments", listComments),
   defineRoute("GET", "/api/board/issues/:id/events", listEvents),
   defineRoute("POST", "/api/board/issues/:id/link-session", linkSession),
+  defineRoute("PATCH", "/api/board/issues/:id/schedule", scheduleIssue),
+  defineRoute("GET", "/api/board/projects/:id/gantt", projectGantt),
   defineRoute("GET", "/api/inbox/stats", inboxStats),
   defineRoute("GET", "/api/sync/status", syncStatus),
 ]
@@ -441,7 +539,7 @@ export default {
           status: 204,
           headers: {
             "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type",
           },
         })

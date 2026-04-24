@@ -1,7 +1,9 @@
 import { useState, useCallback, useEffect } from "react"
 
+export type BoardView = "kanban" | "gantt"
+
 export type Route =
-  | { page: "board"; projectKey: string | null }
+  | { page: "board"; projectKey: string | null; view: BoardView }
   | { page: "inbox"; threadId: string | null }
 
 function parseRoute(pathname: string): Route {
@@ -16,14 +18,18 @@ function parseRoute(pathname: string): Route {
     return { page: "inbox", threadId: null }
   }
 
-  // /projects/:key
-  const projectMatch = pathname.match(/^\/projects\/([^/]+)/)
+  // /projects/:key(/gantt)?
+  const projectMatch = pathname.match(/^\/projects\/([^/]+?)(?:\/(gantt))?\/?$/)
   if (projectMatch) {
-    return { page: "board", projectKey: projectMatch[1] }
+    return {
+      page: "board",
+      projectKey: projectMatch[1],
+      view: projectMatch[2] === "gantt" ? "gantt" : "kanban",
+    }
   }
 
   // / or anything else — board with no project selected
-  return { page: "board", projectKey: null }
+  return { page: "board", projectKey: null, view: "kanban" }
 }
 
 export function useRoute(): { route: Route; navigate: (path: string) => void } {
