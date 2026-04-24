@@ -1,6 +1,6 @@
 # Application: gctrl-analytics (Usage, OTel & Network Dashboard)
 
-gctrl-analytics is the **observability web application** for gctrl — a unified dashboard for usage, OTel traces, cost/latency analytics, and network traffic routed through the kernel. It visualizes activity from both **internal agents** (scheduled/spawned by us through the kernel) and **external agents** (Claude Code, Codex, ad-hoc scripts, humans) that push telemetry through the OTel receiver or route traffic through the kernel proxy.
+gctrl-analytics is the **observability web application** for gctrl — a unified dashboard for all past and live agent-spawn sessions, usage, OTel traces, cost/latency analytics, and network traffic routed through the kernel proxy. It visualizes activity from both **internal agents** (scheduled/spawned by us through the kernel) and **external agents** (Claude Code, Codex, ad-hoc scripts, humans) that push telemetry through the OTel receiver or route traffic through the kernel proxy.
 
 It is the second native application after `gctrl-board`, and the primary place humans go to ask "what has been happening on this machine / in this workspace?".
 
@@ -23,10 +23,11 @@ See [os.md — Dependency Direction](../os.md).
 
 ### In scope
 
-1. **Usage** — sessions, agent runs, tokens, cost, trends over time, by agent / model / workspace.
-2. **OTel analytics** — trace trees, span type distributions, latency percentiles, error loops, scores, alerts.
-3. **Network traffic** — domains contacted, bytes up/down, request counts, status-code distribution, per-agent attribution (requires kernel `proxy` Phase 2 + new `/api/net/*` routes; see [Kernel Dependencies](#kernel-dependencies)).
-4. **Agent attribution** — distinguish **internal** (scheduled via kernel Scheduler / spawned by our apps) vs **external** (pushed OTel from outside, e.g. a developer running `claude` locally against the OTel receiver) across all three surfaces above.
+1. **Sessions** — **all past and live agent-spawn sessions** (internal + external) with live status, trace tree, cost, and linked issue; the primary entry point for "what is running / what ran".
+2. **Usage** — agent runs, tokens, cost, trends over time, by agent / model / workspace.
+3. **OTel analytics** — trace trees, span type distributions, latency percentiles, error loops, scores, alerts.
+4. **Proxied network traffic** — first-class view of requests flowing through the kernel proxy: domains contacted, bytes up/down, request counts, status-code distribution, per-agent attribution (requires kernel `proxy` Phase 2 + new `/api/net/*` routes; see [Kernel Dependencies](#kernel-dependencies)).
+5. **Agent attribution** — distinguish **internal** (scheduled via kernel Scheduler / spawned by our apps) vs **external** (pushed OTel from outside, e.g. a developer running `claude` locally against the OTel receiver) across all surfaces above.
 
 ### Out of scope
 
@@ -43,7 +44,8 @@ See [os.md — Dependency Direction](../os.md).
 | Session list, detail, spans, trace tree, cost breakdown, loops | `GET /api/sessions/*` | — |
 | Network traffic (domains, bytes, status) | — | Kernel `proxy` Phase 2 + `GET /api/net/*` routes |
 | Internal vs. external attribution | `session.agent_kind` (partial) | Add `session.spawn_source: internal \| external` field + filter params |
-| Live updates | — | Optional SSE endpoint `GET /api/sessions/stream` (deferrable) |
+| Live sessions | — | SSE endpoints `GET /api/sessions/stream` and `GET /api/sessions/{id}/stream` (core, M1) |
+| Claude Code JSONL fidelity for external sessions | — | Deferred: `driver-claude-code` watcher (see [Deferred / Future](#deferred--future)) |
 
 **Principle**: no new analytics logic in the app. The app is a **presentation layer**. Any new aggregation or attribution belongs in the kernel so the CLI benefits too.
 
@@ -88,9 +90,12 @@ Single-page rollup answering "what happened in the last N hours/days":
 
 ### 2. Sessions
 
-- Table of sessions filtered by the global filters.
-- Row → detail pane: agent, model, cost, duration, spawn_source, linked issue (if any), span count, error count.
-- Detail pane embeds a **trace tree** (renders `GET /api/sessions/{id}/tree`) with span expansion, latency bars, and error highlighting.
+The primary "what has been / is being spawned" view. Shows **every agent-spawn session** the kernel knows about — past and live — regardless of whether we started it (internal) or an external tool pushed OTel in (external).
+
+- Table of sessions filtered by the global filters, with a **status column**: `live` (no `ended_at`, recent span activity), `idle` (no `ended_at`, no recent spans), `ended`, `errored`.
+- A top toggle defaults to **"Live + recent"**; operators can switch to "All past" for historical inspection.
+- Row → detail pane: agent, model, cost, duration, spawn_source, linked issue (if any), span count, error count, **live indicator** when streaming spans are still arriving.
+- Detail pane embeds a **trace tree** (renders `GET /api/sessions/{id}/tree`) with span expansion, latency bars, and error highlighting. For live sessions the tree appends new spans as they arrive (SSE, see M1 below).
 - Loops view surfaces `GET /api/sessions/{id}/loops` when the kernel detected repeated failures.
 
 ### 3. OTel
@@ -101,15 +106,18 @@ Single-page rollup answering "what happened in the last N hours/days":
 - Alert rule status (reuses `GET /api/analytics/alerts`).
 - Cost breakdown by model and by agent (reuses `GET /api/analytics/cost`).
 
-### 4. Network
+### 4. Network (Proxied Traffic)
+
+Surfaces every HTTP request that flowed through the kernel proxy — both app-originated and external agents routed via `HTTP_PROXY`. Co-equal with Sessions as a first-class surface: operators ask "which session called which domain?" at least as often as "which spans were slow?".
 
 Only meaningful once kernel proxy Phase 2 ships. Before then, this tab shows a placeholder explaining the dependency.
 
 - Top domains by requests and by bytes.
-- Request volume sparkline.
+- Request volume sparkline, stacked by `spawn_source` when attribution is available.
 - Status code distribution (2xx/3xx/4xx/5xx stacked).
-- Recent requests table with per-request drill-through.
-- When attribution is available: "network cost" joined to a session (e.g. "session `sess_abc` contacted `api.openai.com` 42 times, 312 KB").
+- Recent requests table with per-request drill-through (method, host, path, status, bytes, latency, session link).
+- When attribution is available: "network cost" joined to a session (e.g. "session `sess_abc` contacted `api.openai.com` 42 times, 312 KB") and the reverse on the Sessions detail pane ("this session made 42 outbound requests to 3 domains").
+- Overview tab also surfaces the top-3 proxied domains + total requests/bytes in the KPI row so network is visible without clicking in.
 
 ## UI & Stack
 
@@ -144,11 +152,23 @@ The Overview and Sessions tabs show an **Internal / External** toggle. OTel and 
 
 ## Milestones
 
-1. **M0 — Skeleton + Overview + Sessions**: Worker + SPA + kernel proxy, Overview tab, Sessions list + detail with trace tree. No network tab. Uses existing kernel routes only. Fits on a laptop in an afternoon.
-2. **M1 — OTel tab**: latency, spans, scores, alerts, cost breakdown. Still zero new kernel work.
-3. **M2 — Attribution**: kernel adds `session.spawn_source`. App adds global filter + split charts.
-4. **M3 — Network tab**: depends on kernel `proxy` Phase 2 + `/api/net/*` routes. Ship placeholder until then.
-5. **M4 — Live updates (optional)**: SSE for session list on the Sessions tab.
+1. **M0 — Skeleton + Overview + Sessions (past)**: Worker + SPA + kernel proxy, Overview tab, Sessions list + detail with trace tree over historical data. Poll-refresh for "live-ish" updates (5–10s). No network tab. Uses existing kernel routes only. Fits on a laptop in an afternoon.
+2. **M1 — Live sessions**: SSE endpoint `GET /api/sessions/stream` + per-session `GET /api/sessions/{id}/stream`. Sessions table and detail pane update in-place as spans land. This is a core feature, not optional — operators need to see agents while they are running.
+3. **M2 — OTel tab**: latency, spans, scores, alerts, cost breakdown. Still zero new kernel work.
+4. **M3 — Attribution**: kernel adds `session.spawn_source`. App adds global filter + split charts.
+5. **M4 — Network tab**: depends on kernel `proxy` Phase 2 + `/api/net/*` routes. Ship placeholder until then.
+
+## Deferred / Future
+
+### Claude Code JSONL import
+
+Claude Code writes a JSONL transcript per session (tool calls, messages, reasoning, file diffs) that is strictly richer than what we capture from its OTel output today. Importing it would let the Sessions detail pane show full agent reasoning and tool traces for external Claude Code runs — the same fidelity we get for internal sessions.
+
+Out of scope for the initial build. Noted here so the Sessions model is not painted into a corner:
+
+- Kernel would grow a driver (e.g. `driver-claude-code`) that watches `~/.claude/projects/**/*.jsonl` and upserts spans/messages against a matching external session (join key: working directory + start time).
+- No schema change in the session model is required — the driver maps JSONL entries onto existing `Span` / message tables.
+- Until this exists, external Claude Code sessions rely on OTel alone; the Sessions pane renders whatever the OTel receiver captured and labels gaps clearly.
 
 ## Non-Goals / Explicit Boundaries
 
