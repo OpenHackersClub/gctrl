@@ -1,6 +1,8 @@
 # Gantt View — gctrl-board
 
-Timeline visualization for Issues, complementary to the existing Kanban view. Modeled on GitHub Projects' "Roadmap" layout: horizontal bars per Issue on a time axis, grouped by a chosen field (status, assignee, milestone, parent), with direct-manipulation drag-and-drop for scheduling and reassignment.
+Timeline visualization for **Issues**, complementary to the existing Kanban view. Modeled on GitHub Projects' "Roadmap" layout: horizontal bars per Issue on a time axis, grouped by a chosen field (status, assignee, milestone, parent), with direct-manipulation drag-and-drop for scheduling and reassignment.
+
+**Scope: Issues only.** The Gantt does not render Tasks — not even read-only. Tasks are a Scheduler primitive whose timing is an execution detail of how an Issue gets done; humans reason in Issues, and the Gantt is a human planning surface. Task-level visualization, if ever needed, belongs in an agent-execution view, not here. See "Tasks are out of scope" below.
 
 Drag-and-drop is implemented with [`@dnd-kit`](https://github.com/clauderic/dnd-kit) — the same library already used by `KanbanBoard.tsx`, so sensors, keyboard accessibility, and overlay patterns stay consistent across views.
 
@@ -14,7 +16,7 @@ Drag-and-drop is implemented with [`@dnd-kit`](https://github.com/clauderic/dnd-
 ## Non-Goals
 
 - Resource-leveling or auto-scheduling. Humans decide dates; the Tracker only validates.
-- Gantt editing for Tasks. Tasks still render read-only (if shown at all in v1 — see "Tasks lane" below).
+- **Task rendering of any kind** (read-only bars, sub-bars, overlays, collapsed summaries). Tasks are out of scope — see dedicated section below.
 - Critical-path math. We render dependencies but do not compute slack / float in v1.
 - External sync of start/end dates to GitHub/Linear in v1. Dates are gctrl-local until a driver opts in (future work — see "Open questions").
 
@@ -24,7 +26,6 @@ Drag-and-drop is implemented with [`@dnd-kit`](https://github.com/clauderic/dnd-
 - **As an IC**, I can drag an Issue bar to shift its dates, or drag its left/right edge to extend/compress duration, without leaving the view.
 - **As a triager**, I can drag an Issue from one swimlane row to another to reassign it (e.g., change assignee, change milestone) in a single gesture.
 - **As a reviewer**, I can see `blockedBy` arrows pointing into an Issue so I know what must ship first.
-- **As an agent observer**, I can still see Tasks linked to an Issue — rendered as read-only sub-bars below the parent Issue bar.
 
 ## Comparison to GitHub Projects Roadmap
 
@@ -176,15 +177,16 @@ export function useGantt(projectId: string): {
 
 Backed by a single `GET /projects/:id/gantt` fetch + optimistic local reducer. Reuses `useProjectRoute` for the current project.
 
-## Read-only Tasks in the Gantt
+## Tasks are out of scope
 
-Per the architecture invariant "Tasks lane is read-only", Tasks linked to an Issue render as narrow sub-bars *under* the parent Issue's bar, with:
+The Gantt renders **Issues only**. Tasks (Scheduler primitives) do not appear in this view in any form — no sub-bars, no hover reveals, no collapsed summaries, no badges. The rationale:
 
-- No drag handles (`useDraggable` is not attached).
-- Muted color, dashed outline.
-- Width derived from the Task's Scheduler-declared start/end, not editable here.
+1. **Humans plan in Issues.** The Gantt is a planning surface for committed, team-visible work. Tasks are how an agent internally decomposes an Issue — an execution detail, not a planning unit.
+2. **Task timing is Scheduler-owned and ephemeral.** A Task's `start`/`end` is determined by agent runtime, can change within seconds, and is meaningless outside the session that produced it. Surfacing it on a time axis designed for days-to-months invites misreading.
+3. **Invariant preservation.** `architecture.md` defines Tasks as read-only in the Kanban lane; the simplest way to respect that here is to not render them at all.
+4. **Scope discipline.** Every Task-adjacent feature (collapsible sub-bars, disclosure carets, muted colors, Scheduler-fetch plumbing) adds cost without serving the planning use case.
 
-For v1, Tasks are collapsed by default; a disclosure caret on the parent bar expands them. This keeps the v1 view focused on Issue scheduling while still showing agent-visible progress.
+If an agent-execution timeline is ever needed, it belongs in a separate view (e.g., per-session trace visualization already implied by `gctl sessions tree`), not bolted onto the Issue Gantt.
 
 ## Testing
 
