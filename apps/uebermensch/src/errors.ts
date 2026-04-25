@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Effect, Schema } from "effect"
 
 export class VaultError extends Schema.TaggedError<VaultError>()("VaultError", {
   message: Schema.String,
@@ -7,6 +7,29 @@ export class VaultError extends Schema.TaggedError<VaultError>()("VaultError", {
     Schema.Literal("not_found", "collision", "io_failure", "parse_failure"),
   ),
 }) {}
+
+// Wrap a node:fs (or similar) Promise call as an Effect that fails with a
+// VaultError. Eliminates ~6 lines of catch-and-construct boilerplate per call site.
+export const vaultIo = <T>(
+  fn: () => Promise<T>,
+  opts: {
+    readonly message: string | ((e: unknown) => string)
+    readonly path?: string
+    readonly kind?: "not_found" | "collision" | "io_failure" | "parse_failure"
+  },
+): Effect.Effect<T, VaultError> =>
+  Effect.tryPromise({
+    try: fn,
+    catch: (e) =>
+      new VaultError({
+        message:
+          typeof opts.message === "function"
+            ? opts.message(e)
+            : `${opts.message}: ${String(e)}`,
+        path: opts.path,
+        kind: opts.kind ?? "io_failure",
+      }),
+  })
 
 export class ProfileError extends Schema.TaggedError<ProfileError>()("ProfileError", {
   message: Schema.String,
