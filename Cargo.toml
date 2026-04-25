@@ -27,6 +27,10 @@ tokio = { version = "1", features = ["full"] }
 # Web framework
 axum = "0.8"
 
+# Async stream helpers (used for SSE response bodies in gctrl-otel)
+async-stream = "0.3"
+futures-core = "0.3"
+
 # CLI
 clap = { version = "4", features = ["derive"] }
 

@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useState, type ReactNode } from "react"
 import { api } from "../api/client"
 import type {
   AnalyticsOverview,
@@ -12,16 +12,12 @@ import type {
   AlertRule,
 } from "../types"
 import type { Route } from "../hooks/useRoute"
+import { useSessionStream } from "../hooks/useSessionStream"
 
 interface AnalyticsPageProps {
   route: Extract<Route, { page: "analytics" }>
   navigate: (path: string) => void
 }
-
-/** Poll-refresh placeholder until SSE (Kernel Dependencies §5) lands.
- *  The spec says no polling fallback — this is the M0-before-streams hack
- *  and should disappear once GET /api/sessions/stream is available. */
-const LIVE_REFRESH_MS = 5_000
 
 export function AnalyticsPage({ route, navigate }: AnalyticsPageProps) {
   return (
@@ -50,10 +46,11 @@ export function AnalyticsPage({ route, navigate }: AnalyticsPageProps) {
         />
         <div className="flex-1" />
         <span
-          className="text-[11px] font-mono text-zinc-600 tracking-wide"
-          title="Live values poll every 5 seconds. SSE streaming will replace this when GET /api/sessions/stream lands."
+          className="inline-flex items-center gap-1.5 text-[11px] font-mono text-emerald-400 tracking-wide"
+          title="Live updates stream from /api/sessions/stream — no polling."
         >
-          refresh {LIVE_REFRESH_MS / 1000}s
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+          live
         </span>
       </div>
 
@@ -107,34 +104,44 @@ function OverviewTab() {
   const [liveCount, setLiveCount] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
-    const load = async () => {
-      try {
-        const [o, c, live] = await Promise.all([
-          api.analytics.overview(),
-          api.analytics.cost(),
-          // Kernel's /api/analytics rollup has no active_sessions field;
-          // count from sessions.list?status=active instead.
-          api.sessions.list({ status: "active", limit: 200 }),
-        ])
-        if (!cancelled) {
-          setOverview(o)
-          setCost(c)
-          setLiveCount(live.length)
-          setError(null)
-        }
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e))
-      }
-    }
-    load()
-    const h = setInterval(load, LIVE_REFRESH_MS)
-    return () => {
-      cancelled = true
-      clearInterval(h)
+  const refresh = useCallback(async () => {
+    try {
+      const [o, c, live] = await Promise.all([
+        api.analytics.overview(),
+        api.analytics.cost(),
+        // Kernel's /api/analytics rollup has no active_sessions field;
+        // count from sessions.list?status=active instead.
+        api.sessions.list({ status: "active", limit: 200 }),
+      ])
+      setOverview(o)
+      setCost(c)
+      setLiveCount(live.length)
+      setError(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
     }
   }, [])
+
+  // Initial fetch on mount.
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  // Live updates: stream session lifecycle events, adjust the live
+  // count, and refetch the cost/total aggregates on session end.
+  useSessionStream({
+    onEvent: (ev) => {
+      if (ev.type === "session_started") {
+        setLiveCount((n) => (n ?? 0) + 1)
+      } else if (ev.type === "session_ended") {
+        setLiveCount((n) => Math.max(0, (n ?? 0) - 1))
+        // Aggregates change when a session finishes; pull fresh totals.
+        // Cost-by-model rollup also reflects the just-ended session.
+        refresh()
+      }
+    },
+    onReplayGap: refresh,
+  })
 
   if (error) {
     return (
@@ -292,30 +299,69 @@ function SessionsTab({
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    let cancelled = false
-    const load = async () => {
-      try {
-        const list = await api.sessions.list({ limit: 100 })
-        if (!cancelled) {
-          setSessions(list)
-          setError(null)
-          setLoading(false)
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setError(e instanceof Error ? e.message : String(e))
-          setLoading(false)
-        }
-      }
-    }
-    load()
-    const h = setInterval(load, LIVE_REFRESH_MS)
-    return () => {
-      cancelled = true
-      clearInterval(h)
+  const refresh = useCallback(async () => {
+    try {
+      const list = await api.sessions.list({ limit: 100 })
+      setSessions(list)
+      setError(null)
+      setLoading(false)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      setLoading(false)
     }
   }, [])
+
+  // Initial fetch on mount.
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  // Live updates from the SSE stream:
+  //  - `session.started` → prepend a synthetic row, server's full row
+  //    will overwrite on the next `session.span` (which carries
+  //    agent_name + cost) or on the next manual refresh.
+  //  - `session.ended` → mark the row terminal so the live pulse stops.
+  //  - On replay_gap or any error in the data path, refetch the list.
+  useSessionStream({
+    onEvent: (ev) => {
+      if (ev.type === "session_started") {
+        setSessions((rows) => {
+          if (rows.some((r) => r.id === ev.session_id)) return rows
+          const placeholder: SessionSummary = {
+            id: ev.session_id,
+            workspace_id: "default",
+            device_id: "local",
+            agent_name: ev.agent_name,
+            started_at: ev.started_at,
+            ended_at: null,
+            status: "active",
+            total_cost_usd: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+          }
+          return [placeholder, ...rows]
+        })
+      } else if (ev.type === "session_ended") {
+        setSessions((rows) =>
+          rows.map((r) =>
+            r.id === ev.session_id
+              ? {
+                  ...r,
+                  ended_at: ev.ended_at,
+                  status:
+                    ev.status === "failed"
+                      ? "failed"
+                      : ev.status === "cancelled"
+                        ? "cancelled"
+                        : "completed",
+                }
+              : r,
+          ),
+        )
+      }
+    },
+    onReplayGap: refresh,
+  })
 
   const selected =
     selectedSessionId != null
@@ -486,27 +532,34 @@ function SessionDetailPane({
 
   const isLive = session.ended_at === null && session.status === "active"
 
+  const refresh = useCallback(async () => {
+    try {
+      const t = await api.sessions.tree(session.id)
+      setTree(t)
+      setError(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [session.id])
+
   useEffect(() => {
-    let cancelled = false
-    const load = async () => {
-      try {
-        const t = await api.sessions.tree(session.id)
-        if (!cancelled) {
-          setTree(t)
-          setError(null)
-        }
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e))
+    refresh()
+  }, [refresh])
+
+  // Per-session stream: refetch the trace tree on every span event for
+  // this session. The kernel returns the full tree (root + direct
+  // children) cheaply, and this guarantees the UI never reorders or
+  // drops a child relative to a server-side rebuild.
+  useSessionStream({
+    sessionId: session.id,
+    disabled: !isLive,
+    onEvent: (ev) => {
+      if (ev.type === "session_span") {
+        refresh()
       }
-    }
-    load()
-    if (!isLive) return
-    const h = setInterval(load, LIVE_REFRESH_MS)
-    return () => {
-      cancelled = true
-      clearInterval(h)
-    }
-  }, [session.id, isLive])
+    },
+    onReplayGap: refresh,
+  })
 
   return (
     <aside className="w-[540px] min-w-[540px] bg-zinc-950 border-l border-zinc-800 flex flex-col overflow-hidden">
@@ -643,32 +696,34 @@ function UsageTab() {
   const [spans, setSpans] = useState<SpanAnalytics | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
-    const load = async () => {
-      try {
-        const [c, l, s] = await Promise.all([
-          api.analytics.cost(),
-          api.analytics.latency(),
-          api.analytics.spans(),
-        ])
-        if (!cancelled) {
-          setCost(c)
-          setLatency(l)
-          setSpans(s)
-          setError(null)
-        }
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e))
-      }
-    }
-    load()
-    const h = setInterval(load, LIVE_REFRESH_MS)
-    return () => {
-      cancelled = true
-      clearInterval(h)
+  const refresh = useCallback(async () => {
+    try {
+      const [c, l, s] = await Promise.all([
+        api.analytics.cost(),
+        api.analytics.latency(),
+        api.analytics.spans(),
+      ])
+      setCost(c)
+      setLatency(l)
+      setSpans(s)
+      setError(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
     }
   }, [])
+
+  // Initial fetch on mount; aggregates only change meaningfully when a
+  // session ends (totals are session-scoped) so we re-pull on
+  // `session.ended` rather than on every span.
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+  useSessionStream({
+    onEvent: (ev) => {
+      if (ev.type === "session_ended") refresh()
+    },
+    onReplayGap: refresh,
+  })
 
   if (error) {
     return (
@@ -881,26 +936,28 @@ function EvalsTab() {
   const [rules, setRules] = useState<AlertRule[] | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
-    const load = async () => {
-      try {
-        const r = await api.analytics.alerts()
-        if (!cancelled) {
-          setRules(r)
-          setError(null)
-        }
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e))
-      }
-    }
-    load()
-    const h = setInterval(load, LIVE_REFRESH_MS)
-    return () => {
-      cancelled = true
-      clearInterval(h)
+  const refresh = useCallback(async () => {
+    try {
+      const r = await api.analytics.alerts()
+      setRules(r)
+      setError(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
     }
   }, [])
+
+  // Initial fetch; rules only change when an operator edits them out of
+  // band, but kernel auto-score on session.ended can mark them firing,
+  // so refetch on session ends and on replay_gap.
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+  useSessionStream({
+    onEvent: (ev) => {
+      if (ev.type === "session_ended") refresh()
+    },
+    onReplayGap: refresh,
+  })
 
   return (
     <div className="p-6 space-y-6">

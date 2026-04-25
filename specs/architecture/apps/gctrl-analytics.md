@@ -48,7 +48,7 @@ See [os.md — Dependency Direction](../os.md).
 | Network traffic (domains, bytes, status) | — | Kernel `proxy` Phase 2 + `GET /api/net/*` routes |
 | Contributions tab | `driver-github` PR/commit data + commit trailer inference | `GET /api/contributions?since=...` (inference-first; promote to link table only if inference proves lossy) |
 | Internal vs. external attribution | — (`agent_kind` lives on `Task`, not `Session`) | Add `session.created_by: scheduler \| otel_ingest \| api \| unknown`; derive `internal` / `external` as a view |
-| Live sessions | 5s poll over `GET /api/sessions?status=active` (M0-preview shim) | SSE endpoints `GET /api/sessions/stream` and `GET /api/sessions/{id}/stream` (M0-final, replaces shim) |
+| Live sessions | SSE endpoints `GET /api/sessions/stream` and `GET /api/sessions/{id}/stream` (shipped M0-final) | — |
 | "Live sessions now" KPI | `GET /api/sessions?status=active` count, client-side | — (kernel `/api/analytics` rollup intentionally omits `active_sessions`; do not add) |
 | Claude Code JSONL fidelity for external sessions | — | Deferred: `driver-claude-code` watcher (see [Deferred / Future](#deferred--future)) |
 
@@ -148,7 +148,7 @@ data: {"session_id":"…","span_id":"…","ts":"…","type":"generation","status
 
 **Backpressure**: broadcast channel uses `Lagged` errors on slow consumers; handler drops the lagged receiver, closes the connection, and the client reconnects with `Last-Event-ID` — same replay-or-gap path as any other disconnect.
 
-Spec-visible: this is the **only** live-update mechanism *after M0-final ships*. M0-preview ships with a 5s polling shim against the non-stream routes; the shim is deleted in the same PR that lands the streams (see Milestones §M0).
+Spec-visible: this is the **only** live-update mechanism. The M0-preview polling shim was deleted when M0-final landed; `grep setInterval apps/gctrl-board/web/src/pages/AnalyticsPage.tsx` returns zero matches.
 
 ## Dashboards
 
@@ -271,17 +271,17 @@ The Overview and Sessions tabs show an **Internal / External** toggle (`?kind=in
 
 The PRD's primary problem is **live visibility of what's running now**. Shipping past-only first fails that problem, so live Sessions visibility is in M0, not later.
 
-Live updates split into two checkpoints inside M0:
+Live updates were originally staged in two checkpoints; both have shipped:
 
-- **M0-preview** — list + detail pane render with a 5-second poll shim against the existing non-stream routes. This unblocks the rest of the dashboard (Usage, Evals) without waiting on kernel work, and is the state you find on a freshly-merged `spec/gctrl-analytics` branch today. Operators see live status within ≤5s of state change, which clears the PRD's primary problem at a degraded SLA.
-- **M0-final** — kernel ships SSE per Kernel Dependencies §5, the client switches to `EventSource`, and the polling shim is **deleted in the same PR**. After M0-final, the only live-update path is the stream; no polling fallback in the shipped UI.
+- **M0-preview** *(shipped & retired)* — first cut used a 5-second poll shim against the non-stream routes. Unblocked Usage/Evals while the kernel SSE work was specced.
+- **M0-final** *(shipped)* — kernel emits `tokio::sync::broadcast` on every ingest + lifecycle, axum SSE handlers stream events with `Last-Event-ID` replay + `replay_gap` + 15s heartbeat. The client uses `EventSource` (one connection per page for the global stream + one per detail pane for `session_id` filtering). The polling shim and `LIVE_REFRESH_MS` constant are deleted from `AnalyticsPage.tsx`. No polling fallback in the shipped UI.
 
 Each milestone lists one falsifiable acceptance criterion per shipped tab; it's the check the operator should be able to run in under a minute to say "this milestone landed."
 
-1. **M0 — Skeleton + Overview + Sessions (past + live)**: Worker + SPA + kernel HTTP proxy. Overview tab. Sessions tab (list mode only) with trace tree in the detail pane. ADR "Session is the spine / Activity is a view-mode" merged in the same PR. M0 is **not closed** until the SSE swap (M0-final) ships — the M0-preview polling shim is a known temporary state, gated by an explicit removal commitment.
-   - *Accept Overview (M0-preview)*: with one live agent running, the KPI "live sessions now" increments within 5s of the `session.started` span and decrements within 5s of `session.ended`. *(M0-final tightens this to 2s once SSE is wired.)*
-   - *Accept Sessions (M0-preview)*: opening the detail pane on a live session shows new spans within 5s of OTLP ingest. *(M0-final: 2s, via stream append; closing and reopening restores tree state from the non-stream route plus any buffered replay.)*
-   - *Accept M0-final*: `grep -R "setInterval" apps/gctrl-board/web/src/pages/AnalyticsPage.tsx` returns zero matches; the only live-update mechanism is `EventSource` against `/api/sessions/stream` and `/api/sessions/{id}/stream`.
+1. **M0 — Skeleton + Overview + Sessions (past + live)** *(closed)*: Worker + SPA + kernel HTTP proxy. Overview tab. Sessions tab (list mode only) with trace tree in the detail pane. ADR "Session is the spine / Activity is a view-mode" merged. SSE landed in the M0-final follow-up — see Kernel Dependencies §5 for the producer/consumer contract and `kernel/crates/gctrl-otel/tests/sse_stream.rs` for the integration test that exercises ingest → broadcast → SSE frame.
+   - *Accept Overview*: with one live agent running, the KPI "live sessions now" increments within 2s of the `session.started` span and decrements within 2s of `session.ended`, without a page refresh.
+   - *Accept Sessions*: opening the detail pane on a live session refetches the trace tree within 2s of each `session.span` event for that session; closing and reopening restores tree state from the non-stream route plus any buffered replay.
+   - *Accept M0-final*: `grep -R "setInterval" apps/gctrl-board/web/src/pages/AnalyticsPage.tsx` returns zero matches; the only live-update mechanism is `EventSource` against `/api/sessions/stream` and `/api/sessions/{id}/stream`. **Verified.**
 2. **M1 — Usage + Evals**: Usage tab (providers, tools, performance — no network sub-panel yet), Evals tab (scores, alerts). Zero new kernel work.
    - *Accept Usage*: provider spend on the Usage tab over any window matches `gctrl analytics cost --since <window>` to the cent.
    - *Accept Evals*: every alert rule that's `firing` in `gctrl analytics alerts` appears as `firing` on the Evals tab within one refresh.
