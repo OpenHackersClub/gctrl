@@ -542,6 +542,12 @@ pub struct BoardIssue {
     /// GitHub issue URL for 2-way sync.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub github_url: Option<String>,
+    /// Gantt scheduling: planned start date as `YYYY-MM-DD` (project-local).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_date: Option<String>,
+    /// Gantt scheduling: planned due date as `YYYY-MM-DD` (project-local).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_date: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

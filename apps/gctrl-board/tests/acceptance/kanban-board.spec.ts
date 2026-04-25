@@ -101,7 +101,7 @@ test.describe("Kanban Board", () => {
     await expect(card).toBeVisible()
     await expect(card.getByText(issue.id)).toBeVisible()
     await expect(card.getByText("Auth middleware refactor")).toBeVisible()
-    await expect(card.getByText("HI")).toBeVisible()
+    await expect(card.getByTestId("priority-badge")).toHaveText("HI")
     await expect(card.getByText("bug")).toBeVisible()
     await expect(card.getByText("security")).toBeVisible()
   })

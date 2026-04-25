@@ -879,8 +879,8 @@ impl DuckDbStore {
     pub fn insert_board_issue(&self, issue: &gctrl_core::BoardIssue) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO board_issues (id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO board_issues (id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url, start_date, due_date)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 issue.id,
                 issue.project_id,
@@ -908,6 +908,8 @@ impl DuckDbStore {
                 issue.source_path,
                 issue.github_issue_number.map(|n| n as i32),
                 issue.github_url,
+                issue.start_date,
+                issue.due_date,
             ],
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
@@ -955,7 +957,7 @@ impl DuckDbStore {
     pub fn get_board_issue(&self, id: &str) -> Result<Option<gctrl_core::BoardIssue>> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url FROM board_issues WHERE id = ?1",
+            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url, start_date, due_date FROM board_issues WHERE id = ?1",
             [id],
             row_to_board_issue,
         ).ok().map(Ok).transpose()
@@ -964,7 +966,7 @@ impl DuckDbStore {
     pub fn list_board_issues(&self, filter: &gctrl_core::BoardIssueFilter) -> Result<Vec<gctrl_core::BoardIssue>> {
         let conn = self.conn.lock().unwrap();
         let mut sql = String::from(
-            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url FROM board_issues WHERE 1=1"
+            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url, start_date, due_date FROM board_issues WHERE 1=1"
         );
         let mut params_vec: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
         let mut idx = 1;
@@ -1735,6 +1737,8 @@ fn row_to_board_issue(row: &duckdb::Row<'_>) -> duckdb::Result<gctrl_core::Board
         source_path: row.get(23)?,
         github_issue_number: { let v: Option<i32> = row.get(24)?; v.map(|n| n as u32) },
         github_url: row.get(25)?,
+        start_date: row.get(26)?,
+        due_date: row.get(27)?,
     })
 }
 
@@ -2495,6 +2499,8 @@ mod tests {
             source_path: None,
             github_issue_number: None,
             github_url: None,
+            start_date: None,
+            due_date: None,
         }
     }
 

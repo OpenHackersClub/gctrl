@@ -195,7 +195,9 @@ CREATE TABLE IF NOT EXISTS board_issues (
     content_hash    VARCHAR,
     source_path     VARCHAR,
     github_issue_number INTEGER,
-    github_url      VARCHAR
+    github_url      VARCHAR,
+    start_date      VARCHAR,
+    due_date        VARCHAR
 )
 "#;
 

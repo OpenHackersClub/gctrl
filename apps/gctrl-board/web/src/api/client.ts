@@ -10,6 +10,7 @@ import type {
   InboxThread,
   InboxAction,
   InboxStats,
+  GanttView,
 } from "../types"
 
 const BASE = "/api/board"
@@ -119,6 +120,20 @@ export const api = {
         method: "POST",
         body: JSON.stringify(session),
       }),
+
+    schedule: (
+      id: string,
+      patch: { start_date?: string | null; due_date?: string | null }
+    ) =>
+      request<Issue>(`${BASE}/issues/${id}/schedule`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      }),
+  },
+
+  gantt: {
+    project: (projectId: string) =>
+      request<GanttView>(`${BASE}/projects/${projectId}/gantt`),
   },
 
   team: {

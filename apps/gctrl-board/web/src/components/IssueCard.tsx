@@ -54,6 +54,7 @@ export function IssueCard({ issue, onClick, isOverlay, isDragging }: Props) {
           </span>
           {priority !== "none" && (
             <span
+              data-testid="priority-badge"
               className={`inline-flex items-center gap-1 text-[9px] font-mono font-semibold tracking-widest
                 px-1.5 py-0.5 ${PRIORITY_COLORS[priority]}/15 text-${PRIORITY_COLORS[priority].replace("bg-", "")}`}
               style={{
