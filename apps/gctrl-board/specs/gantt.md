@@ -202,6 +202,8 @@ New component: `apps/gctrl-board/web/src/components/GanttBoard.tsx`, reachable f
 
 Explicit snap + min-distance eliminates the "1px drag = 1 week shift at Quarter zoom" risk. Snap unit applies to both bar-move and bar-resize.
 
+**Why Day is the smallest unit** (frappe/gantt ships Hour / Quarter Day / Half Day variants; we don't): Issues are human-planned units of work tracked at day granularity (`start_date` / `due_date` are `YYYY-MM-DD`). Sub-day timing belongs to Tasks, which are out of scope for the Gantt. Day / Week / Month / Quarter covers sprint, release, and roadmap horizons without surfacing execution-detail noise.
+
 ### @dnd-kit integration
 
 Four draggable kinds dispatch cleanly in `onDragEnd`:
