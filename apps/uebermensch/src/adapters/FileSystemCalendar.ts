@@ -3,7 +3,7 @@ import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promi
 import { extname, join, relative } from "node:path"
 import { Effect, Layer, Schema } from "effect"
 import matter from "gray-matter"
-import { VaultError } from "../errors.js"
+import { VaultError, vaultIo } from "../errors.js"
 import { matchesFilter, sortByStart } from "../lib/calendar-filter.js"
 import { EventFrontmatter } from "../schemas.js"
 import {
@@ -29,7 +29,6 @@ const slugify = (s: string): string =>
     .slice(0, 60)
 
 const datePart = (startsAt: string): string => {
-  // Accept bare YYYY-MM-DD or full ISO 8601; emit YYYY-MM-DD.
   const bare = startsAt.match(/^(\d{4}-\d{2}-\d{2})/)
   if (bare) return bare[1]
   const d = new Date(startsAt)
@@ -42,12 +41,16 @@ const datePart = (startsAt: string): string => {
   return `${y}-${m}-${day}`
 }
 
+const failVault = (
+  message: string,
+  path: string,
+  kind: "not_found" | "collision" | "io_failure" | "parse_failure",
+): Effect.Effect<never, VaultError> =>
+  Effect.fail(new VaultError({ message, path, kind }))
+
 type WalkEntry = { abs: string; rel: string }
 
-// Walk calendar/ recursively, skipping the recurring/ subdir for the first slice.
-const walkCalendar = async (
-  root: string,
-): Promise<ReadonlyArray<WalkEntry>> => {
+const walkCalendar = async (root: string): Promise<ReadonlyArray<WalkEntry>> => {
   const start = join(root, CALENDAR_DIR)
   const out: Array<WalkEntry> = []
   let entries: Array<import("node:fs").Dirent>
@@ -64,17 +67,15 @@ const walkCalendar = async (
     const parent = (e as unknown as { parentPath?: string }).parentPath ?? e.path ?? start
     const abs = join(parent, e.name)
     const rel = relative(root, abs)
-    // Skip recurring/ files until RRULE expansion is implemented.
-    const insideRecurring = rel.split("/").includes(RECURRING_SUBDIR)
-    if (insideRecurring) continue
+    if (rel.split("/").includes(RECURRING_SUBDIR)) continue
     out.push({ abs, rel })
   }
   return out
 }
 
 // js-yaml auto-converts ISO 8601 strings to Date objects unless they're
-// quoted in the source. Normalise Date values back to ISO strings so the
-// schema (which expects strings) decodes hand-authored Obsidian files cleanly.
+// quoted in the source. Normalise back to ISO strings so the schema decodes
+// hand-authored Obsidian files cleanly.
 const normaliseDates = (v: unknown): unknown => {
   if (v instanceof Date) return v.toISOString()
   if (Array.isArray(v)) return v.map(normaliseDates)
@@ -88,26 +89,30 @@ const normaliseDates = (v: unknown): unknown => {
   return v
 }
 
+const decodeFrontmatter = (
+  data: unknown,
+  contextPath: string,
+  contextLabel: string,
+) =>
+  Schema.decodeUnknown(EventFrontmatter)(data).pipe(
+    Effect.mapError(
+      (e) =>
+        new VaultError({
+          message: `${contextLabel} invalid frontmatter: ${String(e)}`,
+          path: contextPath,
+          kind: "parse_failure",
+        }),
+    ),
+  )
+
 const decodeEvent = (
   entry: WalkEntry,
   raw: string,
 ): Effect.Effect<CalendarEvent, VaultError> =>
   Effect.gen(function* () {
     const parsed = matter(raw)
-    const data = normaliseDates((parsed.data ?? {}) as Record<string, unknown>) as Record<
-      string,
-      unknown
-    >
-    const decoded = yield* Schema.decodeUnknown(EventFrontmatter)(data).pipe(
-      Effect.mapError(
-        (e) =>
-          new VaultError({
-            message: `event ${entry.rel} invalid frontmatter: ${String(e)}`,
-            path: entry.abs,
-            kind: "parse_failure",
-          }),
-      ),
-    )
+    const data = normaliseDates((parsed.data ?? {}) as Record<string, unknown>)
+    const decoded = yield* decodeFrontmatter(data, entry.abs, `event ${entry.rel}`)
     return {
       slug: decoded.slug,
       title: decoded.title,
@@ -138,27 +143,19 @@ const decodeEvent = (
     }
   })
 
-const loadAll = (vaultDir: string): Effect.Effect<ReadonlyArray<CalendarEvent>, VaultError> =>
+const loadAll = (
+  vaultDir: string,
+): Effect.Effect<ReadonlyArray<CalendarEvent>, VaultError> =>
   Effect.gen(function* () {
-    const entries = yield* Effect.tryPromise({
-      try: () => walkCalendar(vaultDir),
-      catch: (e) =>
-        new VaultError({
-          message: `list calendar failed: ${String(e)}`,
-          path: vaultDir,
-          kind: "io_failure",
-        }),
+    const entries = yield* vaultIo(() => walkCalendar(vaultDir), {
+      message: "list calendar failed",
+      path: vaultDir,
     })
     const out: Array<CalendarEvent> = []
     for (const entry of entries) {
-      const raw = yield* Effect.tryPromise({
-        try: () => readFile(entry.abs, "utf8"),
-        catch: (e) =>
-          new VaultError({
-            message: `read event failed: ${String(e)}`,
-            path: entry.abs,
-            kind: "io_failure",
-          }),
+      const raw = yield* vaultIo(() => readFile(entry.abs, "utf8"), {
+        message: "read event failed",
+        path: entry.abs,
       })
       out.push(yield* decodeEvent(entry, raw))
     }
@@ -175,75 +172,73 @@ const atomicWrite = async (absPath: string, content: string): Promise<void> => {
 const renderFrontmatter = (data: Record<string, unknown>, body: string): string =>
   matter.stringify(body, data)
 
+// Drop empty arrays and nullish values so YAML stays clean.
+const omitEmpty = (rec: Record<string, unknown>): Record<string, unknown> => {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(rec)) {
+    if (v === undefined || v === null) continue
+    if (Array.isArray(v) && v.length === 0) continue
+    out[k] = v
+  }
+  return out
+}
+
 export const FileSystemCalendarLive = (vaultDir: string) =>
   Layer.succeed(CalendarService, {
     list: (filter) =>
       Effect.gen(function* () {
         const all = yield* loadAll(vaultDir)
-        const matched = all.filter((e) => matchesFilter(e, filter))
-        return sortByStart(matched)
+        return sortByStart(all.filter((e) => matchesFilter(e, filter)))
       }),
 
     get: (slug) =>
       Effect.gen(function* () {
         const all = yield* loadAll(vaultDir)
-        for (const e of all) if (e.slug === slug) return e
-        return yield* Effect.fail(
-          new VaultError({
-            message: `event not found: ${slug}`,
-            path: join(vaultDir, CALENDAR_DIR),
-            kind: "not_found",
-          }),
+        const found = all.find((e) => e.slug === slug)
+        if (found) return found
+        return yield* failVault(
+          `event not found: ${slug}`,
+          join(vaultDir, CALENDAR_DIR),
+          "not_found",
         )
       }),
 
     add: (input: EventAddInput) =>
       Effect.gen(function* () {
         const all = yield* loadAll(vaultDir)
+        const calRoot = join(vaultDir, CALENDAR_DIR)
         const slug = input.slug ?? slugify(input.title)
         if (slug.length === 0) {
-          return yield* Effect.fail(
-            new VaultError({
-              message: `cannot derive slug from title: ${input.title}`,
-              path: join(vaultDir, CALENDAR_DIR),
-              kind: "parse_failure",
-            }),
+          return yield* failVault(
+            `cannot derive slug from title: ${input.title}`,
+            calRoot,
+            "parse_failure",
           )
         }
         if (all.some((e) => e.slug === slug)) {
-          return yield* Effect.fail(
-            new VaultError({
-              message: `event slug already exists: ${slug}`,
-              path: join(vaultDir, CALENDAR_DIR),
-              kind: "collision",
-            }),
+          return yield* failVault(
+            `event slug already exists: ${slug}`,
+            calRoot,
+            "collision",
           )
         }
 
-        const now = new Date().toISOString()
-        const datePrefix = (() => {
-          try {
-            return datePart(input.startsAt)
-          } catch {
-            return null
-          }
-        })()
-        if (!datePrefix) {
-          return yield* Effect.fail(
-            new VaultError({
-              message: `invalid starts_at: ${input.startsAt}`,
-              path: join(vaultDir, CALENDAR_DIR),
-              kind: "parse_failure",
-            }),
+        let datePrefix: string
+        try {
+          datePrefix = datePart(input.startsAt)
+        } catch {
+          return yield* failVault(
+            `invalid starts_at: ${input.startsAt}`,
+            calRoot,
+            "parse_failure",
           )
         }
-        const filename = `${datePrefix}--${slug}.md`
-        const relPath = `${CALENDAR_DIR}/${filename}`
+        const relPath = `${CALENDAR_DIR}/${datePrefix}--${slug}.md`
         const absPath = join(vaultDir, relPath)
-
         const body = (input.body ?? "").trimEnd()
-        // Build frontmatter object excluding undefined fields so YAML stays clean.
-        const fmInput: Record<string, unknown> = {
+        const now = new Date().toISOString()
+
+        const fmInput = omitEmpty({
           slug,
           title: input.title,
           kind: input.kind,
@@ -252,46 +247,29 @@ export const FileSystemCalendarLive = (vaultDir: string) =>
           tz: input.tz,
           status: input.status ?? "confirmed",
           all_day: input.allDay ?? false,
+          ends_at: input.endsAt,
+          location: input.location,
+          tickers: input.tickers,
+          topics: input.topics,
+          theses: input.theses,
+          tags: input.tags,
+          related_pages: input.relatedPages,
           created_at: now,
           updated_at: now,
           generator: GENERATOR,
-        }
-        if (input.endsAt) fmInput.ends_at = input.endsAt
-        if (input.location) fmInput.location = input.location
-        if (input.tickers && input.tickers.length > 0) fmInput.tickers = input.tickers
-        if (input.topics && input.topics.length > 0) fmInput.topics = input.topics
-        if (input.theses && input.theses.length > 0) fmInput.theses = input.theses
-        if (input.tags && input.tags.length > 0) fmInput.tags = input.tags
-        if (input.relatedPages && input.relatedPages.length > 0) {
-          fmInput.related_pages = input.relatedPages
-        }
+        })
 
-        // Validate the frontmatter we're about to write — fail fast on bad enum values.
-        yield* Schema.decodeUnknown(EventFrontmatter)(fmInput).pipe(
-          Effect.mapError(
-            (e) =>
-              new VaultError({
-                message: `event frontmatter invalid: ${String(e)}`,
-                path: absPath,
-                kind: "parse_failure",
-              }),
-          ),
-        )
+        // Validate before write — fail fast on bad enum values.
+        yield* decodeFrontmatter(fmInput, absPath, "event")
 
-        // Render once without content_hash, hash, then re-render with the hash embedded.
+        // Render once to compute the hash, then re-render with hash embedded.
         const draft = renderFrontmatter(fmInput, body)
         const contentHash = hashContent(draft)
-        const finalFm = { ...fmInput, content_hash: contentHash }
-        const final = renderFrontmatter(finalFm, body)
+        const final = renderFrontmatter({ ...fmInput, content_hash: contentHash }, body)
 
-        yield* Effect.tryPromise({
-          try: () => atomicWrite(absPath, final),
-          catch: (e) =>
-            new VaultError({
-              message: `write event failed: ${String(e)}`,
-              path: absPath,
-              kind: "io_failure",
-            }),
+        yield* vaultIo(() => atomicWrite(absPath, final), {
+          message: "write event failed",
+          path: absPath,
         })
 
         return { slug, absPath, relPath, contentHash }
@@ -302,22 +280,15 @@ export const FileSystemCalendarLive = (vaultDir: string) =>
         const all = yield* loadAll(vaultDir)
         const target = all.find((e) => e.slug === slug)
         if (!target) {
-          return yield* Effect.fail(
-            new VaultError({
-              message: `event not found: ${slug}`,
-              path: join(vaultDir, CALENDAR_DIR),
-              kind: "not_found",
-            }),
+          return yield* failVault(
+            `event not found: ${slug}`,
+            join(vaultDir, CALENDAR_DIR),
+            "not_found",
           )
         }
-        const raw = yield* Effect.tryPromise({
-          try: () => readFile(target.absPath, "utf8"),
-          catch: (e) =>
-            new VaultError({
-              message: `read event failed: ${String(e)}`,
-              path: target.absPath,
-              kind: "io_failure",
-            }),
+        const raw = yield* vaultIo(() => readFile(target.absPath, "utf8"), {
+          message: "read event failed",
+          path: target.absPath,
         })
         const parsed = matter(raw)
         const data = { ...((parsed.data ?? {}) as Record<string, unknown>) }
@@ -327,26 +298,15 @@ export const FileSystemCalendarLive = (vaultDir: string) =>
         data.updated_at = stamp.updatedAt ?? new Date().toISOString()
         const rebuilt = renderFrontmatter(data, parsed.content)
         // Re-stat to make sure the file wasn't replaced under us mid-stamp.
-        yield* Effect.tryPromise({
-          try: () => stat(target.absPath),
-          catch: (e) =>
-            new VaultError({
-              message: `stat failed: ${String(e)}`,
-              path: target.absPath,
-              kind: "io_failure",
-            }),
+        yield* vaultIo(() => stat(target.absPath), {
+          message: "stat failed",
+          path: target.absPath,
         })
-        yield* Effect.tryPromise({
-          try: () => atomicWrite(target.absPath, rebuilt),
-          catch: (e) =>
-            new VaultError({
-              message: `stamp event failed: ${String(e)}`,
-              path: target.absPath,
-              kind: "io_failure",
-            }),
+        yield* vaultIo(() => atomicWrite(target.absPath, rebuilt), {
+          message: "stamp event failed",
+          path: target.absPath,
         })
       }),
   })
 
-// Exported for tests.
 export const _internal = { slugify, datePart, hashContent }

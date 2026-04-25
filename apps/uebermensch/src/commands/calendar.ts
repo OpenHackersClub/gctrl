@@ -1,15 +1,18 @@
 import { Args, Command, Options } from "@effect/cli"
-import { Console, Effect, Option } from "effect"
+import { Console, Effect, Option, pipe } from "effect"
 import { FileSystemCalendarLive } from "../adapters/FileSystemCalendar.js"
 import { resolveVaultDir } from "../lib/env.js"
 import { parseDateShortcut } from "../lib/calendar-filter.js"
 import {
   CalendarService,
-  type EventFilter,
+  type CalendarEvent,
   type EventAddInput,
+  type EventFilter,
 } from "../services/CalendarService.js"
-import type { CalendarEvent } from "../services/CalendarService.js"
 import type { EventKind, EventSource, EventStatus } from "../schemas.js"
+
+// --- enum allowlists (mirror the Schema literals; kept here so option help text
+// can list them) ---
 
 const KINDS: ReadonlyArray<EventKind> = [
   "personal",
@@ -33,11 +36,15 @@ const SOURCES: ReadonlyArray<EventSource> = [
 ]
 const STATUSES: ReadonlyArray<EventStatus> = ["confirmed", "tentative", "cancelled"]
 
+// --- small helpers (Option / CSV / enum validation) ---
+
 const splitCsv = (s: string): ReadonlyArray<string> =>
-  s
-    .split(",")
-    .map((x) => x.trim())
-    .filter((x) => x.length > 0)
+  s.split(",").map((x) => x.trim()).filter((x) => x.length > 0)
+
+const csvOpt = (
+  opt: Option.Option<string>,
+): ReadonlyArray<string> | undefined =>
+  pipe(opt, Option.map(splitCsv), Option.getOrUndefined)
 
 const validateEnum = <T extends string>(
   values: ReadonlyArray<string>,
@@ -54,23 +61,14 @@ const validateEnum = <T extends string>(
     return values.filter((v): v is T => (allowed as ReadonlyArray<string>).includes(v))
   })
 
-// --- shared option helpers ---
+// --- shared option declarations (reused across list + add) ---
 
 const optList = (long: string, desc: string) =>
   Options.text(long).pipe(Options.withDescription(desc), Options.optional)
 
-const sourceOpt = optList(
-  "source",
-  "comma-separated origins (user,driver-markets,driver-sec,driver-gcal,import)",
-)
-const kindOpt = optList(
-  "kind",
-  "comma-separated event kinds (personal,earnings,macro,deadline,…)",
-)
-const fromOpt = optList(
-  "from",
-  "lower bound (today, tomorrow, +Nd, +Nw, eom, or YYYY-MM-DD)",
-)
+const sourceOpt = optList("source", `comma-separated origins (${SOURCES.join(",")})`)
+const kindOpt = optList("kind", "comma-separated event kinds (personal,earnings,macro,…)")
+const fromOpt = optList("from", "lower bound (today, tomorrow, +Nd, +Nw, eom, or YYYY-MM-DD)")
 const toOpt = optList("to", "upper bound (same shortcuts as --from)")
 const tickersOpt = optList("tickers", "comma-separated tickers (e.g. NVDA,AMZN)")
 const topicsOpt = optList("topics", "comma-separated topic slugs")
@@ -85,80 +83,72 @@ const qOpt = Options.text("q").pipe(
   Options.optional,
 )
 
-const buildFilter = (
-  source: Option.Option<string>,
-  kind: Option.Option<string>,
-  from: Option.Option<string>,
-  to: Option.Option<string>,
-  tickers: Option.Option<string>,
-  topics: Option.Option<string>,
-  theses: Option.Option<string>,
-  tag: Option.Option<string>,
-  status: Option.Option<string>,
-  q: Option.Option<string>,
-): Effect.Effect<EventFilter, never> =>
+// --- buildFilter: turns CLI-Option inputs into an EventFilter ---
+
+const resolveDate = (
+  opt: Option.Option<string>,
+  bound: "from" | "to",
+  now: Date,
+): Effect.Effect<string | undefined, never> =>
+  Effect.gen(function* () {
+    const raw = Option.getOrUndefined(opt)
+    if (!raw) return undefined
+    const d = parseDateShortcut(raw, now, bound)
+    if (!d) {
+      yield* Console.error(`  ! invalid --${bound}: ${raw}`)
+      return undefined
+    }
+    return d.toISOString()
+  })
+
+const buildFilter = (opts: {
+  sourceOpt: Option.Option<string>
+  kindOpt: Option.Option<string>
+  fromOpt: Option.Option<string>
+  toOpt: Option.Option<string>
+  tickersOpt: Option.Option<string>
+  topicsOpt: Option.Option<string>
+  thesesOpt: Option.Option<string>
+  tagOpt: Option.Option<string>
+  statusOpt: Option.Option<string>
+  qOpt: Option.Option<string>
+}): Effect.Effect<EventFilter, never> =>
   Effect.gen(function* () {
     const now = new Date()
-    const filter: {
-      source?: ReadonlyArray<EventSource>
-      kind?: ReadonlyArray<EventKind>
-      from?: string
-      to?: string
-      tickers?: ReadonlyArray<string>
-      topics?: ReadonlyArray<string>
-      theses?: ReadonlyArray<string>
-      tags?: ReadonlyArray<string>
-      status: ReadonlyArray<EventStatus>
-      q?: string
-    } = { status: ["confirmed"] }
-
-    const srcRaw = Option.getOrUndefined(source)
-    if (srcRaw) {
-      filter.source = yield* validateEnum<EventSource>(splitCsv(srcRaw), SOURCES, "source")
+    const sourceCsv = csvOpt(opts.sourceOpt)
+    const kindCsv = csvOpt(opts.kindOpt)
+    const statusCsv = csvOpt(opts.statusOpt)
+    const tickers = csvOpt(opts.tickersOpt)?.map((t) => t.toUpperCase())
+    return {
+      status: statusCsv
+        ? yield* validateEnum<EventStatus>(statusCsv, STATUSES, "status")
+        : ["confirmed"],
+      ...(sourceCsv && {
+        source: yield* validateEnum<EventSource>(sourceCsv, SOURCES, "source"),
+      }),
+      ...(kindCsv && {
+        kind: yield* validateEnum<EventKind>(kindCsv, KINDS, "kind"),
+      }),
+      ...(tickers && { tickers }),
+      ...partial("topics", csvOpt(opts.topicsOpt)),
+      ...partial("theses", csvOpt(opts.thesesOpt)),
+      ...partial("tags", csvOpt(opts.tagOpt)),
+      ...partial("from", yield* resolveDate(opts.fromOpt, "from", now)),
+      ...partial("to", yield* resolveDate(opts.toOpt, "to", now)),
+      ...partial("q", Option.getOrUndefined(opts.qOpt)),
     }
-    const kindRaw = Option.getOrUndefined(kind)
-    if (kindRaw) {
-      filter.kind = yield* validateEnum<EventKind>(splitCsv(kindRaw), KINDS, "kind")
-    }
-    const fromRaw = Option.getOrUndefined(from)
-    if (fromRaw) {
-      const d = parseDateShortcut(fromRaw, now, "from")
-      if (d) filter.from = d.toISOString()
-      else yield* Console.error(`  ! invalid --from: ${fromRaw}`)
-    }
-    const toRaw = Option.getOrUndefined(to)
-    if (toRaw) {
-      const d = parseDateShortcut(toRaw, now, "to")
-      if (d) filter.to = d.toISOString()
-      else yield* Console.error(`  ! invalid --to: ${toRaw}`)
-    }
-    const tickersRaw = Option.getOrUndefined(tickers)
-    if (tickersRaw) filter.tickers = splitCsv(tickersRaw).map((t) => t.toUpperCase())
-    const topicsRaw = Option.getOrUndefined(topics)
-    if (topicsRaw) filter.topics = splitCsv(topicsRaw)
-    const thesesRaw = Option.getOrUndefined(theses)
-    if (thesesRaw) filter.theses = splitCsv(thesesRaw)
-    const tagRaw = Option.getOrUndefined(tag)
-    if (tagRaw) filter.tags = splitCsv(tagRaw)
-    const statusRaw = Option.getOrUndefined(status)
-    if (statusRaw) {
-      filter.status = yield* validateEnum<EventStatus>(
-        splitCsv(statusRaw),
-        STATUSES,
-        "status",
-      )
-    }
-    const qRaw = Option.getOrUndefined(q)
-    if (qRaw) filter.q = qRaw
-
-    return filter
   })
+
+// {key: value} when value is defined, else {} — for clean object spreads.
+const partial = <K extends string, V>(
+  key: K,
+  value: V | undefined,
+): Partial<Record<K, V>> => (value === undefined ? {} : ({ [key]: value } as Record<K, V>))
 
 // --- output rendering ---
 
 const formatTime = (e: CalendarEvent): string => {
   if (e.allDay) return "all-day"
-  // Render in event's tz when supported by the host runtime; fall back to ISO time.
   const d = new Date(e.startsAt)
   if (Number.isNaN(d.getTime())) return e.startsAt
   try {
@@ -176,42 +166,19 @@ const formatTime = (e: CalendarEvent): string => {
 
 const formatLine = (e: CalendarEvent): string => {
   const date = e.startsAt.slice(0, 10)
-  const time = formatTime(e)
   const tickers = e.tickers.length > 0 ? ` [${e.tickers.join(",")}]` : ""
-  return `${e.status.padEnd(9)} ${date} ${time.padEnd(14)} ${e.kind.padEnd(17)} ${e.source.padEnd(15)} ${e.title}${tickers}  #${e.slug}`
+  return `${e.status.padEnd(9)} ${date} ${formatTime(e).padEnd(14)} ${e.kind.padEnd(17)} ${e.source.padEnd(15)} ${e.title}${tickers}  #${e.slug}`
 }
 
 // --- commands ---
 
 const list = Command.make(
   "list",
-  {
-    sourceOpt,
-    kindOpt,
-    fromOpt,
-    toOpt,
-    tickersOpt,
-    topicsOpt,
-    thesesOpt,
-    tagOpt,
-    statusOpt,
-    qOpt,
-  },
+  { sourceOpt, kindOpt, fromOpt, toOpt, tickersOpt, topicsOpt, thesesOpt, tagOpt, statusOpt, qOpt },
   (opts) =>
     Effect.gen(function* () {
       const vaultDir = yield* resolveVaultDir()
-      const filter = yield* buildFilter(
-        opts.sourceOpt,
-        opts.kindOpt,
-        opts.fromOpt,
-        opts.toOpt,
-        opts.tickersOpt,
-        opts.topicsOpt,
-        opts.thesesOpt,
-        opts.tagOpt,
-        opts.statusOpt,
-        opts.qOpt,
-      )
+      const filter = yield* buildFilter(opts)
       const program = Effect.gen(function* () {
         const cal = yield* CalendarService
         const events = yield* cal.list(filter)
@@ -254,11 +221,9 @@ const show = Command.make(
     }),
 ).pipe(Command.withDescription("Show one event with frontmatter and body"))
 
-// --- add ---
+// --- add — required + optional fields ---
 
-const titleOpt = Options.text("title").pipe(
-  Options.withDescription("event title (required)"),
-)
+const titleOpt = Options.text("title").pipe(Options.withDescription("event title (required)"))
 const startOpt = Options.text("start").pipe(
   Options.withDescription("ISO 8601 start (e.g. 2026-05-08T14:00:00+08:00 or 2026-05-08 with --all-day)"),
 )
@@ -284,22 +249,6 @@ const locationOpt = Options.text("location").pipe(
   Options.withDescription("free-form location string"),
   Options.optional,
 )
-const addTickersOpt = Options.text("tickers").pipe(
-  Options.withDescription("comma-separated tickers"),
-  Options.optional,
-)
-const addTopicsOpt = Options.text("topics").pipe(
-  Options.withDescription("comma-separated topic slugs"),
-  Options.optional,
-)
-const addThesesOpt = Options.text("theses").pipe(
-  Options.withDescription("comma-separated thesis slugs"),
-  Options.optional,
-)
-const addTagsOpt = Options.text("tag").pipe(
-  Options.withDescription("comma-separated tags"),
-  Options.optional,
-)
 const bodyOpt = Options.text("body").pipe(
   Options.withDescription("free-form body markdown (notes, agenda)"),
   Options.optional,
@@ -316,20 +265,16 @@ const add = Command.make(
     allDayOpt,
     slugAddOpt,
     locationOpt,
-    addTickersOpt,
-    addTopicsOpt,
-    addThesesOpt,
-    addTagsOpt,
+    tickersOpt,
+    topicsOpt,
+    thesesOpt,
+    tagOpt,
     bodyOpt,
   },
   (opts) =>
     Effect.gen(function* () {
       const vaultDir = yield* resolveVaultDir()
-      const tickers = Option.getOrUndefined(opts.addTickersOpt)
-      const topics = Option.getOrUndefined(opts.addTopicsOpt)
-      const theses = Option.getOrUndefined(opts.addThesesOpt)
-      const tags = Option.getOrUndefined(opts.addTagsOpt)
-
+      const tickers = csvOpt(opts.tickersOpt)?.map((t) => t.toUpperCase())
       const input: EventAddInput = {
         title: opts.titleOpt,
         startsAt: opts.startOpt,
@@ -340,12 +285,11 @@ const add = Command.make(
         location: Option.getOrUndefined(opts.locationOpt),
         slug: Option.getOrUndefined(opts.slugAddOpt),
         body: Option.getOrUndefined(opts.bodyOpt),
-        tickers: tickers ? splitCsv(tickers).map((t) => t.toUpperCase()) : undefined,
-        topics: topics ? splitCsv(topics) : undefined,
-        theses: theses ? splitCsv(theses) : undefined,
-        tags: tags ? splitCsv(tags) : undefined,
+        tickers,
+        topics: csvOpt(opts.topicsOpt),
+        theses: csvOpt(opts.thesesOpt),
+        tags: csvOpt(opts.tagOpt),
       }
-
       const program = Effect.gen(function* () {
         const cal = yield* CalendarService
         const w = yield* cal.add(input)
