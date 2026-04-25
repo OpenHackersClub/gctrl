@@ -1,5 +1,11 @@
 // ── Analytics / Sessions (kernel HTTP API) ──
 
+export type CreatedBy = "scheduler" | "otel_ingest" | "api" | "unknown"
+
+/** UI shorthand for the spec's derived view (analytics §1).
+ *  internal = {scheduler, api}, external = {otel_ingest}. */
+export type SessionKind = "all" | "internal" | "external"
+
 export interface SessionSummary {
   id: string
   workspace_id: string
@@ -11,6 +17,10 @@ export interface SessionSummary {
   total_cost_usd: number
   total_input_tokens: number
   total_output_tokens: number
+  /** Provenance — newer kernels populate this; legacy DBs may report
+   *  `unknown`. Always present in the wire format thanks to the serde
+   *  default on the kernel side. */
+  created_by: CreatedBy
 }
 
 // Mirrors the kernel's `Analytics` struct (gctrl-core/src/types.rs:213).

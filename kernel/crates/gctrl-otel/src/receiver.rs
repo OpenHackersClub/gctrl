@@ -263,20 +263,59 @@ struct ListParams {
     limit: usize,
     agent: Option<String>,
     status: Option<String>,
+    /// Comma-separated provenance values:
+    /// `scheduler`, `otel_ingest`, `api`, `unknown`. Unrecognised tokens
+    /// are silently ignored so an empty filter doesn't 400 on typos —
+    /// we'd rather over-return than under-return on filter sites.
+    created_by: Option<String>,
+    /// Derived shorthand: `internal` ⇒ {Scheduler, Api},
+    /// `external` ⇒ {OtelIngest}. Mutually exclusive with `created_by`;
+    /// `created_by` wins if both are present.
+    kind: Option<String>,
 }
 
 fn default_limit() -> usize {
     20
 }
 
+/// Parse `?created_by=scheduler,api` and `?kind=internal|external` into
+/// the `CreatedBy` set passed to the storage layer. Returns `None` when
+/// no filter is requested (i.e. "all rows"), `Some([])` when the caller
+/// passed only unrecognised tokens (matches no rows).
+fn parse_created_by_filter(
+    raw: Option<&str>,
+    kind: Option<&str>,
+) -> Option<Vec<gctrl_core::CreatedBy>> {
+    if let Some(s) = raw {
+        let parsed: Vec<_> = s
+            .split(',')
+            .map(|t| t.trim())
+            .filter(|t| !t.is_empty())
+            .filter_map(gctrl_core::CreatedBy::from_str)
+            .collect();
+        return Some(parsed);
+    }
+    match kind {
+        Some("internal") => Some(vec![
+            gctrl_core::CreatedBy::Scheduler,
+            gctrl_core::CreatedBy::Api,
+        ]),
+        Some("external") => Some(vec![gctrl_core::CreatedBy::OtelIngest]),
+        _ => None,
+    }
+}
+
 async fn list_sessions(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListParams>,
 ) -> impl IntoResponse {
+    let provenances =
+        parse_created_by_filter(params.created_by.as_deref(), params.kind.as_deref());
     match state.store.list_sessions_filtered(
         params.limit,
         params.agent.as_deref(),
         params.status.as_deref(),
+        provenances.as_deref(),
     ) {
         Ok(sessions) => Json(serde_json::to_value(&sessions).unwrap()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -779,6 +818,9 @@ async fn ingest_traces(
                     total_cost_usd: 0.0,
                     total_input_tokens: 0,
                     total_output_tokens: 0,
+                    // Auto-create on OTLP ingest is the canonical
+                    // `external` provenance — see analytics spec §1.
+                    created_by: gctrl_core::CreatedBy::OtelIngest,
                 };
                 if state.store.insert_session(&session).is_ok() {
                     started_emit.push(session);
@@ -3978,6 +4020,7 @@ mod tests {
                 total_cost_usd: 0.0,
                 total_input_tokens: 0,
                 total_output_tokens: 0,
+                created_by: gctrl_core::CreatedBy::Unknown,
             })
             .unwrap();
 

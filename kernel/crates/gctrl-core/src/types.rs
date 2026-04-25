@@ -49,6 +49,56 @@ impl SessionStatus {
     }
 }
 
+/// How a Session row came to exist. Stored on `Session`; `internal` /
+/// `external` is a derived view, not a separate field
+/// (see `specs/architecture/apps/gctrl-analytics.md` §1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CreatedBy {
+    /// Kernel Scheduler dispatched a Task that produced this session.
+    Scheduler,
+    /// Auto-created on first OTLP span ingestion (no kernel spawn record).
+    OtelIngest,
+    /// Created by an explicit `POST /api/sessions` from an app/tool.
+    Api,
+    /// Pre-migration / unattributed. Never emitted for new rows.
+    #[default]
+    Unknown,
+}
+
+impl CreatedBy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Scheduler => "scheduler",
+            Self::OtelIngest => "otel_ingest",
+            Self::Api => "api",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "scheduler" => Some(Self::Scheduler),
+            "otel_ingest" => Some(Self::OtelIngest),
+            "api" => Some(Self::Api),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+
+    /// `internal = {Scheduler, Api}`, `external = OtelIngest`.
+    /// `Unknown` is neither — it's pre-migration data and the
+    /// operator has to make a judgment call. For UI filtering, we
+    /// treat the `kind=internal|external` shorthand as filtering OUT
+    /// `Unknown` rows.
+    pub fn is_internal(self) -> bool {
+        matches!(self, Self::Scheduler | Self::Api)
+    }
+    pub fn is_external(self) -> bool {
+        matches!(self, Self::OtelIngest)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: SessionId,
@@ -61,6 +111,11 @@ pub struct Session {
     pub total_cost_usd: f64,
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
+    /// Provenance of this session row — see `CreatedBy`. New code must
+    /// set this explicitly; default `Unknown` exists only to give safe
+    /// behaviour for legacy rows read out of the storage layer.
+    #[serde(default)]
+    pub created_by: CreatedBy,
 }
 
 // --- Task (Scheduler) ---

@@ -3,7 +3,9 @@ use gctrl_storage::DuckDbStore;
 
 pub fn run(limit: usize, format: &str, agent: Option<&str>, status: Option<&str>, db_path: &str) -> Result<()> {
     let store = DuckDbStore::open(db_path)?;
-    let sessions = store.list_sessions_filtered(limit, agent, status)?;
+    // CLI doesn't yet expose a created_by filter — pass None to match
+    // legacy behaviour (return all rows regardless of provenance).
+    let sessions = store.list_sessions_filtered(limit, agent, status, None)?;
 
     match format {
         "json" => {

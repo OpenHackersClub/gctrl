@@ -236,11 +236,19 @@ export const api = {
   // In production these hit the same origin and must be routed by the Worker
   // to the kernel HTTP API (see gctrl-analytics spec §5).
   sessions: {
-    list: (params?: { limit?: number; agent?: string; status?: string }) => {
+    list: (params?: {
+      limit?: number
+      agent?: string
+      status?: string
+      /** Derived view filter — `internal` ⇒ {scheduler, api},
+       *  `external` ⇒ {otel_ingest}, `all` (or omitted) ⇒ unfiltered. */
+      kind?: "all" | "internal" | "external"
+    }) => {
       const qs = new URLSearchParams()
       if (params?.limit !== undefined) qs.set("limit", String(params.limit))
       if (params?.agent) qs.set("agent", params.agent)
       if (params?.status) qs.set("status", params.status)
+      if (params?.kind && params.kind !== "all") qs.set("kind", params.kind)
       const q = qs.toString()
       return request<SessionSummary[]>(`/api/sessions${q ? `?${q}` : ""}`)
     },
