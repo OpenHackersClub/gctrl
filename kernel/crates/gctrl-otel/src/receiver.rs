@@ -1,17 +1,25 @@
+use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
-    response::IntoResponse,
+    http::{HeaderMap, StatusCode},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse,
+    },
     routing::{get, patch, post},
     Json, Router,
 };
+use async_stream::stream;
+use futures_core::Stream;
 use gctrl_context::ContextManager;
 use gctrl_core::{NetConfig, SyncConfig};
 use gctrl_storage::{DuckDbStore, SqliteStore};
 use serde::Deserialize;
 
+use crate::event_bus::{EventBus, ReplayResult, SessionEvent};
 use crate::span_processor::{self, OtlpExportRequest};
 
 pub struct AppState {
@@ -26,6 +34,9 @@ pub struct AppState {
     /// Shared HTTP client used by external drivers (Brave, CF Browser) so each
     /// request reuses the connection pool instead of rebuilding it.
     pub http_client: reqwest::Client,
+    /// Live session-event bus (broadcast + replay ring) consumed by the
+    /// SSE stream handlers — see spec/architecture/apps/gctrl-analytics.md §5.
+    pub event_bus: Arc<EventBus>,
 }
 
 pub fn create_router(store: DuckDbStore) -> Router {
@@ -43,6 +54,7 @@ pub fn create_router_from_arc(store: Arc<DuckDbStore>) -> Router {
         sync_config: None,
         net_config: Arc::new(NetConfig::default()),
         http_client: reqwest::Client::new(),
+        event_bus: EventBus::default_capacity(),
     });
     build_router(state)
 }
@@ -77,6 +89,7 @@ pub fn create_router_full(
         sync_config,
         net_config,
         http_client: reqwest::Client::new(),
+        event_bus: EventBus::default_capacity(),
     });
     build_router(state)
 }
@@ -91,6 +104,7 @@ pub fn create_router_with_context(store: DuckDbStore, context: Option<ContextMan
         sync_config: None,
         net_config: Arc::new(NetConfig::default()),
         http_client: reqwest::Client::new(),
+        event_bus: EventBus::default_capacity(),
     });
     build_router(state)
 }
@@ -114,6 +128,9 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/analytics/alerts", get(list_alerts))
         // Trace tree (Langfuse-style)
         .route("/api/sessions/{session_id}/tree", get(get_trace_tree))
+        // SSE live streams — global + per-session (gctrl-analytics §5)
+        .route("/api/sessions/stream", get(stream_sessions))
+        .route("/api/sessions/{session_id}/stream", get(stream_session))
         // Auto-score and session lifecycle
         .route("/api/sessions/{session_id}/auto-score", post(auto_score_session))
         .route("/api/sessions/{session_id}/end", post(end_session))
@@ -321,6 +338,123 @@ async fn get_trace_tree(
     })).into_response()
 }
 
+// --- SSE: live session stream (M0-final per gctrl-analytics §5) ---
+
+/// Parse the optional `Last-Event-ID` header into a u64. Browser
+/// `EventSource` automatically resends this on reconnect; clients can
+/// also pass `?last_event_id=N` for environments that don't preserve
+/// the header (e.g. some HTTP/2 proxies).
+fn parse_last_event_id(headers: &HeaderMap, q: Option<&str>) -> Option<u64> {
+    headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .or(q)
+        .and_then(|s| s.trim().parse::<u64>().ok())
+}
+
+#[derive(Deserialize)]
+struct StreamQuery {
+    /// Fallback for environments that strip the Last-Event-ID header
+    /// across reconnects.
+    last_event_id: Option<String>,
+}
+
+/// Build an SSE event from one bus entry. The `id:` field is the bus's
+/// monotonic counter — the client uses it as `Last-Event-ID` on
+/// reconnect.
+fn entry_to_sse(id: u64, event: &SessionEvent) -> Result<Event, Infallible> {
+    let payload = serde_json::to_string(event).unwrap_or_else(|_| "{}".into());
+    Ok(Event::default()
+        .id(id.to_string())
+        .event(event.event_name())
+        .data(payload))
+}
+
+/// `GET /api/sessions/stream` — broadcast every session event.
+async fn stream_sessions(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(q): Query<StreamQuery>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    sse_response(state, headers, q, None)
+}
+
+/// `GET /api/sessions/{session_id}/stream` — events filtered to one
+/// session. Same broadcast underneath; we just drop entries that don't
+/// match `session_id`.
+async fn stream_session(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Query(q): Query<StreamQuery>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    sse_response(state, headers, q, Some(session_id))
+}
+
+/// Shared SSE assembly: replay any buffered events past `Last-Event-ID`
+/// (emitting `replay_gap` if we can't), then tail the live broadcast.
+fn sse_response(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    q: StreamQuery,
+    filter_session: Option<String>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let last_id = parse_last_event_id(&headers, q.last_event_id.as_deref());
+    let mut rx = state.event_bus.subscribe();
+    let bus = Arc::clone(&state.event_bus);
+
+    let body = stream! {
+        // 1) Replay phase. If the client provided Last-Event-ID, dump
+        //    any buffered events newer than that id; otherwise skip.
+        if let Some(last) = last_id {
+            match bus.replay_after(last) {
+                ReplayResult::Events(events) => {
+                    for (id, ev) in events {
+                        if filter_session.as_deref().is_some_and(|s| s != ev.session_id()) {
+                            continue;
+                        }
+                        yield entry_to_sse(id, &ev);
+                    }
+                }
+                ReplayResult::Gap => {
+                    // Client missed events that aged out of the ring.
+                    // Tell them to refetch state, then resume tailing.
+                    yield Ok(Event::default()
+                        .event("replay_gap")
+                        .data("{}"));
+                }
+                ReplayResult::Caught => {}
+            }
+        }
+
+        // 2) Tail phase. Stream live broadcasts until the client
+        //    disconnects or the receiver lags.
+        loop {
+            match rx.recv().await {
+                Ok((id, ev)) => {
+                    if filter_session.as_deref().is_some_and(|s| s != ev.session_id()) {
+                        continue;
+                    }
+                    yield entry_to_sse(id, &ev);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    // Slow consumer — close the connection. Client will
+                    // reconnect with Last-Event-ID and replay-or-gap
+                    // through the same path.
+                    break;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    };
+
+    Sse::new(body).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("heartbeat"),
+    )
+}
+
 async fn auto_score_session(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
@@ -339,6 +473,11 @@ async fn end_session(
     let status = payload["status"].as_str().unwrap_or("completed");
     match state.store.end_session(&session_id, status) {
         Ok(()) => {
+            state.event_bus.publish(SessionEvent::Ended {
+                session_id: session_id.clone(),
+                status: status.into(),
+                ended_at: chrono::Utc::now().to_rfc3339(),
+            });
             // Auto-score on session end
             let _ = state.store.auto_score_session(&session_id);
             // Check for error loops
@@ -530,8 +669,12 @@ async fn ingest_traces(
         return StatusCode::OK;
     }
 
-    // Auto-create sessions for new session IDs
+    // Auto-create sessions for new session IDs.
+    // `started_emit` collects sessions we created here so we can emit
+    // `session.started` events only for genuinely new rows (not for
+    // sessions that already existed when the span landed).
     let mut seen_sessions = std::collections::HashSet::new();
+    let mut started_emit: Vec<gctrl_core::Session> = Vec::new();
     for span in &spans {
         if seen_sessions.insert(span.session_id.0.clone()) {
             if state.store.get_session(&span.session_id).unwrap_or(None).is_none() {
@@ -547,7 +690,9 @@ async fn ingest_traces(
                     total_input_tokens: 0,
                     total_output_tokens: 0,
                 };
-                let _ = state.store.insert_session(&session);
+                if state.store.insert_session(&session).is_ok() {
+                    started_emit.push(session);
+                }
             }
         }
     }
@@ -555,6 +700,32 @@ async fn ingest_traces(
     match state.store.insert_spans(&spans) {
         Ok(()) => {
             tracing::info!(count = spans.len(), "ingested spans");
+
+            // Publish lifecycle + span events on the live bus.
+            // Errors here would only mean no live subscribers — the DB
+            // write already succeeded, so we silently drop.
+            for session in &started_emit {
+                state.event_bus.publish(SessionEvent::Started {
+                    session_id: session.id.0.clone(),
+                    agent_name: session.agent_name.clone(),
+                    started_at: session.started_at.to_rfc3339(),
+                });
+            }
+            for span in &spans {
+                state.event_bus.publish(SessionEvent::Span {
+                    session_id: span.session_id.0.clone(),
+                    span_id: span.span_id.0.clone(),
+                    parent_span_id: span.parent_span_id.as_ref().map(|p| p.0.clone()),
+                    span_type: span.span_type.as_str().into(),
+                    operation: span.operation_name.clone(),
+                    model: span.model.clone(),
+                    cost_usd: span.cost_usd,
+                    duration_ms: span.duration_ms,
+                    status: span.status.as_str().into(),
+                    ts: span.started_at.to_rfc3339(),
+                });
+            }
+            // end live event publish
 
             // Check alert rules
             if let Ok(rules) = state.store.list_alert_rules() {
