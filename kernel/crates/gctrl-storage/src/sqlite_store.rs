@@ -10,7 +10,7 @@ use std::sync::Mutex;
 
 use rusqlite::{params, Connection};
 use gctrl_core::{
-    GctlError, Result, Task,
+    GctlError, Result, Task, VaultMount, VaultMountKind,
     InboxAction, InboxActionFilter, InboxMessage, InboxMessageFilter, InboxThread,
     PersonaDefinition, PersonaReviewRule,
     context::{ContextEntry, ContextEntryId, ContextFilter, ContextKind, ContextSource},
@@ -243,6 +243,25 @@ CREATE TABLE IF NOT EXISTS memory_entries (
 )
 "#;
 
+// Vault mounts: per-device registry of Obsidian-mountable vault directories
+// the kernel watches and indexes. Each mount maps `name` → filesystem `root_path`
+// with an associated `kind` (workspace, app, or external git repo). NOT D1-synced —
+// mount config is local since paths differ between machines.
+const CREATE_VAULT_MOUNTS: &str = r#"
+CREATE TABLE IF NOT EXISTS gctrl_vault_mounts (
+    id              TEXT PRIMARY KEY,
+    name            TEXT NOT NULL UNIQUE,
+    root_path       TEXT NOT NULL,
+    kind            TEXT NOT NULL,
+    git_url         TEXT,
+    app_id          TEXT,
+    last_commit_sha TEXT,
+    last_synced_at  TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+)
+"#;
+
 const CREATE_INDEXES: &[&str] = &[
     // Board indexes
     "CREATE INDEX IF NOT EXISTS idx_board_issues_project ON board_issues(project_id)",
@@ -347,6 +366,7 @@ impl SqliteStore {
             CREATE_INBOX_SUBSCRIPTIONS,
             CREATE_CONTEXT_ENTRIES,
             CREATE_MEMORY_ENTRIES,
+            CREATE_VAULT_MOUNTS,
         ];
         for stmt in &tables {
             conn.execute_batch(stmt)
@@ -2033,6 +2053,81 @@ impl SqliteStore {
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Vault Mounts CRUD
+    // ═══════════════════════════════════════════════════════════════
+
+    pub fn create_vault_mount(&self, mount: &VaultMount) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO gctrl_vault_mounts (id, name, root_path, kind, git_url, app_id, last_commit_sha, last_synced_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                mount.id,
+                mount.name,
+                mount.root_path,
+                mount.kind.as_str(),
+                mount.git_url,
+                mount.app_id,
+                mount.last_commit_sha,
+                mount.last_synced_at.map(|dt| dt.to_rfc3339()),
+                mount.created_at.to_rfc3339(),
+                mount.updated_at.to_rfc3339(),
+            ],
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_vault_mount(&self, name: &str) -> Result<Option<VaultMount>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, name, root_path, kind, git_url, app_id, last_commit_sha, last_synced_at, created_at, updated_at
+             FROM gctrl_vault_mounts WHERE name = ?1",
+            [name],
+            row_to_vault_mount,
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(GctlError::Storage(other.to_string())),
+        })
+    }
+
+    pub fn list_vault_mounts(&self) -> Result<Vec<VaultMount>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, root_path, kind, git_url, app_id, last_commit_sha, last_synced_at, created_at, updated_at
+             FROM gctrl_vault_mounts ORDER BY name"
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt.query_map([], row_to_vault_mount)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn delete_vault_mount(&self, name: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM gctrl_vault_mounts WHERE name = ?1",
+            [name],
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Update sync state after a successful pull/sync (commit SHA + timestamp).
+    pub fn update_vault_mount_synced(
+        &self,
+        name: &str,
+        last_commit_sha: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE gctrl_vault_mounts SET last_commit_sha = ?1, last_synced_at = ?2, updated_at = ?2 WHERE name = ?3",
+            params![last_commit_sha, now, name],
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -2050,6 +2145,33 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         agent_kind: row.get(4)?,
         orchestrator_claim: row.get(5)?,
         attempt: row.get(6)?,
+        created_at: chrono::DateTime::parse_from_rfc3339(&created_at_str)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now()),
+        updated_at: chrono::DateTime::parse_from_rfc3339(&updated_at_str)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now()),
+    })
+}
+
+fn row_to_vault_mount(row: &rusqlite::Row<'_>) -> rusqlite::Result<VaultMount> {
+    let kind_str: String = row.get(3)?;
+    let last_synced_at_str: Option<String> = row.get(7)?;
+    let created_at_str: String = row.get(8)?;
+    let updated_at_str: String = row.get(9)?;
+    Ok(VaultMount {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        root_path: row.get(2)?,
+        kind: VaultMountKind::from_str(&kind_str).unwrap_or(VaultMountKind::App),
+        git_url: row.get(4)?,
+        app_id: row.get(5)?,
+        last_commit_sha: row.get(6)?,
+        last_synced_at: last_synced_at_str.and_then(|s| {
+            chrono::DateTime::parse_from_rfc3339(&s)
+                .ok()
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+        }),
         created_at: chrono::DateTime::parse_from_rfc3339(&created_at_str)
             .map(|dt| dt.with_timezone(&chrono::Utc))
             .unwrap_or_else(|_| chrono::Utc::now()),
@@ -2758,5 +2880,80 @@ mod tests {
         // A subsequent local edit must mark the row unsynced again.
         store.assign_board_issue("P-1", "u2", "User 2", "human").unwrap();
         assert_eq!(store.list_unsynced_board_issues(10).unwrap().len(), 1);
+    }
+
+    fn make_mount(id: &str, name: &str, kind: VaultMountKind) -> VaultMount {
+        let now = Utc::now();
+        VaultMount {
+            id: id.into(),
+            name: name.into(),
+            root_path: format!("/tmp/{name}"),
+            kind,
+            git_url: None,
+            app_id: None,
+            last_commit_sha: None,
+            last_synced_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn vault_mount_create_and_list() {
+        let store = test_store();
+        store.create_vault_mount(&make_mount("m1", "workspace", VaultMountKind::Workspace)).unwrap();
+        store.create_vault_mount(&make_mount("m2", "gctrl-board", VaultMountKind::App)).unwrap();
+
+        let mounts = store.list_vault_mounts().unwrap();
+        assert_eq!(mounts.len(), 2);
+        assert_eq!(mounts[0].name, "gctrl-board"); // ORDER BY name
+        assert_eq!(mounts[1].name, "workspace");
+        assert_eq!(mounts[0].kind, VaultMountKind::App);
+        assert_eq!(mounts[1].kind, VaultMountKind::Workspace);
+    }
+
+    #[test]
+    fn vault_mount_get_by_name() {
+        let store = test_store();
+        store.create_vault_mount(&make_mount("m1", "workspace", VaultMountKind::Workspace)).unwrap();
+
+        let fetched = store.get_vault_mount("workspace").unwrap();
+        assert!(fetched.is_some());
+        let m = fetched.unwrap();
+        assert_eq!(m.id, "m1");
+        assert_eq!(m.root_path, "/tmp/workspace");
+
+        let missing = store.get_vault_mount("nope").unwrap();
+        assert!(missing.is_none());
+    }
+
+    #[test]
+    fn vault_mount_unique_name_constraint() {
+        let store = test_store();
+        store.create_vault_mount(&make_mount("m1", "dup", VaultMountKind::Workspace)).unwrap();
+        let err = store.create_vault_mount(&make_mount("m2", "dup", VaultMountKind::App));
+        assert!(err.is_err(), "second insert with same name must fail");
+    }
+
+    #[test]
+    fn vault_mount_delete() {
+        let store = test_store();
+        store.create_vault_mount(&make_mount("m1", "tmp", VaultMountKind::Workspace)).unwrap();
+        store.delete_vault_mount("tmp").unwrap();
+        assert!(store.get_vault_mount("tmp").unwrap().is_none());
+    }
+
+    #[test]
+    fn vault_mount_update_synced() {
+        let store = test_store();
+        let mut mount = make_mount("m1", "ext", VaultMountKind::External);
+        mount.git_url = Some("https://github.com/example/app.git".into());
+        store.create_vault_mount(&mount).unwrap();
+        assert!(store.get_vault_mount("ext").unwrap().unwrap().last_commit_sha.is_none());
+
+        store.update_vault_mount_synced("ext", Some("abc123def")).unwrap();
+        let m = store.get_vault_mount("ext").unwrap().unwrap();
+        assert_eq!(m.last_commit_sha.as_deref(), Some("abc123def"));
+        assert!(m.last_synced_at.is_some());
     }
 }

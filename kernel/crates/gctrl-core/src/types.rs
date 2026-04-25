@@ -686,6 +686,53 @@ pub struct InboxActionFilter {
     pub limit: Option<usize>,
 }
 
+// --- Vault Mounts (Kernel) ---
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VaultMountKind {
+    Workspace,
+    App,
+    External,
+}
+
+impl VaultMountKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Workspace => "workspace",
+            Self::App => "app",
+            Self::External => "external",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "workspace" => Some(Self::Workspace),
+            "app" => Some(Self::App),
+            "external" => Some(Self::External),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VaultMount {
+    pub id: String,
+    pub name: String,
+    pub root_path: String,
+    pub kind: VaultMountKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_commit_sha: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_synced_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
