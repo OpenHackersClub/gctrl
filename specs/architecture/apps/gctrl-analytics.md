@@ -46,9 +46,9 @@ See [os.md — Dependency Direction](../os.md).
 | Activity view (timeline / heatmap) | `GET /api/sessions` (time-bucketed client-side) | — |
 | Prompts tab (instance list, grouping) | Span query by span-type | Light route: `GET /api/sessions/{id}/prompts` + `GET /api/prompts?group_by=fingerprint` |
 | Network traffic (domains, bytes, status) | — | Kernel `proxy` Phase 2 + `GET /api/net/*` routes |
-| Contributions tab | `driver-github` PR/commit data | `session.contribution_links` table + `GET /api/contributions?since=...` |
-| Internal vs. external attribution | `session.agent_kind` (partial) | Add `session.spawn_source: internal \| external` field + filter params |
-| Live sessions | — | SSE endpoints `GET /api/sessions/stream` and `GET /api/sessions/{id}/stream` (core, M1) |
+| Contributions tab | `driver-github` PR/commit data + commit trailer inference | `GET /api/contributions?since=...` (inference-first; promote to link table only if inference proves lossy) |
+| Internal vs. external attribution | — (`agent_kind` lives on `Task`, not `Session`) | Add `session.created_by: scheduler \| otel_ingest \| api \| unknown`; derive `internal` / `external` as a view |
+| Live sessions | — | SSE endpoints `GET /api/sessions/stream` and `GET /api/sessions/{id}/stream` (core, **M0**) |
 | Claude Code JSONL fidelity for external sessions | — | Deferred: `driver-claude-code` watcher (see [Deferred / Future](#deferred--future)) |
 
 **Principle**: no new analytics logic in the app. The app is a **presentation layer**. Any new aggregation or attribution belongs in the kernel so the CLI benefits too.
@@ -57,16 +57,31 @@ See [os.md — Dependency Direction](../os.md).
 
 Kernel changes this app needs. Each is useful beyond the app and should land as independent kernel work.
 
-### 1. `session.spawn_source` field
+### 1. `session.created_by` field
 
-Today `Session` records `agent_name` and `agent_kind` (e.g. `ClaudeCode`). It does not record **how** the session was started — whether the kernel Scheduler spawned it or whether an external process pushed OTel in.
+Today `Session` records `agent_name` (string) and a `status` enum; it has **no** `agent_kind` field — `agent_kind` lives on `Task` (`kernel/crates/gctrl-core/src/types.rs:82`). It also does not record **how** the session was started — whether the kernel Scheduler spawned it, an app called the API with a spawn token, or an external process pushed OTel in.
 
-Proposal: add `spawn_source: SpawnSource` where `SpawnSource = Internal | External`.
+Proposal: add a narrow provenance enum on `Session`:
 
-- `Internal` — session was created by the kernel Scheduler or an app calling `POST /api/sessions` with a spawn token.
-- `External` — session was created implicitly on first OTel span ingestion (OTLP receiver), no kernel spawn record.
+```
+created_by: CreatedBy = Scheduler | OtelIngest | Api | Unknown
+```
 
-Emit as a filter on `/api/sessions?spawn_source=internal` and roll up in `/api/analytics?spawn_source=...`.
+- `Scheduler` — session was created by the kernel Scheduler dispatching a `Task`.
+- `Api` — session was created by an app/tool calling `POST /api/sessions` with a spawn token.
+- `OtelIngest` — session was created implicitly on first OTLP span ingestion, no kernel spawn record.
+- `Unknown` — pre-migration rows; never emitted for new sessions.
+
+`internal` vs. `external` is **a view**, not a stored field. Queries and the UI toggle derive it:
+
+```
+internal = created_by IN (Scheduler, Api)
+external = created_by = OtelIngest
+```
+
+This keeps the stored value faithful to the actual signal (who wrote the row) while letting the UI vocabulary evolve. Emit `created_by` as a filter on `/api/sessions?created_by=scheduler` and `/api/analytics?created_by=...`; accept the derived shorthand `?kind=internal` / `?kind=external` too.
+
+For per-session **agent kind** (Claude Code, Codex, ad-hoc) — which the Sessions tab needs — derive from `Task.agent_kind` when a `task_id` is present, otherwise from OTel `resource.service.name` / `telemetry.sdk.name`. No new `Session.agent_kind` column unless derivation proves too slow at list-query scale.
 
 ### 2. `/api/net/*` routes
 
@@ -74,32 +89,71 @@ Once `gctrl-proxy` Phase 2 lands (hudsucker MITM + traffic logging), expose:
 
 - `GET /api/net/overview` — total requests, bytes up/down, distinct domains, window.
 - `GET /api/net/domains?since=...&top=N` — top domains by requests / bytes.
-- `GET /api/net/traffic?since=...&host=...&limit=...` — recent requests, with `session_id` + `spawn_source` when derivable from the proxy's per-process attribution.
+- `GET /api/net/traffic?since=...&host=...&limit=...` — recent requests, with `session_id` + `created_by` when derivable from the proxy's per-process attribution.
 - `GET /api/net/daily?days=N` — daily request and byte trends.
 
 Per-session attribution requires the proxy to tag traffic with the originating session (via env-injected header or PID→session mapping). Until that exists, network traffic shows as "unattributed" with host/process-level grouping only — still useful.
 
-### 3. `GET /api/prompts` + `GET /api/sessions/{id}/prompts`
+### 3. `GET /api/prompts` + `GET /api/sessions/{id}/prompts` (+ storage for prompt turns)
 
 Light-weight routes backing the Prompts tab:
 
 - `GET /api/sessions/{id}/prompts` — ordered list of prompt turns for a session.
 - `GET /api/prompts?group_by=fingerprint&since=...` — prompt instances grouped by normalized-text hash, with counts, avg cost, and linked sessions.
 
-No new storage — these are query-shape conveniences over the existing span table (filter by span type = `prompt` / `user_turn`).
+**Storage is not free today.** `SpanType` in `kernel/crates/gctrl-core/src/types.rs:135` is `Generation | Span | Event` — there is no `prompt` / `user_turn` variant, so a prompts tab cannot be "a query over existing spans." M3 must choose one of:
 
-### 4. `GET /api/contributions` + `session.contribution_links`
+1. **Extend `SpanType`** with `UserTurn` and `AssistantTurn` (or a single `Turn` + role attr), and emit them from the OTLP ingest path. Cheapest option, keeps everything in the span table; cost is a migration + every ingest path learning the new variants.
+2. **Add a dedicated `prompts` table** keyed by `(session_id, turn_ordinal)` with `role`, `text`, `fingerprint`, `tokens_in`, `tokens_out`, `cost_usd`, `span_id` (link). Cleanest schema for the Prompts tab, but a new table to sync.
 
-Backing the Contributions tab. When an agent creates a PR/commit during a session, the kernel records a link row (via `driver-github` callbacks on `pr create` / `git push`). The route aggregates these joined against GitHub-side state (PR status, lines changed).
+Leaning toward (1) unless eval tooling needs random-access joins on prompt text that the span table can't give cheaply. Decide in the M3 ADR; do **not** ship the Prompts tab before this lands.
 
-- `session.contribution_links` — `(session_id, kind: commit | pr | issue, ref, created_at)`.
-- `GET /api/contributions?since=...&agent=...` — list with drill-through fields.
+Route shapes stay the same under either option — the Prompts UI binds to the route, not the table.
+
+### 4. `GET /api/contributions` (inference-first)
+
+Backing the Contributions tab. **Default approach is trailer inference, not a new link table.**
+
+- Agents append a `Session-Id: <uuid>` trailer to commits they author (already a cheap convention to enforce in orch / wrapper scripts).
+- `driver-github` already pulls commits and PRs through the kernel. The Contributions route scans commit trailers and PR body mentions (`Session-Id:` or a recognizable session URL) and joins back to `Session` at query time.
+- `GET /api/contributions?since=...&agent=...` — list of commits / PRs / closed issues with inferred `session_id`, drill-through to PR and Session.
+
+This is retroactive (works for commits we never "observed"), loss-tolerant (missing trailer = unattributed row, still shown), and adds no write path to sync. Promote to a dedicated `session.contribution_links` table **only when** inference proves lossy in practice — e.g. agents routinely strip trailers, or the join is too expensive at scale. If that happens, the table is an index, not a new source of truth.
+
+Explicitly **not** adding `driver-github` callbacks on `pr create` / `git push` for this — that coupling is what we want to avoid until a concrete gap justifies it.
+
+### 5. SSE live-stream contract (M0)
+
+Live session updates go over Server-Sent Events, not polling. Two endpoints:
+
+- `GET /api/sessions/stream` — stream of session-level events (`session.started`, `session.span`, `session.ended`, `session.status_changed`).
+- `GET /api/sessions/{id}/stream` — stream narrowed to one session (span appends, status changes).
+
+**Producer**: a single `tokio::sync::broadcast::channel` per kind inside `gctrl-otel`'s ingest path. On each OTLP batch, ingest fans out a lightweight `SessionEvent` on the broadcast. Each HTTP handler holds a `broadcast::Receiver` and streams events as SSE. No per-connection polling of DuckDB — the ingest path is the only reader that touches the DB for live updates.
+
+**Wire format**: standard SSE framing with one JSON event per message.
+
+```
+id: <monotonic u64 per broadcast>
+event: session.span
+data: {"session_id":"…","span_id":"…","ts":"…","type":"generation","status":"ok"}
+```
+
+`id` is the broadcast-wide monotonic counter, **not** a span or span-start timestamp, so `Last-Event-ID` reconnect is well-defined.
+
+**Reconnect semantics**: on reconnect, the client sends `Last-Event-ID: <n>`. The server replays any buffered events with `id > n` from an in-memory ring (size configurable, default 1024 events per stream, ~few seconds at expected throughput). If the requested id is older than the ring, the server sends `event: replay_gap` and the client is expected to re-fetch state from the non-streaming routes (`/api/sessions`, `/api/sessions/{id}/tree`) and resume tailing.
+
+**Heartbeat**: server emits `: heartbeat\n\n` every 15s so clients behind proxies detect dead connections. No application-level ping payload.
+
+**Backpressure**: broadcast channel uses `Lagged` errors on slow consumers; handler drops the lagged receiver, closes the connection, and the client reconnects with `Last-Event-ID` — same replay-or-gap path as any other disconnect.
+
+Spec-visible: this is the **only** live-update mechanism. The Overview and Sessions tabs must consume these streams directly; no 5–10s polling fallback in the shipped UI.
 
 ## Dashboards
 
-The SPA has **six top-level tabs**. Each tab accepts the same global filters: `time range`, `spawn_source` (all / internal / external), `agent_kind`, `workspace`.
+The SPA has **six top-level tabs**. Each tab accepts the same global filters: `time range`, `created_by` (all / scheduler / api / otel_ingest) with a derived `kind` shortcut (internal / external), `agent_kind` (derived — see §1), `workspace`.
 
-Organizing principle: **Session is the spine** — every other surface is either a slice of session data (prompts, evals, activity, usage) or a downstream artifact (contributions). Tabs are organized by the question the operator is asking, not by the underlying table:
+Organizing principle: **Session is the spine** — every other surface is either a slice of session data (prompts, evals, activity, usage) or a downstream artifact (contributions). This framing is load-bearing for the tab structure, the drill path, and the SSE contract; it warrants a short ADR ("Session is the spine / Activity is a view-mode") before the M0 PR lands so future additions don't quietly re-introduce a parallel Activity model. Tabs are organized by the question the operator is asking, not by the underlying table:
 
 | Tab | Question it answers | Primary entity |
 |-----|---------------------|----------------|
@@ -133,7 +187,7 @@ This tab also absorbs **Agent Activity** as a view-mode toggle (rather than its 
 
 Shared controls: top toggle defaults to **"Live + recent"**; operators can switch to "All past" for historical inspection.
 
-- Row → detail pane: agent, model, cost, duration, spawn_source, linked issue (if any), span count, error count, **live indicator** when streaming spans are still arriving.
+- Row → detail pane: agent, model, cost, duration, `created_by`, linked issue (if any), span count, error count, **live indicator** when streaming spans are still arriving.
 - Detail pane embeds a **trace tree** (renders `GET /api/sessions/{id}/tree`) with span expansion, latency bars, and error highlighting. For live sessions the tree appends new spans as they arrive (SSE, see M1 below).
 - Detail pane also surfaces: **prompts used** (links to Prompts tab), **evals attached** (links to Evals tab), **outbound requests** (from Usage/Network), **contributions produced** (from Contributions).
 - Loops view surfaces `GET /api/sessions/{id}/loops` when the kernel detected repeated failures.
@@ -162,10 +216,10 @@ Answers "is quality drifting? which rules are firing?". Distinct from Prompts be
 Answers "what is this costing, and which providers / tools / domains are burning it?". Merges provider spend, tool usage, proxied network traffic, and OTel performance metrics into one resource-behavior surface. Operators compare "where is cost going?" against "where is traffic going?" in the same tab rather than flipping between three.
 
 - **Providers** — cost + tokens per LLM provider (Anthropic, OpenAI, local). Reuses `GET /api/analytics/cost`.
-- **Tools / utils** — usage per agent kind (Claude Code, Codex, ad-hoc scripts). Rows: invocation count, avg duration, cost, distinct sessions, split by `spawn_source`.
+- **Tools / utils** — usage per agent kind (Claude Code, Codex, ad-hoc scripts). Rows: invocation count, avg duration, cost, distinct sessions, split by `created_by`.
 - **Proxied network traffic** — every HTTP request that flowed through the kernel proxy, both app-originated and external agents routed via `HTTP_PROXY`. Only meaningful once kernel proxy Phase 2 ships; before then, this sub-panel shows a placeholder explaining the dependency.
   - Top domains by requests and by bytes.
-  - Request volume sparkline, stacked by `spawn_source` when attribution is available.
+  - Request volume sparkline, stacked by `created_by` when attribution is available.
   - Status code distribution (2xx/3xx/4xx/5xx stacked).
   - Recent requests table with per-request drill-through (method, host, path, status, bytes, latency, session link).
   - Reverse join on the Sessions detail pane ("this session made 42 outbound requests to 3 domains").
@@ -177,9 +231,9 @@ Answers "what did agents actually ship?". The entity is git/GitHub artifacts, no
 
 - Table of commits, PRs, and issues closed, filterable by agent, time range, repo.
 - Columns: title, author (agent or human), linked session, PR status (open/merged/closed), lines +/-, review signal.
-- Sparkline: contributions/day split by `spawn_source`.
-- Drill-through: contribution → PR on GitHub (via `driver-github`) and contribution → originating session.
-- Reuse: joins `driver-github` PR data with `session.contribution_links` (new lightweight table populated when an agent creates a PR during a session).
+- Sparkline: contributions/day split by `created_by`.
+- Drill-through: contribution → PR on GitHub (via `driver-github`) and contribution → originating session (via commit trailer inference — see Kernel Dependencies §4).
+- Reuse: `driver-github` PR/commit data + trailer inference at query time; no new link table in the initial build.
 
 ## UI & Stack
 
@@ -195,16 +249,16 @@ The Worker itself is a **thin facade**: it proxies to the kernel HTTP API and se
 
 ## Internal vs. External Agent Attribution
 
-This is the distinctive thing this app does that no other surface does today.
+This is the distinctive thing this app does that no other surface does today. The stored field is `created_by` (see Kernel Dependencies §1); `internal` / `external` is a derived view — `internal = {Scheduler, Api}`, `external = {OtelIngest}`.
 
-| Signal | Internal | External |
-|--------|----------|----------|
-| Session creation | Scheduler / app POST with spawn token | Implicit on first OTel ingest |
-| `agent_kind` | Usually known (we set it) | Inferred from OTel resource attrs (`service.name`, `telemetry.sdk.name`) or unknown |
+| Signal | Internal (`Scheduler` / `Api`) | External (`OtelIngest`) |
+|--------|--------------------------------|-------------------------|
+| Session creation | Scheduler dispatch or app `POST /api/sessions` with spawn token | Implicit on first OTLP ingest |
+| Agent kind | Known — `Task.agent_kind` for Scheduler, supplied by caller for Api | Inferred from OTel `resource.service.name` / `telemetry.sdk.name` or unknown |
 | Linked to an Issue | Commonly (scheduler links via task) | Rarely (requires developer to put an Issue key in a span) |
 | Network attribution | High (proxy env injection possible) | Low (depends on whether developer routes through `HTTP_PROXY`) |
 
-The Overview and Sessions tabs show an **Internal / External** toggle. Evals, Usage, and Contributions tabs show a stacked split in every chart so the operator can always see the shape of both populations.
+The Overview and Sessions tabs show an **Internal / External** toggle (`?kind=internal|external`) with an optional drill to the raw `created_by` values. Evals, Usage, and Contributions tabs show a stacked split in every chart so the operator can always see the shape of both populations.
 
 ## Dogfooding
 
@@ -214,13 +268,25 @@ The Overview and Sessions tabs show an **Internal / External** toggle. Evals, Us
 
 ## Milestones
 
-1. **M0 — Skeleton + Overview + Sessions (past)**: Worker + SPA + kernel proxy, Overview tab, Sessions list + detail with trace tree over historical data. Poll-refresh for "live-ish" updates (5–10s). Uses existing kernel routes only. Fits on a laptop in an afternoon.
-2. **M1 — Live sessions**: SSE endpoint `GET /api/sessions/stream` + per-session `GET /api/sessions/{id}/stream`. Sessions table and detail pane update in-place as spans land. This is a core feature, not optional — operators need to see agents while they are running.
-3. **M2 — Usage + Evals**: Usage tab (providers, tools, performance — no network sub-panel yet), Evals tab (scores, alerts). Still zero new kernel work.
-4. **M3 — Prompts + Activity views**: Prompts tab (needs `GET /api/prompts` + `GET /api/sessions/{id}/prompts`), plus Timeline and Heatmap view modes on the Sessions tab.
-5. **M4 — Attribution**: kernel adds `session.spawn_source`. App adds global filter + split charts.
-6. **M5 — Network sub-panel**: depends on kernel `proxy` Phase 2 + `/api/net/*` routes. Ships inside the Usage tab, not as its own tab.
-7. **M6 — Contributions**: `session.contribution_links` + `GET /api/contributions`. Depends on `driver-github` callbacks on PR create / commit push.
+The PRD's primary problem is **live visibility of what's running now**. Shipping past-only first fails that problem, so the SSE contract and live Sessions view are in M0, not later. Poll-refresh is explicitly **not** a fallback — if the stream isn't ready, M0 isn't ready.
+
+Each milestone lists one falsifiable acceptance criterion per shipped tab; it's the check the operator should be able to run in under a minute to say "this milestone landed."
+
+1. **M0 — Skeleton + Overview + Sessions (past + live)**: Worker + SPA + kernel HTTP proxy. Overview tab. Sessions tab (list mode only) with trace tree in the detail pane, rendering past sessions and **streaming live span updates** over `GET /api/sessions/stream` + `GET /api/sessions/{id}/stream` (SSE contract per Kernel Dependencies §5). ADR "Session is the spine / Activity is a view-mode" merged before this lands. No polling fallback in the shipped UI.
+   - *Accept Overview*: with one live agent running, the KPI "live sessions now" increments within 2s of the `session.started` span and decrements within 2s of `session.ended`, without a page refresh.
+   - *Accept Sessions*: opening the detail pane on a live session appends new spans to the trace tree within 2s of OTLP ingest; closing and reopening restores the same tree state from the non-stream route plus any buffered replay.
+2. **M1 — Usage + Evals**: Usage tab (providers, tools, performance — no network sub-panel yet), Evals tab (scores, alerts). Zero new kernel work.
+   - *Accept Usage*: provider spend on the Usage tab over any window matches `gctrl analytics cost --since <window>` to the cent.
+   - *Accept Evals*: every alert rule that's `firing` in `gctrl analytics alerts` appears as `firing` on the Evals tab within one refresh.
+3. **M2 — Prompts + Activity views**: Prompts tab, plus Timeline and Heatmap view modes on the Sessions tab. Depends on Kernel Dependencies §3 (extended `SpanType` variants **or** a `prompts` table — decide in the M2 ADR).
+   - *Accept Prompts*: grouping by fingerprint over a known test corpus produces the same group counts as the kernel query used to back the route (diff the JSON, expect zero rows).
+   - *Accept Sessions views*: switching list → timeline → heatmap does not re-fetch — same query, three renderings — verified by watching the Network tab.
+4. **M3 — Attribution**: kernel adds `session.created_by`; app wires the global filter and adds stacked splits on Evals / Usage / Contributions (even if Contributions is a stub at this point).
+   - *Accept*: filtering `kind=external` on a workspace with only scheduler-spawned sessions returns zero rows; `kind=internal` returns every row. Totals of the two equal the unfiltered total.
+5. **M4 — Network sub-panel**: depends on kernel `proxy` Phase 2 + `/api/net/*` routes. Ships inside the Usage tab, not as its own tab.
+   - *Accept*: a request made through the proxy during a known session appears in that session's detail pane under "outbound requests" within one refresh, with host/path/status matching the proxy log.
+6. **M5 — Contributions**: `GET /api/contributions` (trailer-inference flavour per Kernel Dependencies §4). No `session.contribution_links` table unless inference proves lossy on a real workspace.
+   - *Accept*: a commit authored during a live session with a `Session-Id:` trailer shows up on the Contributions tab with the correct session drill-through; a commit without the trailer shows up as unattributed, not dropped.
 
 ## Deferred / Future
 
@@ -242,9 +308,9 @@ Out of scope for the initial build. Noted here so the Sessions model is not pain
 
 ## Open Questions
 
-1. Should `spawn_source` be three-valued (`internal | external | unknown`) to handle pre-migration data, or should we backfill old rows to `external` on first deploy? Leaning `unknown` + CLI backfill command.
+1. Backfill of `session.created_by` for pre-migration rows: leave as `Unknown` and let a CLI `gctrl sessions backfill-created-by` command reclassify from existing signals (presence of `task_id` ⇒ `Scheduler`, OTel-only origin ⇒ `OtelIngest`)? That's the current lean. No tri-valued `internal|external|unknown` stored field — derivation stays on the read path.
 2. How do we attribute external `claude-code` traffic when it doesn't go through our proxy? Likely we can't — and that's fine; the OTel side still gives us per-session cost.
-3. Chart library: `recharts` (friendly, battery-included) vs. `visx` (more control, more code). Defer until we know what charts M2 actually needs.
-4. Is Agent Activity as a view-mode on Sessions sufficient, or do operators expect it as a top-level tab? Easy to promote later if the toggle proves too buried.
-5. Should Prompts and Evals be merged into one "Quality" tab? Kept separate because the entities (prompt template vs. eval rule) and the operator tasks (authoring vs. regression monitoring) differ — revisit after M3.
-6. `session.contribution_links` vs. inferring contributions from commit message / PR body mentions of session IDs. Explicit link rows are cleaner but require `driver-github` to emit callbacks; inference is retroactive but lossy.
+3. Chart library: `recharts` (friendly, battery-included) vs. `visx` (more control, more code). Defer until we know what charts M1 actually needs.
+4. Is Agent Activity as a view-mode on Sessions sufficient, or do operators expect it as a top-level tab? Easy to promote later if the toggle proves too buried. (Codify the decision in the "Session is the spine" ADR landing with M0.)
+5. Should Prompts and Evals be merged into one "Quality" tab? Kept separate because the entities (prompt template vs. eval rule) and the operator tasks (authoring vs. regression monitoring) differ — revisit after M2.
+6. M2 Prompts storage: extend `SpanType` with `UserTurn` / `AssistantTurn` (option A) vs. dedicated `prompts` table (option B). Decide in the M2 ADR — the trigger for (B) is random-access joins on prompt text that the span table can't serve cheaply.
