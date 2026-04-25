@@ -48,7 +48,8 @@ See [os.md — Dependency Direction](../os.md).
 | Network traffic (domains, bytes, status) | — | Kernel `proxy` Phase 2 + `GET /api/net/*` routes |
 | Contributions tab | `driver-github` PR/commit data + commit trailer inference | `GET /api/contributions?since=...` (inference-first; promote to link table only if inference proves lossy) |
 | Internal vs. external attribution | — (`agent_kind` lives on `Task`, not `Session`) | Add `session.created_by: scheduler \| otel_ingest \| api \| unknown`; derive `internal` / `external` as a view |
-| Live sessions | — | SSE endpoints `GET /api/sessions/stream` and `GET /api/sessions/{id}/stream` (core, **M0**) |
+| Live sessions | 5s poll over `GET /api/sessions?status=active` (M0-preview shim) | SSE endpoints `GET /api/sessions/stream` and `GET /api/sessions/{id}/stream` (M0-final, replaces shim) |
+| "Live sessions now" KPI | `GET /api/sessions?status=active` count, client-side | — (kernel `/api/analytics` rollup intentionally omits `active_sessions`; do not add) |
 | Claude Code JSONL fidelity for external sessions | — | Deferred: `driver-claude-code` watcher (see [Deferred / Future](#deferred--future)) |
 
 **Principle**: no new analytics logic in the app. The app is a **presentation layer**. Any new aggregation or attribution belongs in the kernel so the CLI benefits too.
@@ -147,13 +148,13 @@ data: {"session_id":"…","span_id":"…","ts":"…","type":"generation","status
 
 **Backpressure**: broadcast channel uses `Lagged` errors on slow consumers; handler drops the lagged receiver, closes the connection, and the client reconnects with `Last-Event-ID` — same replay-or-gap path as any other disconnect.
 
-Spec-visible: this is the **only** live-update mechanism. The Overview and Sessions tabs must consume these streams directly; no 5–10s polling fallback in the shipped UI.
+Spec-visible: this is the **only** live-update mechanism *after M0-final ships*. M0-preview ships with a 5s polling shim against the non-stream routes; the shim is deleted in the same PR that lands the streams (see Milestones §M0).
 
 ## Dashboards
 
 The SPA has **six top-level tabs**. Each tab accepts the same global filters: `time range`, `created_by` (all / scheduler / api / otel_ingest) with a derived `kind` shortcut (internal / external), `agent_kind` (derived — see §1), `workspace`.
 
-Organizing principle: **Session is the spine** — every other surface is either a slice of session data (prompts, evals, activity, usage) or a downstream artifact (contributions). This framing is load-bearing for the tab structure, the drill path, and the SSE contract; it warrants a short ADR ("Session is the spine / Activity is a view-mode") before the M0 PR lands so future additions don't quietly re-introduce a parallel Activity model. Tabs are organized by the question the operator is asking, not by the underlying table:
+Organizing principle: **Session is the spine** — every other surface is either a slice of session data (prompts, evals, activity, usage) or a downstream artifact (contributions). This framing is load-bearing for the tab structure, the drill path, and the SSE contract; see [ADR: Session is the spine; Activity is a view-mode](./adr-session-is-the-spine.md) for the rationale, consequences, and trigger to revisit. Tabs are organized by the question the operator is asking, not by the underlying table:
 
 | Tab | Question it answers | Primary entity |
 |-----|---------------------|----------------|
@@ -268,13 +269,19 @@ The Overview and Sessions tabs show an **Internal / External** toggle (`?kind=in
 
 ## Milestones
 
-The PRD's primary problem is **live visibility of what's running now**. Shipping past-only first fails that problem, so the SSE contract and live Sessions view are in M0, not later. Poll-refresh is explicitly **not** a fallback — if the stream isn't ready, M0 isn't ready.
+The PRD's primary problem is **live visibility of what's running now**. Shipping past-only first fails that problem, so live Sessions visibility is in M0, not later.
+
+Live updates split into two checkpoints inside M0:
+
+- **M0-preview** — list + detail pane render with a 5-second poll shim against the existing non-stream routes. This unblocks the rest of the dashboard (Usage, Evals) without waiting on kernel work, and is the state you find on a freshly-merged `spec/gctrl-analytics` branch today. Operators see live status within ≤5s of state change, which clears the PRD's primary problem at a degraded SLA.
+- **M0-final** — kernel ships SSE per Kernel Dependencies §5, the client switches to `EventSource`, and the polling shim is **deleted in the same PR**. After M0-final, the only live-update path is the stream; no polling fallback in the shipped UI.
 
 Each milestone lists one falsifiable acceptance criterion per shipped tab; it's the check the operator should be able to run in under a minute to say "this milestone landed."
 
-1. **M0 — Skeleton + Overview + Sessions (past + live)**: Worker + SPA + kernel HTTP proxy. Overview tab. Sessions tab (list mode only) with trace tree in the detail pane, rendering past sessions and **streaming live span updates** over `GET /api/sessions/stream` + `GET /api/sessions/{id}/stream` (SSE contract per Kernel Dependencies §5). ADR "Session is the spine / Activity is a view-mode" merged before this lands. No polling fallback in the shipped UI.
-   - *Accept Overview*: with one live agent running, the KPI "live sessions now" increments within 2s of the `session.started` span and decrements within 2s of `session.ended`, without a page refresh.
-   - *Accept Sessions*: opening the detail pane on a live session appends new spans to the trace tree within 2s of OTLP ingest; closing and reopening restores the same tree state from the non-stream route plus any buffered replay.
+1. **M0 — Skeleton + Overview + Sessions (past + live)**: Worker + SPA + kernel HTTP proxy. Overview tab. Sessions tab (list mode only) with trace tree in the detail pane. ADR "Session is the spine / Activity is a view-mode" merged in the same PR. M0 is **not closed** until the SSE swap (M0-final) ships — the M0-preview polling shim is a known temporary state, gated by an explicit removal commitment.
+   - *Accept Overview (M0-preview)*: with one live agent running, the KPI "live sessions now" increments within 5s of the `session.started` span and decrements within 5s of `session.ended`. *(M0-final tightens this to 2s once SSE is wired.)*
+   - *Accept Sessions (M0-preview)*: opening the detail pane on a live session shows new spans within 5s of OTLP ingest. *(M0-final: 2s, via stream append; closing and reopening restores tree state from the non-stream route plus any buffered replay.)*
+   - *Accept M0-final*: `grep -R "setInterval" apps/gctrl-board/web/src/pages/AnalyticsPage.tsx` returns zero matches; the only live-update mechanism is `EventSource` against `/api/sessions/stream` and `/api/sessions/{id}/stream`.
 2. **M1 — Usage + Evals**: Usage tab (providers, tools, performance — no network sub-panel yet), Evals tab (scores, alerts). Zero new kernel work.
    - *Accept Usage*: provider spend on the Usage tab over any window matches `gctrl analytics cost --since <window>` to the cent.
    - *Accept Evals*: every alert rule that's `firing` in `gctrl analytics alerts` appears as `firing` on the Evals tab within one refresh.

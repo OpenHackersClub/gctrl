@@ -49,8 +49,11 @@ export function AnalyticsPage({ route, navigate }: AnalyticsPageProps) {
           onClick={() => navigate("/analytics/evals")}
         />
         <div className="flex-1" />
-        <span className="text-[11px] font-mono text-zinc-600 tracking-wide">
-          M0 · poll {LIVE_REFRESH_MS / 1000}s · SSE pending
+        <span
+          className="text-[11px] font-mono text-zinc-600 tracking-wide"
+          title="Live values poll every 5 seconds. SSE streaming will replace this when GET /api/sessions/stream lands."
+        >
+          refresh {LIVE_REFRESH_MS / 1000}s
         </span>
       </div>
 
@@ -101,19 +104,24 @@ function TabButton({
 function OverviewTab() {
   const [overview, setOverview] = useState<AnalyticsOverview | null>(null)
   const [cost, setCost] = useState<CostAnalytics | null>(null)
+  const [liveCount, setLiveCount] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
     const load = async () => {
       try {
-        const [o, c] = await Promise.all([
+        const [o, c, live] = await Promise.all([
           api.analytics.overview(),
           api.analytics.cost(),
+          // Kernel's /api/analytics rollup has no active_sessions field;
+          // count from sessions.list?status=active instead.
+          api.sessions.list({ status: "active", limit: 200 }),
         ])
         if (!cancelled) {
           setOverview(o)
           setCost(c)
+          setLiveCount(live.length)
           setError(null)
         }
       } catch (e) {
@@ -147,7 +155,7 @@ function OverviewTab() {
     <div className="p-6 space-y-6">
       {/* KPI row */}
       <div className="grid grid-cols-4 gap-4">
-        <Kpi label="Live sessions" value={overview.active_sessions} accent />
+        <Kpi label="Live sessions" value={liveCount ?? "—"} accent />
         <Kpi label="Total sessions" value={overview.total_sessions} />
         <Kpi label="Spans" value={overview.total_spans.toLocaleString()} />
         <Kpi
@@ -1024,7 +1032,19 @@ function ScoreLookupPanel() {
           <div className="text-[13px] text-zinc-500 font-mono">Loading…</div>
         )}
         {submitted && error && (
-          <div className="text-[13px] text-rose-400 font-mono">{error}</div>
+          <div className="text-[13px] font-mono space-y-1">
+            <div className="text-rose-400">
+              No score named "{submitted}" — try another rule.
+            </div>
+            <div className="text-zinc-500">
+              Common names: <code className="text-zinc-300">tests_pass</code>,{" "}
+              <code className="text-zinc-300">quality</code>,{" "}
+              <code className="text-zinc-300">loop_detected</code>. Run{" "}
+              <code className="text-zinc-300">gctrl analytics scores</code> for
+              the full list.
+            </div>
+            <div className="text-zinc-700 text-[11px]">{error}</div>
+          </div>
         )}
         {submitted && summary && (
           <div className="grid grid-cols-4 gap-3">

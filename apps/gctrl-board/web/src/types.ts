@@ -13,11 +13,15 @@ export interface SessionSummary {
   total_output_tokens: number
 }
 
+// Mirrors the kernel's `Analytics` struct (gctrl-core/src/types.rs:213).
+// Note: `active_sessions` is NOT part of this response — derive it
+// client-side from `sessions.list({ status: "active" })`.
 export interface AnalyticsOverview {
   total_sessions: number
-  active_sessions: number
   total_spans: number
   total_cost_usd: number
+  total_input_tokens: number
+  total_output_tokens: number
 }
 
 export interface CostByModel {
