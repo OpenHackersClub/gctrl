@@ -249,6 +249,7 @@ describe("HttpIngest with summarization", () => {
       name: () => "fake-llm",
       generateBrief: () => Effect.die("not used"),
       generateInterestReport: () => Effect.die("not used"),
+      researchQuery: () => Effect.die("not used"),
       summarizeSource: () =>
         Effect.sync(() => {
           calls.count += 1
@@ -319,6 +320,7 @@ describe("HttpIngest with summarization", () => {
       name: () => "broken-llm",
       generateBrief: () => Effect.die("not used"),
       generateInterestReport: () => Effect.die("not used"),
+      researchQuery: () => Effect.die("not used"),
       summarizeSource: () =>
         Effect.fail(new LlmError({ message: "upstream 503", kind: "unavailable" })),
     })

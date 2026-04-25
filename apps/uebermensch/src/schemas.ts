@@ -89,3 +89,19 @@ export const ResearchInterestFrontmatter = Schema.Struct({
   horizon: Schema.optional(Schema.Literal("short", "long", "both")),
   weight: Schema.optional(Schema.Number),
 })
+
+export const PromptStatus = Schema.Literal("pending", "processed", "failed", "rerun")
+
+export const PromptFrontmatter = Schema.Struct({
+  slug: Schema.optional(Slug),
+  title: Schema.optional(Schema.String),
+  topics: Schema.optional(Schema.Array(Slug)),
+  status: Schema.optional(PromptStatus),
+  output: Schema.optional(Schema.String),
+  processed_at: Schema.optional(IsoLike),
+  content_hash: Schema.optional(Schema.String),
+  prompt_hash: Schema.optional(Schema.String),
+  model: Schema.optional(Schema.String),
+  cost_usd: Schema.optional(Schema.Number),
+  failed_reason: Schema.optional(Schema.String),
+})

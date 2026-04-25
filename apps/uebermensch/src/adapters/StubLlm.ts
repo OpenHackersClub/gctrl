@@ -69,6 +69,32 @@ export const StubLlmLive = Layer.succeed(LlmService, {
       const promptHash = sha256(`stub-summarize\n${req.url}\n${req.text}`);
       return { insightsMd, promptHash, costUsd: 0, model: STUB_MODEL };
     }),
+  researchQuery: (req) =>
+    Effect.sync(() => {
+      const prompt = [
+        "persona: uber-researcher/stub",
+        `slug: ${req.slug}`,
+        `profile: ${req.profileName}`,
+        `topics: ${req.topics.join(",")}`,
+        `context: ${req.contextPages.map((p) => p.stem).join(",")}`,
+        `question: ${req.question}`,
+      ].join("\n");
+      const promptHash = sha256(prompt);
+      const cited =
+        req.contextPages.length > 0
+          ? req.contextPages.map((p) => `[[${p.stem}]]`).join(", ")
+          : "(no wiki context)";
+      const answerMd = [
+        `## Question`,
+        ``,
+        req.question.trim() || `(empty question for ${req.title})`,
+        ``,
+        `## Stub answer`,
+        ``,
+        `Stub research consolidation for "${req.title}" citing ${cited}.`,
+      ].join("\n");
+      return { answerMd, promptHash, costUsd: 0, model: STUB_MODEL };
+    }),
   generateInterestReport: (req) =>
     Effect.sync(() => {
       const it = req.interest;

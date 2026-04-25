@@ -6,6 +6,7 @@ import {
   type BriefRequest,
   type InterestReportRequest,
   LlmService,
+  type ResearchQueryRequest,
 } from "../services/LlmService.js";
 import type { CuratedItem } from "../services/RendererService.js";
 
@@ -381,6 +382,52 @@ const buildSummaryUserPrompt = (
   return lines.join("\n");
 };
 
+const RESEARCH_SYSTEM_PROMPT = `You are uebermensch-researcher, a chief-of-staff analyst answering a single user-authored research question by consolidating across the user's existing wiki context.
+
+OUTPUT CONTRACT:
+- Output ONLY markdown — no preamble, no JSON, no fenced wrapper.
+- Begin with "## Question" on its own line followed by the question (one paragraph).
+- Then "## Answer" with 200–800 words of substantive consolidated analysis.
+- Then "## Key claims" with 3–7 concrete bullet claims, each ending with at least one bare \`[[stem]]\` citation when supported by a context page.
+- Then "## Open questions" with 1–4 bullets the wiki cannot yet answer.
+
+CITATION RULES (strict):
+- Every \`[[link]]\` MUST match a provided context page \`stem\` exactly.
+- Do NOT use typed-prefix links like \`[[source:x]]\`. Bare stems only.
+- If no context pages were provided, omit \`[[stem]]\` citations entirely and state "(no wiki context yet)" in the Answer's first sentence.
+
+STYLE:
+- Substantive insight only — no meta commentary about the wiki, no "the context covers X".
+- Concrete: name actors, numbers, dates, mechanisms.
+- The body of the user's prompt may include hints, half-formed ideas, or links — treat them as signal but never echo them back verbatim as the answer.`;
+
+const buildResearchQueryUserPrompt = (req: ResearchQueryRequest): string => {
+  const lines: Array<string> = [];
+  lines.push(`profile: ${req.profileName}`);
+  lines.push(`slug: ${req.slug}`);
+  lines.push(`title: ${req.title}`);
+  lines.push(`topics: [${req.topics.join(", ")}]`);
+  lines.push("");
+  lines.push("question: |");
+  for (const line of req.question.split("\n")) lines.push(`  ${line}`);
+  lines.push("");
+  lines.push("context_pages:");
+  if (req.contextPages.length === 0) {
+    lines.push("  (none)");
+  } else {
+    for (const p of req.contextPages) {
+      lines.push(`- stem: ${p.stem}`);
+      lines.push(`  title: ${p.title}`);
+      lines.push(`  topics: [${p.topics.join(", ")}]`);
+      lines.push(`  excerpt: |`);
+      for (const line of p.excerpt.split("\n")) lines.push(`    ${line}`);
+    }
+  }
+  lines.push("");
+  lines.push("Return only the markdown body in the contract above.");
+  return lines.join("\n");
+};
+
 // Clip any preamble before the "## Key Insights" heading; trim trailing
 // whitespace. Models occasionally prefix with "Here are the key insights:" —
 // drop everything up to the first heading.
@@ -499,6 +546,32 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
         model: res.model,
       };
     }),
+  researchQuery: (req) =>
+    Effect.gen(function* () {
+      const model = modelFor();
+      const userPrompt = buildResearchQueryUserPrompt(req);
+      const promptHash = sha256(`${RESEARCH_SYSTEM_PROMPT}\n---\n${userPrompt}`);
+      const res = yield* postLlm(
+        model,
+        RESEARCH_SYSTEM_PROMPT,
+        userPrompt,
+        DEFAULT_MAX_TOKENS,
+        true,
+      );
+      const answerMd = res.text.trim();
+      if (answerMd.length === 0) {
+        return yield* Effect.fail(llmErr("invalid", "kernel researchQuery returned empty body"));
+      }
+      const costUsd = isWorkersAiModel(res.model)
+        ? 0
+        : tokensCost(
+            res.inputTokens,
+            res.outputTokens,
+            ANTHROPIC_INPUT_COST_PER_MTOK,
+            ANTHROPIC_OUTPUT_COST_PER_MTOK,
+          );
+      return { answerMd, promptHash, costUsd, model: res.model };
+    }),
   summarizeSource: (req) =>
     Effect.gen(function* () {
       const capped =
@@ -539,6 +612,7 @@ export const _internal = {
   buildUserPrompt,
   buildInterestReportUserPrompt,
   buildSummaryUserPrompt,
+  buildResearchQueryUserPrompt,
   extractJson,
   kernelBase,
   LlmOutputSchema,
@@ -547,6 +621,7 @@ export const _internal = {
   SYSTEM_PROMPT,
   REPORT_SYSTEM_PROMPT,
   SUMMARY_SYSTEM_PROMPT,
+  RESEARCH_SYSTEM_PROMPT,
   MODEL: DEFAULT_MODEL,
   DEFAULT_MODEL,
   SUMMARY_MODEL,

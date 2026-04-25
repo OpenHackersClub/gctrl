@@ -28,6 +28,12 @@ export type WrittenReport = {
   readonly contentHash: string
 }
 
+export type WrittenResearch = {
+  readonly absPath: string
+  readonly relPath: string
+  readonly contentHash: string
+}
+
 export type ResearchInterest = {
   readonly slug: string
   readonly title: string
@@ -64,6 +70,10 @@ export interface VaultServiceShape {
     slug: string,
     content: string,
   ) => Effect.Effect<WrittenReport, VaultError>
+  readonly writeResearch: (
+    slug: string,
+    content: string,
+  ) => Effect.Effect<WrittenResearch, VaultError>
 }
 
 export class VaultService extends Context.Tag("uebermensch/VaultService")<

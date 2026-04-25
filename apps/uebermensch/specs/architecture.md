@@ -67,7 +67,7 @@ Dependencies MUST flow inward only (see [principles.md § Architectural Invarian
 
 | Concern | Layer | Component | Notes |
 |---------|-------|-----------|-------|
-| User topics, theses, delivery prefs (authored tier) | L0 filesystem | `$UBER_VAULT_DIR/{profile.md,topics.md,sources.md,theses/,prompts/}` | Git-versioned, Obsidian-mountable, portable — see [profile.md](profile.md) |
+| User topics, theses, delivery prefs (authored tier) | L0 filesystem | `$UBER_VAULT_DIR/{profile.md,topics.md,sources.md,theses/,personas/,prompts/}` | Git-versioned, Obsidian-mountable, portable — see [profile.md](profile.md). `personas/` holds per-persona prompt overrides; `prompts/` holds user-authored research queries processed by `gctrl uber prompts process`. |
 | Generated pages + briefs (generated tier) | L0 filesystem | `$UBER_VAULT_DIR/{wiki/,briefs/}` (`wiki/` contains `sources/`, `synthesis/`, `entities/`, `topics/`, `questions/`) | Gitignored, R2-synced, reproducible from sources |
 | Parse + validate profile | L4 | `ProfileService` | Effect-TS `Schema` over markdown/YAML |
 | Raw source capture | L2 extension | `gctrl-net`, `gctrl-context` | Reuses kernel primitives — no new storage |
@@ -194,7 +194,7 @@ apps/uebermensch/
       api/               # HTTP routes on app port
       cli/               # gctrl uber * command impls
   web/                   # Vite SPA
-  prompts/               # Shipped prompt templates (overridable by profile)
+  personas/              # Shipped persona prompt templates (overridable by profile)
   test/
     unit/                # Pure domain tests
     integration/         # Mock KernelClient layer
