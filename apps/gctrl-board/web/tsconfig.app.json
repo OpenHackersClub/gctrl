@@ -4,7 +4,11 @@
     "jsx": "react-jsx",
     "outDir": "../dist-web",
     "rootDir": "src",
-    "noEmit": true
+    "noEmit": true,
+    "baseUrl": "src",
+    "paths": {
+      "@/*": ["./*"]
+    }
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"]
 }

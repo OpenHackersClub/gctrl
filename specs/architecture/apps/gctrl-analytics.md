@@ -243,7 +243,7 @@ Mirrors `gctrl-board` to avoid divergence:
 - Cloudflare Worker facade + React 19 SPA.
 - `@effect/platform` HTTP client for kernel calls (same pattern as board).
 - `recharts` or `visx` for charts — pick one consistent with the board's eventual choice; no need to invent a chart stack twice.
-- Tailwind + shadcn-style components. Dense tables by default — this is an operator tool, not a marketing site.
+- Tailwind v4 + **shadcn/ui** primitives (vendored under `apps/gctrl-board/web/src/components/ui/`). Tokens are declared once in `index.css` `@theme` and inherited by every primitive (`bg-card`, `text-muted-foreground`, `text-primary`, etc.) so the operator-tool aesthetic stays consistent across analytics, kanban, and gantt without re-themeing each component. Primitives in active use today: `Tabs`, `Card`, `Table`, `Badge`, `ToggleGroup`, `Tooltip`, `Button`. Dense tables by default — this is an operator tool, not a marketing site.
 - Routes: `/overview`, `/sessions`, `/sessions/:id`, `/prompts`, `/evals`, `/usage`, `/contributions`.
 
 The Worker itself is a **thin facade**: it proxies to the kernel HTTP API and serves the SPA bundle. No D1, no business logic in the Worker. This follows the [Kernel is source of truth; Worker is facade](../../../CLAUDE.md) invariant.
@@ -285,9 +285,13 @@ Each milestone lists one falsifiable acceptance criterion per shipped tab; it's 
 2. **M1 — Usage + Evals**: Usage tab (providers, tools, performance — no network sub-panel yet), Evals tab (scores, alerts). Zero new kernel work.
    - *Accept Usage*: provider spend on the Usage tab over any window matches `gctrl analytics cost --since <window>` to the cent.
    - *Accept Evals*: every alert rule that's `firing` in `gctrl analytics alerts` appears as `firing` on the Evals tab within one refresh.
-3. **M2 — Prompts + Activity views**: Prompts tab, plus Timeline and Heatmap view modes on the Sessions tab. Depends on Kernel Dependencies §3 (extended `SpanType` variants **or** a `prompts` table — decide in the M2 ADR).
-   - *Accept Prompts*: grouping by fingerprint over a known test corpus produces the same group counts as the kernel query used to back the route (diff the JSON, expect zero rows).
-   - *Accept Sessions views*: switching list → timeline → heatmap does not re-fetch — same query, three renderings — verified by watching the Network tab.
+3. **M2 — Prompts + Activity views**: split for delivery — Activity views (M2a) ship as pure-UI without kernel work; Prompts (M2b) remain blocked on the kernel ADR (extended `SpanType` variants **or** a `prompts` table — decide in the M2 ADR).
+   - **M2a — Sessions Activity views** *(shipped)*: Timeline and Heatmap view modes on the Sessions tab. View-mode is local component state in `SessionsTab`; the underlying `sessions` query is shared across List/Timeline/Heatmap.
+     - Timeline: lanes per `agent_name`, bars per session, colored by status; live sessions pulse; tooltip shows time range and cost; click drills into the detail pane.
+     - Heatmap: agent × hour-of-day grid with a `count`/`cost` toggle; quantized 5-bucket emerald scale so adjacent intensities are eye-readable; click drills into the first session in the cell.
+   - **M2b — Prompts tab** *(blocked on M2 ADR)*: not yet shipped.
+   - *Accept M2a (Sessions views)*: switching list → timeline → heatmap does not re-fetch — same query, three renderings — verified by watching the Network tab. **Verified.**
+   - *Accept M2b (Prompts)*: grouping by fingerprint over a known test corpus produces the same group counts as the kernel query used to back the route (diff the JSON, expect zero rows).
 4. **M3 — Attribution**: kernel adds `session.created_by`; app wires the global filter and adds stacked splits on Evals / Usage / Contributions (even if Contributions is a stub at this point).
    - *Accept*: filtering `kind=external` on a workspace with only scheduler-spawned sessions returns zero rows; `kind=internal` returns every row. Totals of the two equal the unfiltered total.
 5. **M4 — Network sub-panel**: depends on kernel `proxy` Phase 2 + `/api/net/*` routes. Ships inside the Usage tab, not as its own tab.

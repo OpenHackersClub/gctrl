@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react"
-import { api } from "../api/client"
+import { api } from "@/api/client"
 import type {
   AnalyticsOverview,
   CostAnalytics,
@@ -10,89 +10,105 @@ import type {
   SpanAnalytics,
   ScoreSummary,
   AlertRule,
-} from "../types"
-import type { Route } from "../hooks/useRoute"
-import { useSessionStream } from "../hooks/useSessionStream"
+} from "@/types"
+import type { Route } from "@/hooks/useRoute"
+import { useSessionStream } from "@/hooks/useSessionStream"
+import { SessionsTimeline } from "@/components/analytics/SessionsTimeline"
+import { SessionsHeatmap } from "@/components/analytics/SessionsHeatmap"
+import { Button } from "@/components/ui/button"
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { Badge } from "@/components/ui/badge"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import { cn } from "@/lib/utils"
+
+type SessionsView = "list" | "timeline" | "heatmap"
 
 interface AnalyticsPageProps {
   route: Extract<Route, { page: "analytics" }>
   navigate: (path: string) => void
 }
 
-export function AnalyticsPage({ route, navigate }: AnalyticsPageProps) {
-  return (
-    <div className="flex-1 flex flex-col min-w-0 bg-zinc-950">
-      {/* Tab bar */}
-      <div className="h-10 border-b border-zinc-800/80 flex items-center gap-1 px-4 bg-zinc-950/90">
-        <TabButton
-          label="Overview"
-          active={route.tab === "overview"}
-          onClick={() => navigate("/analytics/overview")}
-        />
-        <TabButton
-          label="Sessions"
-          active={route.tab === "sessions"}
-          onClick={() => navigate("/analytics/sessions")}
-        />
-        <TabButton
-          label="Usage"
-          active={route.tab === "usage"}
-          onClick={() => navigate("/analytics/usage")}
-        />
-        <TabButton
-          label="Evals"
-          active={route.tab === "evals"}
-          onClick={() => navigate("/analytics/evals")}
-        />
-        <div className="flex-1" />
-        <span
-          className="inline-flex items-center gap-1.5 text-[11px] font-mono text-emerald-400 tracking-wide"
-          title="Live updates stream from /api/sessions/stream — no polling."
-        >
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-          live
-        </span>
-      </div>
-
-      {/* Tab body */}
-      <div className="flex-1 min-h-0 overflow-auto">
-        {route.tab === "overview" && <OverviewTab />}
-        {route.tab === "sessions" && (
-          <SessionsTab
-            selectedSessionId={route.sessionId}
-            onSelectSession={(id) =>
-              navigate(id ? `/analytics/sessions/${id}` : "/analytics/sessions")
-            }
-          />
-        )}
-        {route.tab === "usage" && <UsageTab />}
-        {route.tab === "evals" && <EvalsTab />}
-      </div>
-    </div>
-  )
+const TAB_PATH: Record<typeof TABS[number], string> = {
+  overview: "/analytics/overview",
+  sessions: "/analytics/sessions",
+  usage: "/analytics/usage",
+  evals: "/analytics/evals",
 }
 
-function TabButton({
-  label,
-  active,
-  onClick,
-}: {
-  label: string
-  active: boolean
-  onClick: () => void
-}) {
+const TABS = ["overview", "sessions", "usage", "evals"] as const
+
+export function AnalyticsPage({ route, navigate }: AnalyticsPageProps) {
   return (
-    <button
-      onClick={onClick}
-      className={`px-3 h-8 text-[12px] font-display tracking-wide uppercase transition-colors cursor-pointer
-        ${
-          active
-            ? "text-emerald-400 border-b-2 border-emerald-400"
-            : "text-zinc-500 hover:text-zinc-300 border-b-2 border-transparent"
-        }`}
-    >
-      {label}
-    </button>
+    <TooltipProvider delayDuration={150}>
+      <div className="flex-1 flex flex-col min-w-0 bg-background">
+        {/* Tab bar — radix Tabs.List with shadcn styling. We keep the
+         * router as the source of truth for the active tab; Tabs is
+         * controlled. */}
+        <div className="h-10 border-b border-border flex items-center px-4 bg-background/90">
+          <Tabs
+            value={route.tab}
+            onValueChange={(v) =>
+              navigate(TAB_PATH[v as (typeof TABS)[number]] ?? "/analytics")
+            }
+            className="flex-1"
+          >
+            <TabsList className="border-b-0 -mb-px">
+              <TabsTrigger value="overview">Overview</TabsTrigger>
+              <TabsTrigger value="sessions">Sessions</TabsTrigger>
+              <TabsTrigger value="usage">Usage</TabsTrigger>
+              <TabsTrigger value="evals">Evals</TabsTrigger>
+            </TabsList>
+          </Tabs>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex">
+                <Badge variant="success" dot pulse>
+                  live
+                </Badge>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>
+              Live updates stream from /api/sessions/stream — no polling.
+            </TooltipContent>
+          </Tooltip>
+        </div>
+
+        {/* Tab body */}
+        <div className="flex-1 min-h-0 overflow-auto">
+          {route.tab === "overview" && <OverviewTab />}
+          {route.tab === "sessions" && (
+            <SessionsTab
+              selectedSessionId={route.sessionId}
+              onSelectSession={(id) =>
+                navigate(id ? `/analytics/sessions/${id}` : "/analytics/sessions")
+              }
+            />
+          )}
+          {route.tab === "usage" && <UsageTab />}
+          {route.tab === "evals" && <EvalsTab />}
+        </div>
+      </div>
+    </TooltipProvider>
   )
 }
 
@@ -210,24 +226,25 @@ function Kpi({
   accent?: boolean
 }) {
   return (
-    <div
-      className={`border p-4 ${
-        accent
-          ? "border-emerald-500/30 bg-emerald-500/5"
-          : "border-zinc-800 bg-zinc-900/30"
-      }`}
+    <Card
+      className={cn(
+        accent && "border-primary/30 bg-primary/5",
+      )}
     >
-      <div className="text-[11px] font-mono tracking-wider text-zinc-500 uppercase mb-1">
-        {label}
-      </div>
-      <div
-        className={`text-2xl font-display font-semibold ${
-          accent ? "text-emerald-400" : "text-zinc-100"
-        }`}
-      >
-        {value}
-      </div>
-    </div>
+      <CardContent className="p-4">
+        <div className="text-[11px] font-mono tracking-wider text-muted-foreground uppercase mb-1">
+          {label}
+        </div>
+        <div
+          className={cn(
+            "text-2xl font-display font-semibold",
+            accent ? "text-primary" : "text-foreground",
+          )}
+        >
+          {value}
+        </div>
+      </CardContent>
+    </Card>
   )
 }
 
@@ -245,44 +262,41 @@ function CostTable({
   }>
 }) {
   return (
-    <div className="border border-zinc-800 bg-zinc-900/30">
-      <div className="px-4 py-2 border-b border-zinc-800 text-[11px] font-mono tracking-wider text-zinc-400 uppercase">
-        {title}
-      </div>
+    <Card>
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+      </CardHeader>
       {rows.length === 0 ? (
-        <div className="p-4 text-sm text-zinc-600 font-mono">No data yet.</div>
+        <CardContent className="text-sm text-muted-foreground/70">
+          No data yet.
+        </CardContent>
       ) : (
-        <table className="w-full text-[13px] font-mono">
-          <thead>
-            <tr className="text-zinc-500 text-[10px] uppercase tracking-wider">
-              <th className="text-left font-normal px-4 py-1.5">Name</th>
-              <th className="text-right font-normal px-4 py-1.5">Cost</th>
-              <th className="text-right font-normal px-4 py-1.5">
-                {rows[0].countLabel}
-              </th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table>
+          <TableHeader className="bg-card/30">
+            <TableRow>
+              <TableHead>Name</TableHead>
+              <TableHead className="text-right">Cost</TableHead>
+              <TableHead className="text-right">{rows[0].countLabel}</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {rows.map((r) => (
-              <tr
-                key={r.key}
-                className="border-t border-zinc-800/60 hover:bg-zinc-800/40"
-              >
-                <td className="px-4 py-1.5 text-zinc-200 truncate max-w-[240px]">
+              <TableRow key={r.key}>
+                <TableCell className="text-foreground truncate max-w-[240px]">
                   {r.primary}
-                </td>
-                <td className="px-4 py-1.5 text-right text-emerald-400">
+                </TableCell>
+                <TableCell className="text-right text-primary">
                   ${r.cost.toFixed(4)}
-                </td>
-                <td className="px-4 py-1.5 text-right text-zinc-400">
+                </TableCell>
+                <TableCell className="text-right text-muted-foreground">
                   {r.count}
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       )}
-    </div>
+    </Card>
   )
 }
 
@@ -298,6 +312,9 @@ function SessionsTab({
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  // View-mode is local state on purpose: per spec, switching list →
+  // timeline → heatmap must NOT re-fetch. Same data, three renderings.
+  const [view, setView] = useState<SessionsView>("list")
 
   const refresh = useCallback(async () => {
     try {
@@ -377,55 +394,112 @@ function SessionsTab({
   }
 
   return (
-    <div className="flex h-full min-h-0">
-      {/* List */}
-      <div className="flex-1 min-w-0 border-r border-zinc-800 overflow-auto">
-        <table className="w-full text-[13px] font-mono">
-          <thead className="sticky top-0 bg-zinc-950 z-10">
-            <tr className="text-zinc-500 text-[10px] uppercase tracking-wider">
-              <th className="text-left font-normal px-4 py-2">Status</th>
-              <th className="text-left font-normal px-4 py-2">Agent</th>
-              <th className="text-left font-normal px-4 py-2">Started</th>
-              <th className="text-right font-normal px-4 py-2">Dur</th>
-              <th className="text-right font-normal px-4 py-2">Tokens</th>
-              <th className="text-right font-normal px-4 py-2">Cost</th>
-              <th className="text-left font-normal px-4 py-2">ID</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading && sessions.length === 0 && (
-              <tr>
-                <td colSpan={7} className="p-8 text-center text-zinc-600">
-                  Loading sessions…
-                </td>
-              </tr>
-            )}
-            {!loading && sessions.length === 0 && (
-              <tr>
-                <td colSpan={7} className="p-8 text-center text-zinc-600">
-                  No sessions yet. Spawn an agent and this table will populate.
-                </td>
-              </tr>
-            )}
-            {sessions.map((s) => (
-              <SessionRow
-                key={s.id}
-                session={s}
-                selected={s.id === selectedSessionId}
-                onSelect={() => onSelectSession(s.id)}
-              />
-            ))}
-          </tbody>
-        </table>
+    <div className="flex flex-col h-full min-h-0">
+      {/* View-mode switcher — same data, three renderings */}
+      <div className="h-9 border-b border-border flex items-center px-4 gap-3 bg-background/60 shrink-0">
+        <span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground/70">
+          view
+        </span>
+        <ToggleGroup
+          type="single"
+          value={view}
+          onValueChange={(v) => {
+            // Radix emits "" when the active item is clicked. Ignore
+            // that — view-mode is required, not toggle-able to empty.
+            if (v) setView(v as SessionsView)
+          }}
+        >
+          <ToggleGroupItem value="list" data-testid="sessions-view-list">
+            list
+          </ToggleGroupItem>
+          <ToggleGroupItem value="timeline" data-testid="sessions-view-timeline">
+            timeline
+          </ToggleGroupItem>
+          <ToggleGroupItem value="heatmap" data-testid="sessions-view-heatmap">
+            heatmap
+          </ToggleGroupItem>
+        </ToggleGroup>
+        <div className="flex-1" />
+        <span className="text-[11px] font-mono text-muted-foreground">
+          {sessions.length} session{sessions.length === 1 ? "" : "s"}
+        </span>
       </div>
 
-      {/* Detail */}
-      {selected && (
-        <SessionDetailPane
-          session={selected}
-          onClose={() => onSelectSession(null)}
-        />
-      )}
+      <div className="flex flex-1 min-h-0">
+        {/* Body — switches by view; each renderer is a pure function of `sessions` */}
+        <div className="flex-1 min-w-0 border-r border-border overflow-auto">
+          {view === "list" && (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Agent</TableHead>
+                  <TableHead>Started</TableHead>
+                  <TableHead className="text-right">Dur</TableHead>
+                  <TableHead className="text-right">Tokens</TableHead>
+                  <TableHead className="text-right">Cost</TableHead>
+                  <TableHead>ID</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {loading && sessions.length === 0 && (
+                  <TableRow>
+                    <TableCell
+                      colSpan={7}
+                      className="p-8 text-center text-muted-foreground/70"
+                    >
+                      Loading sessions…
+                    </TableCell>
+                  </TableRow>
+                )}
+                {!loading && sessions.length === 0 && (
+                  <TableRow>
+                    <TableCell
+                      colSpan={7}
+                      className="p-8 text-center text-muted-foreground/70"
+                    >
+                      No sessions yet. Spawn an agent and this table will
+                      populate.
+                    </TableCell>
+                  </TableRow>
+                )}
+                {sessions.map((s) => (
+                  <SessionRow
+                    key={s.id}
+                    session={s}
+                    selected={s.id === selectedSessionId}
+                    onSelect={() => onSelectSession(s.id)}
+                  />
+                ))}
+              </TableBody>
+            </Table>
+          )}
+
+          {view === "timeline" && (
+            <SessionsTimeline
+              sessions={sessions}
+              selectedId={selectedSessionId}
+              onSelect={onSelectSession}
+            />
+          )}
+
+          {view === "heatmap" && (
+            <SessionsHeatmap
+              sessions={sessions}
+              selectedId={selectedSessionId}
+              onSelect={onSelectSession}
+            />
+          )}
+        </div>
+
+        {/* Detail pane is shared across all three views */}
+        {selected && (
+          <SessionDetailPane
+            session={selected}
+            onClose={() => onSelectSession(null)}
+          />
+        )}
+      </div>
     </div>
   )
 }
@@ -447,36 +521,33 @@ function SessionRow({
   const isLive = session.ended_at === null && session.status === "active"
 
   return (
-    <tr
+    <TableRow
       onClick={onSelect}
-      className={`border-t border-zinc-800/60 cursor-pointer transition-colors ${
-        selected ? "bg-emerald-500/5" : "hover:bg-zinc-800/40"
-      }`}
+      data-state={selected ? "selected" : undefined}
+      className="cursor-pointer"
     >
-      <td className="px-4 py-1.5">
+      <TableCell>
         <StatusBadge status={session.status} live={isLive} />
-      </td>
-      <td className="px-4 py-1.5 text-zinc-200 truncate max-w-[180px]">
+      </TableCell>
+      <TableCell className="text-foreground truncate max-w-[180px]">
         {session.agent_name || "—"}
-      </td>
-      <td className="px-4 py-1.5 text-zinc-400 text-[12px]">
+      </TableCell>
+      <TableCell className="text-muted-foreground text-[12px]">
         {new Date(session.started_at).toLocaleString()}
-      </td>
-      <td className="px-4 py-1.5 text-right text-zinc-400 text-[12px]">
+      </TableCell>
+      <TableCell className="text-right text-muted-foreground text-[12px]">
         {formatDuration(durationMs)}
-      </td>
-      <td className="px-4 py-1.5 text-right text-zinc-400 text-[12px]">
-        {(
-          session.total_input_tokens + session.total_output_tokens
-        ).toLocaleString()}
-      </td>
-      <td className="px-4 py-1.5 text-right text-emerald-400">
+      </TableCell>
+      <TableCell className="text-right text-muted-foreground text-[12px]">
+        {(session.total_input_tokens + session.total_output_tokens).toLocaleString()}
+      </TableCell>
+      <TableCell className="text-right text-primary">
         ${session.total_cost_usd.toFixed(4)}
-      </td>
-      <td className="px-4 py-1.5 text-zinc-600 text-[11px] truncate max-w-[160px]">
+      </TableCell>
+      <TableCell className="text-muted-foreground/70 text-[11px] truncate max-w-[160px]">
         {session.id}
-      </td>
-    </tr>
+      </TableCell>
+    </TableRow>
   )
 }
 
@@ -489,25 +560,20 @@ function StatusBadge({
 }) {
   if (live) {
     return (
-      <span className="inline-flex items-center gap-1.5 text-[11px] text-emerald-400 font-mono uppercase tracking-wider">
-        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+      <Badge variant="success" dot pulse>
         live
-      </span>
+      </Badge>
     )
   }
-  const color =
+  const variant =
     status === "completed"
-      ? "text-zinc-400"
+      ? "muted"
       : status === "failed"
-        ? "text-rose-400"
+        ? "destructive"
         : status === "cancelled"
-          ? "text-amber-400"
-          : "text-zinc-500"
-  return (
-    <span className={`text-[11px] font-mono uppercase tracking-wider ${color}`}>
-      {status}
-    </span>
-  )
+          ? "warn"
+          : "muted"
+  return <Badge variant={variant}>{status}</Badge>
 }
 
 function formatDuration(ms: number): string {
@@ -860,24 +926,26 @@ function Panel({
   children: ReactNode
 }) {
   return (
-    <div className="border border-zinc-800 bg-zinc-900/30">
-      <div className="px-4 py-2 border-b border-zinc-800 flex items-center justify-between">
-        <span className="text-[11px] font-mono tracking-wider text-zinc-400 uppercase">
-          {title}
-        </span>
+    <Card>
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
         {subtitle && (
-          <span className="text-[11px] font-mono text-zinc-600">
+          <span className="text-[11px] font-mono text-muted-foreground/70">
             {subtitle}
           </span>
         )}
-      </div>
+      </CardHeader>
       {children}
-    </div>
+    </Card>
   )
 }
 
 function EmptyRow({ text }: { text: string }) {
-  return <div className="p-4 text-sm text-zinc-600 font-mono">{text}</div>
+  return (
+    <CardContent className="text-sm text-muted-foreground/70">
+      {text}
+    </CardContent>
+  )
 }
 
 type Align = "left" | "right"
@@ -892,41 +960,37 @@ function SimpleTable({
   rows: Array<{ key: string; cells: ReactNode[] }>
 }) {
   return (
-    <table className="w-full text-[13px] font-mono">
-      <thead>
-        <tr className="text-zinc-500 text-[10px] uppercase tracking-wider">
+    <Table>
+      <TableHeader className="bg-card/30">
+        <TableRow>
           {columns.map((c, i) => (
-            <th
+            <TableHead
               key={c}
-              className={`font-normal px-4 py-1.5 ${
-                aligns[i] === "right" ? "text-right" : "text-left"
-              }`}
+              className={cn(aligns[i] === "right" && "text-right")}
             >
               {c}
-            </th>
+            </TableHead>
           ))}
-        </tr>
-      </thead>
-      <tbody>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
         {rows.map((r) => (
-          <tr
-            key={r.key}
-            className="border-t border-zinc-800/60 hover:bg-zinc-800/40"
-          >
+          <TableRow key={r.key}>
             {r.cells.map((cell, i) => (
-              <td
+              <TableCell
                 key={i}
-                className={`px-4 py-1.5 ${
-                  aligns[i] === "right" ? "text-right" : "text-left"
-                } ${aligns[i] === "left" ? "max-w-[320px] truncate" : ""}`}
+                className={cn(
+                  aligns[i] === "right" && "text-right",
+                  aligns[i] === "left" && "max-w-[320px] truncate",
+                )}
               >
                 {cell}
-              </td>
+              </TableCell>
             ))}
-          </tr>
+          </TableRow>
         ))}
-      </tbody>
-    </table>
+      </TableBody>
+    </Table>
   )
 }
 
@@ -1008,14 +1072,11 @@ function EvalsTab() {
 
 function RuleState({ enabled }: { enabled: boolean }) {
   return enabled ? (
-    <span className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider text-emerald-400">
-      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+    <Badge variant="success" dot>
       enabled
-    </span>
+    </Badge>
   ) : (
-    <span className="text-[11px] font-mono uppercase tracking-wider text-zinc-500">
-      disabled
-    </span>
+    <Badge variant="muted">disabled</Badge>
   )
 }
 
@@ -1059,48 +1120,44 @@ function ScoreLookupPanel() {
           const name = input.trim()
           if (name) setSubmitted(name)
         }}
-        className="px-4 py-3 flex items-center gap-2 border-b border-zinc-800"
+        className="px-4 py-3 flex items-center gap-2 border-b border-border"
       >
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="score name (e.g. tests_pass, quality)"
-          className="flex-1 bg-zinc-950 border border-zinc-800 px-3 py-1.5 text-[13px] font-mono text-zinc-200
-            focus:outline-none focus:border-emerald-500/40"
+          className="flex-1 bg-background border border-input px-3 py-1.5 text-[13px] font-mono text-foreground
+            focus:outline-none focus:border-ring"
         />
-        <button
-          type="submit"
-          disabled={!input.trim()}
-          className="px-3 py-1.5 text-[12px] font-display tracking-wide uppercase
-            bg-emerald-500/10 text-emerald-400 border border-emerald-500/25
-            hover:bg-emerald-500/20 disabled:opacity-25 disabled:cursor-not-allowed
-            cursor-pointer transition-colors"
-        >
+        <Button type="submit" disabled={!input.trim()} size="sm">
           Lookup
-        </button>
+        </Button>
       </form>
-      <div className="p-4">
+      <CardContent>
         {!submitted && (
-          <div className="text-[13px] text-zinc-500 font-mono">
+          <div className="text-[13px] text-muted-foreground font-mono">
             Enter a score rule name to see pass/fail totals and rate.
           </div>
         )}
         {submitted && loading && (
-          <div className="text-[13px] text-zinc-500 font-mono">Loading…</div>
+          <div className="text-[13px] text-muted-foreground font-mono">
+            Loading…
+          </div>
         )}
         {submitted && error && (
           <div className="text-[13px] font-mono space-y-1">
-            <div className="text-rose-400">
+            <div className="text-destructive">
               No score named "{submitted}" — try another rule.
             </div>
-            <div className="text-zinc-500">
-              Common names: <code className="text-zinc-300">tests_pass</code>,{" "}
-              <code className="text-zinc-300">quality</code>,{" "}
-              <code className="text-zinc-300">loop_detected</code>. Run{" "}
-              <code className="text-zinc-300">gctrl analytics scores</code> for
-              the full list.
+            <div className="text-muted-foreground">
+              Common names:{" "}
+              <code className="text-foreground">tests_pass</code>,{" "}
+              <code className="text-foreground">quality</code>,{" "}
+              <code className="text-foreground">loop_detected</code>. Run{" "}
+              <code className="text-foreground">gctrl analytics scores</code>{" "}
+              for the full list.
             </div>
-            <div className="text-zinc-700 text-[11px]">{error}</div>
+            <div className="text-muted-foreground/50 text-[11px]">{error}</div>
           </div>
         )}
         {submitted && summary && (
@@ -1119,7 +1176,7 @@ function ScoreLookupPanel() {
             />
           </div>
         )}
-      </div>
+      </CardContent>
     </Panel>
   )
 }
@@ -1135,20 +1192,22 @@ function ScoreKpi({
 }) {
   const color =
     tone === "good"
-      ? "text-emerald-400"
+      ? "text-primary"
       : tone === "bad"
-        ? "text-rose-400"
+        ? "text-destructive"
         : tone === "warn"
           ? "text-amber-400"
-          : "text-zinc-200"
+          : "text-foreground"
   return (
-    <div className="border border-zinc-800 bg-zinc-950 p-3">
-      <div className="text-[10px] font-mono uppercase tracking-wider text-zinc-500 mb-1">
-        {label}
-      </div>
-      <div className={`text-xl font-display font-semibold ${color}`}>
-        {value}
-      </div>
-    </div>
+    <Card className="bg-background">
+      <CardContent className="p-3">
+        <div className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground mb-1">
+          {label}
+        </div>
+        <div className={cn("text-xl font-display font-semibold", color)}>
+          {value}
+        </div>
+      </CardContent>
+    </Card>
   )
 }

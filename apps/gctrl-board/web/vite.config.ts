@@ -6,6 +6,12 @@ import path from "node:path"
 export default defineConfig({
   root: path.resolve(__dirname),
   plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: {
+      // shadcn/ui convention — `@/components/ui/...` etc.
+      "@": path.resolve(__dirname, "./src"),
+    },
+  },
   build: {
     outDir: path.resolve(__dirname, "../dist-web"),
   },

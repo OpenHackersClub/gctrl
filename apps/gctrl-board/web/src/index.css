@@ -1,11 +1,19 @@
 @import url("https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap");
 @import "tailwindcss";
+@import "tw-animate-css";
+
+/* shadcn dark-mode hook. The board ships dark-only today, so this
+ * activates whenever the document carries the .dark class (or a
+ * descendant); we keep the variant declared so future light-mode work
+ * lands cleanly. */
+@custom-variant dark (&:is(.dark *));
 
 @theme {
   --font-display: "Chakra Petch", sans-serif;
   --font-body: "Outfit", sans-serif;
   --font-mono: "JetBrains Mono", monospace;
 
+  /* Board-specific tokens (kanban / gantt) — kept stable. */
   --color-surface: #18181b;
   --color-surface-raised: #1f1f23;
   --color-border-subtle: #27272a;
@@ -21,6 +29,41 @@
   --animate-fade-in: fade-in 0.15s ease-out;
   --animate-fade-in-up: fade-in-up 0.2s ease-out;
   --animate-pulse-subtle: pulse-subtle 2s ease-in-out infinite;
+
+  /* shadcn semantic tokens — referenced by primitives via
+   * `bg-background`, `text-foreground`, `border-border`, etc. We pin
+   * them to the existing zinc-based dark palette so shadcn primitives
+   * blend with the operator-tool aesthetic and don't introduce a
+   * second visual vocabulary. */
+  --color-background: #09090b;          /* zinc-950 */
+  --color-foreground: #d4d4d8;          /* zinc-300 */
+
+  --color-card: #18181b;                /* zinc-900 */
+  --color-card-foreground: #e4e4e7;     /* zinc-200 */
+
+  --color-popover: #18181b;
+  --color-popover-foreground: #e4e4e7;
+
+  --color-primary: #34d399;             /* emerald-400 — operator accent */
+  --color-primary-foreground: #052e1a;  /* near-black emerald */
+
+  --color-secondary: #27272a;           /* zinc-800 */
+  --color-secondary-foreground: #d4d4d8;
+
+  --color-muted: #18181b;
+  --color-muted-foreground: #71717a;    /* zinc-500 */
+
+  --color-accent: #27272a;
+  --color-accent-foreground: #e4e4e7;
+
+  --color-destructive: #fb7185;         /* rose-400 — failure rows */
+  --color-destructive-foreground: #18181b;
+
+  --color-border: #27272a;
+  --color-input: #27272a;
+  --color-ring: #34d399;                /* focus ring = primary */
+
+  --radius: 0.25rem;                    /* tight, operator-tool feel */
 }
 
 @keyframes slide-in-right {
