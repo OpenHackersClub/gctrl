@@ -9,7 +9,13 @@
 // is keyed off session status so concurrent agent activity and idle
 // gaps are immediately readable.
 
-import type { SessionSummary } from "../../types"
+import type { SessionSummary } from "@/types"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import { cn } from "@/lib/utils"
 
 interface Props {
   sessions: SessionSummary[]
@@ -71,7 +77,7 @@ export function SessionsTimeline({ sessions, selectedId, onSelect }: Props) {
         </span>
       </div>
 
-      <div className="border border-zinc-800 bg-zinc-900/30 overflow-hidden">
+      <div className="border border-border bg-card/30 overflow-hidden">
         {/* Lanes */}
         <div className="relative" style={{ height: totalHeight }}>
           {/* Vertical gridlines per tick */}
@@ -80,7 +86,7 @@ export function SessionsTimeline({ sessions, selectedId, onSelect }: Props) {
             return (
               <div
                 key={`grid-${t}`}
-                className="absolute top-0 bottom-[22px] w-px bg-zinc-800/60"
+                className="absolute top-0 bottom-[22px] w-px bg-border"
                 style={{ left: `calc(${LABEL_WIDTH}px + ${((t - minT) / span) * 100}% - ${(LABEL_WIDTH * (t - minT)) / span}px)` }}
                 aria-hidden
                 data-x={x}
@@ -116,26 +122,37 @@ export function SessionsTimeline({ sessions, selectedId, onSelect }: Props) {
                   const width = Math.max(0.4, ((end - start) / span) * 100)
                   const isLive = s.ended_at === null && s.status === "active"
                   return (
-                    <button
-                      key={s.id}
-                      onClick={() => onSelect(s.id)}
-                      title={`${s.agent_name || "—"}\n${fmtAbs(start)} → ${
-                        s.ended_at ? fmtAbs(end) : "live"
-                      }\n$${s.total_cost_usd.toFixed(4)}`}
-                      className={`absolute top-1/2 -translate-y-1/2 h-3 rounded-sm cursor-pointer transition-opacity ${barClass(
-                        s.status,
-                        isLive,
-                      )} ${
-                        selectedId === s.id
-                          ? "ring-1 ring-emerald-300"
-                          : "hover:opacity-90"
-                      }`}
-                      style={{
-                        left: `${left}%`,
-                        width: `${width}%`,
-                        minWidth: 4,
-                      }}
-                    />
+                    <Tooltip key={s.id}>
+                      <TooltipTrigger asChild>
+                        <button
+                          onClick={() => onSelect(s.id)}
+                          aria-label={`Session ${s.id} on agent ${s.agent_name}`}
+                          className={cn(
+                            "absolute top-1/2 -translate-y-1/2 h-3 rounded-sm cursor-pointer transition-opacity focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                            barClass(s.status, isLive),
+                            selectedId === s.id
+                              ? "ring-1 ring-primary/80"
+                              : "hover:opacity-90",
+                          )}
+                          style={{
+                            left: `${left}%`,
+                            width: `${width}%`,
+                            minWidth: 4,
+                          }}
+                        />
+                      </TooltipTrigger>
+                      <TooltipContent side="top" className="space-y-0.5">
+                        <div className="text-foreground">
+                          {s.agent_name || "—"}
+                        </div>
+                        <div className="text-muted-foreground">
+                          {fmtAbs(start)} → {s.ended_at ? fmtAbs(end) : "live"}
+                        </div>
+                        <div className="text-primary">
+                          ${s.total_cost_usd.toFixed(4)}
+                        </div>
+                      </TooltipContent>
+                    </Tooltip>
                   )
                 })}
               </div>
@@ -177,9 +194,9 @@ export function SessionsTimeline({ sessions, selectedId, onSelect }: Props) {
 function Legend() {
   return (
     <div className="flex items-center gap-4 mt-2 text-[10px] font-mono uppercase tracking-wider text-zinc-500">
-      <LegendDot className="bg-emerald-400 animate-pulse" label="live" />
-      <LegendDot className="bg-zinc-500" label="completed" />
-      <LegendDot className="bg-rose-500" label="failed" />
+      <LegendDot className="bg-primary animate-pulse" label="live" />
+      <LegendDot className="bg-muted-foreground" label="completed" />
+      <LegendDot className="bg-destructive" label="failed" />
       <LegendDot className="bg-amber-500" label="cancelled" />
     </div>
   )
@@ -195,12 +212,11 @@ function LegendDot({ className, label }: { className: string; label: string }) {
 }
 
 function barClass(status: SessionSummary["status"], isLive: boolean): string {
-  if (isLive) return "bg-emerald-400 animate-pulse"
-  if (status === "completed") return "bg-zinc-500"
-  if (status === "failed") return "bg-rose-500"
+  if (isLive) return "bg-primary animate-pulse"
+  if (status === "failed") return "bg-destructive"
   if (status === "cancelled") return "bg-amber-500"
-  // Fallback: same as completed.
-  return "bg-zinc-500"
+  // completed + fallback
+  return "bg-muted-foreground"
 }
 
 function buildTicks(min: number, max: number, count: number): number[] {

@@ -243,7 +243,7 @@ Mirrors `gctrl-board` to avoid divergence:
 - Cloudflare Worker facade + React 19 SPA.
 - `@effect/platform` HTTP client for kernel calls (same pattern as board).
 - `recharts` or `visx` for charts — pick one consistent with the board's eventual choice; no need to invent a chart stack twice.
-- Tailwind + shadcn-style components. Dense tables by default — this is an operator tool, not a marketing site.
+- Tailwind v4 + **shadcn/ui** primitives (vendored under `apps/gctrl-board/web/src/components/ui/`). Tokens are declared once in `index.css` `@theme` and inherited by every primitive (`bg-card`, `text-muted-foreground`, `text-primary`, etc.) so the operator-tool aesthetic stays consistent across analytics, kanban, and gantt without re-themeing each component. Primitives in active use today: `Tabs`, `Card`, `Table`, `Badge`, `ToggleGroup`, `Tooltip`, `Button`. Dense tables by default — this is an operator tool, not a marketing site.
 - Routes: `/overview`, `/sessions`, `/sessions/:id`, `/prompts`, `/evals`, `/usage`, `/contributions`.
 
 The Worker itself is a **thin facade**: it proxies to the kernel HTTP API and serves the SPA bundle. No D1, no business logic in the Worker. This follows the [Kernel is source of truth; Worker is facade](../../../CLAUDE.md) invariant.
