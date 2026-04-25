@@ -8,7 +8,7 @@
 
 | Task | Description | Priority | Depends On | Issue |
 |------|-------------|----------|------------|-------|
-| Vault scaffolding | Template vault shape — `profile.md`, `topics.md`, `sources.md`, `theses/`, `prompts/`, `.obsidian/` defaults, `.gitignore` — emitted by `gctrl uber vault init` | P0 | — | TBD |
+| Vault scaffolding | Template vault shape — `profile.md`, `topics.md`, `sources.md`, `theses/`, `personas/`, `prompts/`, `.obsidian/` defaults, `.gitignore` — emitted by `gctrl uber vault init` | P0 | — | TBD |
 | Profile schema lock-in | Finalise profile+vault layout in `specs/profile.md`; commit sample vault | P0 | — | TBD |
 | Profile/Vault reader | Effect-TS `ProfileService` reading markdown + YAML frontmatter from `$UBER_VAULT_DIR` (authored tier) with schema validation; VaultWatcher fiber for `fs.watch` | P0 | Profile schema | TBD |
 | Kernel vault mount | Wire `gctrl-kb` with `context_root = $UBER_VAULT_DIR, wiki_subpath = "wiki"` so the kernel reads/writes wiki pages at the vault root. Retire the legacy `~/.local/share/gctrl/context/wiki` path for Uebermensch workspaces. | P0 | Profile/Vault reader | TBD |
@@ -104,7 +104,7 @@
 | Task | Description | Priority | Depends On | Issue |
 |------|-------------|----------|------------|-------|
 | `SinkInService` scaffold | Effect-TS service with gap-pass + answer-pass + file-pages stages; connected to `KbPort` + `LlmPort` | P0 | M1 | TBD |
-| `uber-sinkin` prompt templates | `prompts/sinkin-gap.md` + `prompts/sinkin-answer.md`; prompt-injection sentinels; gap cap enforcement | P0 | SinkInService scaffold | TBD |
+| `uber-sinkin` prompt templates | `personas/sinkin-gap.md` + `personas/sinkin-answer.md`; prompt-injection sentinels; gap cap enforcement | P0 | SinkInService scaffold | TBD |
 | `uber_sinkin_sessions` table | SQLite table tracking per-session cost, scope, gap/connection counts | P0 | M0 storage migration | TBD |
 | `gctrl uber sinkin` CLI | Run scheduled SinkIn; `--topic`, `--thesis`, `--dry-run` flags; session report to stdout | P0 | SinkInService | TBD |
 | `gctrl uber query` CLI | Answer a user question from the wiki; `--file` flag files as Question page | P0 | SinkInService | TBD |

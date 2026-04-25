@@ -1,12 +1,12 @@
 # Uebermensch — Profile & Vault
 
-> The profile directory is also the **Obsidian vault** — a single markdown-first root holding user-authored config (topics, theses, prompts) alongside LLM-generated content (wiki, briefs, synthesis). The user opens this directory in Obsidian; the app reads it; R2 syncs it.
+> The profile directory is also the **Obsidian vault** — a single markdown-first root holding user-authored config (topics, theses, prompts, persona overrides) alongside LLM-generated content (wiki, briefs, synthesis). The user opens this directory in Obsidian; the app reads it; R2 syncs it.
 
 ## Location & Identity
 
 - Default path: `~/uebermensch-vault` — overridable via `UBER_VAULT_DIR` (alias `UBER_PROFILE_DIR` retained for continuity).
 - The directory is a **git repository** the user owns *and* an **Obsidian vault** the user opens — one location, two hats.
-- `gctrl uber vault init` scaffolds an empty vault at `$UBER_VAULT_DIR` from the template (profile.md, topics.md, sources.md, theses/, prompts/, .gitignore).
+- `gctrl uber vault init` scaffolds an empty vault at `$UBER_VAULT_DIR` from the template (profile.md, topics.md, sources.md, theses/, prompts/, personas/, .gitignore).
 
 The identity (`identity.slug` × machine fingerprint) gates sync: each vault is keyed to one user identity; vault content MUST NOT leak between identities in shared storage. `identity.slug` is the canonical machine id — lowercase, `[a-z0-9-]+`, derived from `identity.name` at vault-init time (user may override). `identity.name` is the display name used in UI + generated markdown; it MAY contain spaces, mixed case, and non-ASCII.
 
@@ -14,7 +14,7 @@ The identity (`identity.slug` × machine fingerprint) gates sync: each vault is 
 
 | Tier | Path glob | Authored by | Git | R2 sync |
 |------|-----------|-------------|-----|---------|
-| **Authored** (source of truth = user) | `profile.md`, `topics.md`, `sources.md`, `theses/**`, `prompts/**`, `personas.md`, `avoid.md`, `ME.md`, `projects.md`, `README.md` | User | ✅ tracked | ✅ |
+| **Authored** (source of truth = user) | `profile.md`, `topics.md`, `sources.md`, `theses/**`, `prompts/**`, `personas.md`, `personas/**`, `avoid.md`, `ME.md`, `projects.md`, `README.md` | User | ✅ tracked | ✅ |
 | **Generated** (source of truth = LLM / app) | `wiki/**` (includes `wiki/synthesis/**`, `wiki/sources/**`), `briefs/**`, `.gctrl-uber/**`, `.obsidian/workspace*.json` | LLM personas (`uber-ingest`, `uber-curator`, `uber-deepdive`) + app | ❌ gitignored | ✅ |
 
 R2 syncs both tiers — git is for the authored tier only, so the user can `git diff` meaningful changes without generated noise.
@@ -44,11 +44,13 @@ $UBER_VAULT_DIR/
 ├── personas.md               # persona → model + prompt path map (optional; YAML frontmatter)
 ├── ME.md                     # free-form self-description; fed as system context
 ├── projects.md               # projects + commitments; fed as system context
-├── prompts/                  # per-persona prompt overrides (optional)
+├── personas/                 # per-persona prompt overrides (optional)
 │   ├── uber-curator.md
 │   ├── uber-ingest.md
 │   ├── uber-deepdive.md
 │   └── uber-evaluator.md
+├── prompts/                  # user-authored research queries (free-form notes — uebermensch researches & files results to wiki/research/)
+│   └── what-is-claudes-real-moat.md
 ├── theses/                   # one file per open thesis
 │   ├── llm-tooling-consolidation.md
 │   └── prediction-market-liquidity.md
@@ -227,7 +229,8 @@ After bootstrap, pulls are incremental and the daemon runs the push/pull protoco
 - `profile.md`, `topics.md`, `sources.md` — minimal viable config (data in YAML frontmatter)
 - `theses/` — empty
 - `ME.md`, `projects.md`, `avoid.md` — stubs
-- `prompts/` — shipped defaults
+- `personas/` — shipped persona-prompt defaults
+- `prompts/` — empty (user drops research queries here; processed by `gctrl uber prompts process`)
 - `.obsidian/` — default graph + appearance config
 - `.gitignore`
 - `README.md` — short onboarding note
@@ -277,8 +280,8 @@ delivery:
       target_ref: "dc:webhook:env:DISCORD_FEED_URL"
 
   personas:                    # persona → override prompt path (relative to $UBER_VAULT_DIR)
-    uber-curator: "prompts/uber-curator.md"
-    uber-deepdive: "prompts/uber-deepdive.md"
+    uber-curator: "personas/uber-curator.md"
+    uber-deepdive: "personas/uber-deepdive.md"
 
   retention:
     briefs_days: 180
@@ -412,25 +415,56 @@ Frontmatter:
 personas:
   uber-curator:
     model: "@cf/google/gemma-4-26b-a4b-it"  # routed via Cloudflare AI Gateway
-    prompt_path: "prompts/uber-curator.md"
+    prompt_path: "personas/uber-curator.md"
   uber-ingest:
     model: "claude-haiku-4-5"
-    prompt_path: "prompts/uber-ingest.md"
+    prompt_path: "personas/uber-ingest.md"
   uber-deepdive:
     model: "@cf/google/gemma-4-26b-a4b-it"  # routed via Cloudflare AI Gateway
-    prompt_path: "prompts/uber-deepdive.md"
+    prompt_path: "personas/uber-deepdive.md"
   uber-evaluator:
     model: "claude-haiku-4-5"
-    prompt_path: "prompts/uber-evaluator.md"
+    prompt_path: "personas/uber-evaluator.md"
 ```
 
-If omitted, the shipped defaults under `apps/uebermensch/prompts/` are used unchanged. Personas declare `model` at profile level so users can swap defaults without touching app code.
+If omitted, the shipped defaults under `apps/uebermensch/personas/` are used unchanged. Personas declare `model` at profile level so users can swap defaults without touching app code.
 
-### prompts/\<persona\>.md (optional)
+### personas/\<persona\>.md (optional)
 
 Prompt templates using `{{var}}` placeholders. See [briefing-pipeline.md § Prompt Contracts](briefing-pipeline.md#prompt-contracts) for the variables each persona receives.
 
 Overrides MUST keep the shipped template's required variables (parser rejects on missing) — but MAY add more. Missing required vars fail profile validation.
+
+### prompts/\<slug\>.md (optional)
+
+User-authored research queries. The user drops a free-form markdown note here; `gctrl uber query process` reads each pending file, runs an LLM research pass (with relevant wiki context), writes the consolidated answer to `wiki/research/<slug>.md`, and stamps the prompt's frontmatter with `status: processed`, `output`, `processed_at`, `content_hash`, `prompt_hash`, and `model`.
+
+Minimum frontmatter (everything optional except `slug`, which defaults to filename if omitted):
+
+```markdown
+---
+slug: what-is-claudes-real-moat
+title: "What is Claude's real moat?"
+topics: [ai-dev-workflows]   # optional — narrows wiki context
+status: pending              # pending | processed | failed | rerun
+---
+
+Question/notes go here in free-form markdown. Anything you'd jot in a notebook works —
+bullet points, half-formed ideas, links you saw. Uebermensch reads the whole file.
+```
+
+After processing:
+
+```yaml
+status: processed
+output: wiki/research/what-is-claudes-real-moat.md
+processed_at: 2026-04-25T08:14:11Z
+content_hash: sha256:…
+prompt_hash: sha256:…
+model: claude-opus-4-7
+```
+
+Set `status: rerun` (or delete the post-processing fields) to re-process. The query file itself is never overwritten by the LLM — only its frontmatter is updated; the body stays as the user wrote it.
 
 ### ME.md / projects.md
 
@@ -452,8 +486,9 @@ These two files anchor every prompt — they're the highest-leverage artifacts i
 3. `sources.md` frontmatter satisfies `Profile.sources`; every `topics: [...]` entry matches a topic slug.
 4. Every file under `theses/` has valid frontmatter and a non-empty body.
 5. Every thesis `topics: [...]` entry matches a topic slug.
-6. `personas.md` (if present) references files that exist under `prompts/`.
-7. `prompts/<persona>.md` (if present) declares all required template variables.
+6. `personas.md` (if present) references files that exist under `personas/`.
+7. `personas/<persona>.md` (if present) declares all required template variables.
+8. `prompts/<slug>.md` (if present) frontmatter parses; `slug` is unique within `prompts/` and matches `[a-z0-9-]+`.
 
 ### Semantic
 

@@ -64,6 +64,29 @@ export type SourceSummaryResponse = {
   readonly model: string;
 };
 
+export type ResearchQueryContextPage = {
+  readonly stem: string;
+  readonly title: string;
+  readonly topics: ReadonlyArray<string>;
+  readonly excerpt: string;
+};
+
+export type ResearchQueryRequest = {
+  readonly slug: string;
+  readonly title: string;
+  readonly topics: ReadonlyArray<string>;
+  readonly question: string;
+  readonly profileName: string;
+  readonly contextPages: ReadonlyArray<ResearchQueryContextPage>;
+};
+
+export type ResearchQueryResponse = {
+  readonly answerMd: string;
+  readonly promptHash: string;
+  readonly costUsd: number;
+  readonly model: string;
+};
+
 export interface LlmServiceShape {
   readonly name: () => string;
   readonly generateBrief: (req: BriefRequest) => Effect.Effect<BriefResponse, LlmError>;
@@ -73,6 +96,9 @@ export interface LlmServiceShape {
   readonly summarizeSource: (
     req: SourceSummaryRequest,
   ) => Effect.Effect<SourceSummaryResponse, LlmError>;
+  readonly researchQuery: (
+    req: ResearchQueryRequest,
+  ) => Effect.Effect<ResearchQueryResponse, LlmError>;
 }
 
 export class LlmService extends Context.Tag("uebermensch/LlmService")<

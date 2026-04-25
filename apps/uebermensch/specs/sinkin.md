@@ -37,7 +37,7 @@ Scope flags (from CLI or profile):
 
 ### Stage 2 — Gap Pass (LLM)
 
-Persona: `uber-sinkin`, prompt template `prompts/sinkin-gap.md`.
+Persona: `uber-sinkin`, prompt template `personas/sinkin-gap.md`.
 
 Input: compact wiki survey, profile (topics, theses, identity), existing Question pages (so we don't re-ask answered questions).
 
@@ -178,7 +178,7 @@ Keyword + frontmatter search over the wiki for pages relevant to the question. A
 
 ### Answer
 
-Persona: `uber-sinkin`, prompt template `prompts/sinkin-answer.md`. Same wrapper as Gap Pass — all page content inside `<page>` sentinels.
+Persona: `uber-sinkin`, prompt template `personas/sinkin-answer.md`. Same wrapper as Gap Pass — all page content inside `<page>` sentinels.
 
 Output: markdown answer (1-5 paragraphs) with bare `[[slug]]` citations. Printed to stdout.
 
@@ -260,7 +260,7 @@ sinkin:
 
 ### `uber-sinkin` (Gap Pass + Answer Pass + Interactive Query)
 
-Lives at `prompts/sinkin-gap.md` and `prompts/sinkin-answer.md` (separate templates for gap and answer tasks; share the same persona name for cost attribution).
+Lives at `personas/sinkin-gap.md` and `personas/sinkin-answer.md` (separate templates for gap and answer tasks; share the same persona name for cost attribution).
 
 Default model: inherits `driver-llm` default (`@cf/google/gemma-4-26b-a4b-it` via Cloudflare AI Gateway). Can be overridden in `personas.md` under the vault's authored tier.
 

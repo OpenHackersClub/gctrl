@@ -132,7 +132,7 @@ Uebermensch runs LLM work via kernel personas. Defaults configured in profile un
 | `uber-deepdive` | read, generation | Long-form thesis deep-dive synthesis |
 | `uber-evaluator` | read (briefs, sources), generation | LLM-as-judge eval over briefs |
 
-Each persona maps to a `prompt_versions` row templated under `apps/uebermensch/prompts/<persona>.md` with vault overrides from `$UBER_VAULT_DIR/prompts/<persona>.md` (authored tier) taking precedence.
+Each persona maps to a `prompt_versions` row templated under `apps/uebermensch/personas/<persona>.md` with vault overrides from `$UBER_VAULT_DIR/personas/<persona>.md` (authored tier) taking precedence. (Note: the vault's `prompts/` folder is reserved for user-authored research queries — see [profile.md § prompts/](specs/profile.md#promptsslugmd-optional).)
 
 ## Dispatch Flow (Agent Work on Uebermensch)
 
@@ -155,7 +155,7 @@ Local daemon + vault is always the source of truth during development. Cloud dep
 
 1. Install Obsidian (desktop / mobile).
 2. "Open folder as vault" → select `$UBER_VAULT_DIR`.
-3. First-run banner: "This vault is managed by Uebermensch. Authored files (`profile.md`, `theses/`, `prompts/`) are yours; generated files (`wiki/`, `briefs/`) are updated by the daemon — edit with care." — shipped via `README.md` at the vault root.
+3. First-run banner: "This vault is managed by Uebermensch. Authored files (`profile.md`, `theses/`, `personas/`, `prompts/`) are yours; generated files (`wiki/`, `briefs/`) are updated by the daemon — edit with care. Drop research questions into `prompts/` and run `gctrl uber query process`." — shipped via `README.md` at the vault root.
 4. Obsidian workspace state is per-machine (gitignored, not R2-synced) — each device has its own pinned notes and pane layout.
 
 ### Multi-device via R2
@@ -185,7 +185,7 @@ Profile references drivers by name; drivers read their own secrets from the kern
 | Effect-TS services | `apps/uebermensch/src/services/` (BriefingService, CuratorService, DelivererService, EvaluatorService) |
 | Effect-TS adapters | `apps/uebermensch/src/adapters/` (KernelClient, ProfileReader) |
 | Web UI | `apps/uebermensch/web/` (Vite SPA) |
-| Prompt templates | `apps/uebermensch/prompts/` (overridable by profile) |
+| Persona prompt templates | `apps/uebermensch/personas/` (overridable by profile) |
 | Rust storage (DuckDB / SQLite) | `kernel/crates/gctrl-storage/src/` (add `uber_*` tables to schema.rs) |
 | Rust HTTP routes (proxy to app) | `kernel/crates/gctrl-otel/src/receiver.rs` (if kernel surfaces routes) |
 | Rust driver-llm | `kernel/crates/gctrl-driver-llm/` |

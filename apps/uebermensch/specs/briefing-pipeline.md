@@ -78,7 +78,7 @@ Implementation: `CuratorService` (Effect-TS) → `LlmPort.generate`.
 
 ### Prompt Contracts
 
-Prompt templates under `apps/uebermensch/prompts/<persona>.md`, overridable by profile.
+Prompt templates under `apps/uebermensch/personas/<persona>.md`, overridable by profile (`$UBER_VAULT_DIR/personas/<persona>.md`).
 
 **Variables injected at render time** (required):
 

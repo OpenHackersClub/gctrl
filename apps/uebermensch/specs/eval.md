@@ -279,7 +279,7 @@ Pipeline:
 4. Write scores with `target_type=prompt_version, target_id=<hash>, name=<dimension>`.
 5. Produce a comparison report (`wiki/synthesis/prompt-ab-<date>.md`) — stores the setup, scores, and winner.
 
-A winning prompt gets promoted via `gctrl uber prompt promote <hash>` → writes the prompt to `prompts/<persona>.md` in the profile. This is the one place prompts move from hashes to files automatically — and it's user-initiated.
+A winning prompt gets promoted via `gctrl uber prompt promote <hash>` → writes the prompt to `personas/<persona>.md` in the profile. This is the one place persona prompts move from hashes to files automatically — and it's user-initiated.
 
 ## Delivery Health
 

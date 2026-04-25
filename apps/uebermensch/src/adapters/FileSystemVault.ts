@@ -171,6 +171,24 @@ export const FileSystemVaultLive = (vaultDir: string) =>
             kind: "io_failure",
           }),
       }),
+    writeResearch: (slug, content) =>
+      Effect.tryPromise({
+        try: async () => {
+          const relPath = `wiki/research/${slug}.md`
+          const absPath = join(vaultDir, relPath)
+          const tmpPath = `${absPath}.tmp-${process.pid}-${Date.now()}`
+          await mkdir(join(vaultDir, "wiki", "research"), { recursive: true })
+          await writeFile(tmpPath, content, "utf8")
+          await rename(tmpPath, absPath)
+          return { absPath, relPath, contentHash: hashContent(content) }
+        },
+        catch: (e) =>
+          new VaultError({
+            message: `write research failed: ${String(e)}`,
+            path: vaultDir,
+            kind: "io_failure",
+          }),
+      }),
     writeSource: (slug, content, options) =>
       Effect.gen(function* () {
         const relPath = `wiki/sources/${slug}.md`
