@@ -161,13 +161,19 @@ test.describe("Issue Lifecycle", () => {
       panel.getByText("Playwright acceptance test comment")
     ).toBeVisible()
 
-    // Verify via kernel
-    const comments = await kernel.getComments(issue.id)
-    expect(
-      comments.some(
-        (c) => c.body === "Playwright acceptance test comment"
+    // Verify via kernel — poll because the optimistic UI render can
+    // race the Worker → D1 commit on remote (CDP) runs.
+    await expect
+      .poll(
+        async () => {
+          const comments = await kernel.getComments(issue.id)
+          return comments.some(
+            (c) => c.body === "Playwright acceptance test comment"
+          )
+        },
+        { timeout: 5_000, intervals: [100, 250, 500] }
       )
-    ).toBe(true)
+      .toBe(true)
   })
 
   test("full forward transition: backlog → todo → in_progress → in_review → done", async ({
