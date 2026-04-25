@@ -26,6 +26,7 @@ These are enforced by the Tracker at the application API boundary, not in the st
 3. An Issue SHOULD auto-transition to `in_review` when a PR referencing it is opened.
 4. An Issue SHOULD auto-transition to `done` when the linked PR is merged.
 5. Moving to `cancelled` MUST include a note explaining why.
+6. Agents handing off work to another agent or human SHOULD post a comment on the Issue describing what's done and what the next picker-up should do — see [pr-review.md § Agent Handoff via Issue Comments](pr-review.md#agent-handoff-via-issue-comments). The Issue (not the PR thread) is the durable handoff surface so the convention works across PR-less work, multi-PR Issues, and cross-agent reviews (e.g. `opencode` reviewing a `claude-code` WIP PR).
 
 ## Issue Requirements
 

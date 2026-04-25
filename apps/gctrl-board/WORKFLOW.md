@@ -33,6 +33,7 @@ Transitions are validated at the Rust storage layer. Invalid transitions return 
 | PR opened referencing issue key | Move to `in_review` |
 | PR merged | Move to `done` |
 | All blockers resolved | Move blocked issue to `todo` |
+| Agent hands off work (review / pause / completion) | Post `## Agent: <name>` comment on the Issue — see [pr-review.md § Agent Handoff via Issue Comments](specs/workflows/pr-review.md#agent-handoff-via-issue-comments) |
 
 ## Agent Dispatch Flow
 
