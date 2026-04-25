@@ -76,9 +76,11 @@ Dependencies MUST flow inward only (see [principles.md § Architectural Invarian
 | LLM invocation | L1 driver | `driver-llm` | Every call → Session, span, prompt_version |
 | External messaging | L1 drivers | `driver-telegram`, `driver-discord` | Kernel holds tokens |
 | External data ingestion | L1 drivers | `driver-rss`, `driver-sec`, `driver-markets` | Pull on schedule; kernel owns secrets |
+| External calendar mirror | L1 driver | `driver-gcal` | Read-only by default; opt-in write-back; OAuth via kernel — see [calendar.md](calendar.md) |
 | Brief curation | L4 | `CuratorService` + `BriefingService` | Orchestrates: query kb → rank → summarise → render |
-| Brief delivery | L4 | `DelivererService` | Renders per channel, writes `uber_deliveries` |
+| Brief delivery | L4 | `DelivererService` | Renders per channel, writes `uber_deliveries`; reused by calendar reminders |
 | Wiki introspection | L4 | `SinkInService` | Weekly: surveys wiki → gaps → questions + connections; also powers `gctrl uber query` |
+| Calendar | L4 + L2 + L1 | `CalendarService` + `uber_calendar` index + `driver-markets`/`driver-sec`/`driver-gcal` producers | Vault-first events filterable by source/kind; today's events surface in brief; reminders fan-out via `DelivererService` — see [calendar.md](calendar.md) |
 | Eval (automated + human) | L4 + L2 | `EvaluatorService` + kernel `scores` table | Auto-runs after each brief |
 | Cost budget enforcement | L2 | `Guardrails` policies | Daily budget = profile value; violation pauses sessions |
 | Sync | L2 extension | `gctrl-sync` | `uber_*` SQLite → D1 (index); entire `$UBER_VAULT_DIR` → R2 (content, bidirectional) |

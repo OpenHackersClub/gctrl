@@ -116,6 +116,27 @@
 
 **Done when:** A weekly SinkIn run files ≥1 Question page and ≥1 Connection synthesis page against a vault with ≥10 source pages; `gctrl uber query "..."` answers a question from the wiki and optionally files it; all pages render correctly in Obsidian with resolved `[[slug]]` links.
 
+## M6: Calendar — Planned
+
+**Goal:** Time-bound events (personal commitments + market dates) live in the vault, surface in the morning brief, drive opt-in reminders, and are filterable by source/kind/ticker/topic/thesis. Spec: [specs/calendar.md](specs/calendar.md).
+
+| Task | Description | Priority | Depends On | Issue |
+|------|-------------|----------|------------|-------|
+| `calendar/` vault layout + frontmatter schema | New top-level dir; `EventFrontmatter` with `slug, title, kind, source, starts_at, ends_at, tz, tickers, topics, theses, tags, reminders, status` | P0 | M0 vault scaffolding | TBD |
+| `uber_calendar` + `uber_calendar_reminders` SQLite migrations | Index tables with `(starts_at)`, `(kind, starts_at)`, `(source, starts_at)`, `(source, external_id)` indexes | P0 | M0 storage migration | TBD |
+| `CalendarService` + filter predicate engine | Effect-TS service: list/get/create/update/remove with predicate set (source, kind, from/to, tickers, topics, theses, tag, status, q) | P0 | calendar schema | TBD |
+| CLI: `gctrl uber calendar {list,show,add,edit,remove,reindex}` | Mirrors filter predicates; `add/edit` round-trips through schema | P0 | CalendarService | TBD |
+| Briefing-pipeline integration | Renderer prepends "On the calendar today" section grouped by `kind`; curator prompt receives `<calendar_today>` block | P0 | M1 Curator pipeline | TBD |
+| Reminder scheduler + delivery | Compute `fire_at = starts_at + offset` on event write; Scheduler polls `pending` rows; hand off to existing `DelivererService` | P0 | M2 Deliverer | TBD |
+| `.ics` feed at `/api/uber/calendar/feed.ics` | Read-only iCalendar export of the active default view; bearer token auth in query param | P1 | CalendarService HTTP API | TBD |
+| `driver-markets` calendar producer | Earnings calendar + macro release dates; writes `calendar/generated/<date>--<ticker>-<period>-earnings.md` and macro events | P0 | M3 driver-markets | TBD |
+| `driver-sec` calendar producer | Lockup expiries, S-1/S-3 effective dates, scheduled comment periods | P1 | M3 driver-sec | TBD |
+| `driver-gcal` (read-only) | OAuth 2.0 via kernel; poll Google Calendar; mirror events with `source: driver-gcal` | P0 | calendar schema | TBD |
+| App web UI: Calendar view (agenda + week + month) | Filter chip strip; saved view presets; agenda/week/month layout modes | P1 | M2 App web UI | TBD |
+| `driver-gcal` write-back (opt-in) | `direction: read-write` flag per calendar; pushes `source: user` events to Google with local-wins conflict policy | P2 | driver-gcal read-only | TBD |
+
+**Done when:** A user can `gctrl uber calendar add` a personal event and see it in tomorrow's brief; `driver-markets` populates earnings dates for the user's ticker watchlist; `gctrl uber calendar list --view personal-week` returns the right shape on stdout and `/api/uber/calendar/feed.ics` is subscribable from Google Calendar; reminders fire idempotently to the configured channel within 60s of the scheduled offset.
+
 ## Backlog (unprioritized)
 
 1. LLM-as-judge with rubric per dimension (accuracy, depth, freshness)
@@ -139,3 +160,5 @@
 6. [ ] Prediction-market data source policy (Polymarket TOS) — needed by M3
 7. [ ] Profile schema migration tooling — needed by M2
 8. [ ] Should scheduled brief run inside kernel Scheduler or inside the Uebermensch app process? (Leaning: kernel Scheduler fires, Uebermensch executes.) — needed by M1
+9. [ ] Earnings data source — free public scrape vs. paid API trade-off — needed by calendar M1 (see [calendar.md § Open Questions #1](specs/calendar.md#open-questions))
+10. [ ] `driver-gcal` write-back conflict UX — needed by calendar M2 (see [calendar.md § Open Questions #6](specs/calendar.md#open-questions))
