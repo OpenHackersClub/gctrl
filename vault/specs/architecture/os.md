@@ -259,7 +259,7 @@ Applications are larger, stateful programs that orchestrate kernel primitives th
 | Application | Tables Owned | Kernel Primitives Used | Runtime | Status |
 |-------------|-------------|----------------------|---------|--------|
 | **gctrl-board** | `board_projects`, `board_issues`, `board_events`, `board_comments` | Storage, Telemetry (session-issue linking) | Effect-TS | Implemented |
-| **Observe & Eval** | `scores` | Telemetry, Storage, Query Engine | Rust (compiled into binary) | Partial (auto-scoring implemented, no separate app boundary) |
+| **Observe & Eval** | `scores` (kernel-shared), `eval_metrics`, `eval_datasets`, `eval_cases`, `eval_runs` | Telemetry, Storage, Model Router, Query Engine | Rust (compiled into binary) | Partial (auto-scoring + score store implemented; metric/prompt/dataset/run primitives, substrate API, and harness runner planned for M4 — see [apps/observe-eval.md](apps/observe-eval.md)) |
 | **Capacity Engine** | `capacity_*` | Storage, Telemetry, Query Engine | Rust (compiled into binary) | **Planned** |
 
 > **Note:** `tasks`, `prompt_versions`, `tags`, `daily_aggregates`, `alert_rules`, `alert_events` are **kernel-owned** tables — they support kernel primitives (Scheduler, Telemetry, Guardrails) and do NOT carry application namespace prefixes. See [domain-model.md](domain-model.md) § 5.1 and § 5.3 for DDL.

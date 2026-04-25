@@ -124,7 +124,7 @@ Four core primitives that every agent team needs:
 
 **gctrl-board** — Lightweight project management and kanban. Issues with status lifecycle, dependency graph, agent assignment, auto-transitions from kernel events. The first application built on gctrl.
 
-**Observe & Eval** — Langfuse-grade analytics, local-first. Cost/token analytics, latency percentiles, trace exploration, scoring (human + auto + model), prompt version management. Everything Langfuse shows in its dashboard, gctrl can produce from local DuckDB.
+**Observe & Eval** — Lifecycle eval substrate and harness, local-first. Owns metrics, judge prompts, datasets, eval runs, and the score store across dev → CI → staging → prod. Both an embeddable API/SDK applications call from their own loops (substrate) and a `gctrl eval run` runner that owns the loop end-to-end (harness) — same primitives, same metric names, same store. Plus Langfuse-grade observability: cost/token analytics, latency percentiles, trace exploration, prompt version management. Not a pytest plugin; not a single-phase test framework. See [Observe & Eval architecture](../architecture/apps/observe-eval.md).
 
 **Capacity Engine** — Throughput measurement and delivery forecasting. Answers "how many issues can our agents close per week?" and "are we on track for this milestone?" by correlating telemetry with project data.
 
