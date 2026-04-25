@@ -13,6 +13,10 @@ import type {
 } from "../types"
 import type { Route } from "../hooks/useRoute"
 import { useSessionStream } from "../hooks/useSessionStream"
+import { SessionsTimeline } from "../components/analytics/SessionsTimeline"
+import { SessionsHeatmap } from "../components/analytics/SessionsHeatmap"
+
+type SessionsView = "list" | "timeline" | "heatmap"
 
 interface AnalyticsPageProps {
   route: Extract<Route, { page: "analytics" }>
@@ -298,6 +302,9 @@ function SessionsTab({
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  // View-mode is local state on purpose: per spec, switching list →
+  // timeline → heatmap must NOT re-fetch. Same data, three renderings.
+  const [view, setView] = useState<SessionsView>("list")
 
   const refresh = useCallback(async () => {
     try {
@@ -377,56 +384,129 @@ function SessionsTab({
   }
 
   return (
-    <div className="flex h-full min-h-0">
-      {/* List */}
-      <div className="flex-1 min-w-0 border-r border-zinc-800 overflow-auto">
-        <table className="w-full text-[13px] font-mono">
-          <thead className="sticky top-0 bg-zinc-950 z-10">
-            <tr className="text-zinc-500 text-[10px] uppercase tracking-wider">
-              <th className="text-left font-normal px-4 py-2">Status</th>
-              <th className="text-left font-normal px-4 py-2">Agent</th>
-              <th className="text-left font-normal px-4 py-2">Started</th>
-              <th className="text-right font-normal px-4 py-2">Dur</th>
-              <th className="text-right font-normal px-4 py-2">Tokens</th>
-              <th className="text-right font-normal px-4 py-2">Cost</th>
-              <th className="text-left font-normal px-4 py-2">ID</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading && sessions.length === 0 && (
-              <tr>
-                <td colSpan={7} className="p-8 text-center text-zinc-600">
-                  Loading sessions…
-                </td>
-              </tr>
-            )}
-            {!loading && sessions.length === 0 && (
-              <tr>
-                <td colSpan={7} className="p-8 text-center text-zinc-600">
-                  No sessions yet. Spawn an agent and this table will populate.
-                </td>
-              </tr>
-            )}
-            {sessions.map((s) => (
-              <SessionRow
-                key={s.id}
-                session={s}
-                selected={s.id === selectedSessionId}
-                onSelect={() => onSelectSession(s.id)}
-              />
-            ))}
-          </tbody>
-        </table>
+    <div className="flex flex-col h-full min-h-0">
+      {/* View-mode switcher — same data, three renderings */}
+      <div className="h-9 border-b border-zinc-800 flex items-center px-4 gap-3 bg-zinc-950/60 shrink-0">
+        <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-600">
+          view
+        </span>
+        <div className="flex gap-px bg-zinc-800/60 p-px">
+          <ViewButton
+            active={view === "list"}
+            onClick={() => setView("list")}
+            label="list"
+          />
+          <ViewButton
+            active={view === "timeline"}
+            onClick={() => setView("timeline")}
+            label="timeline"
+          />
+          <ViewButton
+            active={view === "heatmap"}
+            onClick={() => setView("heatmap")}
+            label="heatmap"
+          />
+        </div>
+        <div className="flex-1" />
+        <span className="text-[11px] font-mono text-zinc-500">
+          {sessions.length} session{sessions.length === 1 ? "" : "s"}
+        </span>
       </div>
 
-      {/* Detail */}
-      {selected && (
-        <SessionDetailPane
-          session={selected}
-          onClose={() => onSelectSession(null)}
-        />
-      )}
+      <div className="flex flex-1 min-h-0">
+        {/* Body — switches by view; each renderer is a pure function of `sessions` */}
+        <div className="flex-1 min-w-0 border-r border-zinc-800 overflow-auto">
+          {view === "list" && (
+            <table className="w-full text-[13px] font-mono">
+              <thead className="sticky top-0 bg-zinc-950 z-10">
+                <tr className="text-zinc-500 text-[10px] uppercase tracking-wider">
+                  <th className="text-left font-normal px-4 py-2">Status</th>
+                  <th className="text-left font-normal px-4 py-2">Agent</th>
+                  <th className="text-left font-normal px-4 py-2">Started</th>
+                  <th className="text-right font-normal px-4 py-2">Dur</th>
+                  <th className="text-right font-normal px-4 py-2">Tokens</th>
+                  <th className="text-right font-normal px-4 py-2">Cost</th>
+                  <th className="text-left font-normal px-4 py-2">ID</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading && sessions.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="p-8 text-center text-zinc-600">
+                      Loading sessions…
+                    </td>
+                  </tr>
+                )}
+                {!loading && sessions.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="p-8 text-center text-zinc-600">
+                      No sessions yet. Spawn an agent and this table will
+                      populate.
+                    </td>
+                  </tr>
+                )}
+                {sessions.map((s) => (
+                  <SessionRow
+                    key={s.id}
+                    session={s}
+                    selected={s.id === selectedSessionId}
+                    onSelect={() => onSelectSession(s.id)}
+                  />
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          {view === "timeline" && (
+            <SessionsTimeline
+              sessions={sessions}
+              selectedId={selectedSessionId}
+              onSelect={onSelectSession}
+            />
+          )}
+
+          {view === "heatmap" && (
+            <SessionsHeatmap
+              sessions={sessions}
+              selectedId={selectedSessionId}
+              onSelect={onSelectSession}
+            />
+          )}
+        </div>
+
+        {/* Detail pane is shared across all three views */}
+        {selected && (
+          <SessionDetailPane
+            session={selected}
+            onClose={() => onSelectSession(null)}
+          />
+        )}
+      </div>
     </div>
+  )
+}
+
+function ViewButton({
+  active,
+  onClick,
+  label,
+}: {
+  active: boolean
+  onClick: () => void
+  label: string
+}) {
+  return (
+    <button
+      onClick={onClick}
+      data-testid={`sessions-view-${label}`}
+      className={`px-2.5 py-1 text-[11px] font-mono tracking-wide cursor-pointer transition-colors ${
+        active
+          ? "bg-emerald-500/15 text-emerald-300"
+          : "bg-zinc-900/60 text-zinc-500 hover:text-zinc-300"
+      }`}
+    >
+      {label}
+    </button>
   )
 }
 
