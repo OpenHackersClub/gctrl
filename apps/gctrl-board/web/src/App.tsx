@@ -10,6 +10,7 @@ import { CreateIssueDialog } from "./components/CreateIssueDialog"
 import { ProjectSelector } from "./components/ProjectSelector"
 import { NavSidebar } from "./components/NavSidebar"
 import { InboxPage } from "./pages/InboxPage"
+import { AnalyticsPage } from "./pages/AnalyticsPage"
 import { api } from "./api/client"
 import type { Issue, InboxStats } from "./types"
 
@@ -226,7 +227,12 @@ export function App() {
 
   const selectedProject = projects.find((p) => p.id === selectedProjectId)
 
-  const pageTitle = route.page === "inbox" ? "inbox" : "board"
+  const pageTitle =
+    route.page === "inbox"
+      ? "inbox"
+      : route.page === "analytics"
+        ? "analytics"
+        : "board"
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-200 font-body grid-bg flex">
@@ -355,8 +361,10 @@ export function App() {
 
             {/* Dispatch is now automatic — no dialog needed */}
           </>
-        ) : (
+        ) : route.page === "inbox" ? (
           <InboxPage />
+        ) : (
+          <AnalyticsPage route={route} navigate={navigate} />
         )}
       </div>
 

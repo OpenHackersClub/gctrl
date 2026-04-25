@@ -11,6 +11,15 @@ import type {
   InboxAction,
   InboxStats,
   GanttView,
+  SessionSummary,
+  AnalyticsOverview,
+  CostAnalytics,
+  DailyEntry,
+  TraceTreeResponse,
+  LatencyAnalytics,
+  SpanAnalytics,
+  ScoreSummary,
+  AlertRule,
 } from "../types"
 
 const BASE = "/api/board"
@@ -218,5 +227,40 @@ export const api = {
       }),
 
     stats: () => request<InboxStats>("/api/inbox/stats"),
+  },
+
+  // Kernel analytics + sessions — proxied by Vite dev server to :4318.
+  // In production these hit the same origin and must be routed by the Worker
+  // to the kernel HTTP API (see gctrl-analytics spec §5).
+  sessions: {
+    list: (params?: { limit?: number; agent?: string; status?: string }) => {
+      const qs = new URLSearchParams()
+      if (params?.limit !== undefined) qs.set("limit", String(params.limit))
+      if (params?.agent) qs.set("agent", params.agent)
+      if (params?.status) qs.set("status", params.status)
+      const q = qs.toString()
+      return request<SessionSummary[]>(`/api/sessions${q ? `?${q}` : ""}`)
+    },
+
+    get: (id: string) => request<SessionSummary>(`/api/sessions/${id}`),
+
+    tree: (id: string) =>
+      request<TraceTreeResponse>(`/api/sessions/${id}/tree`),
+  },
+
+  analytics: {
+    overview: () => request<AnalyticsOverview>("/api/analytics"),
+    cost: () => request<CostAnalytics>("/api/analytics/cost"),
+    daily: (days?: number) => {
+      const q = days !== undefined ? `?days=${days}` : ""
+      return request<DailyEntry[]>(`/api/analytics/daily${q}`)
+    },
+    latency: () => request<LatencyAnalytics>("/api/analytics/latency"),
+    spans: () => request<SpanAnalytics>("/api/analytics/spans"),
+    score: (name: string) =>
+      request<ScoreSummary>(
+        `/api/analytics/scores?name=${encodeURIComponent(name)}`,
+      ),
+    alerts: () => request<AlertRule[]>("/api/analytics/alerts"),
   },
 }

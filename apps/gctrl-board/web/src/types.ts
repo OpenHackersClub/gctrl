@@ -1,3 +1,121 @@
+// ── Analytics / Sessions (kernel HTTP API) ──
+
+export interface SessionSummary {
+  id: string
+  workspace_id: string
+  device_id: string
+  agent_name: string
+  started_at: string
+  ended_at: string | null
+  status: "active" | "completed" | "failed" | "cancelled"
+  total_cost_usd: number
+  total_input_tokens: number
+  total_output_tokens: number
+}
+
+// Mirrors the kernel's `Analytics` struct (gctrl-core/src/types.rs:213).
+// Note: `active_sessions` is NOT part of this response — derive it
+// client-side from `sessions.list({ status: "active" })`.
+export interface AnalyticsOverview {
+  total_sessions: number
+  total_spans: number
+  total_cost_usd: number
+  total_input_tokens: number
+  total_output_tokens: number
+}
+
+export interface CostByModel {
+  model: string
+  cost: number
+  calls: number
+}
+
+export interface CostByAgent {
+  agent: string
+  cost: number
+  sessions: number
+}
+
+export interface CostAnalytics {
+  by_model: CostByModel[]
+  by_agent: CostByAgent[]
+}
+
+export interface DailyEntry {
+  date: string
+  sessions: number
+  spans: number
+  cost_usd: number
+}
+
+export interface LatencyByModel {
+  model: string
+  p50_ms: number
+  p95_ms: number
+  p99_ms: number
+}
+
+export interface LatencyAnalytics {
+  by_model: LatencyByModel[]
+}
+
+export interface SpanDistEntry {
+  type: string
+  count: number
+  percentage: number
+}
+
+export interface SpanAnalytics {
+  distribution: SpanDistEntry[]
+}
+
+export interface ScoreSummary {
+  name: string
+  pass: number
+  fail: number
+  total: number
+  pass_rate: number
+  avg_value: number
+}
+
+export interface AlertRule {
+  id: string
+  name: string
+  condition_type: string
+  threshold: number
+  action: string
+  enabled: boolean
+}
+
+export interface TraceTreeNode {
+  span_id: string
+  type: string
+  operation: string | null
+  model: string | null
+  input_tokens: number | null
+  output_tokens: number | null
+  cost_usd: number | null
+  duration_ms: number | null
+  status: string
+  children?: TraceTreeNode[]
+}
+
+export interface TraceTreeResponse {
+  session: {
+    id: string
+    agent_name: string
+    status: string
+    total_cost_usd: number
+    total_input_tokens: number
+    total_output_tokens: number
+    started_at: string
+  }
+  spans: TraceTreeNode[]
+  span_count: number
+  scores?: Array<{ name: string; value: number; source: string }>
+  tags?: Array<{ key: string; value: string }>
+}
+
 export type IssueStatus =
   | "backlog"
   | "todo"

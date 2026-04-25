@@ -38,6 +38,22 @@ function InboxIcon({ active }: { active: boolean }) {
   )
 }
 
+function AnalyticsIcon({ active }: { active: boolean }) {
+  const color = active ? "text-emerald-400" : "text-zinc-500"
+  return (
+    <svg
+      className={`w-5 h-5 ${color} transition-colors duration-150`}
+      viewBox="0 0 20 20"
+      fill="currentColor"
+    >
+      {/* Bar chart icon */}
+      <rect x="3" y="11" width="3" height="6" rx="0.5" />
+      <rect x="8.5" y="7" width="3" height="10" rx="0.5" />
+      <rect x="14" y="3" width="3" height="14" rx="0.5" />
+    </svg>
+  )
+}
+
 function GctlMark() {
   return (
     <div className="flex items-center justify-center">
@@ -53,6 +69,7 @@ function GctlMark() {
 export function NavSidebar({ route, navigate, unreadCount }: NavSidebarProps) {
   const isBoardActive = route.page === "board"
   const isInboxActive = route.page === "inbox"
+  const isAnalyticsActive = route.page === "analytics"
 
   return (
     <nav className="w-14 min-h-screen bg-zinc-950 border-r border-zinc-800 flex flex-col items-center py-4 gap-1 shrink-0">
@@ -79,6 +96,16 @@ export function NavSidebar({ route, navigate, unreadCount }: NavSidebarProps) {
             {unreadCount > 99 ? "99+" : unreadCount}
           </span>
         )}
+      </button>
+
+      {/* Analytics nav item */}
+      <button
+        onClick={() => navigate("/analytics")}
+        className={`w-10 h-10 flex items-center justify-center rounded-md transition-all duration-150 cursor-pointer
+          ${isAnalyticsActive ? "bg-emerald-500/10" : "hover:bg-zinc-800/60"}`}
+        title="Analytics"
+      >
+        <AnalyticsIcon active={isAnalyticsActive} />
       </button>
 
       {/* Spacer */}
