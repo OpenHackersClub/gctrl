@@ -14,8 +14,8 @@ The identity (`identity.slug` × machine fingerprint) gates sync: each vault is 
 
 | Tier | Path glob | Authored by | Git | R2 sync |
 |------|-----------|-------------|-----|---------|
-| **Authored** (source of truth = user) | `profile.md`, `topics.md`, `sources.md`, `theses/**`, `prompts/**`, `personas.md`, `personas/**`, `avoid.md`, `ME.md`, `projects.md`, `README.md` | User | ✅ tracked | ✅ |
-| **Generated** (source of truth = LLM / app) | `wiki/**` (includes `wiki/synthesis/**`, `wiki/sources/**`), `briefs/**`, `.gctrl-uber/**`, `.obsidian/workspace*.json` | LLM personas (`uber-ingest`, `uber-curator`, `uber-deepdive`) + app | ❌ gitignored | ✅ |
+| **Authored** (source of truth = user) | `profile.md`, `topics.md`, `sources.md`, `theses/**`, `prompts/**`, `personas.md`, `personas/**`, `avoid.md`, `ME.md`, `projects.md`, `README.md`, `calendar/*.md` (excluding `calendar/generated/**`) | User | ✅ tracked | ✅ |
+| **Generated** (source of truth = LLM / app) | `wiki/**` (includes `wiki/synthesis/**`, `wiki/sources/**`), `briefs/**`, `calendar/generated/**`, `.gctrl-uber/**`, `.obsidian/workspace*.json` | LLM personas (`uber-ingest`, `uber-curator`, `uber-deepdive`) + app + drivers | ❌ gitignored | ✅ |
 
 R2 syncs both tiers — git is for the authored tier only, so the user can `git diff` meaningful changes without generated noise.
 
@@ -54,6 +54,9 @@ $UBER_VAULT_DIR/
 ├── theses/                   # one file per open thesis
 │   ├── llm-tooling-consolidation.md
 │   └── prediction-market-liquidity.md
+├── calendar/                 # time-bound events (see specs/calendar.md)
+│   ├── 2026-05-08--board-meeting.md       # source: user (authored)
+│   └── recurring/                          # optional RRULE files (authored)
 │
 │  ─── Generated (gitignored; R2-synced) ───
 ├── briefs/                   # one markdown file per brief
@@ -75,6 +78,9 @@ $UBER_VAULT_DIR/
 │   ├── sources/
 │   ├── synthesis/
 │   └── questions/
+└── calendar/generated/        # driver-pulled events (gitignored, R2-synced)
+    ├── 2026-05-21--nvda-q1-2026-earnings.md  # source: driver-markets
+    └── 2026-05-09--gcal-eu-ai-summit.md      # source: driver-gcal
 ```
 
 ### What lives here vs. kernel SQLite
@@ -86,8 +92,10 @@ $UBER_VAULT_DIR/
 | Wiki pages (sources, entities, topics, synthesis, questions) | — |
 | Brief bodies (`briefs/<date>.md`) | `uber_briefs` index row (vault_path, cost, prompt_hash) |
 | Deepdive synthesis page (`wiki/synthesis/...md`) | `uber_briefs` index row with `kind=deepdive` |
+| Calendar events (`calendar/**/*.md`) | `uber_calendar` index row (vault_path, starts_at, kind, source) — see [calendar.md](calendar.md) |
 | — | `uber_brief_items` (per-item search index; rebuild-able from markdown) |
-| — | `uber_deliveries` (per-channel send receipts) |
+| — | `uber_deliveries` (per-channel send receipts; reused by calendar reminders) |
+| — | `uber_calendar_reminders` (pending/sent reminder fan-out; one per (event, channel, fire_at)) |
 | — | `uber_alerts` (eval/scrape/budget alerts) |
 | — | `uber_sources_cfg` (last-seen timestamps) |
 | — | `scores`, `sessions`, `spans`, `traffic`, `prompt_versions` (kernel tables) |
