@@ -28,6 +28,28 @@ const statements = [
   `CREATE TABLE IF NOT EXISTS issue_events (id TEXT PRIMARY KEY, issue_id TEXT NOT NULL REFERENCES issues(id), event_type TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL, actor_type TEXT NOT NULL DEFAULT 'human', timestamp TEXT NOT NULL DEFAULT (datetime('now')), data TEXT NOT NULL DEFAULT '{}')`,
 
   `CREATE INDEX IF NOT EXISTS idx_events_issue ON issue_events(issue_id)`,
+
+  // 0004_analytics.sql — analytics mirror tables
+  `CREATE TABLE IF NOT EXISTS analytics_sessions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, device_id TEXT NOT NULL, agent_name TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT, status TEXT NOT NULL DEFAULT 'active', total_cost_usd REAL NOT NULL DEFAULT 0, total_input_tokens INTEGER NOT NULL DEFAULT 0, total_output_tokens INTEGER NOT NULL DEFAULT 0, created_by TEXT NOT NULL DEFAULT 'unknown', synced_at TEXT NOT NULL DEFAULT (datetime('now')))`,
+  `CREATE INDEX IF NOT EXISTS idx_analytics_sessions_started ON analytics_sessions(started_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_analytics_sessions_agent ON analytics_sessions(agent_name)`,
+  `CREATE INDEX IF NOT EXISTS idx_analytics_sessions_status ON analytics_sessions(status)`,
+  `CREATE INDEX IF NOT EXISTS idx_analytics_sessions_creator ON analytics_sessions(created_by)`,
+
+  `CREATE TABLE IF NOT EXISTS analytics_daily (date TEXT NOT NULL, metric TEXT NOT NULL, dimension TEXT NOT NULL DEFAULT 'total', value REAL NOT NULL, synced_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY (date, metric, dimension))`,
+  `CREATE INDEX IF NOT EXISTS idx_analytics_daily_date ON analytics_daily(date DESC)`,
+
+  `CREATE TABLE IF NOT EXISTS analytics_cost_by_model (model TEXT PRIMARY KEY, cost REAL NOT NULL DEFAULT 0, calls INTEGER NOT NULL DEFAULT 0, synced_at TEXT NOT NULL DEFAULT (datetime('now')))`,
+
+  `CREATE TABLE IF NOT EXISTS analytics_cost_by_agent (agent TEXT PRIMARY KEY, cost REAL NOT NULL DEFAULT 0, sessions INTEGER NOT NULL DEFAULT 0, synced_at TEXT NOT NULL DEFAULT (datetime('now')))`,
+
+  `CREATE TABLE IF NOT EXISTS analytics_span_distribution (span_type TEXT PRIMARY KEY, count INTEGER NOT NULL DEFAULT 0, percentage REAL NOT NULL DEFAULT 0, synced_at TEXT NOT NULL DEFAULT (datetime('now')))`,
+
+  `CREATE TABLE IF NOT EXISTS analytics_scores (name TEXT PRIMARY KEY, pass INTEGER NOT NULL DEFAULT 0, fail INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 0, pass_rate REAL NOT NULL DEFAULT 0, avg_value REAL NOT NULL DEFAULT 0, synced_at TEXT NOT NULL DEFAULT (datetime('now')))`,
+
+  `CREATE TABLE IF NOT EXISTS analytics_alerts (id TEXT PRIMARY KEY, name TEXT NOT NULL, condition_type TEXT NOT NULL, threshold REAL NOT NULL, action TEXT NOT NULL DEFAULT 'warn', enabled INTEGER NOT NULL DEFAULT 1, synced_at TEXT NOT NULL DEFAULT (datetime('now')))`,
+
+  `CREATE TABLE IF NOT EXISTS analytics_sync_state (resource TEXT PRIMARY KEY, last_synced_at TEXT NOT NULL, last_status TEXT NOT NULL, last_error TEXT)`,
 ]
 
 for (const sql of statements) {

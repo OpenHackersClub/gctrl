@@ -34,6 +34,11 @@ export interface D1ClientShape {
     sql: string,
     ...binds: unknown[]
   ) => Effect.Effect<void, D1Error>
+
+  /** Underlying D1Database binding — for callers that need .prepare/.batch
+   *  outside the Effect wrapper (e.g. the scheduled handler / sync code that
+   *  shares logic with non-Effect contexts). */
+  readonly raw: D1Database
 }
 
 export class D1Client extends Context.Tag("D1Client")<D1Client, D1ClientShape>() {}
@@ -81,4 +86,6 @@ export const makeD1Client = (db: D1Database): D1ClientShape => ({
           .then(() => undefined),
       catch: (e) => new D1Error({ message: String(e) }),
     }),
+
+  raw: db,
 })

@@ -4,21 +4,39 @@
  * Routes:
  *   /api/board/*  → D1-backed board API (Effect-TS handlers)
  *   /api/inbox/*  → stub returning empty stats
+ *   /api/*        → proxied to KERNEL_URL when configured (facade over kernel HTTP API)
  *   everything else → static assets (SPA with fallback routing)
  *
  * Each API handler is an Effect program using D1Client, with tagged errors
  * caught and mapped to HTTP responses at the boundary.
  */
 import { Effect } from "effect"
+import {
+  getAlerts,
+  getCost,
+  getDaily,
+  getOverview,
+  getScoreSummary,
+  getSession,
+  getSpanDistribution,
+  getSyncStatus,
+  KernelConfig,
+  listSessions,
+  makeKernelClient,
+  syncFromKernel,
+  triggerSync,
+} from "./analytics.js"
 import { D1Client, D1Error, makeD1Client } from "./d1.js"
 
 interface Env {
   ASSETS: Fetcher
   DB: D1Database
   /**
-   * Optional base URL for the gctrl kernel daemon. When set, the Worker
-   * proxies acceptance-rollup reads to the kernel (kernel is source of
-   * truth). Defaults to localhost for dev.
+   * Base URL for the gctrl kernel daemon. When set, the Worker proxies
+   * unmatched /api/* paths to the kernel and runs the analytics sync cron;
+   * see src/analytics.ts and the proxyToKernel fallback below. Defaults to
+   * localhost for dev — Cloudflare edge cannot reach localhost, so deployed
+   * Workers must point this at a publicly-reachable kernel.
    */
   KERNEL_URL?: string
 }
@@ -94,7 +112,7 @@ type RouteParams = Record<string, string>
 type ApiHandler = (
   request: Request,
   params: RouteParams
-) => Effect.Effect<Response, D1Error, D1Client>
+) => Effect.Effect<Response, D1Error, D1Client | KernelConfig>
 
 interface Route {
   method: string
@@ -539,6 +557,20 @@ const routes: Route[] = [
   defineRoute("GET", "/api/board/projects/:id/gantt", projectGantt),
   defineRoute("GET", "/api/inbox/stats", inboxStats),
   defineRoute("GET", "/api/sync/status", syncStatus),
+
+  // Analytics — D1-backed reads (kept in sync from kernel by the scheduled handler).
+  // /api/analytics/latency stays unmirrored: D1 lacks PERCENTILE_CONT, so it
+  // falls through to the kernel proxy in the fetch handler below.
+  defineRoute("GET", "/api/analytics", getOverview),
+  defineRoute("GET", "/api/analytics/cost", getCost),
+  defineRoute("GET", "/api/analytics/spans", getSpanDistribution),
+  defineRoute("GET", "/api/analytics/daily", getDaily),
+  defineRoute("GET", "/api/analytics/alerts", getAlerts),
+  defineRoute("GET", "/api/analytics/scores", getScoreSummary),
+  defineRoute("GET", "/api/sessions", listSessions),
+  defineRoute("GET", "/api/sessions/:id", getSession),
+  defineRoute("GET", "/api/analytics/sync-status", getSyncStatus),
+  defineRoute("POST", "/api/analytics/sync", triggerSync),
 ]
 
 // ── Route matcher → Effect<Response> ──
@@ -546,7 +578,7 @@ const routes: Route[] = [
 const matchRoute = (
   request: Request,
   pathname: string,
-): Effect.Effect<Response, D1Error, D1Client> | null => {
+): Effect.Effect<Response, D1Error, D1Client | KernelConfig> | null => {
   for (const r of routes) {
     if (request.method !== r.method) continue
     const match = pathname.match(r.pattern)
@@ -557,6 +589,31 @@ const matchRoute = (
     return r.handler(request, params)
   }
   return null
+}
+
+// ── Kernel facade proxy ──
+//
+// For /api/* paths the Worker doesn't handle locally, forward to the kernel
+// HTTP API at KERNEL_URL. Cloudflare edge can't reach localhost, so deployments
+// must point KERNEL_URL at a publicly-reachable kernel (tunnel or hosted).
+const proxyToKernel = async (
+  request: Request,
+  kernelUrl: string,
+  url: URL,
+): Promise<Response> => {
+  const target = new URL(url.pathname + url.search, kernelUrl)
+  const upstream = await fetch(target.toString(), {
+    method: request.method,
+    headers: request.headers,
+    body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
+  } as RequestInit)
+  const headers = new Headers(upstream.headers)
+  headers.set("Access-Control-Allow-Origin", "*")
+  return new Response(upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers,
+  })
 }
 
 // ── Main fetch handler ──
@@ -574,7 +631,7 @@ export default {
           headers: {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization",
           },
         })
       }
@@ -589,13 +646,24 @@ export default {
       }
 
       const effect = matchRoute(request, url.pathname)
-      if (!effect) return errorResponse("Not found", 404)
+      if (!effect) {
+        if (env.KERNEL_URL) {
+          try {
+            return await proxyToKernel(request, env.KERNEL_URL, url)
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e)
+            return errorResponse(`Kernel unreachable: ${msg}`, 502)
+          }
+        }
+        return errorResponse("Not found", 404)
+      }
 
-      // Provide D1Client and run the Effect
+      // Provide D1Client + KernelConfig and run the Effect
       const d1 = makeD1Client(env.DB)
       return Effect.runPromise(
         effect.pipe(
           Effect.provideService(D1Client, d1),
+          Effect.provideService(KernelConfig, { kernelUrl: env.KERNEL_URL }),
           Effect.catchTag("D1Error", (e) =>
             Effect.succeed(errorResponse(e.message, 500)),
           ),
@@ -613,5 +681,16 @@ export default {
     }
 
     return assetResponse
+  },
+
+  /**
+   * Scheduled handler — pulls analytics from KERNEL_URL into D1 on every cron
+   * tick. Configured in wrangler.toml under [triggers]. No-op when KERNEL_URL
+   * isn't set (e.g. preview without a kernel target).
+   */
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    if (!env.KERNEL_URL) return
+    const kernel = makeKernelClient(env.KERNEL_URL)
+    ctx.waitUntil(syncFromKernel(env.DB, kernel))
   },
 } satisfies ExportedHandler<Env>

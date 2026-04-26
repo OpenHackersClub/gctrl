@@ -273,5 +273,20 @@ export const api = {
         `/api/analytics/scores?name=${encodeURIComponent(name)}`,
       ),
     alerts: () => request<AlertRule[]>("/api/analytics/alerts"),
+    syncStatus: () => request<AnalyticsSyncStatus>("/api/analytics/sync-status"),
+    sync: () =>
+      request<AnalyticsSyncStatus>("/api/analytics/sync", { method: "POST" }),
   },
+}
+
+export interface AnalyticsSyncResource {
+  resource: string
+  last_synced_at: string
+  last_status: "ok" | "error"
+  last_error: string | null
+}
+
+export interface AnalyticsSyncStatus {
+  kernel_url_configured: boolean
+  resources: AnalyticsSyncResource[]
 }
