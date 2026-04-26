@@ -49,8 +49,8 @@ impl DuckDbStore {
     pub fn insert_session(&self, session: &Session) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO sessions (id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO sessions (id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 session.id.0,
                 session.workspace_id.0,
@@ -62,6 +62,7 @@ impl DuckDbStore {
                 session.total_cost_usd,
                 session.total_input_tokens as i64,
                 session.total_output_tokens as i64,
+                session.created_by.as_str(),
             ],
         )
         .map_err(|e| GctlError::Storage(e.to_string()))?;
@@ -165,7 +166,7 @@ impl DuckDbStore {
     pub fn get_session(&self, id: &SessionId) -> Result<Option<Session>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens FROM sessions WHERE id = ?")
+            .prepare("SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by FROM sessions WHERE id = ?")
             .map_err(|e| GctlError::Storage(e.to_string()))?;
 
         let mut rows = stmt
@@ -182,7 +183,7 @@ impl DuckDbStore {
     pub fn list_sessions(&self, limit: usize) -> Result<Vec<Session>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens FROM sessions ORDER BY started_at DESC LIMIT ?")
+            .prepare("SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by FROM sessions ORDER BY started_at DESC LIMIT ?")
             .map_err(|e| GctlError::Storage(e.to_string()))?;
 
         let mut rows = stmt
@@ -201,9 +202,10 @@ impl DuckDbStore {
         limit: usize,
         agent: Option<&str>,
         status: Option<&str>,
+        created_by: Option<&[gctrl_core::CreatedBy]>,
     ) -> Result<Vec<Session>> {
         let conn = self.conn.lock().unwrap();
-        let mut sql = "SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens FROM sessions WHERE 1=1".to_string();
+        let mut sql = "SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by FROM sessions WHERE 1=1".to_string();
         let mut bound_params: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
 
         if let Some(agent_name) = agent {
@@ -213,6 +215,18 @@ impl DuckDbStore {
         if let Some(status_val) = status {
             sql.push_str(" AND status = ?");
             bound_params.push(Box::new(status_val.to_string()));
+        }
+        // `created_by` accepts a SET so callers can express either the
+        // raw enum (`?created_by=scheduler`) or the derived view
+        // (`?kind=internal` ⇒ {Scheduler, Api}).
+        if let Some(provenances) = created_by {
+            if !provenances.is_empty() {
+                let placeholders = provenances.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+                sql.push_str(&format!(" AND created_by IN ({placeholders})"));
+                for p in provenances {
+                    bound_params.push(Box::new(p.as_str().to_string()));
+                }
+            }
         }
         sql.push_str(" ORDER BY started_at DESC");
         sql.push_str(&format!(" LIMIT {}", limit));
@@ -1968,6 +1982,10 @@ fn row_to_session(row: &duckdb::Row<'_>) -> Result<Session> {
     let total_cost_usd: f64 = row.get(7).map_err(|e| GctlError::Storage(e.to_string()))?;
     let total_input_tokens: i64 = row.get(8).map_err(|e| GctlError::Storage(e.to_string()))?;
     let total_output_tokens: i64 = row.get(9).map_err(|e| GctlError::Storage(e.to_string()))?;
+    // Legacy rows that predate the migration can be NULL (the ALTER
+    // can't carry NOT NULL on DuckDB). Treat NULL as `Unknown`.
+    let created_by_raw: Option<String> =
+        row.get(10).map_err(|e| GctlError::Storage(e.to_string()))?;
 
     Ok(Session {
         id: gctrl_core::SessionId(id),
@@ -1988,6 +2006,12 @@ fn row_to_session(row: &duckdb::Row<'_>) -> Result<Session> {
         total_cost_usd,
         total_input_tokens: total_input_tokens as u64,
         total_output_tokens: total_output_tokens as u64,
+        // Unrecognised values fall back to `Unknown` so a hand-edited
+        // DB or future-but-unparseable variant doesn't break list reads.
+        created_by: created_by_raw
+            .as_deref()
+            .and_then(gctrl_core::CreatedBy::from_str)
+            .unwrap_or(gctrl_core::CreatedBy::Unknown),
     })
 }
 
@@ -2187,6 +2211,7 @@ mod tests {
             total_cost_usd: 0.0,
             total_input_tokens: 0,
             total_output_tokens: 0,
+            created_by: CreatedBy::Unknown,
         }
     }
 
@@ -2633,7 +2658,7 @@ mod tests {
         store.insert_session(&s2).unwrap();
 
         let filtered = store
-            .list_sessions_filtered(20, Some("claude"), None)
+            .list_sessions_filtered(20, Some("claude"), None, None)
             .unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].agent_name, "claude");
@@ -2647,10 +2672,60 @@ mod tests {
         store.insert_session(&make_session("s2")).unwrap();
 
         let filtered = store
-            .list_sessions_filtered(20, None, Some("completed"))
+            .list_sessions_filtered(20, None, Some("completed"), None)
             .unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id.0, "s1");
+    }
+
+    #[test]
+    fn test_session_round_trips_created_by() {
+        let store = test_store();
+        let mut sched = make_session("s-sched");
+        sched.created_by = CreatedBy::Scheduler;
+        let mut otel = make_session("s-otel");
+        otel.created_by = CreatedBy::OtelIngest;
+        store.insert_session(&sched).unwrap();
+        store.insert_session(&otel).unwrap();
+
+        // Round-trip: read each row and assert the variant survived.
+        let got_sched = store.get_session(&SessionId("s-sched".into())).unwrap().unwrap();
+        let got_otel = store.get_session(&SessionId("s-otel".into())).unwrap().unwrap();
+        assert_eq!(got_sched.created_by, CreatedBy::Scheduler);
+        assert_eq!(got_otel.created_by, CreatedBy::OtelIngest);
+    }
+
+    #[test]
+    fn test_list_sessions_filtered_by_created_by() {
+        let store = test_store();
+        let mut sched = make_session("s-sched");
+        sched.created_by = CreatedBy::Scheduler;
+        let mut otel = make_session("s-otel");
+        otel.created_by = CreatedBy::OtelIngest;
+        let mut api = make_session("s-api");
+        api.created_by = CreatedBy::Api;
+        store.insert_session(&sched).unwrap();
+        store.insert_session(&otel).unwrap();
+        store.insert_session(&api).unwrap();
+
+        // External-only filter (OtelIngest).
+        let ext = store
+            .list_sessions_filtered(20, None, None, Some(&[CreatedBy::OtelIngest]))
+            .unwrap();
+        assert_eq!(ext.len(), 1);
+        assert_eq!(ext[0].id.0, "s-otel");
+
+        // Internal filter (Scheduler ∪ Api).
+        let int = store
+            .list_sessions_filtered(20, None, None, Some(&[CreatedBy::Scheduler, CreatedBy::Api]))
+            .unwrap();
+        assert_eq!(int.len(), 2);
+        let mut ids: Vec<_> = int.iter().map(|s| s.id.0.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["s-api", "s-sched"]);
+
+        // Spec acceptance: internal + external = total.
+        assert_eq!(ext.len() + int.len(), 3);
     }
 
     #[test]

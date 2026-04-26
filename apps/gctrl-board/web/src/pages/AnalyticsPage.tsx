@@ -4,6 +4,7 @@ import type {
   AnalyticsOverview,
   CostAnalytics,
   SessionSummary,
+  SessionKind,
   TraceTreeNode,
   TraceTreeResponse,
   LatencyAnalytics,
@@ -48,16 +49,20 @@ interface AnalyticsPageProps {
   navigate: (path: string) => void
 }
 
-const TAB_PATH: Record<typeof TABS[number], string> = {
+const TABS = ["overview", "sessions", "usage", "evals"] as const
+
+const TAB_PATH: Record<(typeof TABS)[number], string> = {
   overview: "/analytics/overview",
   sessions: "/analytics/sessions",
   usage: "/analytics/usage",
   evals: "/analytics/evals",
 }
 
-const TABS = ["overview", "sessions", "usage", "evals"] as const
-
 export function AnalyticsPage({ route, navigate }: AnalyticsPageProps) {
+  // Global attribution filter — applies to every tab.
+  // `internal` = scheduler+api, `external` = otel_ingest (analytics §1).
+  const [kind, setKind] = useState<SessionKind>("all")
+
   return (
     <TooltipProvider delayDuration={150}>
       <div className="flex-1 flex flex-col min-w-0 bg-background">
@@ -79,9 +84,10 @@ export function AnalyticsPage({ route, navigate }: AnalyticsPageProps) {
               <TabsTrigger value="evals">Evals</TabsTrigger>
             </TabsList>
           </Tabs>
+          <KindFilter kind={kind} onChange={setKind} />
           <Tooltip>
             <TooltipTrigger asChild>
-              <span className="inline-flex">
+              <span className="inline-flex ml-3">
                 <Badge variant="success" dot pulse>
                   live
                 </Badge>
@@ -95,13 +101,14 @@ export function AnalyticsPage({ route, navigate }: AnalyticsPageProps) {
 
         {/* Tab body */}
         <div className="flex-1 min-h-0 overflow-auto">
-          {route.tab === "overview" && <OverviewTab />}
+          {route.tab === "overview" && <OverviewTab kind={kind} />}
           {route.tab === "sessions" && (
             <SessionsTab
               selectedSessionId={route.sessionId}
               onSelectSession={(id) =>
                 navigate(id ? `/analytics/sessions/${id}` : "/analytics/sessions")
               }
+              kind={kind}
             />
           )}
           {route.tab === "usage" && <UsageTab />}
@@ -112,22 +119,60 @@ export function AnalyticsPage({ route, navigate }: AnalyticsPageProps) {
   )
 }
 
+function KindFilter({
+  kind,
+  onChange,
+}: {
+  kind: SessionKind
+  onChange: (k: SessionKind) => void
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <ToggleGroup
+          type="single"
+          value={kind}
+          onValueChange={(v) => {
+            if (v) onChange(v as SessionKind)
+          }}
+        >
+          <ToggleGroupItem value="all" data-testid="kind-all">
+            all
+          </ToggleGroupItem>
+          <ToggleGroupItem value="internal" data-testid="kind-internal">
+            internal
+          </ToggleGroupItem>
+          <ToggleGroupItem value="external" data-testid="kind-external">
+            external
+          </ToggleGroupItem>
+        </ToggleGroup>
+      </TooltipTrigger>
+      <TooltipContent>
+        internal = scheduler+api, external = otel-ingested. See analytics spec §1.
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
 // ───────────────────────── Overview ─────────────────────────
 
-function OverviewTab() {
+function OverviewTab({ kind }: { kind: SessionKind }) {
   const [overview, setOverview] = useState<AnalyticsOverview | null>(null)
   const [cost, setCost] = useState<CostAnalytics | null>(null)
   const [liveCount, setLiveCount] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  // Live count respects the kind filter — operators expect "live
+  // sessions now" to track the same population as the rest of the page.
+  // The cost/overview aggregates are not yet kind-filtered server-side
+  // (kernel's /api/analytics rollup is still population-wide); call
+  // that out in the KPI label rather than silently fudging.
   const refresh = useCallback(async () => {
     try {
       const [o, c, live] = await Promise.all([
         api.analytics.overview(),
         api.analytics.cost(),
-        // Kernel's /api/analytics rollup has no active_sessions field;
-        // count from sessions.list?status=active instead.
-        api.sessions.list({ status: "active", limit: 200 }),
+        api.sessions.list({ status: "active", limit: 200, kind }),
       ])
       setOverview(o)
       setCost(c)
@@ -136,23 +181,31 @@ function OverviewTab() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [])
+  }, [kind])
 
-  // Initial fetch on mount.
+  // Initial fetch on mount + on kind change.
   useEffect(() => {
     refresh()
   }, [refresh])
 
-  // Live updates: stream session lifecycle events, adjust the live
-  // count, and refetch the cost/total aggregates on session end.
+  // Live updates: stream lifecycle events, but only adjust the count
+  // when the event matches the active kind filter. We rely on a fresh
+  // fetch to pick up `created_by` for new sessions.
   useSessionStream({
     onEvent: (ev) => {
       if (ev.type === "session_started") {
-        setLiveCount((n) => (n ?? 0) + 1)
+        // We don't know the new row's created_by from the event alone
+        // (event payload is intentionally narrow). When `all` is
+        // active, just bump; otherwise refetch so we count correctly.
+        if (kind === "all") {
+          setLiveCount((n) => (n ?? 0) + 1)
+        } else {
+          refresh()
+        }
       } else if (ev.type === "session_ended") {
-        setLiveCount((n) => Math.max(0, (n ?? 0) - 1))
-        // Aggregates change when a session finishes; pull fresh totals.
-        // Cost-by-model rollup also reflects the just-ended session.
+        if (kind === "all") {
+          setLiveCount((n) => Math.max(0, (n ?? 0) - 1))
+        }
         refresh()
       }
     },
@@ -174,15 +227,25 @@ function OverviewTab() {
     return <div className="p-8 text-zinc-500 font-mono text-sm">Loading…</div>
   }
 
+  // Live KPI follows the kind filter; the rollup KPIs are still
+  // population-wide because the kernel's /api/analytics endpoint
+  // doesn't accept a kind param yet. Annotate them so operators know.
+  const liveLabel =
+    kind === "all" ? "Live sessions" : `Live (${kind})`
+  const rollupSuffix = kind === "all" ? "" : " · all kinds"
+
   return (
     <div className="p-6 space-y-6">
       {/* KPI row */}
       <div className="grid grid-cols-4 gap-4">
-        <Kpi label="Live sessions" value={liveCount ?? "—"} accent />
-        <Kpi label="Total sessions" value={overview.total_sessions} />
-        <Kpi label="Spans" value={overview.total_spans.toLocaleString()} />
+        <Kpi label={liveLabel} value={liveCount ?? "—"} accent />
         <Kpi
-          label="Total cost"
+          label={`Total sessions${rollupSuffix}`}
+          value={overview.total_sessions}
+        />
+        <Kpi label={`Spans${rollupSuffix}`} value={overview.total_spans.toLocaleString()} />
+        <Kpi
+          label={`Total cost${rollupSuffix}`}
           value={`$${overview.total_cost_usd.toFixed(4)}`}
         />
       </div>
@@ -305,9 +368,11 @@ function CostTable({
 function SessionsTab({
   selectedSessionId,
   onSelectSession,
+  kind,
 }: {
   selectedSessionId: string | null
   onSelectSession: (id: string | null) => void
+  kind: SessionKind
 }) {
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -318,7 +383,7 @@ function SessionsTab({
 
   const refresh = useCallback(async () => {
     try {
-      const list = await api.sessions.list({ limit: 100 })
+      const list = await api.sessions.list({ limit: 100, kind })
       setSessions(list)
       setError(null)
       setLoading(false)
@@ -326,9 +391,9 @@ function SessionsTab({
       setError(e instanceof Error ? e.message : String(e))
       setLoading(false)
     }
-  }, [])
+  }, [kind])
 
-  // Initial fetch on mount.
+  // Initial fetch on mount + on kind change.
   useEffect(() => {
     refresh()
   }, [refresh])
@@ -342,6 +407,14 @@ function SessionsTab({
   useSessionStream({
     onEvent: (ev) => {
       if (ev.type === "session_started") {
+        // The kind filter requires knowing `created_by` to decide
+        // whether to show the row. The event payload deliberately
+        // omits provenance, so when filtering we refetch instead of
+        // showing a placeholder we'd then have to retract.
+        if (kind !== "all") {
+          refresh()
+          return
+        }
         setSessions((rows) => {
           if (rows.some((r) => r.id === ev.session_id)) return rows
           const placeholder: SessionSummary = {
@@ -355,6 +428,9 @@ function SessionsTab({
             total_cost_usd: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
+            // Provenance unknown until the next refresh — `unknown`
+            // is the spec-sanctioned placeholder for that.
+            created_by: "unknown",
           }
           return [placeholder, ...rows]
         })
@@ -576,6 +652,30 @@ function StatusBadge({
   return <Badge variant={variant}>{status}</Badge>
 }
 
+function ProvenanceBadge({ createdBy }: { createdBy: SessionSummary["created_by"] }) {
+  // Map raw created_by ⇒ derived view label so operators read the
+  // same vocabulary the filter uses. We still show the raw value as
+  // a sub-line so /analytics/sessions/<id> doesn't drop signal that
+  // an external tooling integration cares about.
+  const view: "internal" | "external" | "unknown" =
+    createdBy === "scheduler" || createdBy === "api"
+      ? "internal"
+      : createdBy === "otel_ingest"
+        ? "external"
+        : "unknown"
+  const color =
+    view === "internal"
+      ? "text-emerald-400"
+      : view === "external"
+        ? "text-sky-400"
+        : "text-zinc-500"
+  return (
+    <span className={`text-[11px] font-mono uppercase tracking-wider ${color}`}>
+      {view} <span className="text-zinc-600">({createdBy})</span>
+    </span>
+  )
+}
+
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`
   const s = Math.floor(ms / 1000)
@@ -672,6 +772,10 @@ function SessionDetailPane({
                 ${session.total_cost_usd.toFixed(4)}
               </span>
             }
+          />
+          <DetailField
+            label="Provenance"
+            value={<ProvenanceBadge createdBy={session.created_by} />}
           />
         </div>
       </div>

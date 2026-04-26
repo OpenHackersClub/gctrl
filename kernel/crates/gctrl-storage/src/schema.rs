@@ -10,8 +10,23 @@ CREATE TABLE IF NOT EXISTS sessions (
     total_cost_usd  DOUBLE DEFAULT 0.0,
     total_input_tokens  BIGINT DEFAULT 0,
     total_output_tokens BIGINT DEFAULT 0,
-    synced          BOOLEAN DEFAULT FALSE
+    synced          BOOLEAN DEFAULT FALSE,
+    -- Provenance: scheduler | otel_ingest | api | unknown.
+    -- See specs/architecture/apps/gctrl-analytics.md §1. `unknown`
+    -- exists only for pre-migration rows; new rows must set it.
+    created_by      VARCHAR NOT NULL DEFAULT 'unknown'
 )
+"#;
+
+/// Idempotent migration for existing DBs that predate `created_by`.
+/// DuckDB doesn't yet support adding a column with `NOT NULL DEFAULT`
+/// constraints (parser error: "Adding columns with constraints not
+/// yet supported"), so the ALTER is constraint-less. Legacy rows land
+/// as NULL; `row_to_session` maps NULL/unknown to `CreatedBy::Unknown`,
+/// preserving the spec invariant that `Unknown` is reserved for
+/// pre-migration data.
+pub const ADD_SESSIONS_CREATED_BY: &str = r#"
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS created_by VARCHAR
 "#;
 
 pub const CREATE_SPANS_TABLE: &str = r#"
@@ -402,6 +417,9 @@ pub const CREATE_INDEXES: &[&str] = &[
 pub fn all_migrations() -> Vec<&'static str> {
     let mut stmts = vec![
         CREATE_SESSIONS_TABLE,
+        // Idempotent column add for DBs that predate `created_by`. Runs
+        // after CREATE so a fresh schema is also a no-op.
+        ADD_SESSIONS_CREATED_BY,
         CREATE_SPANS_TABLE,
         CREATE_TRAFFIC_TABLE,
         CREATE_GUARDRAIL_EVENTS_TABLE,
