@@ -5,6 +5,7 @@ import { FileSystemVaultLive } from "../adapters/FileSystemVault.js";
 import { HttpFeedDefaultConfig, HttpFeedLive } from "../adapters/HttpFeed.js";
 import { HttpIngestDefaultConfig, HttpIngestLive } from "../adapters/HttpIngest.js";
 import { KernelLlmLive } from "../adapters/KernelLlm.js";
+import { personFeedUrls } from "../lib/discovery.js";
 import { resolveVaultDir } from "../lib/env.js";
 import { FeedService } from "../services/FeedService.js";
 import { IngestService } from "../services/IngestService.js";
@@ -181,7 +182,12 @@ const sources = Command.make(
         const allTopicSlugs = profile.topics.topics.map((t) => t.slug);
         const topicWatchlists: Record<string, ReadonlyArray<string>> = {};
         for (const t of profile.topics.topics) {
-          topicWatchlists[t.slug] = t.watchlist ?? [];
+          // Person topics treat aliases as watchlist terms so a page that
+          // mentions "Sam Altman" or "@sama" classifies onto the
+          // `sam-altman` topic without forcing the user to also slugify
+          // those forms into `watchlist`.
+          const merged = [...(t.watchlist ?? []), ...(t.aliases ?? [])];
+          topicWatchlists[t.slug] = merged;
         }
         const selected = profile.sources.sources.filter((s) => {
           if (onlySlug !== null) return s.slug === onlySlug;
@@ -296,7 +302,213 @@ const sources = Command.make(
   ),
 );
 
+// --- ingest person ----------------------------------------------------------
+// Walk topics with `kind: person`, build their candidate feeds (Google News +
+// any author-supplied feed URLs), fetch each, and ingest recent items. Each
+// ingested page is force-tagged with the person's topic slug so it shows up
+// in candidate selection and briefs.
+
+const personSlugOpt = Options.text("topic").pipe(
+  Options.withDescription("Restrict to a single person topic slug"),
+  Options.optional,
+);
+
+const personSinceHoursOpt = Options.integer("since-hours").pipe(
+  Options.withDescription("Only ingest items published within the last N hours"),
+  Options.withDefault(168),
+);
+
+const personLimitOpt = Options.integer("limit").pipe(
+  Options.withDescription("Max items per discovered feed"),
+  Options.withDefault(10),
+);
+
+const personMinWordsOpt = Options.integer("min-words").pipe(
+  Options.withDescription("Reject ingested pages with fewer words (default 50)"),
+  Options.withDefault(50),
+);
+
+const personOverwriteOpt = Options.boolean("overwrite").pipe(
+  Options.withDescription("Overwrite existing pages (default: skip on collision)"),
+  Options.withDefault(false),
+);
+
+const personDryRunOpt = Options.boolean("dry-run").pipe(
+  Options.withDescription("Show what would be ingested without writing"),
+  Options.withDefault(false),
+);
+
+const personSummarizeOpt = Options.boolean("summarize").pipe(
+  Options.withDescription(
+    "Replace each stored body with an LLM-generated key-insights summary (default on; set UBER_INGEST_SUMMARIZE=0 to disable)",
+  ),
+  Options.withDefault(summarizeDefaultFromEnv()),
+);
+
+const person = Command.make(
+  "person",
+  {
+    personSlugOpt,
+    personSinceHoursOpt,
+    personLimitOpt,
+    personMinWordsOpt,
+    personOverwriteOpt,
+    personDryRunOpt,
+    personSummarizeOpt,
+  },
+  ({
+    personSlugOpt: onlySlugVal,
+    personSinceHoursOpt: sinceHours,
+    personLimitOpt: limit,
+    personMinWordsOpt: minWords,
+    personOverwriteOpt: overwrite,
+    personDryRunOpt: dryRun,
+    personSummarizeOpt: summarize,
+  }) =>
+    Effect.gen(function* () {
+      const vaultDir = yield* resolveVaultDir();
+      const onlySlug = Option.getOrNull(onlySlugVal);
+      const now = new Date();
+      const cutoff = new Date(now.getTime() - sinceHours * 3_600_000);
+      const date = now.toISOString().slice(0, 10);
+
+      yield* Console.log(
+        `discovering person sources from ${vaultDir} (since ${cutoff.toISOString()})`,
+      );
+
+      const program = Effect.gen(function* () {
+        const profileSvc = yield* ProfileService;
+        const feedSvc = yield* FeedService;
+        const ingestSvc = yield* IngestService;
+        const profile = yield* profileSvc.load();
+
+        const allTopicSlugs = profile.topics.topics.map((t) => t.slug);
+        const topicWatchlists: Record<string, ReadonlyArray<string>> = {};
+        for (const t of profile.topics.topics) {
+          topicWatchlists[t.slug] = [...(t.watchlist ?? []), ...(t.aliases ?? [])];
+        }
+
+        const persons = profile.topics.topics.filter((t) => {
+          if (t.kind !== "person") return false;
+          if (onlySlug !== null) return t.slug === onlySlug;
+          return true;
+        });
+        if (persons.length === 0) {
+          yield* Console.log(
+            onlySlug !== null
+              ? `  no person topic with slug "${onlySlug}"`
+              : `  no topics with kind=person`,
+          );
+          return;
+        }
+        yield* Console.log(`  ${persons.length} person topic(s) selected`);
+
+        let totalFetched = 0;
+        let totalIngested = 0;
+        let totalSkipped = 0;
+        let totalFailed = 0;
+
+        for (const p of persons) {
+          const feeds = personFeedUrls(p);
+          if (feeds.length === 0) {
+            yield* Console.log(`  - ${p.slug}: discovery disabled, skipping`);
+            continue;
+          }
+          yield* Console.log(`  - ${p.slug} (${p.title}): ${feeds.length} feed(s)`);
+
+          for (const feedUrl of feeds) {
+            const fetched = yield* feedSvc.fetchFeed(feedUrl).pipe(
+              Effect.tap((f) =>
+                Console.log(`    ${f.format} "${f.title}" — ${f.items.length} item(s)`),
+              ),
+              Effect.tapError((e) => Console.log(`    feed fetch failed — ${e.kind}: ${e.message}`)),
+              Effect.either,
+            );
+            const feed = Either.getOrNull(fetched);
+            if (feed === null) {
+              totalFailed += 1;
+              continue;
+            }
+            const windowItems = feed.items.filter((it) => {
+              if (!it.link) return false;
+              if (!it.publishedAt) return true;
+              return it.publishedAt >= cutoff;
+            });
+            const batch = windowItems.slice(0, limit);
+            totalFetched += batch.length;
+            yield* Console.log(
+              `      ${batch.length}/${windowItems.length} within window (limit=${limit})`,
+            );
+            for (const item of batch) {
+              if (dryRun) {
+                yield* Console.log(`      [dry-run] ${item.link}`);
+                continue;
+              }
+              const result = yield* ingestSvc
+                .ingestUrl({
+                  url: item.link,
+                  date,
+                  topicSlugs: allTopicSlugs,
+                  minWordCount: minWords,
+                  overwrite,
+                  // Pin the person's slug so the page lands on this topic
+                  // even when the article body uses a partial/last-name form
+                  // that the classifier alone might miss.
+                  forceTopics: [p.slug],
+                  topicWatchlists,
+                  descriptionFromFeed: item.description ?? undefined,
+                  summarize,
+                })
+                .pipe(
+                  Effect.tap((r) =>
+                    Console.log(
+                      `      ✓ ${r.relPath} (${r.wordCount}w${r.paywalled ? ", paywalled" : ""}${r.bodySource === "rss_description" ? ", rss-desc" : r.bodySource === "llm_insights" ? ", insights" : ""}, topics=[${r.topicsMatched.join(", ")}])`,
+                    ),
+                  ),
+                  Effect.tapError((e) => Console.log(`      ✗ ${item.link} — ${e.kind}: ${e.message}`)),
+                  Effect.either,
+                );
+              Either.match(result, {
+                onLeft: (e) => {
+                  if (e.kind === "collision") totalSkipped += 1;
+                  else totalFailed += 1;
+                },
+                onRight: () => {
+                  totalIngested += 1;
+                },
+              });
+            }
+          }
+        }
+        yield* Console.log(
+          `\ntotals: fetched=${totalFetched} ingested=${totalIngested} skipped=${totalSkipped} failed=${totalFailed}`,
+        );
+      });
+
+      const vaultLayer = FileSystemVaultLive(vaultDir);
+      const ingestLayer = HttpIngestLive.pipe(
+        Layer.provide(Layer.mergeAll(vaultLayer, HttpIngestDefaultConfig)),
+      );
+      const feedLayer = HttpFeedLive.pipe(Layer.provide(HttpFeedDefaultConfig));
+      yield* program.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            FileSystemProfileLive(vaultDir),
+            vaultLayer,
+            ingestLayer,
+            feedLayer,
+            KernelLlmLive,
+          ),
+        ),
+      );
+    }),
+).pipe(
+  Command.withDescription(
+    "Discover and ingest news + interviews for topics with kind: person",
+  ),
+);
+
 export const ingest = Command.make("ingest").pipe(
-  Command.withSubcommands([url, sources]),
+  Command.withSubcommands([url, sources, person]),
   Command.withDescription("Ingest external sources into the vault"),
 );

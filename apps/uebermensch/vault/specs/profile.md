@@ -321,6 +321,23 @@ topics:
     horizon: "long"
     weight: 0.6
     watchlist: ["vllm", "dspy", "effect-ts"]
+
+  # A topic can also be a person. `kind: person` opens up two affordances:
+  #   1. `aliases` are matched in source bodies in addition to the slug —
+  #      so the topic catches "Sam Altman" and "@sama" without slug-shaping.
+  #   2. `gctrl uber ingest person` discovers Google News RSS for the title
+  #      (and an "interview OR podcast OR talk" variant), plus any explicit
+  #      `discovery.feeds`, and ingests recent items tagged with this slug.
+  - slug: "sam-altman"
+    title: "Sam Altman"
+    kind: "person"
+    horizon: "both"
+    weight: 0.7
+    aliases: ["Sam Altman", "@sama"]
+    discovery:
+      google_news: true
+      interviews: true
+      feeds: ["https://blog.samaltman.com/posts.atom"]
 ```
 
 Maps to: `Profile.topics`. Slugs are the lingua franca — they appear in theses, source topic filters, brief item tags, and rank priors.

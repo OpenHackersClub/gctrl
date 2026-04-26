@@ -55,12 +55,36 @@ export const ProfileConfig = Schema.Struct({
   delivery: Delivery,
 })
 
+// Person topics open up name/alias matching and feed discovery.
+// `kind` defaults to "topic"; vault files written before this field landed
+// continue to load.
+export const TopicKind = Schema.Literal("topic", "person")
+export type TopicKind = typeof TopicKind.Type
+
+// Discovery config — currently only meaningful for person topics. When
+// `google_news` is true, `gctrl uber ingest person` auto-builds a Google News
+// RSS query from `title` (and optionally aliases) and ingests recent items.
+// `feeds` is a list of pre-built RSS/Atom URLs (e.g. a personal blog feed,
+// substack, or a curated YouTube interview channel).
+export const TopicDiscovery = Schema.Struct({
+  google_news: Schema.optional(Schema.Boolean),
+  interviews: Schema.optional(Schema.Boolean),
+  feeds: Schema.optional(Schema.Array(Schema.String)),
+})
+export type TopicDiscovery = typeof TopicDiscovery.Type
+
 export const TopicEntry = Schema.Struct({
   slug: Slug,
   title: Schema.String,
   horizon: Schema.Literal("short", "long", "both"),
   weight: Schema.Number,
+  kind: Schema.optional(TopicKind),
+  // Free-text surface forms used during classification: full name, handles,
+  // common short forms. Unlike `watchlist` (which is slug-shaped), aliases
+  // accept spaces, punctuation, and mixed case — "Sam Altman", "@sama".
+  aliases: Schema.optional(Schema.Array(Schema.String)),
   watchlist: Schema.optional(Schema.Array(Slug)),
+  discovery: Schema.optional(TopicDiscovery),
 })
 
 export const TopicsConfig = Schema.Struct({
