@@ -15,6 +15,8 @@ pub struct GctlConfig {
     pub guardrails: GuardrailsConfig,
     #[serde(default)]
     pub net: NetConfig,
+    #[serde(default)]
+    pub scheduler: SchedulerConfig,
 }
 
 impl Default for GctlConfig {
@@ -26,6 +28,7 @@ impl Default for GctlConfig {
             sync: SyncConfig::default(),
             guardrails: GuardrailsConfig::default(),
             net: NetConfig::default(),
+            scheduler: SchedulerConfig::default(),
         }
     }
 }
@@ -206,6 +209,35 @@ impl Default for GuardrailsConfig {
     }
 }
 
+/// Configuration for the kernel scheduler (gctrl-scheduler crate).
+///
+/// Defaults are tuned for "dozens of jobs firing on the order of minutes-hours,"
+/// not "thousands of jobs firing per second." If you need finer-grained polling,
+/// drop `poll_interval_secs` — at 5s you'll still wake the runner only ~17k
+/// times/day on an idle box.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchedulerConfig {
+    pub enabled: bool,
+    pub poll_interval_secs: u64,
+    /// Cap on schedules dispatched per tick. Prevents a backlog of overdue
+    /// jobs from monopolising the runner.
+    pub max_per_tick: usize,
+    /// Default per-job HTTP timeout in seconds. Individual schedules may
+    /// override via `Schedule::timeout_secs`.
+    pub default_timeout_secs: u64,
+}
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            poll_interval_secs: 30,
+            max_per_tick: 16,
+            default_timeout_secs: 60,
+        }
+    }
+}
+
 fn dirs_default_data() -> PathBuf {
     if let Some(home) = std::env::var_os("HOME") {
         PathBuf::from(home).join(".local/share")
@@ -252,5 +284,14 @@ mod tests {
         let cfg = SyncConfig::default();
         assert!(!cfg.enabled);
         assert!(cfg.r2_bucket.is_empty());
+    }
+
+    #[test]
+    fn scheduler_defaults_enabled_30s() {
+        let cfg = SchedulerConfig::default();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.poll_interval_secs, 30);
+        assert_eq!(cfg.max_per_tick, 16);
+        assert_eq!(cfg.default_timeout_secs, 60);
     }
 }

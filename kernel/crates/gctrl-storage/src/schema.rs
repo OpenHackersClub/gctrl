@@ -335,6 +335,29 @@ CREATE TABLE IF NOT EXISTS inbox_subscriptions (
 )
 "#;
 
+pub const CREATE_SCHEDULES_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS schedules (
+    id              VARCHAR PRIMARY KEY,
+    name            VARCHAR NOT NULL UNIQUE,
+    cron            VARCHAR NOT NULL,
+    target_url      VARCHAR NOT NULL,
+    target_method   VARCHAR NOT NULL DEFAULT 'POST',
+    body_json       JSON,
+    headers_json    JSON,
+    timeout_secs    INTEGER NOT NULL DEFAULT 60,
+    enabled         BOOLEAN NOT NULL DEFAULT true,
+    next_run_at     VARCHAR,
+    last_run_at     VARCHAR,
+    last_status     INTEGER,
+    last_response   VARCHAR,
+    last_error      VARCHAR,
+    run_count       INTEGER NOT NULL DEFAULT 0,
+    failure_count   INTEGER NOT NULL DEFAULT 0,
+    created_at      VARCHAR NOT NULL,
+    updated_at      VARCHAR NOT NULL
+)
+"#;
+
 pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_spans_session ON spans(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(trace_id)",
@@ -372,6 +395,8 @@ pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_inbox_actions_message ON inbox_actions(message_id)",
     "CREATE INDEX IF NOT EXISTS idx_inbox_actions_actor ON inbox_actions(actor_id)",
     "CREATE INDEX IF NOT EXISTS idx_inbox_subscriptions_user ON inbox_subscriptions(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules(enabled, next_run_at)",
+    "CREATE INDEX IF NOT EXISTS idx_schedules_name ON schedules(name)",
 ];
 
 pub fn all_migrations() -> Vec<&'static str> {
@@ -399,6 +424,7 @@ pub fn all_migrations() -> Vec<&'static str> {
         CREATE_INBOX_THREADS_TABLE,
         CREATE_INBOX_ACTIONS_TABLE,
         CREATE_INBOX_SUBSCRIPTIONS_TABLE,
+        CREATE_SCHEDULES_TABLE,
     ];
     stmts.extend(CREATE_INDEXES.iter());
     stmts

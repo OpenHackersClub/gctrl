@@ -139,6 +139,71 @@ enum Commands {
     /// Orchestrator — spawn agents for dispatch-eligible tasks
     #[command(subcommand)]
     Orch(OrchCmd),
+    /// Periodic HTTP-callback scheduler (cron-driven jobs)
+    #[command(subcommand)]
+    Scheduler(SchedulerCmd),
+}
+
+#[derive(Subcommand)]
+enum SchedulerCmd {
+    /// List schedules
+    List {
+        /// Only show enabled schedules
+        #[arg(long)]
+        enabled: bool,
+        /// Output format: table, json
+        #[arg(short, long, default_value = "table")]
+        format: String,
+    },
+    /// Show a single schedule (by id or name) as JSON
+    Show {
+        /// Schedule id or name
+        id: String,
+    },
+    /// Create a new schedule
+    Add {
+        /// Unique schedule name
+        #[arg(long)]
+        name: String,
+        /// Cron expression (5/6/7 fields, e.g. "0 */2 * * *" for every 2 hours)
+        #[arg(long)]
+        cron: String,
+        /// HTTP target URL the runner POSTs to when due
+        #[arg(long = "target-url")]
+        target_url: String,
+        /// HTTP method (GET, POST, PUT, DELETE, PATCH)
+        #[arg(long, default_value = "POST")]
+        method: String,
+        /// Request body as JSON string
+        #[arg(long)]
+        body: Option<String>,
+        /// Per-request timeout in seconds
+        #[arg(long, default_value = "60")]
+        timeout: i64,
+    },
+    /// Delete a schedule by id or name
+    Rm {
+        /// Schedule id or name
+        id: String,
+    },
+    /// Enable a schedule
+    Enable {
+        /// Schedule id or name
+        id: String,
+    },
+    /// Disable a schedule
+    Disable {
+        /// Schedule id or name
+        id: String,
+    },
+    /// Manually fire a schedule via the running daemon's HTTP API
+    Run {
+        /// Schedule id or name
+        id: String,
+        /// Daemon base URL
+        #[arg(long, default_value = "http://127.0.0.1:4318")]
+        daemon: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -577,6 +642,21 @@ async fn main() -> Result<()> {
                 commands::net::compact(&domain, &format, output.as_deref())
             }
             NetCmd::Stats { domain } => commands::net::stats(&domain),
+        },
+        Commands::Scheduler(cmd) => match cmd {
+            SchedulerCmd::List { enabled, format } => {
+                commands::scheduler::list(&db_path, enabled, &format)
+            }
+            SchedulerCmd::Show { id } => commands::scheduler::show(&db_path, &id),
+            SchedulerCmd::Add { name, cron, target_url, method, body, timeout } => {
+                commands::scheduler::add(&db_path, &name, &cron, &target_url, &method, body.as_deref(), timeout)
+            }
+            SchedulerCmd::Rm { id } => commands::scheduler::rm(&db_path, &id),
+            SchedulerCmd::Enable { id } => commands::scheduler::enable(&db_path, &id, true),
+            SchedulerCmd::Disable { id } => commands::scheduler::enable(&db_path, &id, false),
+            SchedulerCmd::Run { id, daemon } => {
+                commands::scheduler::run_now(&db_path, &id, &daemon).await
+            }
         },
     }
 }

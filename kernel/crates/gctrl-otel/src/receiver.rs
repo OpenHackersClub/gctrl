@@ -75,6 +75,11 @@ pub fn create_router_dual_with_sync(
 }
 
 /// Create router with dual stores, D1 sync, and external network drivers (Brave, CF Browser).
+///
+/// Mounts the scheduler routes (`/api/schedules*`) alongside the main router
+/// using a separate state — the scheduler is self-contained and only needs
+/// the SQLite store, so it owns its own `with_state` rather than fattening
+/// `AppState`.
 pub fn create_router_full(
     store: Arc<DuckDbStore>,
     sqlite: Arc<SqliteStore>,
@@ -83,7 +88,7 @@ pub fn create_router_full(
 ) -> Router {
     let state = Arc::new(AppState {
         store,
-        sqlite,
+        sqlite: Arc::clone(&sqlite),
         context: None,
         started_at: std::time::Instant::now(),
         sync_config,
@@ -91,7 +96,7 @@ pub fn create_router_full(
         http_client: reqwest::Client::new(),
         event_bus: EventBus::default_capacity(),
     });
-    build_router(state)
+    build_router(state).merge(gctrl_scheduler::http::router(sqlite))
 }
 
 pub fn create_router_with_context(store: DuckDbStore, context: Option<ContextManager>) -> Router {

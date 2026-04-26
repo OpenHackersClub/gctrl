@@ -13,6 +13,7 @@ pub mod check;
 pub mod net;
 pub mod orch;
 pub mod personas;
+pub mod scheduler;
 pub mod prompt;
 pub mod query;
 pub mod score;

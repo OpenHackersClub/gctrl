@@ -1,0 +1,113 @@
+//! End-to-end test of the runner: insert a due schedule pointing at a
+//! `wiremock` stub, run one tick, assert the stub was hit and the row was
+//! updated with status + recomputed `next_run_at`.
+
+use std::sync::Arc;
+
+use chrono::{TimeZone, Utc};
+use gctrl_core::{Schedule, SchedulerConfig};
+use gctrl_scheduler::ScheduleRunner;
+use gctrl_storage::SqliteStore;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+fn make_due_schedule(target_url: &str) -> Schedule {
+    let now = Utc::now();
+    // next_run_at in the past → guaranteed due on next tick.
+    let past = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
+    Schedule {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: "test.due".into(),
+        cron: "0 */2 * * *".into(),
+        target_url: target_url.into(),
+        target_method: "POST".into(),
+        body_json: Some(serde_json::json!({ "hello": "world" })),
+        headers_json: None,
+        timeout_secs: 5,
+        enabled: true,
+        next_run_at: Some(past.to_rfc3339()),
+        last_run_at: None,
+        last_status: None,
+        last_response: None,
+        last_error: None,
+        run_count: 0,
+        failure_count: 0,
+        created_at: now.to_rfc3339(),
+        updated_at: now.to_rfc3339(),
+    }
+}
+
+#[tokio::test]
+async fn runner_fires_due_schedule_and_records_outcome() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let store = Arc::new(SqliteStore::open(":memory:").unwrap());
+    let sched = make_due_schedule(&format!("{}/hook", mock.uri()));
+    store.create_schedule(&sched).unwrap();
+
+    let runner = ScheduleRunner::new(Arc::clone(&store), SchedulerConfig::default());
+    let n = runner.tick().await.unwrap();
+    assert_eq!(n, 1, "exactly one schedule should fire");
+
+    let after = store.get_schedule(&sched.id).unwrap().unwrap();
+    assert_eq!(after.last_status, Some(200));
+    assert_eq!(after.run_count, 1);
+    assert_eq!(after.failure_count, 0);
+    assert!(after.last_run_at.is_some());
+    // Recomputed next_run_at must be in the future, not the historical past
+    // value we seeded with.
+    let next = after.next_run_at.expect("next_run_at recomputed");
+    let next_dt: chrono::DateTime<Utc> = chrono::DateTime::parse_from_rfc3339(&next)
+        .unwrap()
+        .with_timezone(&Utc);
+    assert!(next_dt > Utc::now());
+
+    drop(mock); // verifies `expect(1)`.
+}
+
+#[tokio::test]
+async fn runner_records_failure_on_5xx() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/boom"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("nope"))
+        .mount(&mock)
+        .await;
+
+    let store = Arc::new(SqliteStore::open(":memory:").unwrap());
+    let sched = make_due_schedule(&format!("{}/boom", mock.uri()));
+    store.create_schedule(&sched).unwrap();
+
+    let runner = ScheduleRunner::new(Arc::clone(&store), SchedulerConfig::default());
+    runner.tick().await.unwrap();
+
+    let after = store.get_schedule(&sched.id).unwrap().unwrap();
+    assert_eq!(after.last_status, Some(503));
+    assert_eq!(after.run_count, 1);
+    assert_eq!(after.failure_count, 1, "5xx must increment failure_count");
+}
+
+#[tokio::test]
+async fn runner_skips_non_due_schedules() {
+    let store = Arc::new(SqliteStore::open(":memory:").unwrap());
+    // Schedule whose next_run is far in the future.
+    let mut sched = make_due_schedule("http://127.0.0.1:1");
+    sched.next_run_at = Some(
+        Utc.with_ymd_and_hms(2099, 1, 1, 0, 0, 0)
+            .unwrap()
+            .to_rfc3339(),
+    );
+    store.create_schedule(&sched).unwrap();
+
+    let runner = ScheduleRunner::new(Arc::clone(&store), SchedulerConfig::default());
+    let n = runner.tick().await.unwrap();
+    assert_eq!(n, 0);
+    let after = store.get_schedule(&sched.id).unwrap().unwrap();
+    assert_eq!(after.run_count, 0);
+}

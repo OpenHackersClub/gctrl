@@ -1,0 +1,25 @@
+[package]
+name = "gctrl-scheduler"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gctrl-core = { path = "../gctrl-core" }
+gctrl-storage = { path = "../gctrl-storage" }
+tokio = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+reqwest = { workspace = true }
+cron = "0.15"
+
+[dev-dependencies]
+tower = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+wiremock = "0.6"

@@ -16,6 +16,8 @@ gctrl-query = { path = "../gctrl-query" }
 gctrl-net = { path = "../gctrl-net" }
 gctrl-context = { path = "../gctrl-context" }
 gctrl-orch = { path = "../gctrl-orch" }
+gctrl-scheduler = { path = "../gctrl-scheduler" }
+reqwest = { workspace = true }
 
 clap = { workspace = true }
 tokio = { workspace = true }
