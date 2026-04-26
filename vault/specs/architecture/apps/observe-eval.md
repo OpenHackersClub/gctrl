@@ -146,5 +146,6 @@ The runner calls the substrate `POST /api/eval/score` for every case. There is n
 - [PRD § Native Applications](../../gctrl/PRD.md) — product positioning
 - [ROADMAP § M4](../../gctrl/ROADMAP.md) — delivery milestones
 - [domain-model § 5.3](../domain-model.md#53-eval-application-tables) — table DDL and ownership
+- [implementation/kernel/eval-storage.md](../../implementation/kernel/eval-storage.md) — column-level DDL, JSON shapes, indexes, migration order
 - [os.md § 3](../os.md) — application invariants
 - [glossary](../../glossary.md) — Metric, Judge, Eval Run, Eval Score
