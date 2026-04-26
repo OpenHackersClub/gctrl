@@ -32,7 +32,14 @@ Canonical definitions for gctrl domain terms. When terms are used in specs, they
 | **Issue Key** | A formatted identifier like `BACK-42` — composed of `{PROJECT_KEY}-{COUNTER}`. Project key is from `board_projects.key`; counter auto-increments per project. | Application | gctrl-board |
 | **Tracker** | An application component of gctrl-board that manages Issue lifecycle, dependency DAG, and auto-transitions. Subscribes to kernel IPC events. NOT a kernel primitive. | Application | gctrl-board |
 | **Board** | A kanban view of Issues (human-managed) and Tasks (agent-managed, read-only). Configured per-project with columns and WIP limits. | Application | gctrl-board |
-| **Eval Score** | A quality rating attached to a Session, Span, or Task — human-annotated or auto-computed. Stored in `eval_scores` (Observe & Eval application). | Application | Observe & Eval |
+| **Eval Score** | A quality rating attached to a Session, Span, Task, Eval Case, or Eval Run — human-annotated, auto-computed, or judge-produced. Stored in the kernel-owned `scores` table; the same row carries scores from every lifecycle phase (dev, CI, staging, prod). | Application | Observe & Eval |
+| **Metric** | A named scoring function registered in `eval_metrics`. Resolves to either an in-process evaluator (deterministic check) or a judge prompt (LLM-as-judge). The unit of metric-name continuity from dev → prod. | Application | Observe & Eval |
+| **Judge** | An LLM-as-judge invocation produced by a metric of `kind='judge'`. Calls the kernel Model Router; the call itself is captured as Spans like any other generation. | Application | Observe & Eval |
+| **Eval Run** | A grouping row in `eval_runs` that ties a batch of `Score`s together (one per `gctrl eval run` invocation or app-initiated batch). Carries suite name, baseline ref, git sha, env, model. | Application | Observe & Eval |
+| **Eval Case** | A single `{ input, expected?, context? }` item belonging to a Dataset. Schema is intentionally permissive — apps may also pass cases inline without registering them. | Application | Observe & Eval |
+| **Eval Dataset** | A named collection of Eval Cases. Required for harness mode and replayable baselines; not required for substrate-mode calls. | Application | Observe & Eval |
+| **Eval Substrate** | The metrics, prompts, judges, and score store reachable via `POST /api/eval/*`. Applications drive their own loops and call into it. | Application | Observe & Eval |
+| **Eval Harness** | The `gctrl eval run` runner that loads a suite, iterates cases, calls the substrate per case, and gates pass/fail. A built-in client of the substrate — no private path. | Application | Observe & Eval |
 
 ## Shell Concepts
 

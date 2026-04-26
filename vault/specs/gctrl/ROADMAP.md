@@ -73,18 +73,26 @@
 
 ## M4: Eval, Capacity & Intelligence — Planned
 
-**Goal:** Agents understand their own performance; teams can forecast delivery.
+**Goal:** Apps can author and run evals across the full product-dev lifecycle (dev → CI → staging → prod) on a single set of primitives. Agents understand their own performance; teams can forecast delivery.
+
+Observe & Eval owns both the **substrate** (metrics, prompts, judges, datasets, runs, score store) and the **harness** (`gctrl eval run`). See [Observe & Eval architecture](../architecture/apps/observe-eval.md) for the full design.
 
 | Task | Description | Priority | Depends On | Issue |
 |------|-------------|----------|------------|-------|
-| Eval scoring pipeline | Configurable auto-scoring rules beyond `auto-score` (custom evaluators) | P1 | M1 Scoring | TBD |
-| Prompt A/B comparison | Compare prompt versions by score distributions | P2 | Eval scoring, M1 Prompt versions | TBD |
+| Eval primitives schema | `eval_metrics`, `eval_datasets`, `eval_cases`, `eval_runs` tables; extend `scores.target_type` for `eval_case`/`eval_run` | P1 | M1 Storage | TBD |
+| Substrate API | `POST /api/eval/score`, `/metrics`, `/datasets`, `/cases`, `/runs` — applications call directly from their own loops | P1 | Eval primitives schema | TBD |
+| Built-in judge metrics | Curated set: `faithfulness`, `tool_correctness`, `json_correctness`, `hallucination`, generic `g_eval` | P1 | Substrate API, M1 Model router | TBD |
+| Harness runner | `gctrl eval run <suite>` end-to-end runner; thin client of the substrate API | P1 | Substrate API | TBD |
+| Baseline & CI gating | `--baseline <run-id>` regression diff, non-zero exit on threshold breach | P1 | Harness runner | TBD |
+| Prompt A/B comparison | Compare prompt versions / models against the same suite by score distributions | P2 | Harness runner, M1 Prompt versions | TBD |
+| `EvalRunCompleted` event + board surface | Surface regressions on Issue cards in gctrl-board | P2 | Harness runner | TBD |
+| TypeScript SDK | Thin wrapper over substrate API for embedded eval in TS apps | P2 | Substrate API | TBD |
 | Throughput metrics | Issues closed/week, avg cost/issue, avg duration/issue by agent | P1 | M2c Cost accumulation | TBD |
 | Delivery forecast | Given open issues + throughput, estimate completion date | P2 | Throughput metrics | TBD |
 | NL→SQL query interface | Natural language → guardrailed SQL for agent self-inspection | P2 | M1 Query engine | TBD |
 | Board snapshots | `gctrl board snapshot` → markdown context entry for agent consumption | P1 | M2a Board, M1 Context Manager | TBD |
 
-**Done when:** An agent can run `gctrl query "my cost this session"` and get an answer. A team lead can run `gctrl capacity forecast --milestone v2` and get a date estimate.
+**Done when:** An app can call `POST /api/eval/score` with `{ metric: "faithfulness", input, output }` from its own dev loop, *and* `gctrl eval run <suite> --baseline <run-id>` exits non-zero on regression in CI — both writing to the same `scores` table queryable as one trend. An agent can run `gctrl query "my cost this session"` and get an answer. A team lead can run `gctrl capacity forecast --milestone v2` and get a date estimate.
 
 ## Backlog (unprioritized)
 

@@ -363,7 +363,25 @@ Per Invariant #3, application tables carry the `board_` namespace prefix.
 
 ### 5.3 Eval application tables
 
-From `schema.rs`: `scores` (kernel-owned, general target_type/target_id). The `eval_scores` prefix in earlier spec revisions was folded into the kernel-owned `scores` table; eval uses it with `target_type IN ('session', 'span', 'task')`.
+The Observe & Eval application owns evaluation primitives across the full product-dev lifecycle (dev → CI → staging → prod). It uses both kernel-owned and app-namespaced tables. See [Observe & Eval architecture](apps/observe-eval.md) for design rationale.
+
+**Kernel-owned (shared sink):**
+
+- `scores` — every score from every mode (substrate API + harness runner, dev runs + live sessions). `target_type` extends to `eval_case` and `eval_run` alongside the existing `session`, `span`, `task`. The metric-continuity property (one metric name spanning the lifecycle) depends on this table being the single sink.
+- `prompt_versions` — reused for judge prompts (content-addressed by hash, same as agent prompts).
+
+**App-namespaced (`eval_*` per Invariant #3):**
+
+| Table | Purpose |
+|---|---|
+| `eval_metrics` | Metric definitions: `name`, `kind` (`deterministic` \| `judge` \| `composite`), `prompt_id` (for judges), `threshold`, `schema` |
+| `eval_datasets` | Named dataset metadata |
+| `eval_cases` | Cases belonging to datasets — `input`, `expected`, `context` (JSON-typed; permissive schema) |
+| `eval_runs` | Run-level metadata grouping a batch of `Score`s: suite name, `baseline_run_id`, `git_sha`, env, model, prompt version |
+
+DDL lands in `kernel/crates/gctrl-storage/src/schema.rs` under `CREATE_EVAL_*_TABLE` constants when M4 implementation begins.
+
+The earlier `eval_scores` prefix was folded into the kernel-owned `scores` table for the continuity reasons above; the `eval_*` namespace is reserved for app-owned tables that the kernel does not need to know about.
 
 ### 5.4 Indexes
 
