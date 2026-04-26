@@ -75,7 +75,7 @@ sequenceDiagram
 | `archived` | After retention window | no-op | Vault file stays (R2-retained); SQLite row gets `archived_at` |
 | `failed` | Any step may transition here on error | `uber_briefs.status='failed'`, `failed_reason`, `failed_at` | Terminal. Curator/renderer/deliverer errors all land here; `scored → archived` never fails |
 
-The full state machine is enumerated in [domain-model.md § 2.1](specs/domain-model.md#21-brief). Invalid transitions (e.g., `delivered → pending`, `failed → anything`) MUST be rejected at the storage layer.
+The full state machine is enumerated in [domain-model.md § 2.1](vault/specs/domain-model.md#21-brief). Invalid transitions (e.g., `delivered → pending`, `failed → anything`) MUST be rejected at the storage layer.
 
 ## CLI Commands
 
@@ -132,11 +132,11 @@ Uebermensch runs LLM work via kernel personas. Defaults configured in profile un
 | `uber-deepdive` | read, generation | Long-form thesis deep-dive synthesis |
 | `uber-evaluator` | read (briefs, sources), generation | LLM-as-judge eval over briefs |
 
-Each persona maps to a `prompt_versions` row templated under `apps/uebermensch/personas/<persona>.md` with vault overrides from `$UBER_VAULT_DIR/personas/<persona>.md` (authored tier) taking precedence. (Note: the vault's `prompts/` folder is reserved for user-authored research queries — see [profile.md § prompts/](specs/profile.md#promptsslugmd-optional).)
+Each persona maps to a `prompt_versions` row templated under `apps/uebermensch/personas/<persona>.md` with vault overrides from `$UBER_VAULT_DIR/personas/<persona>.md` (authored tier) taking precedence. (Note: the vault's `prompts/` folder is reserved for user-authored research queries — see [profile.md § prompts/](vault/specs/profile.md#promptsslugmd-optional).)
 
 ## Dispatch Flow (Agent Work on Uebermensch)
 
-When an engineer dispatches work on Uebermensch itself (fix a prompt, add a driver), it flows through gctrl-board in project `UBERDEV` — the same cycle as any other gctrl-board project. See [product-cycle.md](../gctrl-board/specs/workflows/product-cycle.md).
+When an engineer dispatches work on Uebermensch itself (fix a prompt, add a driver), it flows through gctrl-board in project `UBERDEV` — the same cycle as any other gctrl-board project. See [product-cycle.md](../gctrl-board/vault/specs/workflows/product-cycle.md).
 
 Briefs are neither Issues nor Tasks — they are app-owned `uber_briefs` rows. A brief MAY be converted to an Issue (via UC-3) in any project the user chooses.
 
@@ -146,7 +146,7 @@ Uebermensch runs in two modes:
 
 | Mode | Description | Primary target |
 |------|-------------|----------------|
-| **Local daemon + Obsidian vault** | Runs alongside the gctrl kernel on the user's machine. Reads the vault at `$UBER_VAULT_DIR` (default `~/uebermensch-vault`). Obsidian opens the same directory — no ETL, no export step. Vault syncs to R2 via `sync.vault.uber` mount (see [profile.md § Sync (R2)](specs/profile.md#sync-r2)). | Default. Dev, single-user, multi-device via R2 pull. |
+| **Local daemon + Obsidian vault** | Runs alongside the gctrl kernel on the user's machine. Reads the vault at `$UBER_VAULT_DIR` (default `~/uebermensch-vault`). Obsidian opens the same directory — no ETL, no export step. Vault syncs to R2 via `sync.vault.uber` mount (see [profile.md § Sync (R2)](vault/specs/profile.md#sync-r2)). | Default. Dev, single-user, multi-device via R2 pull. |
 | **Cloudflare Worker** (planned M4) | Runs as a Worker backed by D1 (`uber_*` index) + R2 (vault content). Profile's authored tier continues to git-sync from the external repo; the Worker serves read-only views of the R2-hosted vault. | Team/shared deploy. |
 
 Local daemon + vault is always the source of truth during development. Cloud deploy mirrors the pattern in [gctrl-board/WORKFLOW.md — Deployment](../gctrl-board/WORKFLOW.md#deployment) with the additional R2 vault mount.
@@ -193,10 +193,10 @@ Profile references drivers by name; drivers read their own secrets from the kern
 | Rust driver-discord | `kernel/crates/gctrl-driver-discord/` |
 | Rust driver-rss | `kernel/crates/gctrl-driver-rss/` |
 | Rust driver-markets | `kernel/crates/gctrl-driver-markets/` |
-| Architecture spec | `apps/uebermensch/specs/architecture.md` |
-| Domain model | `apps/uebermensch/specs/domain-model.md` |
-| Profile schema | `apps/uebermensch/specs/profile.md` |
-| KB extensions | `apps/uebermensch/specs/knowledge-base.md` |
-| Briefing pipeline | `apps/uebermensch/specs/briefing-pipeline.md` |
-| Delivery | `apps/uebermensch/specs/delivery.md` |
-| Eval | `apps/uebermensch/specs/eval.md` |
+| Architecture spec | `apps/uebermensch/vault/specs/architecture.md` |
+| Domain model | `apps/uebermensch/vault/specs/domain-model.md` |
+| Profile schema | `apps/uebermensch/vault/specs/profile.md` |
+| KB extensions | `apps/uebermensch/vault/specs/knowledge-base.md` |
+| Briefing pipeline | `apps/uebermensch/vault/specs/briefing-pipeline.md` |
+| Delivery | `apps/uebermensch/vault/specs/delivery.md` |
+| Eval | `apps/uebermensch/vault/specs/eval.md` |

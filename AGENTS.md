@@ -4,7 +4,7 @@
 
 GroundCtrl (gctrl) is a local-first operating system for human+agent teams. Follows the **Unix layered model**: a **Kernel** (Rust — telemetry, storage, guardrails, query, network, browser, sync; exposes HTTP API on `:4318`), a **Shell** (Effect-TS CLI — invokes kernel via HTTP, communicates with external tools like GitHub via direct REST API), **Native Applications & Utilities** (Effect-TS — board, eval, capacity), and **External Applications** (Linear, Plane, Notion, Phoenix — connected via drivers). DuckDB storage. Unix philosophy throughout; DDD for domain modeling.
 
-**Dogfooding:** We use gctrl to build gctrl. gctrl's own issue tracking, agent dispatch, and PR workflow are defined in `vault/specs/gctrl/`. Opinionated product workflows (issue lifecycle, sprint cycle, PR review, PRD template) live in `apps/gctrl-board/specs/workflows/`. Kernel-level orchestration and dispatch format are defined in `vault/specs/architecture/kernel/`. The telemetry, task tracking, guardrails, and CLI tools are exercised daily during development. If a feature isn't useful for building gctrl itself, question whether it belongs. Bugs found during dogfooding are the highest-priority fixes.
+**Dogfooding:** We use gctrl to build gctrl. gctrl's own issue tracking, agent dispatch, and PR workflow are defined in `vault/specs/gctrl/`. Opinionated product workflows (issue lifecycle, sprint cycle, PR review, PRD template) live in `apps/gctrl-board/vault/specs/workflows/`. Kernel-level orchestration and dispatch format are defined in `vault/specs/architecture/kernel/`. The telemetry, task tracking, guardrails, and CLI tools are exercised daily during development. If a feature isn't useful for building gctrl itself, question whether it belongs. Bugs found during dogfooding are the highest-priority fixes.
 
 ## Specs Table of Contents
 
@@ -20,7 +20,7 @@ The `vault/specs/` directory is the single source of truth for cross-cutting des
 
 | Document | Scope | Content that belongs here |
 |----------|-------|--------------------------|
-| `vault/specs/gctrl/PRD.md` | Product requirements | Goals, non-goals, use cases, roadmap (→ issues), success criteria. Instantiates the [PRD template](apps/gctrl-board/specs/workflows/prd-template.md). MUST NOT contain architecture or implementation details. |
+| `vault/specs/gctrl/PRD.md` | Product requirements | Goals, non-goals, use cases, roadmap (→ issues), success criteria. Instantiates the [PRD template](apps/gctrl-board/vault/specs/workflows/prd-template.md). MUST NOT contain architecture or implementation details. |
 
 ### Architecture & Boundaries
 
@@ -42,17 +42,17 @@ Kernel-level orchestration and the WORKFLOW.md file format are architecture spec
 | `vault/specs/architecture/kernel/orchestrator.md` | Orchestration state machine | Kernel-level dispatch, retry, reconciliation, agent-agnostic execution. Claim states, transition triggers, concurrency control, workspace management. |
 | `vault/specs/architecture/kernel/workflow-format.md` | WORKFLOW.md file format | YAML frontmatter + prompt template file format for agent dispatch. |
 
-### Application Workflows (`apps/gctrl-board/specs/workflows/`)
+### Application Workflows (`apps/gctrl-board/vault/specs/workflows/`)
 
 Opinionated product workflows owned by gctrl-board. These define how work flows through the application — kanban lifecycle, sprint cycle, PR conventions, PRD format.
 
 | Document | Scope | Content that belongs here |
 |----------|-------|--------------------------|
-| `apps/gctrl-board/specs/workflows/product-cycle.md` | Sprint cycle | Plan → iterate (agent-autonomous) → show & tell. Multiple iterations per cycle. Agent self-verification, autonomous fixes, suggestions. |
-| `apps/gctrl-board/specs/workflows/issue-lifecycle.md` | Kanban lifecycle | Statuses, transition rules, auto-transitions. |
-| `apps/gctrl-board/specs/workflows/pr-review.md` | PR review conventions | PR structure, review checklist, agent PR conventions, merge strategy. |
-| `apps/gctrl-board/specs/workflows/prd-template.md` | PRD template | Product requirements document template for gctrl-board projects. |
-| `apps/gctrl-board/specs/workflows/roadmap-template.md` | Roadmap template | Milestones, task breakdown, acceptance criteria, open questions — decoupled from the PRD. |
+| `apps/gctrl-board/vault/specs/workflows/product-cycle.md` | Sprint cycle | Plan → iterate (agent-autonomous) → show & tell. Multiple iterations per cycle. Agent self-verification, autonomous fixes, suggestions. |
+| `apps/gctrl-board/vault/specs/workflows/issue-lifecycle.md` | Kanban lifecycle | Statuses, transition rules, auto-transitions. |
+| `apps/gctrl-board/vault/specs/workflows/pr-review.md` | PR review conventions | PR structure, review checklist, agent PR conventions, merge strategy. |
+| `apps/gctrl-board/vault/specs/workflows/prd-template.md` | PRD template | Product requirements document template for gctrl-board projects. |
+| `apps/gctrl-board/vault/specs/workflows/roadmap-template.md` | Roadmap template | Milestones, task breakdown, acceptance criteria, open questions — decoupled from the PRD. |
 
 ### Application Specs (`apps/{app-name}/`)
 
@@ -60,22 +60,26 @@ Every application MUST have its own directory under `apps/` containing at minimu
 
 | File | Required | Content |
 |------|----------|---------|
-| `PRD.md` | MUST | Product requirements — problem, goals, use cases, roadmap. Instantiates the [PRD template](apps/gctrl-board/specs/workflows/prd-template.md). |
+| `PRD.md` | MUST | Product requirements — problem, goals, use cases, roadmap. Instantiates the [PRD template](apps/gctrl-board/vault/specs/workflows/prd-template.md). |
 | `WORKFLOW.md` | MUST | How work flows through the app — agent dispatch, personas, review conventions. |
-| `specs/` | SHOULD | App-specific architecture, domain model, and implementation specs. |
+| `vault/` | SHOULD | App vault — Obsidian-mountable. Contains `specs/` (architecture, domain model, implementation), and per-app operational data (e.g. `BOARD/`, `INBOX/`). Bare `[[slug]]` wikilinks allowed for issue/operational refs. |
 
 ```
 apps/
-├── gctrl-board/           # First application
-│   ├── PRD.md            # Board-specific product requirements
-│   ├── WORKFLOW.md       # Board-specific workflow (agent assignment, issue lifecycle)
-│   └── specs/            # Board-specific specs (tracker, kanban, dependencies)
-├── observe-eval/         # Future application
+├── gctrl-board/                # First application
+│   ├── PRD.md                  # Board-specific product requirements
+│   ├── WORKFLOW.md             # Board-specific workflow (agent assignment, issue lifecycle)
+│   └── vault/
+│       ├── specs/              # Board-specific specs (tracker, kanban, dependencies)
+│       └── BOARD/              # Board issues (BOARD-1.md, ...)
+├── gctrl-inbox/
 │   ├── PRD.md
-│   └── WORKFLOW.md
-└── capacity/             # Future application
-    ├── PRD.md
-    └── WORKFLOW.md
+│   ├── WORKFLOW.md
+│   └── vault/
+│       └── INBOX/              # Inbox messages
+├── utils/                      # Repo-shipped skills (utility app)
+│   └── skills/
+└── …                           # Future apps follow the same shape
 ```
 
 This separates each app's product context from the kernel specs. Agents working on a specific app load that app's `PRD.md` and `WORKFLOW.md` for context — not the entire `vault/specs/` tree.

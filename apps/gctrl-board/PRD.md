@@ -2,7 +2,7 @@
 
 > Agent-native project management, observability, and evaluation for human+agent teams. **Track issues, understand agent behavior through traces and prompts, and close the feedback loop with eval scoring.** A native application in the gctrl Unix architecture — rides on the shell and kernel (not consumed as a library). Includes a **web UI** (kanban board + agent OTel dashboard) and CLI surface.
 >
-> Instantiates the [PRD template](specs/workflows/prd-template.md).
+> Instantiates the [PRD template](vault/specs/workflows/prd-template.md).
 
 ## Architectural Position
 

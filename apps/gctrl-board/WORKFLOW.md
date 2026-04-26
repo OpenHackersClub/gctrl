@@ -4,7 +4,7 @@ How work flows through gctrl-board, from issue creation to completion.
 
 ## Issue Lifecycle (Kanban)
 
-Follows the [issue lifecycle spec](specs/workflows/issue-lifecycle.md).
+Follows the [issue lifecycle spec](vault/specs/workflows/issue-lifecycle.md).
 
 ```
 backlog → todo → in_progress → in_review → done
@@ -33,11 +33,11 @@ Transitions are validated at the Rust storage layer. Invalid transitions return 
 | PR opened referencing issue key | Move to `in_review` |
 | PR merged | Move to `done` |
 | All blockers resolved | Move blocked issue to `todo` |
-| Agent hands off work (review / pause / completion) | Post `## Agent: <name>` comment on the Issue — see [pr-review.md § Agent Handoff via Issue Comments](specs/workflows/pr-review.md#agent-handoff-via-issue-comments) |
+| Agent hands off work (review / pause / completion) | Post `## Agent: <name>` comment on the Issue — see [pr-review.md § Agent Handoff via Issue Comments](vault/specs/workflows/pr-review.md#agent-handoff-via-issue-comments) |
 
 ## Agent Dispatch Flow
 
-See [product-cycle.md](specs/workflows/product-cycle.md) for the full cycle spec.
+See [product-cycle.md](vault/specs/workflows/product-cycle.md) for the full cycle spec.
 
 ```mermaid
 sequenceDiagram
@@ -177,16 +177,16 @@ wrangler d1 migrations create gctrl-board-db "<description>"
 
 ## Markdown Directory Convention
 
-Issues can be authored as plain markdown files under the repo's top-level `gctrl/` directory. The kernel daemon (`gctrld serve`) auto-detects `./gctrl/` and runs a file watcher that imports new/modified `*.md` files into the local DuckDB `board_*` tables (content-hash deduped). Override the path with `gctrld serve --board-dir <path>`.
+Issues are authored as plain markdown files inside the gctrl-board app vault. The kernel daemon (`gctrld serve --board-dir <path>`) runs a file watcher that imports new/modified `*.md` files into the local DuckDB `board_*` tables (content-hash deduped).
 
 ```
-gctrl/                       # Configurable via --board-dir; default: ./gctrl/
-├── BOARD/                   # Subdirectory name = project key (uppercased)
-│   ├── BOARD-1.md           #   filename stem must match issue key
-│   └── BOARD-2.md
-└── INBOX/
-    └── INBOX-1.md
+apps/gctrl-board/vault/      # Pass to --board-dir
+└── BOARD/                   # Subdirectory name = project key (uppercased)
+    ├── BOARD-1.md           #   filename stem must match issue key
+    └── BOARD-2.md
 ```
+
+INBOX records live in the gctrl-inbox app vault (`apps/gctrl-inbox/vault/INBOX/`) and follow the same convention; the daemon watches each app vault separately.
 
 Rules:
 

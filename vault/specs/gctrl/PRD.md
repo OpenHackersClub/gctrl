@@ -2,7 +2,7 @@
 
 > Tools and workflows for harness engineering — so agents work with the right context and guardrails, and humans deep-think on what matters and review work.
 >
-> Instantiates the [PRD template](../../apps/gctrl-board/specs/workflows/prd-template.md) for gctrl itself.
+> Instantiates the [PRD template](../../apps/gctrl-board/vault/specs/workflows/prd-template.md) for gctrl itself.
 
 ## The Problem
 
