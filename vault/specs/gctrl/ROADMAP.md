@@ -79,7 +79,7 @@ Observe & Eval owns both the **substrate** (metrics, prompts, judges, datasets, 
 
 | Task | Description | Priority | Depends On | Issue |
 |------|-------------|----------|------------|-------|
-| Eval primitives schema | `eval_metrics`, `eval_datasets`, `eval_cases`, `eval_runs` tables; extend `scores.target_type` for `eval_case`/`eval_run` | P1 | M1 Storage | TBD |
+| Eval primitives schema | `eval_metrics`, `eval_datasets`, `eval_cases`, `eval_runs` tables; extend `scores.target_type` for `eval_case`/`eval_run` and add `scores.eval_run_id` FK. See [implementation/kernel/eval-storage.md](../implementation/kernel/eval-storage.md) | P1 | M1 Storage | TBD |
 | Substrate API | `POST /api/eval/score`, `/metrics`, `/datasets`, `/cases`, `/runs` — applications call directly from their own loops | P1 | Eval primitives schema | TBD |
 | Built-in judge metrics | Curated set: `faithfulness`, `tool_correctness`, `json_correctness`, `hallucination`, generic `g_eval` | P1 | Substrate API, M1 Model router | TBD |
 | Harness runner | `gctrl eval run <suite>` end-to-end runner; thin client of the substrate API | P1 | Substrate API | TBD |
