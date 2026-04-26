@@ -9,6 +9,19 @@ Defined as a **kernel interface trait** with **platform-specific implementations
 
 > **Terminology note:** "Adapter" here refers to internal kernel implementations (tokio timers, launchd, DO Alarms), not external app drivers. See [os.md § 5](../os.md) for the driver/adapter distinction.
 
+## Implementation status (April 2026)
+
+The unified `SchedulerPort` described below is the **target shape**. The current code splits these responsibilities across two crates:
+
+| Responsibility | Crate | Storage |
+|---|---|---|
+| Task tracking (#1) — claim, dispatch, complete agent work | `gctrl-orch` | `tasks` table |
+| Deferred & recurring execution (#2) — cron-driven HTTP callbacks | `gctrl-scheduler` | `schedules` table |
+
+`gctrl-scheduler` today is a generic "fire HTTP at a URL on a cron" runner. It does NOT yet read from or write to the `tasks` table, and it does NOT normalize agent-system metadata. The `Schedule` row in storage is a callback definition (cron + target URL + body), not a `Task`.
+
+Unifying the two behind a single `SchedulerPort` is **deferred** — the contracts and lifecycles are different enough (long-lived agent claims with retries vs. short HTTP callbacks with idempotent re-fires) that conflating them prematurely would tangle agent orchestration with periodic ingest. When unification ships, `schedule_recurring(cron)` will produce `Task` rows that the orch dispatcher claims; until then, recurring HTTP callbacks live in their own table and the two crates communicate over the kernel HTTP API.
+
 ---
 
 ## Tasks

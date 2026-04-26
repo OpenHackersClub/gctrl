@@ -94,6 +94,33 @@ async fn runner_records_failure_on_5xx() {
 }
 
 #[tokio::test]
+async fn runner_caps_huge_response_body() {
+    // Target returns 256 KB; runner cap is 64 KB. Stored response must be
+    // bounded — otherwise a misbehaving target could OOM the daemon.
+    let big_body: String = "x".repeat(256 * 1024);
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/big"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(big_body))
+        .mount(&mock)
+        .await;
+
+    let store = Arc::new(SqliteStore::open(":memory:").unwrap());
+    let sched = make_due_schedule(&format!("{}/big", mock.uri()));
+    store.create_schedule(&sched).unwrap();
+
+    let runner = ScheduleRunner::new(Arc::clone(&store), SchedulerConfig::default());
+    runner.tick().await.unwrap();
+
+    let after = store.get_schedule(&sched.id).unwrap().unwrap();
+    assert_eq!(after.last_status, Some(200));
+    let stored = after.last_response.expect("response stored");
+    // Preview cap (4 KB) is what actually lands in storage; the body cap
+    // (64 KB) is what's read off the wire. The preview is well below either.
+    assert!(stored.len() <= 8 * 1024, "stored len {}", stored.len());
+}
+
+#[tokio::test]
 async fn runner_skips_non_due_schedules() {
     let store = Arc::new(SqliteStore::open(":memory:").unwrap());
     // Schedule whose next_run is far in the future.

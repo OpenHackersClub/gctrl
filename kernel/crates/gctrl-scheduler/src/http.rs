@@ -18,6 +18,7 @@ use gctrl_storage::SqliteStore;
 use serde::{Deserialize, Serialize};
 
 use crate::cron::next_after;
+use crate::runner::read_capped_body;
 
 pub fn router(sqlite: Arc<SqliteStore>) -> Router {
     Router::new()
@@ -178,9 +179,9 @@ async fn run_now(
     }
 
     let (success, status, response, error) = match req.send().await {
-        Ok(r) => {
+        Ok(mut r) => {
             let st = r.status().as_u16() as i64;
-            let body = r.text().await.unwrap_or_default();
+            let body = read_capped_body(&mut r).await;
             ((200..400).contains(&st), Some(st), Some(body), None)
         }
         Err(e) => (false, None, None, Some(e.to_string())),

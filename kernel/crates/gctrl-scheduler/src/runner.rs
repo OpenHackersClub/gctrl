@@ -23,6 +23,11 @@ use tracing::{debug, error, info, warn};
 
 use crate::cron::next_after;
 
+/// Hard cap on bytes read from a callback response. A misconfigured or
+/// malicious target could otherwise stream gigabytes into memory before we
+/// truncate. We chunk-read up to this and bail; the preview field then
+/// further trims to `RESPONSE_PREVIEW_BYTES` for storage.
+const RESPONSE_BODY_CAP_BYTES: usize = 64 * 1024;
 const RESPONSE_PREVIEW_BYTES: usize = 4_096;
 
 pub struct ScheduleRunner {
@@ -112,9 +117,9 @@ impl ScheduleRunner {
         }
 
         let outcome = match req.send().await {
-            Ok(resp) => {
+            Ok(mut resp) => {
                 let status = resp.status().as_u16() as i64;
-                let body = resp.text().await.unwrap_or_default();
+                let body = read_capped_body(&mut resp).await;
                 let preview = truncate(&body, RESPONSE_PREVIEW_BYTES);
                 let success = (200..400).contains(&status);
                 if success {
@@ -220,6 +225,33 @@ struct FireOutcome {
     status: Option<i64>,
     response: Option<String>,
     error: Option<String>,
+}
+
+/// Read at most `RESPONSE_BODY_CAP_BYTES` from `resp` using chunked reads.
+/// Stops streaming the moment the cap is reached, so a 1 GB response body
+/// only ever costs us 64 KB of buffer + whatever single chunk reqwest hands
+/// us next. Made `pub(crate)` so the `run_now` HTTP handler can reuse it.
+pub(crate) async fn read_capped_body(resp: &mut reqwest::Response) -> String {
+    let mut buf: Vec<u8> = Vec::with_capacity(8 * 1024);
+    let mut overflow = false;
+    while let Ok(Some(chunk)) = resp.chunk().await {
+        if buf.len() + chunk.len() > RESPONSE_BODY_CAP_BYTES {
+            let take = RESPONSE_BODY_CAP_BYTES.saturating_sub(buf.len());
+            buf.extend_from_slice(&chunk[..take]);
+            overflow = true;
+            break;
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    let body = String::from_utf8_lossy(&buf).into_owned();
+    if overflow {
+        format!(
+            "{body}…[truncated at {}-byte response cap]",
+            RESPONSE_BODY_CAP_BYTES
+        )
+    } else {
+        body
+    }
 }
 
 fn truncate(s: &str, max_bytes: usize) -> String {
