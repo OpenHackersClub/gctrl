@@ -2,7 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use gctrl_core::{NetConfig, SyncConfig};
+use gctrl_core::{NetConfig, SchedulerConfig, SyncConfig};
+use gctrl_scheduler::ScheduleRunner;
 use gctrl_storage::{DuckDbStore, SqliteStore};
 
 use super::watch;
@@ -41,6 +42,19 @@ pub async fn run(host: String, port: u16, db_path: &str, board_dir: Option<PathB
     }
     if net_config.cf_browser_enabled() {
         tracing::info!("Cloudflare Browser Rendering enabled");
+    }
+
+    // Spawn the scheduler runner. Uses defaults from `SchedulerConfig::default()`
+    // (30s poll, 16 jobs/tick, 60s timeout) — operators can override later via
+    // config file once we wire `~/.config/gctrl/config.toml` parsing.
+    let scheduler_config = SchedulerConfig::default();
+    if scheduler_config.enabled {
+        let runner_store = Arc::clone(&sqlite);
+        let runner_cfg = scheduler_config.clone();
+        tokio::spawn(async move {
+            ScheduleRunner::new(runner_store, runner_cfg).run_forever().await;
+        });
+        tracing::info!("scheduler runner spawned (poll={}s)", scheduler_config.poll_interval_secs);
     }
 
     let router = gctrl_otel::create_router_full(

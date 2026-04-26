@@ -13,7 +13,8 @@ use gctrl_core::{
     memory::{MemoryEntry, MemoryEntryId, MemoryFilter, MemoryStats, MemoryType},
     AcceptanceCheck, AcceptanceCheckRow, AcceptanceKind, AcceptanceRollup, AcceptanceStatus,
     GctlError, InboxAction, InboxActionFilter, InboxMessage, InboxMessageFilter, InboxThread,
-    PersonaDefinition, PersonaReviewRule, Result, Task, VaultMount, VaultMountKind,
+    PersonaDefinition, PersonaReviewRule, Result, Schedule, ScheduleFilter, ScheduleRunUpdate,
+    Task, VaultMount, VaultMountKind,
 };
 use rusqlite::{params, Connection};
 
@@ -284,6 +285,29 @@ CREATE TABLE IF NOT EXISTS gctrl_vault_mounts (
 )
 "#;
 
+const CREATE_SCHEDULES: &str = r#"
+CREATE TABLE IF NOT EXISTS schedules (
+    id              TEXT PRIMARY KEY,
+    name            TEXT NOT NULL UNIQUE,
+    cron            TEXT NOT NULL,
+    target_url      TEXT NOT NULL,
+    target_method   TEXT NOT NULL DEFAULT 'POST',
+    body_json       TEXT,
+    headers_json    TEXT,
+    timeout_secs    INTEGER NOT NULL DEFAULT 60,
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    next_run_at     TEXT,
+    last_run_at     TEXT,
+    last_status     INTEGER,
+    last_response   TEXT,
+    last_error      TEXT,
+    run_count       INTEGER NOT NULL DEFAULT 0,
+    failure_count   INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+)
+"#;
+
 const CREATE_INDEXES: &[&str] = &[
     // Board indexes
     "CREATE INDEX IF NOT EXISTS idx_board_issues_project ON board_issues(project_id)",
@@ -331,6 +355,9 @@ const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_memory_synced ON memory_entries(synced)",
     "CREATE INDEX IF NOT EXISTS idx_memory_device ON memory_entries(device_id)",
     "CREATE INDEX IF NOT EXISTS idx_memory_updated ON memory_entries(updated_at)",
+    // Schedule indexes — `due` is the hot path for the runner poll loop
+    "CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules(enabled, next_run_at)",
+    "CREATE INDEX IF NOT EXISTS idx_schedules_name ON schedules(name)",
 ];
 
 // ═══════════════════════════════════════════════════════════════
@@ -392,6 +419,7 @@ impl SqliteStore {
             CREATE_CONTEXT_ENTRIES,
             CREATE_MEMORY_ENTRIES,
             CREATE_VAULT_MOUNTS,
+            CREATE_SCHEDULES,
         ];
         for stmt in &tables {
             conn.execute_batch(stmt)
@@ -2408,6 +2436,153 @@ impl SqliteStore {
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
     }
+
+    // ───────────────────────── Schedules ─────────────────────────
+
+    pub fn create_schedule(&self, sched: &Schedule) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO schedules (id, name, cron, target_url, target_method, body_json, headers_json, timeout_secs, enabled, next_run_at, last_run_at, last_status, last_response, last_error, run_count, failure_count, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            params![
+                sched.id,
+                sched.name,
+                sched.cron,
+                sched.target_url,
+                sched.target_method,
+                sched.body_json.as_ref().map(|v| v.to_string()),
+                sched.headers_json.as_ref().map(|v| v.to_string()),
+                sched.timeout_secs,
+                sched.enabled,
+                sched.next_run_at,
+                sched.last_run_at,
+                sched.last_status,
+                sched.last_response,
+                sched.last_error,
+                sched.run_count,
+                sched.failure_count,
+                sched.created_at,
+                sched.updated_at,
+            ],
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_schedule(&self, id_or_name: &str) -> Result<Option<Schedule>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, name, cron, target_url, target_method, body_json, headers_json, timeout_secs, enabled, next_run_at, last_run_at, last_status, last_response, last_error, run_count, failure_count, created_at, updated_at
+             FROM schedules WHERE id = ?1 OR name = ?1",
+            [id_or_name],
+            row_to_schedule,
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(GctlError::Storage(other.to_string())),
+        })
+    }
+
+    pub fn list_schedules(&self, filter: &ScheduleFilter) -> Result<Vec<Schedule>> {
+        let conn = self.conn.lock().unwrap();
+        let mut sql = "SELECT id, name, cron, target_url, target_method, body_json, headers_json, timeout_secs, enabled, next_run_at, last_run_at, last_status, last_response, last_error, run_count, failure_count, created_at, updated_at FROM schedules WHERE 1=1".to_string();
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        let mut idx = 1;
+        if let Some(en) = filter.enabled {
+            sql.push_str(&format!(" AND enabled = ?{}", idx));
+            params_vec.push(Box::new(en));
+            idx += 1;
+        }
+        if let Some(ref pre) = filter.name_prefix {
+            sql.push_str(&format!(" AND name LIKE ?{}", idx));
+            params_vec.push(Box::new(format!("{}%", pre)));
+        }
+        sql.push_str(" ORDER BY name");
+        let mut stmt = conn.prepare(&sql).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let p: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(rusqlite::params_from_iter(p), row_to_schedule)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// Schedules whose `next_run_at` is `<= now` AND `enabled = 1`. The hot path
+    /// for the runner — caller polls this on every tick.
+    pub fn list_due_schedules(&self, now_rfc3339: &str, limit: usize) -> Result<Vec<Schedule>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, cron, target_url, target_method, body_json, headers_json, timeout_secs, enabled, next_run_at, last_run_at, last_status, last_response, last_error, run_count, failure_count, created_at, updated_at
+             FROM schedules
+             WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ?1
+             ORDER BY next_run_at LIMIT ?2"
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt.query_map(params![now_rfc3339, limit as i64], row_to_schedule)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn delete_schedule(&self, id_or_name: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn.execute(
+            "DELETE FROM schedules WHERE id = ?1 OR name = ?1",
+            [id_or_name],
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(n > 0)
+    }
+
+    pub fn set_schedule_enabled(&self, id_or_name: &str, enabled: bool) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        let n = conn.execute(
+            "UPDATE schedules SET enabled = ?1, updated_at = ?2 WHERE id = ?3 OR name = ?3",
+            params![enabled, now, id_or_name],
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(n > 0)
+    }
+
+    /// Persist outcome of a runner attempt + the precomputed next firing time.
+    /// `failure_count` increments on `update.success == false`; `run_count`
+    /// increments unconditionally so the user can tell "fired but failed" from
+    /// "never fired."
+    pub fn record_schedule_run(&self, id: &str, update: &ScheduleRunUpdate) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        let failure_inc: i64 = if update.success { 0 } else { 1 };
+        conn.execute(
+            "UPDATE schedules
+             SET last_run_at = ?1,
+                 next_run_at = ?2,
+                 last_status = ?3,
+                 last_response = ?4,
+                 last_error = ?5,
+                 run_count = run_count + 1,
+                 failure_count = failure_count + ?6,
+                 updated_at = ?7
+             WHERE id = ?8",
+            params![
+                update.last_run_at,
+                update.next_run_at,
+                update.last_status,
+                update.last_response,
+                update.last_error,
+                failure_inc,
+                now,
+                id,
+            ],
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Set `next_run_at` without touching run history — used after creating a
+    /// schedule or when re-enabling one whose stored `next_run_at` is stale.
+    pub fn set_schedule_next_run(&self, id: &str, next_run_at: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE schedules SET next_run_at = ?1, updated_at = ?2 WHERE id = ?3",
+            params![next_run_at, now, id],
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -2431,6 +2606,31 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         updated_at: chrono::DateTime::parse_from_rfc3339(&updated_at_str)
             .map(|dt| dt.with_timezone(&chrono::Utc))
             .unwrap_or_else(|_| chrono::Utc::now()),
+    })
+}
+
+fn row_to_schedule(row: &rusqlite::Row<'_>) -> rusqlite::Result<Schedule> {
+    let body_json_str: Option<String> = row.get(5)?;
+    let headers_json_str: Option<String> = row.get(6)?;
+    Ok(Schedule {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        cron: row.get(2)?,
+        target_url: row.get(3)?,
+        target_method: row.get(4)?,
+        body_json: body_json_str.and_then(|s| serde_json::from_str(&s).ok()),
+        headers_json: headers_json_str.and_then(|s| serde_json::from_str(&s).ok()),
+        timeout_secs: row.get(7)?,
+        enabled: row.get(8)?,
+        next_run_at: row.get(9)?,
+        last_run_at: row.get(10)?,
+        last_status: row.get(11)?,
+        last_response: row.get(12)?,
+        last_error: row.get(13)?,
+        run_count: row.get(14)?,
+        failure_count: row.get(15)?,
+        created_at: row.get(16)?,
+        updated_at: row.get(17)?,
     })
 }
 

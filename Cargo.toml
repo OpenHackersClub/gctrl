@@ -12,6 +12,7 @@ members = [
     "kernel/crates/gctrl-sync",
     "kernel/crates/gctrl-context",
     "kernel/crates/gctrl-orch",
+    "kernel/crates/gctrl-scheduler",
 ]
 
 [workspace.package]

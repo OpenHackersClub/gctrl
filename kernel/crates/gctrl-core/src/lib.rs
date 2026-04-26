@@ -3,6 +3,7 @@ pub mod config;
 pub mod context;
 pub mod error;
 pub mod memory;
+pub mod schedule;
 pub mod types;
 
 pub use acceptance::*;
@@ -10,4 +11,5 @@ pub use config::*;
 pub use context::*;
 pub use error::*;
 pub use memory::*;
+pub use schedule::*;
 pub use types::*;
