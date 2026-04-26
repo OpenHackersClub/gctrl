@@ -615,4 +615,4 @@ Enforcement:
 - [briefing-pipeline.md § Prompt Contracts](briefing-pipeline.md#prompt-contracts) — how profile content enters prompts
 - [delivery.md § Channel Router](delivery.md#channel-router) — how `channels` config drives fan-out
 - [eval.md § Budget Enforcement](eval.md#budget-enforcement) — how `budgets` meet Guardrails
-- [kernel sync.md](../../../specs/architecture/kernel/sync.md) — the R2 sync primitive reused here
+- [kernel sync.md](../../../vault/specs/architecture/kernel/sync.md) — the R2 sync primitive reused here

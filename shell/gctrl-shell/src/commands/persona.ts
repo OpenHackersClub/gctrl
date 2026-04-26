@@ -35,7 +35,7 @@ const listCommand = Command.make("list", { format: formatOption }, ({ format }) 
     const personas = yield* kernel.get("/api/personas", PersonaList)
 
     if (personas.length === 0) {
-      yield* Console.log("No personas found. Run `gctrl persona seed` to load from specs/team/personas.md")
+      yield* Console.log("No personas found. Run `gctrl persona seed` to load from vault/specs/team/personas.md")
       return
     }
 
@@ -89,7 +89,7 @@ const seedFile = Options.file("file").pipe(Options.optional)
 const seedCommand = Command.make("seed", { file: seedFile }, ({ file }) =>
   Effect.gen(function* () {
     const kernel = yield* KernelClient
-    const filePath = Option.getOrElse(file, () => "specs/team/personas.md")
+    const filePath = Option.getOrElse(file, () => "vault/specs/team/personas.md")
 
     // Read and parse the markdown file
     const { readFileSync } = yield* Effect.sync(() => require("node:fs"))

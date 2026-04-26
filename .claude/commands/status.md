@@ -6,8 +6,8 @@ System health overview — active sessions, recent errors, cost summary.
 
 Read these files to understand the system model:
 
-- `specs/architecture/os.md` — Kernel layer (telemetry, storage, guardrails)
-- `specs/architecture/domain-model.md` — Session, span, and cost field definitions
+- `vault/specs/architecture/os.md` — Kernel layer (telemetry, storage, guardrails)
+- `vault/specs/architecture/domain-model.md` — Session, span, and cost field definitions
 
 ### 2. Gather Data
 

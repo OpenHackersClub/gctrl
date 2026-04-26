@@ -33,13 +33,13 @@ const checkAcceptanceCriteria = (
 
     // Check for specs with acceptance criteria
     const specSearch = yield* execPromise(
-      "grep -r 'acceptance_criteria\\|Acceptance Criteria\\|## AC\\|\\- \\[[ x]\\]' specs/ --include='*.md' -l 2>/dev/null || true",
+      "grep -r 'acceptance_criteria\\|Acceptance Criteria\\|## AC\\|\\- \\[[ x]\\]' vault/specs/ apps/*/vault/specs/ --include='*.md' -l 2>/dev/null || true",
       cwd
     )
 
     // Check for unchecked acceptance criteria items
     const unchecked = yield* execPromise(
-      "grep -rn '\\- \\[ \\]' specs/ --include='*.md' 2>/dev/null || true",
+      "grep -rn '\\- \\[ \\]' vault/specs/ apps/*/vault/specs/ --include='*.md' 2>/dev/null || true",
       cwd
     )
 

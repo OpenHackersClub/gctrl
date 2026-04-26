@@ -1,7 +1,7 @@
 // Live session-event stream hook.
 //
 // Wraps the browser `EventSource` against the kernel SSE endpoints
-// specified in `specs/architecture/apps/gctrl-analytics.md` §5:
+// specified in `vault/specs/architecture/apps/gctrl-analytics.md` §5:
 //   GET /api/sessions/stream            — every event
 //   GET /api/sessions/{id}/stream       — events for one session
 //

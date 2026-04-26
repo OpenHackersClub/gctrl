@@ -185,7 +185,7 @@ graph TB
 | **Install size** | Rust binary + npm workspaces | ~340MB (full), ~45MB (minimal) | npm global + Claude Code plugin | Elixir/OTP + Mix deps |
 | **Distribution** | Source (cargo + npm) | npm (`ruflo`), curl installer | Claude Code plugin marketplace or npm (`oh-my-claude-sisyphus`) | Source (Mix), or "build your own from SPEC.md" |
 | **Dependencies** | DuckDB (bundled), no cloud required | Node.js 20+, optional SQLite, optional pgvector | Claude Code (required), tmux (recommended), optional Codex/Gemini CLIs | Linear API key, Codex executable, filesystem |
-| **Spec quality** | Full specs/ directory with principles, domain model, architecture | 70+ ADRs | Plugin docs, CLI reference | 78KB SPEC.md — the most thorough spec in the group |
+| **Spec quality** | Full vault/specs/ directory with principles, domain model, architecture | 70+ ADRs | Plugin docs, CLI reference | 78KB SPEC.md — the most thorough spec in the group |
 
 ---
 

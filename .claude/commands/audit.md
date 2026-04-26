@@ -23,7 +23,7 @@ Parse the audit output. Each check reports PASS, FAIL, or WARN:
 - **Build** — TypeScript compilation (tsup + DTS) for all workspace packages
 - **Biome Lint** — static analysis on `shell/*/src/` and `apps/*/src/`
 - **Tests (TS)** — vitest test suites across shell and apps
-- **Acceptance Criteria** — unchecked `- [ ]` items in `specs/`
+- **Acceptance Criteria** — unchecked `- [ ]` items in `vault/specs/`
 
 ### 3. If Any Check Fails
 

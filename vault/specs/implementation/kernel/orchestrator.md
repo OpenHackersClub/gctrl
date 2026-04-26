@@ -1,6 +1,6 @@
 # Orchestration — Implementation Details
 
-Implementation details for the orchestration state machine defined in [specs/architecture/kernel/orchestrator.md](../../architecture/kernel/orchestrator.md). This file covers Rust crate structure, agent adapter wiring, and concrete configuration.
+Implementation details for the orchestration state machine defined in [vault/specs/architecture/kernel/orchestrator.md](../../architecture/kernel/orchestrator.md). This file covers Rust crate structure, agent adapter wiring, and concrete configuration.
 
 ## Tech Stack Rationale
 

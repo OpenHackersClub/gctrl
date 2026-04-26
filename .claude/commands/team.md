@@ -2,13 +2,13 @@ Spawn a team of specialist agents for a task — each with the right persona and
 
 > **Thin bridge**: Persona data is managed by the kernel (`persona_definitions` table).
 > This skill calls `gctrl persona` and `gctrl team` CLI commands to resolve and render prompts.
-> Edit personas in `specs/team/personas.md` and run `gctrl persona seed` to update the kernel.
+> Edit personas in `vault/specs/team/personas.md` and run `gctrl persona seed` to update the kernel.
 
 ## Instructions
 
 ### 1. Load Available Personas
 
-Read `specs/team/personas.md` to understand the 7 specialist roles.
+Read `vault/specs/team/personas.md` to understand the 7 specialist roles.
 
 Run `gctrl persona list --format json` to get kernel-stored personas. If empty, run `gctrl persona seed` first.
 

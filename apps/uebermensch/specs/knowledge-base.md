@@ -1,6 +1,6 @@
 # Uebermensch — Knowledge Base
 
-> How Uebermensch extends `gctrl-kb` (see [kernel knowledgebase.md](../../../specs/architecture/kernel/knowledgebase.md)) with an investment-domain schema — page types, frontmatter, and lint rules tailored to research, theses, and market tracking.
+> How Uebermensch extends `gctrl-kb` (see [kernel knowledgebase.md](../../../vault/specs/architecture/kernel/knowledgebase.md)) with an investment-domain schema — page types, frontmatter, and lint rules tailored to research, theses, and market tracking.
 >
 > **Non-goal:** building a parallel wiki. We add page types + frontmatter + lint rules; the link graph, ingest pipeline, and storage are all kernel primitives.
 
@@ -14,7 +14,7 @@
 
 ## Page Types
 
-Extends `WikiPageType` from [kernel domain-model § 2](../../../specs/architecture/domain-model.md#wikimeta--wikipagetype-specs-only) with one new variant (`Thesis`) and a documented convention for using the existing variants in an investment context.
+Extends `WikiPageType` from [kernel domain-model § 2](../../../vault/specs/architecture/domain-model.md#wikimeta--wikipagetype-specs-only) with one new variant (`Thesis`) and a documented convention for using the existing variants in an investment context.
 
 | Type | Kernel variant | Folder | Role | Written by |
 |------|---------------|--------|------|-----------|
@@ -224,7 +224,7 @@ sources_cited: [<source-slug>, ...]
 
 ## Wikilink Conventions
 
-Inherits [kernel knowledgebase § Wikilink Format](../../../specs/architecture/kernel/knowledgebase.md#wikilink-format). Uebermensch keeps wikilinks **Obsidian-native** — every `[[slug]]` is the stem of a markdown file somewhere under the vault. Typed prefixes (`[[thesis:slug]]`, `[[market:slug]]`) are forbidden: Obsidian treats them as a literal page name with a colon in it and the resolver fails.
+Inherits [kernel knowledgebase § Wikilink Format](../../../vault/specs/architecture/kernel/knowledgebase.md#wikilink-format). Uebermensch keeps wikilinks **Obsidian-native** — every `[[slug]]` is the stem of a markdown file somewhere under the vault. Typed prefixes (`[[thesis:slug]]`, `[[market:slug]]`) are forbidden: Obsidian treats them as a literal page name with a colon in it and the resolver fails.
 
 Rules:
 
@@ -250,7 +250,7 @@ Both are authored by `uber-deepdive`, not by the user. They fuel the "conviction
 
 ## Ingest Pipeline Extensions
 
-Inherits the kernel ingest workflow (see [knowledgebase § Ingest](../../../specs/architecture/kernel/knowledgebase.md#1-ingest)) with one addition:
+Inherits the kernel ingest workflow (see [knowledgebase § Ingest](../../../vault/specs/architecture/kernel/knowledgebase.md#1-ingest)) with one addition:
 
 **Investment overlay step** (between "extract entities" and "update index"):
 
@@ -364,7 +364,7 @@ Policy: the LLM MUST NOT silently invent new page types or frontmatter fields. N
 
 ## Related
 
-- [kernel knowledgebase.md](../../../specs/architecture/kernel/knowledgebase.md) — base KB design
+- [kernel knowledgebase.md](../../../vault/specs/architecture/kernel/knowledgebase.md) — base KB design
 - [domain-model.md § 6](domain-model.md#6-wiki-extensions-gctrl-kb) — new `Thesis` variant
 - [briefing-pipeline.md](briefing-pipeline.md) — how candidate selection + citation resolution work
 - [eval.md](eval.md) — lint results fuel eval scores

@@ -207,7 +207,7 @@ A **subscription** controls what enters a user's inbox:
 
 ### Board Integration
 
-All cross-app data flows through **kernel IPC events** (per Invariant #2 in `specs/principles.md`). gctrl-inbox and gctrl-board MUST NOT call each other's APIs directly or join each other's tables.
+All cross-app data flows through **kernel IPC events** (per Invariant #2 in `vault/specs/principles.md`). gctrl-inbox and gctrl-board MUST NOT call each other's APIs directly or join each other's tables.
 
 1. **Issue detail shows inbox count** — board reads inbox pending count via kernel HTTP API (`GET /api/inbox/threads?context_type=issue&context_ref=BACK-42`), not a direct table join
 2. **Thread links to issue** — inbox thread for BACK-42 links to board issue view via `context_ref` (the issue key). Inbox enriches display by fetching issue metadata from kernel API (`GET /api/board/issues/{key}`)

@@ -822,7 +822,7 @@ mod tests {
             review_focus: "Hexagonal boundaries, dependency direction".into(),
             pushes_back: "Adapters depend on each other".into(),
             tools: vec!["cargo build".into(), "cargo test".into()],
-            key_specs: vec!["specs/architecture/".into()],
+            key_specs: vec!["vault/specs/architecture/".into()],
             source_hash: Some("abc123".into()),
         };
         let json = serde_json::to_string(&persona).unwrap();

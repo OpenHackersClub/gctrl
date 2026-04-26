@@ -15,18 +15,18 @@ gctrl follows the **Unix philosophy** — both the layered model and the design 
 | **Make each program do one thing well** | Each crate is one primitive. Each CLI command is one verb. `gctrl net fetch` fetches. `gctrl net compact` compacts. No combined super-commands. |
 | **Build a prototype as soon as possible** | Stub crates (`gctrl-proxy`, `gctrl-sync`) ship with clear interfaces before full implementation. Feature-gated code allows incomplete work to coexist. |
 | **Choose portability over efficiency** | Scheduler uses a trait/driver pattern: tokio (local), launchd (macOS), DO Alarms (Cloudflare). DuckDB runs everywhere. |
-| **Store data in flat text files** | WORKFLOW.md, AGENTS.md, and specs/ are plain Markdown — editable with any tool. DuckDB stores structured data but exports to flat Parquet/CSV. Traffic logs are JSONL. |
+| **Store data in flat text files** | WORKFLOW.md, AGENTS.md, and vault/specs/ are plain Markdown — editable with any tool. DuckDB stores structured data but exports to flat Parquet/CSV. Traffic logs are JSONL. |
 | **Use software leverage** | External tools (Linear, Plane, Notion, Obsidian, Phoenix) are applications installed on the OS — connected via drivers and kernel IPC, not rebuilt. The kernel multiplies the value of every installed app. |
 | **Use shell scripts to increase leverage** | The CLI is the primary interface. Agents compose `gctrl` commands in scripts. WORKFLOW.md prompt templates generate agent prompts. Hooks are shell scripts. |
 | **Avoid captive user interfaces** | No mandatory GUI. Every feature is CLI/API-first and automatable. Obsidian, web dashboards, and other UIs are optional external apps, not requirements. |
 | **Make every program a filter** | Utilities accept stdin and produce stdout where practical. `--format json` on every command. Output pipes to `jq`, `grep`, other `gctrl` commands. |
 
-See `specs/principles.md` for the full Unix philosophy mapping and design principles.
+See `vault/specs/principles.md` for the full Unix philosophy mapping and design principles.
 
 ## Architecture Index
 
 ```
-specs/architecture/
+vault/specs/architecture/
 ├── README.md          ← this file — system overview, Unix philosophy, data flow
 ├── os.md              ← layer guide: kernel, shell, apps, utilities, external apps
 ├── domain-model.md    ← domain types, storage schema (DDL), Effect-TS schemas
@@ -260,4 +260,4 @@ Dependencies flow inward: Shell → Adapters → Domain, never reverse.
 
 ## Implementation Details
 
-For languages, frameworks, crate/package structure, dependency graphs, and code patterns, see `specs/implementation/kernel/components.md`.
+For languages, frameworks, crate/package structure, dependency graphs, and code patterns, see `vault/specs/implementation/kernel/components.md`.

@@ -49,11 +49,11 @@ flowchart TB
   Vault -.->|mount| Obsidian(["Obsidian app"])
 ```
 
-- **Table namespace:** `uber_*` (see Invariant #3 in [principles.md](../../specs/principles.md))
-- **Wiki infrastructure:** reuses `gctrl-kb` mounted at `$UBER_VAULT_DIR/wiki/` — see [knowledgebase.md](../../specs/architecture/kernel/knowledgebase.md)
-- **External data:** via kernel drivers only (LLM, Telegram, Discord, RSS, SEC, markets). App MUST NOT call external APIs directly — see [os.md § Dependency Direction](../../specs/architecture/os.md#dependency-direction-invariant)
+- **Table namespace:** `uber_*` (see Invariant #3 in [principles.md](../../vault/specs/principles.md))
+- **Wiki infrastructure:** reuses `gctrl-kb` mounted at `$UBER_VAULT_DIR/wiki/` — see [knowledgebase.md](../../vault/specs/architecture/kernel/knowledgebase.md)
+- **External data:** via kernel drivers only (LLM, Telegram, Discord, RSS, SEC, markets). App MUST NOT call external APIs directly — see [os.md § Dependency Direction](../../vault/specs/architecture/os.md#dependency-direction-invariant)
 - **Vault = Profile:** `$UBER_VAULT_DIR` (default `~/uebermensch-vault`) is both the portable profile git repo AND the Obsidian-mountable markdown vault. Briefs, wiki pages, and sources are plain markdown files. SQLite holds only an index (`vault_path` + `content_hash`). R2 sync makes the vault multi-device. See [specs/profile.md](specs/profile.md).
-- **Related apps:** subsumes the [researcher-market](../../specs/architecture/apps/researcher-market.md) and [researcher-agentic](../../specs/architecture/apps/researcher-agentic.md) patterns, adding daily briefings, action items, and multi-channel delivery
+- **Related apps:** subsumes the [researcher-market](../../vault/specs/architecture/apps/researcher-market.md) and [researcher-agentic](../../vault/specs/architecture/apps/researcher-agentic.md) patterns, adding daily briefings, action items, and multi-channel delivery
 
 ## Problem
 
@@ -258,7 +258,7 @@ Full spec in [specs/eval.md](specs/eval.md).
 | `driver-markets` | Prices + prediction market (Polymarket) + earnings/macro calendar producers | `MarketDataPort` (new) + `CalendarPort` | Planned (M3) |
 | `driver-gcal` | Google Calendar mirror (read-only by default; opt-in write-back) | `CalendarPort` (new) | Planned (calendar M1+; see [calendar.md](specs/calendar.md)) |
 
-Driver definitions live in new kernel crates (`kernel/crates/gctrl-driver-<name>/`), feature-gated. See [os.md § 5](../../specs/architecture/os.md) for the driver/adapter distinction. Uebermensch MUST NOT ship its own HTTP clients for these services.
+Driver definitions live in new kernel crates (`kernel/crates/gctrl-driver-<name>/`), feature-gated. See [os.md § 5](../../vault/specs/architecture/os.md) for the driver/adapter distinction. Uebermensch MUST NOT ship its own HTTP clients for these services.
 
 ## Roadmap
 

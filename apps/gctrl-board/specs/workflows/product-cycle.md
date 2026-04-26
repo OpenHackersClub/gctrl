@@ -4,7 +4,7 @@ Defines the sprint cycle for human+agent teams. A cycle is a time-boxed period (
 
 The core loop: **human sets goals → agent drafts plan → human signs off → agent ships verifiable work → agent presents results → human reviews and decides next**.
 
-Related specs: [issue-lifecycle.md](issue-lifecycle.md), [pr-review.md](pr-review.md). Orchestration is a kernel primitive — see [specs/architecture/kernel/orchestrator.md](../../../../specs/architecture/kernel/orchestrator.md).
+Related specs: [issue-lifecycle.md](issue-lifecycle.md), [pr-review.md](pr-review.md). Orchestration is a kernel primitive — see [specs/architecture/kernel/orchestrator.md](../../../../vault/specs/architecture/kernel/orchestrator.md).
 
 ---
 
@@ -114,7 +114,7 @@ flowchart TB
 
 ### 3.1 Pick Up Issues
 
-The orchestrator (see [specs/architecture/kernel/orchestrator.md](../../../../specs/architecture/kernel/orchestrator.md)) selects the next issue from the ready set:
+The orchestrator (see [specs/architecture/kernel/orchestrator.md](../../../../vault/specs/architecture/kernel/orchestrator.md)) selects the next issue from the ready set:
 
 1. Issue MUST be `todo` with zero unresolved blockers.
 2. Issue MUST have acceptance criteria.

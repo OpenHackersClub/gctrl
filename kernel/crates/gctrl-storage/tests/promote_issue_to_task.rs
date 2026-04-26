@@ -1,7 +1,7 @@
 //! TDD contract tests for Issue → Task promotion on status move.
 //!
 //! These tests describe the contract from
-//! [specs/implementation/kernel/session-trigger.md §Tier 1] that `SqliteStore`
+//! [vault/specs/implementation/kernel/session-trigger.md §Tier 1] that `SqliteStore`
 //! must satisfy. They are the RED half of the red-green cycle: they reference
 //! `promote_issue_to_task` and `list_tasks_for_issue`, which do not yet exist
 //! on `SqliteStore`. Expect a compile error until Tier 1 GREEN lands.

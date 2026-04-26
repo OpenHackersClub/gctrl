@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS board_events (
 "#;
 
 // Scheduler primitive: Tasks are promoted from Issues on transition to
-// `in_progress`. See specs/implementation/kernel/session-trigger.md §Tier 1.
+// `in_progress`. See vault/specs/implementation/kernel/session-trigger.md §Tier 1.
 const CREATE_TASKS: &str = r#"
 CREATE TABLE IF NOT EXISTS tasks (
     id                  TEXT PRIMARY KEY,
@@ -660,7 +660,7 @@ impl SqliteStore {
     /// non-`in_progress` transitions). `agent_kind` is chosen by the caller
     /// (receiver.rs will resolve it from WORKFLOW.md in Tier 2).
     ///
-    /// Spec: specs/implementation/kernel/session-trigger.md §Tier 1.
+    /// Spec: vault/specs/implementation/kernel/session-trigger.md §Tier 1.
     pub fn update_board_issue_status_and_promote(
         &self,
         id: &str,
@@ -683,7 +683,7 @@ impl SqliteStore {
     /// Promote an Issue to a Task. Idempotent while the Task is non-terminal —
     /// repeated calls return the existing Task row.
     ///
-    /// Spec: specs/implementation/kernel/session-trigger.md §Tier 1.
+    /// Spec: vault/specs/implementation/kernel/session-trigger.md §Tier 1.
     pub fn promote_issue_to_task(&self, issue_id: &str, agent_kind: &str) -> Result<Task> {
         let conn = self.conn.lock().unwrap();
         Self::promote_issue_to_task_inner(&conn, issue_id, agent_kind)
@@ -2537,11 +2537,11 @@ mod tests {
             name: "Architect".into(),
             focus: "System design".into(),
             prompt_prefix: "You are a senior architect...".into(),
-            owns: "specs/".into(),
+            owns: "vault/specs/".into(),
             review_focus: "Architecture decisions".into(),
             pushes_back: "Over-engineering".into(),
             tools: vec!["read".into(), "write".into()],
-            key_specs: vec!["specs/arch.md".into()],
+            key_specs: vec!["vault/specs/arch.md".into()],
             source_hash: Some("hash123".into()),
         };
 

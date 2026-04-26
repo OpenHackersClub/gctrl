@@ -4,4 +4,4 @@ Local-first operating system for human+agent teams. Unix-inspired: **Kernel** (t
 
 Follows conventions from `@debuggingfuture/arch-taste.md`.
 
-See `AGENTS.md` for the full knowledge base index, invariants, and documentation standards. See `specs/` for architecture, domain model, principles, and implementation details.
+See `AGENTS.md` for the full knowledge base index, invariants, and documentation standards. See `vault/specs/` for architecture, domain model, principles, and implementation details.

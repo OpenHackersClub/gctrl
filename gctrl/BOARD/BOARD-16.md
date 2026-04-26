@@ -11,7 +11,7 @@ created_by: debuggingfuture
 
 Build a persistent, interlinked wiki layer on top of gctrl-context. Agents incrementally build and maintain the knowledge base; humans curate sources and ask questions. Inspired by Karpathy's LLM knowledge base pattern.
 
-See spec: specs/architecture/kernel/knowledgebase.md
+See spec: vault/specs/architecture/kernel/knowledgebase.md
 
 ## Milestones
 

@@ -4,7 +4,7 @@ The orchestrator is a **kernel primitive** responsible for agent-agnostic dispat
 
 Issues are an application-level concept (gctrl-board) and are NOT visible to the Orchestrator. The Orchestrator dispatches Sessions to execute Tasks; applications observe the resulting events via kernel IPC and update their own work items.
 
-For implementation details (formal verification, crate structure, adapter wiring, tech stack), see [specs/implementation/orchestrator.md](../../implementation/kernel/orchestrator.md).
+For implementation details (formal verification, crate structure, adapter wiring, tech stack), see [vault/specs/implementation/orchestrator.md](../../implementation/kernel/orchestrator.md).
 
 ---
 

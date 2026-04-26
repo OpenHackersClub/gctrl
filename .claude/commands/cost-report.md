@@ -6,7 +6,7 @@ Summarize cost and token usage across sessions — totals, breakdowns, daily tre
 
 Read these files to understand cost attribution:
 
-- `specs/architecture/domain-model.md` — Session and span cost fields, token accounting
+- `vault/specs/architecture/domain-model.md` — Session and span cost fields, token accounting
 
 ### 2. Gather Data
 

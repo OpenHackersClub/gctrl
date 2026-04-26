@@ -1220,7 +1220,7 @@ struct BoardMoveBody {
 /// Resolves the agent runtime kind for an Issue at dispatch time.
 ///
 /// TODO(tier2.5): parse `agent.runtime` from `WORKFLOW.md` at the project
-/// filesystem root (see specs/architecture/session-trigger-from-board.md
+/// filesystem root (see vault/specs/architecture/session-trigger-from-board.md
 /// §"Agent resolution"). For now we hardcode the default runtime so the HTTP
 /// envelope contract is exercised end-to-end.
 fn resolve_agent_kind(_project_key: Option<&str>) -> String {

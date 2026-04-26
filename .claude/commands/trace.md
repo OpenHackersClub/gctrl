@@ -6,7 +6,7 @@ Investigate a session's trace tree — visualize span hierarchy, identify errors
 
 Read these files to understand trace structure:
 
-- `specs/architecture/domain-model.md` — Span types (Generation, Span, Event), parent-child relationships, session model
+- `vault/specs/architecture/domain-model.md` — Span types (Generation, Span, Event), parent-child relationships, session model
 
 ### 2. Identify the Session
 

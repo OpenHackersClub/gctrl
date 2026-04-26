@@ -303,4 +303,4 @@ Data source: kernel `prompt_versions`, `session_prompts`, `eval_scores` tables.
 8. `gctrl board score BACK-1 --name quality --value 0.9` writes to `eval_scores` and is queryable in the eval dashboard (web UI).
 9. `gctrl board context-audit BACK-1` shows the rendered prompt and lists context entries provided vs. referenced.
 10. Auto-scores (tests_pass, coverage_delta, cost_efficiency) are computed on every issue completion without manual action.
-11. **All data flows through the shell/kernel HTTP API.** See [specs/architecture/os.md — Dependency Direction](../../specs/architecture/os.md) for the full invariant.
+11. **All data flows through the shell/kernel HTTP API.** See [vault/specs/architecture/os.md — Dependency Direction](../../vault/specs/architecture/os.md) for the full invariant.

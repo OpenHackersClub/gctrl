@@ -2,7 +2,7 @@
 //!   DuckDB → R2 (Parquet) for OLAP telemetry tables
 //!   SQLite  → D1 (row-level) for OLTP board/task tables
 //!
-//! See `specs/architecture/kernel/sync.md` for the full design.
+//! See `vault/specs/architecture/kernel/sync.md` for the full design.
 
 use async_trait::async_trait;
 use chrono::Utc;

@@ -2,7 +2,7 @@
 
 > The canonical data shapes for Uebermensch. See [architecture.md](architecture.md) for how the pieces fit together, [PRD.md](../PRD.md) for the problem.
 >
-> **Policy** (per [principles.md § Architectural Invariants](../../../specs/principles.md#architectural-invariants)): kernel-owned types live in `specs/architecture/domain-model.md`; this document defines only Uebermensch-owned additions. Where we need a new kernel-facing type (e.g. `LlmRequest`), it is declared here and promoted into kernel specs when the first driver lands.
+> **Policy** (per [principles.md § Architectural Invariants](../../../vault/specs/principles.md#architectural-invariants)): kernel-owned types live in `specs/architecture/domain-model.md`; this document defines only Uebermensch-owned additions. Where we need a new kernel-facing type (e.g. `LlmRequest`), it is declared here and promoted into kernel specs when the first driver lands.
 
 ---
 
@@ -294,7 +294,7 @@ export class InvalidStateTransition extends Schema.TaggedError<InvalidStateTrans
 
 ## 4. Storage Schema (SQLite, synced to D1)
 
-All app-owned tables live in the **SQLite** path (row-level sync target is Cloudflare D1 — see [kernel/sync.md § 6](../../../specs/architecture/kernel/sync.md#6-syncable-tables)). Per [principles.md § Architectural Invariants #3](../../../specs/principles.md#architectural-invariants), every app table carries the `uber_` namespace prefix.
+All app-owned tables live in the **SQLite** path (row-level sync target is Cloudflare D1 — see [kernel/sync.md § 6](../../../vault/specs/architecture/kernel/sync.md#6-syncable-tables)). Per [principles.md § Architectural Invariants #3](../../../vault/specs/principles.md#architectural-invariants), every app table carries the `uber_` namespace prefix.
 
 Tables MUST be added to `kernel/crates/gctrl-storage/src/schema.rs` as `CREATE_UBER_*_TABLE` constants; the kernel owns the write lock.
 
@@ -403,7 +403,7 @@ CREATE INDEX IF NOT EXISTS idx_uber_alerts_brief        ON uber_alerts(related_b
 
 ### Sync policy
 
-Per [kernel/sync.md](../../../specs/architecture/kernel/sync.md):
+Per [kernel/sync.md](../../../vault/specs/architecture/kernel/sync.md):
 
 - All five tables carry `device_id` and `updated_at` — eligible for row-level SQLite → D1 sync.
 - Brief bodies are NOT in SQLite — they live in the vault at `uber_briefs.vault_path`. Vault files sync to R2 via the `sync.vault.uber` mount (see [profile.md § Sync (R2)](profile.md#sync-r2)), so the body replication is orthogonal to the index row replication.

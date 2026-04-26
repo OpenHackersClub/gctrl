@@ -2,8 +2,8 @@
  * Session Trigger — acceptance (TDD contract, currently pending).
  *
  * These tests encode the end-to-end drag-to-dispatch flow from
- * [specs/architecture/session-trigger-from-board.md] and
- * [specs/implementation/kernel/session-trigger.md §Tier 4].
+ * [vault/specs/architecture/session-trigger-from-board.md] and
+ * [vault/specs/implementation/kernel/session-trigger.md §Tier 4].
  *
  * They are marked `test.fixme` until the implementation lands. The implementer:
  *   1. Replace `test.fixme` with `test` one at a time (red → green).

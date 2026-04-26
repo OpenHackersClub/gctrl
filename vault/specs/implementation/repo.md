@@ -51,7 +51,7 @@ gctrl/
 │   └── INBOX/                 #   project key INBOX (intake)
 │       └── ...
 │
-├── specs/                     # Architecture, design, and formal specs
+├── vault/specs/                     # Architecture, design, and formal specs
 │   ├── architecture/          # System structure (kernel/shell/apps layers)
 │   └── implementation/        # Coding patterns, testing, repo structure
 │

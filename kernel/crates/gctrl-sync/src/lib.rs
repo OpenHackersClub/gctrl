@@ -3,7 +3,7 @@
 //! Exports unsynced DuckDB rows as Parquet, uploads to Cloudflare R2 via
 //! S3-compatible API, and imports remote Parquet files from other devices.
 //!
-//! See `specs/architecture/kernel/sync.md` for the full design.
+//! See `vault/specs/architecture/kernel/sync.md` for the full design.
 
 pub mod d1;
 pub mod engine;
