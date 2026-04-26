@@ -4,7 +4,7 @@ Defines the sprint cycle for human+agent teams. A cycle is a time-boxed period (
 
 The core loop: **human sets goals → agent drafts plan → human signs off → agent ships verifiable work → agent presents results → human reviews and decides next**.
 
-Related specs: [issue-lifecycle.md](issue-lifecycle.md), [pr-review.md](pr-review.md). Orchestration is a kernel primitive — see [specs/architecture/kernel/orchestrator.md](../../../../vault/specs/architecture/kernel/orchestrator.md).
+Related specs: [issue-lifecycle.md](issue-lifecycle.md), [pr-review.md](pr-review.md). Orchestration is a kernel primitive — see [vault/specs/architecture/kernel/orchestrator.md](../../../../../vault/specs/architecture/kernel/orchestrator.md).
 
 ---
 
@@ -114,7 +114,7 @@ flowchart TB
 
 ### 3.1 Pick Up Issues
 
-The orchestrator (see [specs/architecture/kernel/orchestrator.md](../../../../vault/specs/architecture/kernel/orchestrator.md)) selects the next issue from the ready set:
+The orchestrator (see [vault/specs/architecture/kernel/orchestrator.md](../../../../../vault/specs/architecture/kernel/orchestrator.md)) selects the next issue from the ready set:
 
 1. Issue MUST be `todo` with zero unresolved blockers.
 2. Issue MUST have acceptance criteria.
@@ -139,10 +139,10 @@ Before opening a PR, the agent MUST verify its own work:
 2. **Run soak/acceptance tests** where applicable — e.g., load tests for API changes, browser tests for UI changes.
 3. **Self-review the diff.** Read the diff as if reviewing someone else's code. Look for:
    - Missing edge cases
-   - Broken invariants (see `specs/principles.md`)
+   - Broken invariants (see `vault/specs/principles.md`)
    - Unnecessary complexity
    - Missing or stale specs
-4. **Log what changed.** Update relevant specs if the implementation changes behavior documented in `specs/`. Add a note in the PR body listing which spec files were updated and why.
+4. **Log what changed.** Update relevant specs if the implementation changes behavior documented in `vault/specs/`. Add a note in the PR body listing which spec files were updated and why.
 
 ### 3.4 Autonomous Fixes
 
@@ -217,7 +217,7 @@ At the end of the cycle, the agent produces a **cycle report** combining all per
 1. **Roadmap update** — the agent MUST update `ROADMAP.md` to reflect what shipped, what moved, and what's next. The diff is part of the delivery:
    ```sh
    # Agent updates ROADMAP.md, commits, includes diff in report
-   git diff HEAD~1 -- specs/gctrl/ROADMAP.md
+   git diff HEAD~1 -- vault/specs/gctrl/ROADMAP.md
    ```
 
 2. **Issues completed** — table with titles, PR links, cost, and a link to each PR's delivery package.

@@ -92,7 +92,7 @@ pub async fn watch_board_dir(store: Arc<SqliteStore>, board_dir: PathBuf) {
     drop(watcher);
 }
 
-/// Import a single project subdirectory (e.g. `gctrl/BOARD/`).
+/// Import a single project subdirectory (e.g. `apps/gctrl-board/vault/BOARD/`).
 fn import_subdir(store: &SqliteStore, dir: &std::path::Path, board_dir: &std::path::Path) {
     // Derive project key from directory name
     let project_key = match dir.file_name().and_then(|n| n.to_str()) {

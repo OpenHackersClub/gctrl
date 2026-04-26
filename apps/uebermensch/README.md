@@ -2,7 +2,7 @@
 
 > Chief-of-Staff app for investors. Vault-first, Obsidian-mountable, R2-synced.
 
-See [PRD.md](PRD.md) for vision, [ROADMAP.md](ROADMAP.md) for milestones, [WORKFLOW.md](WORKFLOW.md) for lifecycle, and `specs/` for architecture details.
+See [PRD.md](PRD.md) for vision, [ROADMAP.md](ROADMAP.md) for milestones, [WORKFLOW.md](WORKFLOW.md) for lifecycle, and `vault/specs/` for architecture details.
 
 ## Status
 
@@ -13,7 +13,7 @@ drivers) remains for a follow-up PR.
 
 | Artifact | Status |
 |----------|--------|
-| `PRD.md`, `ROADMAP.md`, `WORKFLOW.md`, `specs/` | Complete |
+| `PRD.md`, `ROADMAP.md`, `WORKFLOW.md`, `vault/specs/` | Complete |
 | `src/` — profile reader, vault reader, stub LLM, CLI | Shipped (this PR) |
 | `uber profile validate` | Shipped |
 | `uber vault init` | Shipped (scaffolds from `tests/fixtures/vault/`) |
@@ -56,7 +56,7 @@ frontmatter so Obsidian reads it natively. Minimum recognised files:
 | `wiki/**/*.md` | generated entity / topic / source pages (gitignored, R2-synced) |
 | `briefs/<date>.md` | written by `uber brief` |
 
-See [specs/profile.md](specs/profile.md) for the full schema and sync model.
+See [vault/specs/profile.md](vault/specs/profile.md) for the full schema and sync model.
 
 ## Directory layout
 
@@ -68,13 +68,13 @@ apps/uebermensch/
 ├── README.md               # (this file)
 ├── src/                    # Effect-TS CLI + services + adapters
 ├── tests/                  # vitest + fixtures/vault
-└── specs/                  # Architecture, domain model, pipeline, KB, delivery, eval
+└── vault/specs/                  # Architecture, domain model, pipeline, KB, delivery, eval
 ```
 
 ## Related specs
 
-- [specs/architecture.md](specs/architecture.md) — L0/L1 diagram, hexagonal layers
-- [specs/profile.md](specs/profile.md) — vault layout, identity, R2 sync protocol
-- [specs/briefing-pipeline.md](specs/briefing-pipeline.md) — curator → renderer → deliverer
-- [specs/knowledge-base.md](specs/knowledge-base.md) — page types, frontmatter, lint rules
-- [specs/domain-model.md](specs/domain-model.md) — Effect-TS schemas + SQLite DDL
+- [vault/specs/architecture.md](vault/specs/architecture.md) — L0/L1 diagram, hexagonal layers
+- [vault/specs/profile.md](vault/specs/profile.md) — vault layout, identity, R2 sync protocol
+- [vault/specs/briefing-pipeline.md](vault/specs/briefing-pipeline.md) — curator → renderer → deliverer
+- [vault/specs/knowledge-base.md](vault/specs/knowledge-base.md) — page types, frontmatter, lint rules
+- [vault/specs/domain-model.md](vault/specs/domain-model.md) — Effect-TS schemas + SQLite DDL

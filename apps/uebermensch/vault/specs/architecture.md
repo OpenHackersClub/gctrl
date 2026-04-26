@@ -6,7 +6,7 @@ See [PRD.md](../PRD.md) for the problem and goals. This document defines **how**
 
 ## 1. Layered Position
 
-Uebermensch sits in the **Native Application** layer of the gctrl Unix model (see [os.md § Layer Overview](../../../vault/specs/architecture/os.md#layer-overview)).
+Uebermensch sits in the **Native Application** layer of the gctrl Unix model (see [os.md § Layer Overview](../../../../vault/specs/architecture/os.md#layer-overview)).
 
 ```mermaid
 flowchart TB
@@ -61,7 +61,7 @@ flowchart TB
   Prof -.->|fs read| Prof2
 ```
 
-Dependencies MUST flow inward only (see [principles.md § Architectural Invariants #1](../../../vault/specs/principles.md#architectural-invariants)). Uebermensch app code MUST NOT import kernel crates directly, MUST NOT open DuckDB, and MUST NOT call external APIs directly.
+Dependencies MUST flow inward only (see [principles.md § Architectural Invariants #1](../../../../vault/specs/principles.md#architectural-invariants)). Uebermensch app code MUST NOT import kernel crates directly, MUST NOT open DuckDB, and MUST NOT call external APIs directly.
 
 ## 2. Responsibility Map
 
@@ -121,7 +121,7 @@ flowchart LR
 
 Enforced invariants:
 
-1. Uebermensch daemon MUST NOT open `gctrl.duckdb`. Only the kernel daemon holds the DuckDB write lock (see [principles.md § Architectural Invariants #2](../../../vault/specs/principles.md#architectural-invariants)).
+1. Uebermensch daemon MUST NOT open `gctrl.duckdb`. Only the kernel daemon holds the DuckDB write lock (see [principles.md § Architectural Invariants #2](../../../../vault/specs/principles.md#architectural-invariants)).
 2. Uebermensch daemon MAY read `$UBER_VAULT_DIR` (authored + generated tiers) directly for rendering performance, but MUST route every mutation through kernel HTTP routes (`KbPort` → wiki, `BriefingService` → briefs). Direct vault writes from the Uebermensch process are forbidden except for the `.gctrl-uber/` metadata dir.
 3. Uebermensch daemon MUST NOT hold any external API key. All external calls go through kernel drivers.
 4. Obsidian edits are first-class — the `VaultWatcher` cannot distinguish `$EDITOR`, `git checkout`, and Obsidian writes, and all three follow the same reload path.
@@ -234,14 +234,14 @@ Two stores, with clear ownership:
 
 Rebuilding SQLite from vault + kernel sessions MUST produce an equivalent index (see [domain-model.md § 10](domain-model.md#10-invariants) invariant #2). The reverse is not true — SQLite cannot reconstruct the vault.
 
-### Kernel-owned tables (see [kernel sync.md § 6](../../../vault/specs/architecture/kernel/sync.md#6-syncable-tables))
+### Kernel-owned tables (see [kernel sync.md § 6](../../../../vault/specs/architecture/kernel/sync.md#6-syncable-tables))
 
 Re-used as-is:
 - `sessions`, `spans`, `traffic` — every LLM call and scrape
 - `prompt_versions`, `session_prompts` — prompt audit trail
 - `scores` — brief + item scoring (kernel-owned; single evaluation table shared across apps)
 - `context_entries` — source pages (projected from vault `wiki/**` markdown)
-- `kb_links`, `kb_pages` — wiki graph (see [knowledgebase.md](../../../vault/specs/architecture/kernel/knowledgebase.md))
+- `kb_links`, `kb_pages` — wiki graph (see [knowledgebase.md](../../../../vault/specs/architecture/kernel/knowledgebase.md))
 
 ### App-owned tables (namespace `uber_*`)
 
@@ -280,7 +280,7 @@ The kernel `gctrl-kb` crate is configured with `context_root = $UBER_VAULT_DIR, 
 
 ## 8. Cross-App Interaction
 
-Uebermensch exchanges state with gctrl-board via kernel IPC events + HTTP API, NEVER by direct table joins (see [principles.md § Design Principles #2](../../../vault/specs/principles.md#design-principles)).
+Uebermensch exchanges state with gctrl-board via kernel IPC events + HTTP API, NEVER by direct table joins (see [principles.md § Design Principles #2](../../../../vault/specs/principles.md#design-principles)).
 
 | From | To | Mechanism | Payload |
 |------|----|-----------|---------|

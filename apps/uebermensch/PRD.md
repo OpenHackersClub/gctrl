@@ -2,7 +2,7 @@
 
 > Personal Chief of Staff for investors. Watches the topics you care about, files them into a Karpathy-style knowledge wiki stored as a plain-markdown Obsidian vault, syncs the vault across devices via R2, and delivers timely briefs + long-horizon analyses to the App, Telegram, and Discord. A native gctrl application.
 >
-> Instantiates the [PRD template](../gctrl-board/specs/workflows/prd-template.md).
+> Instantiates the [PRD template](../gctrl-board/vault/specs/workflows/prd-template.md).
 
 ## Architectural Position
 
@@ -52,7 +52,7 @@ flowchart TB
 - **Table namespace:** `uber_*` (see Invariant #3 in [principles.md](../../vault/specs/principles.md))
 - **Wiki infrastructure:** reuses `gctrl-kb` mounted at `$UBER_VAULT_DIR/wiki/` — see [knowledgebase.md](../../vault/specs/architecture/kernel/knowledgebase.md)
 - **External data:** via kernel drivers only (LLM, Telegram, Discord, RSS, SEC, markets). App MUST NOT call external APIs directly — see [os.md § Dependency Direction](../../vault/specs/architecture/os.md#dependency-direction-invariant)
-- **Vault = Profile:** `$UBER_VAULT_DIR` (default `~/uebermensch-vault`) is both the portable profile git repo AND the Obsidian-mountable markdown vault. Briefs, wiki pages, and sources are plain markdown files. SQLite holds only an index (`vault_path` + `content_hash`). R2 sync makes the vault multi-device. See [specs/profile.md](specs/profile.md).
+- **Vault = Profile:** `$UBER_VAULT_DIR` (default `~/uebermensch-vault`) is both the portable profile git repo AND the Obsidian-mountable markdown vault. Briefs, wiki pages, and sources are plain markdown files. SQLite holds only an index (`vault_path` + `content_hash`). R2 sync makes the vault multi-device. See [vault/specs/profile.md](vault/specs/profile.md).
 - **Related apps:** subsumes the [researcher-market](../../vault/specs/architecture/apps/researcher-market.md) and [researcher-agentic](../../vault/specs/architecture/apps/researcher-agentic.md) patterns, adding daily briefings, action items, and multi-channel delivery
 
 ## Problem
@@ -105,7 +105,7 @@ The non-obvious bets:
 | "Tell me when Polymarket shifts >10% on a topic I follow" | Telegram / Discord | Alert rule on `driver-markets` traffic → brief item with urgency `high` |
 | "How much am I spending on this assistant per day?" | App | Budget widget showing daily LLM + scrape cost, reading from kernel `analytics` |
 | "Review this week's briefs and score them" | App | Brief archive with inline scoring form (quality, signal/noise, citation-coverage) |
-| "What's on the calendar this week — earnings, FOMC, my own meetings?" | App + CLI | Calendar view filterable by source (personal / driver-markets / driver-sec) and kind (earnings / macro / personal); morning brief includes today's events. See [calendar.md](specs/calendar.md). |
+| "What's on the calendar this week — earnings, FOMC, my own meetings?" | App + CLI | Calendar view filterable by source (personal / driver-markets / driver-sec) and kind (earnings / macro / personal); morning brief includes today's events. See [calendar.md](vault/specs/calendar.md). |
 | "Remind me 30 min before NVDA earnings" | Telegram / App | `reminders: [{ offset: -PT30M, channel: telegram_primary }]` on the event file; idempotent fan-out via DelivererService |
 | "Subscribe to a read-only finance overlay in Google Calendar" | Google Calendar | `/api/uber/calendar/feed.ics` exposes the active filtered view as a subscribable iCal feed |
 
@@ -211,11 +211,11 @@ A single directory at `$UBER_VAULT_DIR` (default `~/uebermensch-vault`) holding:
 - **Authored tier** (git-tracked): `profile.md`, `topics.md`, `sources.md`, `theses/<slug>.md`, `personas/<persona>.md` (per-persona prompt overrides), `prompts/<slug>.md` (free-form research queries), `calendar/<YYYY-MM-DD>--<slug>.md`, `.obsidian/` — edited by the user in Obsidian or any editor.
 - **Generated tier** (gitignored, R2-synced): `wiki/**` (`wiki/sources/<slug>.md`, `wiki/synthesis/<slug>.md`, entities, topics, questions) + `briefs/<YYYY-MM-DD>.md` + `calendar/generated/**` (driver-pulled events) — written by the kernel + Uebermensch services.
 
-Every file is CommonMark + YAML frontmatter. Wikilinks use plain `[[slug]]` — Obsidian and `gctrl-kb` share one resolver. A `VaultWatcher` fiber watches `fs.watch` events so user edits are reindexed without a restart. Full format in [specs/profile.md](specs/profile.md).
+Every file is CommonMark + YAML frontmatter. Wikilinks use plain `[[slug]]` — Obsidian and `gctrl-kb` share one resolver. A `VaultWatcher` fiber watches `fs.watch` events so user edits are reindexed without a restart. Full format in [vault/specs/profile.md](vault/specs/profile.md).
 
 ### Knowledge Base (investment-scoped)
 
-Extends `gctrl-kb` with investment-specific page types (Thesis, Company, Sector, Macro-theme, Market, Person, Source, Deep-dive) and a `kb-schema.md` governing conventions. Mounted at `$UBER_VAULT_DIR/wiki/` (generated) and `$UBER_VAULT_DIR/theses/` (authored). Human curates; LLM maintains. Full spec in [specs/knowledge-base.md](specs/knowledge-base.md).
+Extends `gctrl-kb` with investment-specific page types (Thesis, Company, Sector, Macro-theme, Market, Person, Source, Deep-dive) and a `kb-schema.md` governing conventions. Mounted at `$UBER_VAULT_DIR/wiki/` (generated) and `$UBER_VAULT_DIR/theses/` (authored). Human curates; LLM maintains. Full spec in [vault/specs/knowledge-base.md](vault/specs/knowledge-base.md).
 
 ### Briefing Pipeline
 
@@ -224,11 +224,11 @@ Extends `gctrl-kb` with investment-specific page types (Thesis, Company, Sector,
 3. **Deliverer** — renders brief to each active channel, idempotent per `(brief_id, channel)`.
 4. **Evaluator** — scores brief (automated + human).
 
-See [specs/briefing-pipeline.md](specs/briefing-pipeline.md).
+See [vault/specs/briefing-pipeline.md](vault/specs/briefing-pipeline.md).
 
 ### Calendar
 
-Time-bound events live alongside the wiki. Personal commitments (`source: user`) and market dates (`source: driver-markets`, `driver-sec`, `driver-gcal`) share one storage shape and one query surface; the user filters by source / kind / ticker / topic / thesis to display "personal week", "earnings watchlist", or any saved view. Today's events surface in the morning brief; opt-in reminders fire via the same `DelivererService` channels. Read-only `.ics` feed and bidirectional Google Calendar sync are extensions on the same data model. Full spec in [specs/calendar.md](specs/calendar.md).
+Time-bound events live alongside the wiki. Personal commitments (`source: user`) and market dates (`source: driver-markets`, `driver-sec`, `driver-gcal`) share one storage shape and one query surface; the user filters by source / kind / ticker / topic / thesis to display "personal week", "earnings watchlist", or any saved view. Today's events surface in the morning brief; opt-in reminders fire via the same `DelivererService` channels. Read-only `.ics` feed and bidirectional Google Calendar sync are extensions on the same data model. Full spec in [vault/specs/calendar.md](vault/specs/calendar.md).
 
 ### Delivery Channels
 
@@ -236,7 +236,7 @@ Time-bound events live alongside the wiki. Personal commitments (`source: user`)
 - **Telegram** — via `driver-telegram` kernel LKM. Bot commands: `/brief`, `/ingest`, `/deepdive <thesis>`, `/score`.
 - **Discord** — via `driver-discord` kernel LKM. Webhook posts + slash commands in configured channels.
 
-Full spec in [specs/delivery.md](specs/delivery.md).
+Full spec in [vault/specs/delivery.md](vault/specs/delivery.md).
 
 ### Eval & Monitoring
 
@@ -244,7 +244,7 @@ Full spec in [specs/delivery.md](specs/delivery.md).
 - **Scrape quality** — per-domain success rate, content quality, staleness. Alerts on regressions.
 - **Knowledge-base health** — orphan rate, stale theses, contradiction count (reuses `gctrl kb lint`).
 
-Full spec in [specs/eval.md](specs/eval.md).
+Full spec in [vault/specs/eval.md](vault/specs/eval.md).
 
 ### Drivers Needed (kernel LKMs)
 
@@ -256,7 +256,7 @@ Full spec in [specs/eval.md](specs/eval.md).
 | `driver-rss` | Scheduled RSS polling → source ingest | `SourcePort` (new) | Planned (blocks M1) |
 | `driver-sec` | SEC EDGAR filings polling | `SourcePort` | Planned (M3) |
 | `driver-markets` | Prices + prediction market (Polymarket) + earnings/macro calendar producers | `MarketDataPort` (new) + `CalendarPort` | Planned (M3) |
-| `driver-gcal` | Google Calendar mirror (read-only by default; opt-in write-back) | `CalendarPort` (new) | Planned (calendar M1+; see [calendar.md](specs/calendar.md)) |
+| `driver-gcal` | Google Calendar mirror (read-only by default; opt-in write-back) | `CalendarPort` (new) | Planned (calendar M1+; see [calendar.md](vault/specs/calendar.md)) |
 
 Driver definitions live in new kernel crates (`kernel/crates/gctrl-driver-<name>/`), feature-gated. See [os.md § 5](../../vault/specs/architecture/os.md) for the driver/adapter distinction. Uebermensch MUST NOT ship its own HTTP clients for these services.
 

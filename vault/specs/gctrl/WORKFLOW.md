@@ -2,7 +2,7 @@
 
 How work flows through gctrl — from ideation to merged PR. This is gctrl's own workflow.
 
-> **Workflow specs**: Opinionated product workflows (issue lifecycle, product cycle, PR review, PRD template) live in `apps/gctrl-board/specs/workflows/`. Kernel-level orchestration and dispatch are defined in `vault/specs/architecture/kernel/`.
+> **Workflow specs**: Opinionated product workflows (issue lifecycle, product cycle, PR review, PRD template) live in `apps/gctrl-board/vault/specs/workflows/`. Kernel-level orchestration and dispatch are defined in `vault/specs/architecture/kernel/`.
 
 ---
 
@@ -32,7 +32,7 @@ gctrl task list --orphan
 
 ## 2. Issue Lifecycle
 
-Follows [issue-lifecycle.md](../../apps/gctrl-board/specs/workflows/issue-lifecycle.md).
+Follows [issue-lifecycle.md](../../apps/gctrl-board/vault/specs/workflows/issue-lifecycle.md).
 
 gctrl uses the standard kanban lifecycle with project key prefix `BACK-*` (or per-project keys).
 
@@ -76,7 +76,7 @@ gctrl board sync --direction pull    # GitHub → local only
 
 ## 4. PR Review
 
-Follows [pr-review.md](../../apps/gctrl-board/specs/workflows/pr-review.md).
+Follows [pr-review.md](../../apps/gctrl-board/vault/specs/workflows/pr-review.md).
 
 gctrl-specific additions:
 

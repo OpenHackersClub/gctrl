@@ -9,7 +9,7 @@
 | Task | Description | Priority | Depends On | Issue |
 |------|-------------|----------|------------|-------|
 | Vault scaffolding | Template vault shape — `profile.md`, `topics.md`, `sources.md`, `theses/`, `personas/`, `prompts/`, `.obsidian/` defaults, `.gitignore` — emitted by `gctrl uber vault init` | P0 | — | TBD |
-| Profile schema lock-in | Finalise profile+vault layout in `specs/profile.md`; commit sample vault | P0 | — | TBD |
+| Profile schema lock-in | Finalise profile+vault layout in `vault/specs/profile.md`; commit sample vault | P0 | — | TBD |
 | Profile/Vault reader | Effect-TS `ProfileService` reading markdown + YAML frontmatter from `$UBER_VAULT_DIR` (authored tier) with schema validation; VaultWatcher fiber for `fs.watch` | P0 | Profile schema | TBD |
 | Kernel vault mount | Wire `gctrl-kb` with `context_root = $UBER_VAULT_DIR, wiki_subpath = "wiki"` so the kernel reads/writes wiki pages at the vault root. Retire the legacy `~/.local/share/gctrl/context/wiki` path for Uebermensch workspaces. | P0 | Profile/Vault reader | TBD |
 | `uber_*` storage migration | Add `uber_briefs` (with `vault_path`, `content_hash`, `failed_at`, `failed_reason`), `uber_brief_items`, `uber_deliveries`, `uber_alerts` to SQLite schema | P0 | — | TBD |
@@ -28,9 +28,9 @@
 
 | Task | Description | Priority | Depends On | Issue |
 |------|-------------|----------|------------|-------|
-| Investment KB schema | `kb-schema.md` shipped under `specs/knowledge-base.md` — page types, frontmatter, lint rules, bare-slug wikilink convention | P0 | M0 | TBD |
+| Investment KB schema | `kb-schema.md` shipped under `vault/specs/knowledge-base.md` — page types, frontmatter, lint rules, bare-slug wikilink convention | P0 | M0 | TBD |
 | Thesis page type | Extend `gctrl-kb` `WikiPageType` with `Thesis`; wiki lint knows about it; thesis pages live at `$UBER_VAULT_DIR/theses/` (authored tier) | P0 | Investment KB schema | TBD |
-| R2 vault sync (bidirectional) | Extend kernel sync with `sync.vault.uber` mount per [profile.md § Sync (R2)](specs/profile.md#sync-r2) — object keys `vault/<identity.slug>/<vault_path>`, debounced 30s push, 5min pull, conflict files as `<stem>.conflict-<device>-<ts>.md` | P0 | M0 Kernel vault mount | TBD |
+| R2 vault sync (bidirectional) | Extend kernel sync with `sync.vault.uber` mount per [profile.md § Sync (R2)](vault/specs/profile.md#sync-r2) — object keys `vault/<identity.slug>/<vault_path>`, debounced 30s push, 5min pull, conflict files as `<stem>.conflict-<device>-<ts>.md` | P0 | M0 Kernel vault mount | TBD |
 | `gctrl uber vault pull --from r2` | Bootstrap a fresh device from R2 for a given `identity.slug` — LISTs the prefix, downloads every key, seeds `.gctrl-uber/index.jsonl`, then hands off to the bidirectional sync | P0 | R2 vault sync | TBD |
 | `gctrl uber vault conflicts` | List outstanding `*.conflict-*.md` files under the vault so the user can resolve in Obsidian | P1 | R2 vault sync | TBD |
 | driver-rss | Kernel LKM polling RSS feeds listed in profile, producing sources under `$UBER_VAULT_DIR/wiki/sources/` | P0 | M0 Kernel vault mount | TBD |
@@ -118,7 +118,7 @@
 
 ## M6: Calendar — Planned
 
-**Goal:** Time-bound events (personal commitments + market dates) live in the vault, surface in the morning brief, drive opt-in reminders, and are filterable by source/kind/ticker/topic/thesis. Spec: [specs/calendar.md](specs/calendar.md).
+**Goal:** Time-bound events (personal commitments + market dates) live in the vault, surface in the morning brief, drive opt-in reminders, and are filterable by source/kind/ticker/topic/thesis. Spec: [vault/specs/calendar.md](vault/specs/calendar.md).
 
 | Task | Description | Priority | Depends On | Issue |
 |------|-------------|----------|------------|-------|
@@ -160,5 +160,5 @@
 6. [ ] Prediction-market data source policy (Polymarket TOS) — needed by M3
 7. [ ] Profile schema migration tooling — needed by M2
 8. [ ] Should scheduled brief run inside kernel Scheduler or inside the Uebermensch app process? (Leaning: kernel Scheduler fires, Uebermensch executes.) — needed by M1
-9. [ ] Earnings data source — free public scrape vs. paid API trade-off — needed by calendar M1 (see [calendar.md § Open Questions #1](specs/calendar.md#open-questions))
-10. [ ] `driver-gcal` write-back conflict UX — needed by calendar M2 (see [calendar.md § Open Questions #6](specs/calendar.md#open-questions))
+9. [ ] Earnings data source — free public scrape vs. paid API trade-off — needed by calendar M1 (see [calendar.md § Open Questions #1](vault/specs/calendar.md#open-questions))
+10. [ ] `driver-gcal` write-back conflict UX — needed by calendar M2 (see [calendar.md § Open Questions #6](vault/specs/calendar.md#open-questions))

@@ -65,6 +65,6 @@ graph LR
 
 ## Related Docs
 
-- `specs/gctrl/workflows` — Full Task → Issue lifecycle, external sync rules, PR review conventions
-- `specs/architecture/domain-model.md` — Board schemas (DuckDB DDL + Effect-TS types)
-- `specs/implementation/apps/components.md` — gctrl-board implementation details (Effect-TS, tsup, vitest)
+- `vault/specs/gctrl/workflows` — Full Task → Issue lifecycle, external sync rules, PR review conventions
+- `vault/specs/architecture/domain-model.md` — Board schemas (DuckDB DDL + Effect-TS types)
+- `vault/specs/implementation/apps/components.md` — gctrl-board implementation details (Effect-TS, tsup, vitest)

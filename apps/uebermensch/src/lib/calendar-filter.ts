@@ -1,5 +1,5 @@
 // Pure helpers for calendar filtering — no I/O.
-// Spec: apps/uebermensch/specs/calendar.md § Filter predicates.
+// Spec: apps/uebermensch/vault/specs/calendar.md § Filter predicates.
 
 import type { CalendarEvent, EventFilter } from "../services/CalendarService.js"
 

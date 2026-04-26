@@ -8,7 +8,7 @@ The PRD is NOT an architecture doc. It answers "what problem are we solving and 
 
 ## How to Use
 
-1. Copy this template into your project's directory (e.g., `specs/gctrl/PRD.md` or `apps/gctrl-board/PRD.md`).
+1. Copy this template into your project's directory (e.g., `vault/specs/gctrl/PRD.md` or `apps/gctrl-board/PRD.md`).
 2. Fill in each section. Delete sections that don't apply.
 3. The Roadmap section should produce issues: each milestone/feature maps to one or more gctrl-board issues.
 4. Review the PRD before sprint planning. Update it as priorities shift.

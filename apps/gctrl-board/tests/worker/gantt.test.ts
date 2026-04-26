@@ -1,7 +1,7 @@
 /**
  * Gantt API tests — PATCH /schedule and GET /projects/:id/gantt.
  *
- * Mirrors the spec in apps/gctrl-board/specs/gantt.md:
+ * Mirrors the spec in apps/gctrl-board/vault/specs/gantt.md:
  *  - start_date <= due_date validated
  *  - null clears a field (other is preserved)
  *  - emits issue_events with event_type="scheduled"
