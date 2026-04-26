@@ -988,6 +988,7 @@ mod tests {
                 content_hash: None, source_path: None,
                 github_issue_number: None, github_url: None,
                 start_date: None, due_date: None,
+                acceptance_criteria: None,
             }).unwrap();
         }
 

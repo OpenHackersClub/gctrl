@@ -321,3 +321,29 @@ export interface InboxStats {
   by_urgency: Record<string, number>
   by_kind: Record<string, number>
 }
+
+export type AcceptanceKind = "shell" | "test" | "http"
+export type AcceptanceStatus = "pending" | "running" | "pass" | "fail"
+
+export interface AcceptanceCheckRow {
+  id: string
+  issue_id: string
+  check_idx: number
+  kind: AcceptanceKind
+  command: string
+  status: AcceptanceStatus
+  last_session_id: string | null
+  last_run_at: string | null
+  output: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface AcceptanceRollup {
+  total: number
+  passed: number
+  failed: number
+  pending: number
+  running: number
+  checks: AcceptanceCheckRow[]
+}

@@ -8,14 +8,14 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use rusqlite::{params, Connection};
 use gctrl_core::{
-    GctlError, Result, Task, VaultMount, VaultMountKind,
-    InboxAction, InboxActionFilter, InboxMessage, InboxMessageFilter, InboxThread,
-    PersonaDefinition, PersonaReviewRule,
     context::{ContextEntry, ContextEntryId, ContextFilter, ContextKind, ContextSource},
     memory::{MemoryEntry, MemoryEntryId, MemoryFilter, MemoryStats, MemoryType},
+    AcceptanceCheck, AcceptanceCheckRow, AcceptanceKind, AcceptanceRollup, AcceptanceStatus,
+    GctlError, InboxAction, InboxActionFilter, InboxMessage, InboxMessageFilter, InboxThread,
+    PersonaDefinition, PersonaReviewRule, Result, Task, VaultMount, VaultMountKind,
 };
+use rusqlite::{params, Connection};
 
 // ═══════════════════════════════════════════════════════════════
 // Schema (SQLite-compatible DDL)
@@ -66,8 +66,30 @@ CREATE TABLE IF NOT EXISTS board_issues (
     github_url      TEXT,
     start_date      TEXT,
     due_date        TEXT,
+    acceptance_criteria TEXT,
     device_id       TEXT NOT NULL DEFAULT '',
     synced          INTEGER NOT NULL DEFAULT 0
+)
+"#;
+
+// Checks parsed from an issue's `acceptance_criteria` markdown, one row per
+// `- [ ] kind: command` line. `check_idx` is the 0-based position in the list
+// and forms the natural key alongside `issue_id` — agents call back with
+// `(issue_id, check_idx)` when reporting results.
+const CREATE_BOARD_ACCEPTANCE_CHECKS: &str = r#"
+CREATE TABLE IF NOT EXISTS board_acceptance_checks (
+    id                TEXT PRIMARY KEY,
+    issue_id          TEXT NOT NULL,
+    check_idx         INTEGER NOT NULL,
+    kind              TEXT NOT NULL,
+    command           TEXT NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'pending',
+    last_session_id   TEXT,
+    last_run_at       TEXT,
+    output            TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    UNIQUE(issue_id, check_idx)
 )
 "#;
 
@@ -272,6 +294,8 @@ const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_board_issues_due_date ON board_issues(due_date)",
     "CREATE INDEX IF NOT EXISTS idx_board_events_issue ON board_events(issue_id)",
     "CREATE INDEX IF NOT EXISTS idx_board_comments_issue ON board_comments(issue_id)",
+    "CREATE INDEX IF NOT EXISTS idx_board_acceptance_checks_issue ON board_acceptance_checks(issue_id)",
+    "CREATE INDEX IF NOT EXISTS idx_board_acceptance_checks_status ON board_acceptance_checks(status)",
     // Board sync indexes
     "CREATE INDEX IF NOT EXISTS idx_board_projects_synced ON board_projects(synced)",
     "CREATE INDEX IF NOT EXISTS idx_board_projects_updated ON board_projects(updated_at)",
@@ -355,6 +379,7 @@ impl SqliteStore {
         let tables = [
             CREATE_BOARD_PROJECTS,
             CREATE_BOARD_ISSUES,
+            CREATE_BOARD_ACCEPTANCE_CHECKS,
             CREATE_BOARD_EVENTS,
             CREATE_BOARD_COMMENTS,
             CREATE_TASKS,
@@ -381,6 +406,7 @@ impl SqliteStore {
             "ALTER TABLE board_projects ADD COLUMN synced INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE board_issues ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE board_issues ADD COLUMN synced INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE board_issues ADD COLUMN acceptance_criteria TEXT",
             "ALTER TABLE board_events ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE board_events ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'))",
             "ALTER TABLE board_events ADD COLUMN synced INTEGER NOT NULL DEFAULT 0",
@@ -431,22 +457,28 @@ impl SqliteStore {
                     github_repo: row.get(4)?,
                 })
             },
-        ).ok().map(Ok).transpose()
+        )
+        .ok()
+        .map(Ok)
+        .transpose()
     }
 
     pub fn list_board_projects(&self) -> Result<Vec<gctrl_core::BoardProject>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, name, key, counter, github_repo FROM board_projects ORDER BY name")
+        let mut stmt = conn
+            .prepare("SELECT id, name, key, counter, github_repo FROM board_projects ORDER BY name")
             .map_err(|e| GctlError::Storage(e.to_string()))?;
-        let rows = stmt.query_map([], |row| {
-            Ok(gctrl_core::BoardProject {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                key: row.get(2)?,
-                counter: row.get(3)?,
-                github_repo: row.get(4)?,
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(gctrl_core::BoardProject {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    key: row.get(2)?,
+                    counter: row.get(3)?,
+                    github_repo: row.get(4)?,
+                })
             })
-        }).map_err(|e| GctlError::Storage(e.to_string()))?;
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
@@ -467,19 +499,21 @@ impl SqliteStore {
             "UPDATE board_projects SET counter = counter + 1, device_id = ?1, updated_at = ?2, synced = 0 WHERE id = ?3",
             params![self.device_id, now, project_id],
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let counter: i32 = conn.query_row(
-            "SELECT counter FROM board_projects WHERE id = ?1",
-            [project_id],
-            |row| row.get(0),
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let counter: i32 = conn
+            .query_row(
+                "SELECT counter FROM board_projects WHERE id = ?1",
+                [project_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(counter)
     }
 
     pub fn insert_board_issue(&self, issue: &gctrl_core::BoardIssue) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO board_issues (id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url, start_date, due_date, device_id, synced)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            "INSERT INTO board_issues (id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url, start_date, due_date, acceptance_criteria, device_id, synced)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
             params![
                 issue.id,
                 issue.project_id,
@@ -509,6 +543,7 @@ impl SqliteStore {
                 issue.github_url,
                 issue.start_date,
                 issue.due_date,
+                issue.acceptance_criteria,
                 self.device_id,
             ],
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
@@ -529,8 +564,9 @@ impl SqliteStore {
                 "UPDATE board_issues SET title = ?1, description = ?2, status = ?3, priority = ?4,
                  assignee_id = ?5, assignee_name = ?6, assignee_type = ?7,
                  labels = ?8, parent_id = ?9, updated_at = ?10,
-                 content_hash = ?11, source_path = ?12, device_id = ?13, synced = 0
-                 WHERE id = ?14",
+                 content_hash = ?11, source_path = ?12, acceptance_criteria = ?13,
+                 device_id = ?14, synced = 0
+                 WHERE id = ?15",
                 params![
                     issue.title,
                     issue.description,
@@ -544,10 +580,12 @@ impl SqliteStore {
                     chrono::Utc::now().to_rfc3339(),
                     issue.content_hash,
                     issue.source_path,
+                    issue.acceptance_criteria,
                     self.device_id,
                     issue.id,
                 ],
-            ).map_err(|e| GctlError::Storage(e.to_string()))?;
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
             Ok(true)
         } else {
             self.insert_board_issue(issue)?;
@@ -558,16 +596,19 @@ impl SqliteStore {
     pub fn get_board_issue(&self, id: &str) -> Result<Option<gctrl_core::BoardIssue>> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url, start_date, due_date FROM board_issues WHERE id = ?1",
+            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url, start_date, due_date, acceptance_criteria FROM board_issues WHERE id = ?1",
             [id],
             row_to_board_issue,
         ).ok().map(Ok).transpose()
     }
 
-    pub fn list_board_issues(&self, filter: &gctrl_core::BoardIssueFilter) -> Result<Vec<gctrl_core::BoardIssue>> {
+    pub fn list_board_issues(
+        &self,
+        filter: &gctrl_core::BoardIssueFilter,
+    ) -> Result<Vec<gctrl_core::BoardIssue>> {
         let conn = self.conn.lock().unwrap();
         let mut sql = String::from(
-            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url, start_date, due_date FROM board_issues WHERE 1=1"
+            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url, start_date, due_date, acceptance_criteria FROM board_issues WHERE 1=1"
         );
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         let mut idx = 1;
@@ -593,24 +634,37 @@ impl SqliteStore {
             params_vec.push(Box::new(limit as i64));
         }
 
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
-        let mut stmt = conn.prepare(&sql).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let rows = stmt.query_map(param_refs.as_slice(), row_to_board_issue)
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map(param_refs.as_slice(), row_to_board_issue)
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    pub fn update_board_issue_status(&self, id: &str, status: &str, actor_id: &str, actor_name: &str, actor_type: &str) -> Result<()> {
+    pub fn update_board_issue_status(
+        &self,
+        id: &str,
+        status: &str,
+        actor_id: &str,
+        actor_name: &str,
+        actor_type: &str,
+    ) -> Result<()> {
         let target = gctrl_core::IssueStatus::from_str(status)
             .ok_or_else(|| GctlError::Storage(format!("invalid status: {}", status)))?;
 
         // Get current status
         let conn = self.conn.lock().unwrap();
-        let current_str: String = conn.query_row(
-            "SELECT status FROM board_issues WHERE id = ?1",
-            [id],
-            |row| row.get(0),
-        ).map_err(|e| GctlError::Storage(format!("issue not found: {} ({})", id, e)))?;
+        let current_str: String = conn
+            .query_row(
+                "SELECT status FROM board_issues WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(format!("issue not found: {} ({})", id, e)))?;
 
         let current = gctrl_core::IssueStatus::from_str(&current_str)
             .unwrap_or(gctrl_core::IssueStatus::Backlog);
@@ -625,7 +679,12 @@ impl SqliteStore {
                 "invalid transition: {} -> {} (allowed: {})",
                 current.as_str(),
                 target.as_str(),
-                current.valid_transitions().iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
+                current
+                    .valid_transitions()
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
             )));
         };
 
@@ -671,13 +730,24 @@ impl SqliteStore {
         actor_type: &str,
     ) -> Result<Option<Task>> {
         self.update_board_issue_status(id, status, actor_id, actor_name, actor_type)?;
-        if status == gctrl_core::IssueStatus::InProgress.as_str() {
-            let conn = self.conn.lock().unwrap();
-            let task = Self::promote_issue_to_task_inner(&conn, id, agent_kind)?;
-            Ok(Some(task))
-        } else {
-            Ok(None)
+        if status != gctrl_core::IssueStatus::InProgress.as_str() {
+            return Ok(None);
         }
+        let task = {
+            let conn = self.conn.lock().unwrap();
+            Self::promote_issue_to_task_inner(&conn, id, agent_kind)?
+        };
+        // Sync acceptance_checks with the issue's acceptance_criteria so the
+        // agent has rows to POST results against. seed_acceptance_checks
+        // preserves status for unchanged (kind, command) pairs — idempotent on
+        // re-promotion.
+        let checks = self
+            .get_board_issue(id)?
+            .and_then(|i| i.acceptance_criteria)
+            .map(|s| gctrl_core::parse_acceptance_criteria(&s))
+            .unwrap_or_default();
+        self.seed_acceptance_checks(id, &checks)?;
+        Ok(Some(task))
     }
 
     /// Promote an Issue to a Task. Idempotent while the Task is non-terminal —
@@ -689,7 +759,11 @@ impl SqliteStore {
         Self::promote_issue_to_task_inner(&conn, issue_id, agent_kind)
     }
 
-    fn promote_issue_to_task_inner(conn: &Connection, issue_id: &str, agent_kind: &str) -> Result<Task> {
+    fn promote_issue_to_task_inner(
+        conn: &Connection,
+        issue_id: &str,
+        agent_kind: &str,
+    ) -> Result<Task> {
         // Reuse the existing Task if one is still non-terminal.
         let existing = Self::find_nonterminal_task_for_issue(conn, issue_id)?;
         if let Some(task) = existing {
@@ -973,22 +1047,24 @@ impl SqliteStore {
         let mut stmt = conn.prepare(
             "SELECT id, issue_id, type, actor_id, actor_name, actor_type, timestamp, data FROM board_events WHERE issue_id = ?1 ORDER BY timestamp"
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let rows = stmt.query_map([issue_id], |row| {
-            let ts: String = row.get(6)?;
-            let data_str: String = row.get(7)?;
-            Ok(gctrl_core::BoardEvent {
-                id: row.get(0)?,
-                issue_id: row.get(1)?,
-                event_type: row.get(2)?,
-                actor_id: row.get(3)?,
-                actor_name: row.get(4)?,
-                actor_type: row.get(5)?,
-                timestamp: chrono::DateTime::parse_from_rfc3339(&ts)
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .unwrap_or_else(|_| chrono::Utc::now()),
-                data: serde_json::from_str(&data_str).unwrap_or(serde_json::Value::Null),
+        let rows = stmt
+            .query_map([issue_id], |row| {
+                let ts: String = row.get(6)?;
+                let data_str: String = row.get(7)?;
+                Ok(gctrl_core::BoardEvent {
+                    id: row.get(0)?,
+                    issue_id: row.get(1)?,
+                    event_type: row.get(2)?,
+                    actor_id: row.get(3)?,
+                    actor_name: row.get(4)?,
+                    actor_type: row.get(5)?,
+                    timestamp: chrono::DateTime::parse_from_rfc3339(&ts)
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now()),
+                    data: serde_json::from_str(&data_str).unwrap_or(serde_json::Value::Null),
+                })
             })
-        }).map_err(|e| GctlError::Storage(e.to_string()))?;
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
@@ -1012,34 +1088,44 @@ impl SqliteStore {
         let mut stmt = conn.prepare(
             "SELECT id, issue_id, author_id, author_name, author_type, body, created_at, session_id FROM board_comments WHERE issue_id = ?1 ORDER BY created_at"
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let rows = stmt.query_map([issue_id], |row| {
-            let ts: String = row.get(6)?;
-            Ok(gctrl_core::BoardComment {
-                id: row.get(0)?,
-                issue_id: row.get(1)?,
-                author_id: row.get(2)?,
-                author_name: row.get(3)?,
-                author_type: row.get(4)?,
-                body: row.get(5)?,
-                created_at: chrono::DateTime::parse_from_rfc3339(&ts)
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .unwrap_or_else(|_| chrono::Utc::now()),
-                session_id: row.get(7)?,
+        let rows = stmt
+            .query_map([issue_id], |row| {
+                let ts: String = row.get(6)?;
+                Ok(gctrl_core::BoardComment {
+                    id: row.get(0)?,
+                    issue_id: row.get(1)?,
+                    author_id: row.get(2)?,
+                    author_name: row.get(3)?,
+                    author_type: row.get(4)?,
+                    body: row.get(5)?,
+                    created_at: chrono::DateTime::parse_from_rfc3339(&ts)
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now()),
+                    session_id: row.get(7)?,
+                })
             })
-        }).map_err(|e| GctlError::Storage(e.to_string()))?;
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    pub fn link_session_to_issue(&self, issue_id: &str, session_id: &str, cost: f64, tokens: u64) -> Result<()> {
+    pub fn link_session_to_issue(
+        &self,
+        issue_id: &str,
+        session_id: &str,
+        cost: f64,
+        tokens: u64,
+    ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let now = chrono::Utc::now().to_rfc3339();
 
         // Read current session_ids, append, write back
-        let current: String = conn.query_row(
-            "SELECT session_ids FROM board_issues WHERE id = ?1",
-            [issue_id],
-            |row| row.get(0),
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let current: String = conn
+            .query_row(
+                "SELECT session_ids FROM board_issues WHERE id = ?1",
+                [issue_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
 
         let mut ids: Vec<String> = serde_json::from_str(&current).unwrap_or_default();
         if !ids.contains(&session_id.to_string()) {
@@ -1057,7 +1143,8 @@ impl SqliteStore {
                 synced = 0
              WHERE id = ?6",
             params![ids_json, cost, tokens as i64, now, self.device_id, issue_id],
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        )
+        .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
     }
 
@@ -1065,77 +1152,98 @@ impl SqliteStore {
     // Board sync helpers (D1)
     // ═══════════════════════════════════════════════════════════════
 
-    pub fn list_unsynced_board_projects(&self, batch_size: usize) -> Result<Vec<gctrl_core::BoardProject>> {
+    pub fn list_unsynced_board_projects(
+        &self,
+        batch_size: usize,
+    ) -> Result<Vec<gctrl_core::BoardProject>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, name, key, counter, github_repo FROM board_projects WHERE synced = 0 ORDER BY updated_at ASC LIMIT ?1",
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let rows = stmt.query_map([batch_size as i64], |row| {
-            Ok(gctrl_core::BoardProject {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                key: row.get(2)?,
-                counter: row.get(3)?,
-                github_repo: row.get(4)?,
+        let rows = stmt
+            .query_map([batch_size as i64], |row| {
+                Ok(gctrl_core::BoardProject {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    key: row.get(2)?,
+                    counter: row.get(3)?,
+                    github_repo: row.get(4)?,
+                })
             })
-        }).map_err(|e| GctlError::Storage(e.to_string()))?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
-    }
-
-    pub fn list_unsynced_board_issues(&self, batch_size: usize) -> Result<Vec<gctrl_core::BoardIssue>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url, start_date, due_date FROM board_issues WHERE synced = 0 ORDER BY updated_at ASC LIMIT ?1",
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let rows = stmt.query_map([batch_size as i64], row_to_board_issue)
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    pub fn list_unsynced_board_events(&self, batch_size: usize) -> Result<Vec<gctrl_core::BoardEvent>> {
+    pub fn list_unsynced_board_issues(
+        &self,
+        batch_size: usize,
+    ) -> Result<Vec<gctrl_core::BoardIssue>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url, start_date, due_date, acceptance_criteria FROM board_issues WHERE synced = 0 ORDER BY updated_at ASC LIMIT ?1",
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map([batch_size as i64], row_to_board_issue)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn list_unsynced_board_events(
+        &self,
+        batch_size: usize,
+    ) -> Result<Vec<gctrl_core::BoardEvent>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, issue_id, type, actor_id, actor_name, actor_type, timestamp, data FROM board_events WHERE synced = 0 ORDER BY updated_at ASC LIMIT ?1",
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let rows = stmt.query_map([batch_size as i64], |row| {
-            let ts: String = row.get(6)?;
-            let data_str: Option<String> = row.get(7)?;
-            Ok(gctrl_core::BoardEvent {
-                id: row.get(0)?,
-                issue_id: row.get(1)?,
-                event_type: row.get(2)?,
-                actor_id: row.get(3)?,
-                actor_name: row.get(4)?,
-                actor_type: row.get(5)?,
-                timestamp: chrono::DateTime::parse_from_rfc3339(&ts)
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .unwrap_or_else(|_| chrono::Utc::now()),
-                data: data_str.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(serde_json::Value::Null),
+        let rows = stmt
+            .query_map([batch_size as i64], |row| {
+                let ts: String = row.get(6)?;
+                let data_str: Option<String> = row.get(7)?;
+                Ok(gctrl_core::BoardEvent {
+                    id: row.get(0)?,
+                    issue_id: row.get(1)?,
+                    event_type: row.get(2)?,
+                    actor_id: row.get(3)?,
+                    actor_name: row.get(4)?,
+                    actor_type: row.get(5)?,
+                    timestamp: chrono::DateTime::parse_from_rfc3339(&ts)
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now()),
+                    data: data_str
+                        .and_then(|s| serde_json::from_str(&s).ok())
+                        .unwrap_or(serde_json::Value::Null),
+                })
             })
-        }).map_err(|e| GctlError::Storage(e.to_string()))?;
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    pub fn list_unsynced_board_comments(&self, batch_size: usize) -> Result<Vec<gctrl_core::BoardComment>> {
+    pub fn list_unsynced_board_comments(
+        &self,
+        batch_size: usize,
+    ) -> Result<Vec<gctrl_core::BoardComment>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, issue_id, author_id, author_name, author_type, body, created_at, session_id FROM board_comments WHERE synced = 0 ORDER BY updated_at ASC LIMIT ?1",
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let rows = stmt.query_map([batch_size as i64], |row| {
-            let ts: String = row.get(6)?;
-            Ok(gctrl_core::BoardComment {
-                id: row.get(0)?,
-                issue_id: row.get(1)?,
-                author_id: row.get(2)?,
-                author_name: row.get(3)?,
-                author_type: row.get(4)?,
-                body: row.get(5)?,
-                created_at: chrono::DateTime::parse_from_rfc3339(&ts)
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .unwrap_or_else(|_| chrono::Utc::now()),
-                session_id: row.get(7)?,
+        let rows = stmt
+            .query_map([batch_size as i64], |row| {
+                let ts: String = row.get(6)?;
+                Ok(gctrl_core::BoardComment {
+                    id: row.get(0)?,
+                    issue_id: row.get(1)?,
+                    author_id: row.get(2)?,
+                    author_name: row.get(3)?,
+                    author_type: row.get(4)?,
+                    body: row.get(5)?,
+                    created_at: chrono::DateTime::parse_from_rfc3339(&ts)
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now()),
+                    session_id: row.get(7)?,
+                })
             })
-        }).map_err(|e| GctlError::Storage(e.to_string()))?;
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
@@ -1146,8 +1254,10 @@ impl SqliteStore {
         let conn = self.conn.lock().unwrap();
         let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
         let sql = format!("UPDATE {table} SET synced = 1 WHERE id IN ({placeholders})");
-        let params_vec: Vec<&dyn rusqlite::types::ToSql> =
-            ids.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
+        let params_vec: Vec<&dyn rusqlite::types::ToSql> = ids
+            .iter()
+            .map(|s| s as &dyn rusqlite::types::ToSql)
+            .collect();
         conn.execute(&sql, params_vec.as_slice())
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
@@ -1174,7 +1284,8 @@ impl SqliteStore {
         let conn = self.conn.lock().unwrap();
         let count = |table: &str| -> u64 {
             let sql = format!("SELECT COUNT(*) FROM {table} WHERE synced = 0");
-            conn.query_row(&sql, [], |row| row.get::<_, i64>(0)).unwrap_or(0) as u64
+            conn.query_row(&sql, [], |row| row.get::<_, i64>(0))
+                .unwrap_or(0) as u64
         };
         Ok((
             count("board_projects"),
@@ -1182,6 +1293,106 @@ impl SqliteStore {
             count("board_comments"),
             count("board_events"),
         ))
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Acceptance checks
+    // ═══════════════════════════════════════════════════════════════
+
+    /// Synchronize `board_acceptance_checks` for an issue with the given parsed
+    /// checks. Idempotent on re-promotion: rows whose `(kind, command)` is
+    /// unchanged keep their existing status/output so agent results survive
+    /// re-runs. Rows whose content changed reset to `pending`. Rows whose
+    /// `check_idx` is beyond the new list are deleted (checklist shrank).
+    pub fn seed_acceptance_checks(&self, issue_id: &str, checks: &[AcceptanceCheck]) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        for check in checks {
+            let existing: Option<(String, String)> = conn
+                .query_row(
+                    "SELECT kind, command FROM board_acceptance_checks WHERE issue_id = ?1 AND check_idx = ?2",
+                    params![issue_id, check.idx as i64],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .ok();
+            let kind_str = check.kind.as_str();
+            match existing {
+                Some((ek, ec)) if ek == kind_str && ec == check.command => {
+                    // Unchanged — preserve runtime status.
+                }
+                Some(_) => {
+                    conn.execute(
+                        "UPDATE board_acceptance_checks SET kind = ?1, command = ?2, status = 'pending', output = NULL, last_session_id = NULL, last_run_at = NULL, updated_at = ?3 WHERE issue_id = ?4 AND check_idx = ?5",
+                        params![kind_str, check.command, now, issue_id, check.idx as i64],
+                    ).map_err(|e| GctlError::Storage(e.to_string()))?;
+                }
+                None => {
+                    let id = format!("acc-{}", uuid::Uuid::new_v4());
+                    conn.execute(
+                        "INSERT INTO board_acceptance_checks (id, issue_id, check_idx, kind, command, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?6)",
+                        params![id, issue_id, check.idx as i64, kind_str, check.command, now],
+                    ).map_err(|e| GctlError::Storage(e.to_string()))?;
+                }
+            }
+        }
+        conn.execute(
+            "DELETE FROM board_acceptance_checks WHERE issue_id = ?1 AND check_idx >= ?2",
+            params![issue_id, checks.len() as i64],
+        )
+        .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Record an agent's result for one check. Returns `true` if the row
+    /// existed (and was updated). Agent POSTs land here.
+    pub fn upsert_acceptance_result(
+        &self,
+        issue_id: &str,
+        check_idx: i64,
+        status: AcceptanceStatus,
+        output: Option<&str>,
+        session_id: Option<&str>,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        let rows = conn
+            .execute(
+                "UPDATE board_acceptance_checks SET status = ?1, output = ?2, last_session_id = ?3, last_run_at = ?4, updated_at = ?4 WHERE issue_id = ?5 AND check_idx = ?6",
+                params![status.as_str(), output, session_id, now, issue_id, check_idx],
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(rows > 0)
+    }
+
+    pub fn list_acceptance_checks(&self, issue_id: &str) -> Result<Vec<AcceptanceCheckRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, issue_id, check_idx, kind, command, status, last_session_id, last_run_at, output, created_at, updated_at FROM board_acceptance_checks WHERE issue_id = ?1 ORDER BY check_idx ASC",
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map([issue_id], row_to_acceptance_check)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn acceptance_rollup(&self, issue_id: &str) -> Result<AcceptanceRollup> {
+        let checks = self.list_acceptance_checks(issue_id)?;
+        let mut rollup = AcceptanceRollup {
+            total: checks.len() as u64,
+            ..AcceptanceRollup::default()
+        };
+        for c in &checks {
+            match c.status {
+                AcceptanceStatus::Pass => rollup.passed += 1,
+                AcceptanceStatus::Fail => rollup.failed += 1,
+                AcceptanceStatus::Pending => rollup.pending += 1,
+                AcceptanceStatus::Running => rollup.running += 1,
+            }
+        }
+        rollup.checks = checks;
+        Ok(rollup)
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -1195,11 +1406,13 @@ impl SqliteStore {
         let specs_json = serde_json::to_string(&persona.key_specs).unwrap_or_else(|_| "[]".into());
 
         // Check if exists
-        let exists: bool = conn.query_row(
-            "SELECT COUNT(*) > 0 FROM persona_definitions WHERE id = ?1",
-            [&persona.id],
-            |row| row.get(0),
-        ).unwrap_or(false);
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM persona_definitions WHERE id = ?1",
+                [&persona.id],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
 
         if exists {
             conn.execute(
@@ -1245,7 +1458,9 @@ impl SqliteStore {
         let mut stmt = conn.prepare(
             "SELECT id, name, focus, prompt_prefix, owns, review_focus, pushes_back, tools, key_specs, source_hash FROM persona_definitions ORDER BY name"
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         let mut personas = Vec::new();
         while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
             let tools_str: String = row.get(7).unwrap_or_default();
@@ -1268,7 +1483,8 @@ impl SqliteStore {
 
     pub fn delete_persona(&self, id: &str) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
-        let affected = conn.execute("DELETE FROM persona_definitions WHERE id = ?1", [id])
+        let affected = conn
+            .execute("DELETE FROM persona_definitions WHERE id = ?1", [id])
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(affected > 0)
     }
@@ -1279,11 +1495,13 @@ impl SqliteStore {
         let ids_json = serde_json::to_string(&rule.persona_ids).unwrap_or_else(|_| "[]".into());
 
         // Check if exists by id
-        let exists: bool = conn.query_row(
-            "SELECT COUNT(*) > 0 FROM persona_review_rules WHERE id = ?1",
-            [&rule.id],
-            |row| row.get(0),
-        ).unwrap_or(false);
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM persona_review_rules WHERE id = ?1",
+                [&rule.id],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
 
         if exists {
             conn.execute(
@@ -1302,10 +1520,12 @@ impl SqliteStore {
 
     pub fn list_review_rules(&self) -> Result<Vec<PersonaReviewRule>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, pr_type, persona_ids FROM persona_review_rules ORDER BY pr_type"
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare("SELECT id, pr_type, persona_ids FROM persona_review_rules ORDER BY pr_type")
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         let mut rules = Vec::new();
         while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
             let ids_str: String = row.get(2).unwrap_or_default();
@@ -1331,7 +1551,10 @@ impl SqliteStore {
                     persona_ids: serde_json::from_str(&ids_str).unwrap_or_default(),
                 })
             },
-        ).ok().map(Ok).transpose()
+        )
+        .ok()
+        .map(Ok)
+        .transpose()
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -1424,7 +1647,11 @@ impl SqliteStore {
         let conn = self.conn.lock().unwrap();
         let needs_join = filter.project.is_some();
         let col = |name: &str| -> String {
-            if needs_join { format!("m.{}", name) } else { name.to_string() }
+            if needs_join {
+                format!("m.{}", name)
+            } else {
+                name.to_string()
+            }
         };
 
         let base = if needs_join {
@@ -1475,9 +1702,13 @@ impl SqliteStore {
             params_vec.push(Box::new(limit as i64));
         }
 
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
-        let mut stmt = conn.prepare(&sql).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let rows = stmt.query_map(param_refs.as_slice(), row_to_inbox_message)
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map(param_refs.as_slice(), row_to_inbox_message)
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
@@ -1522,9 +1753,13 @@ impl SqliteStore {
             params_vec.push(Box::new(limit as i64));
         }
 
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
-        let mut stmt = conn.prepare(&sql).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let rows = stmt.query_map(param_refs.as_slice(), row_to_inbox_thread)
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map(param_refs.as_slice(), row_to_inbox_thread)
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
@@ -1533,11 +1768,13 @@ impl SqliteStore {
         let conn = self.conn.lock().unwrap();
 
         // Validate message is pending
-        let status: String = conn.query_row(
-            "SELECT status FROM inbox_messages WHERE id = ?1",
-            [&action.message_id],
-            |row| row.get(0),
-        ).map_err(|e| GctlError::Storage(format!("message not found: {}", e)))?;
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM inbox_messages WHERE id = ?1",
+                [&action.message_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(format!("message not found: {}", e)))?;
 
         if status != "pending" {
             return Err(GctlError::Storage(format!(
@@ -1568,7 +1805,8 @@ impl SqliteStore {
         conn.execute(
             "UPDATE inbox_messages SET status = 'acted', updated_at = ?1 WHERE id = ?2",
             params![now, action.message_id],
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        )
+        .map_err(|e| GctlError::Storage(e.to_string()))?;
 
         // Recalc thread counts
         self.recalc_thread_counts_with_conn(&conn, &action.thread_id)?;
@@ -1606,9 +1844,13 @@ impl SqliteStore {
             params_vec.push(Box::new(limit as i64));
         }
 
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
-        let mut stmt = conn.prepare(&sql).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let rows = stmt.query_map(param_refs.as_slice(), row_to_inbox_action)
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map(param_refs.as_slice(), row_to_inbox_action)
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
@@ -1618,16 +1860,14 @@ impl SqliteStore {
         self.recalc_thread_counts_with_conn(&conn, thread_id)
     }
 
-    fn recalc_thread_counts_with_conn(
-        &self,
-        conn: &Connection,
-        thread_id: &str,
-    ) -> Result<()> {
-        let pending_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM inbox_messages WHERE thread_id = ?1 AND status = 'pending'",
-            [thread_id],
-            |row| row.get(0),
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+    fn recalc_thread_counts_with_conn(&self, conn: &Connection, thread_id: &str) -> Result<()> {
+        let pending_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM inbox_messages WHERE thread_id = ?1 AND status = 'pending'",
+                [thread_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
 
         // Compute latest_urgency as the highest urgency among pending messages
         let urgency_order = ["critical", "high", "medium", "low", "info"];
@@ -1636,7 +1876,9 @@ impl SqliteStore {
             let mut stmt = conn.prepare(
                 "SELECT DISTINCT urgency FROM inbox_messages WHERE thread_id = ?1 AND status = 'pending'"
             ).map_err(|e| GctlError::Storage(e.to_string()))?;
-            let mut rows = stmt.query([thread_id]).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let mut rows = stmt
+                .query([thread_id])
+                .map_err(|e| GctlError::Storage(e.to_string()))?;
             while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
                 let u: String = row.get(0).unwrap_or_default();
                 let u_pos = urgency_order.iter().position(|&x| x == u).unwrap_or(4);
@@ -1662,17 +1904,25 @@ impl SqliteStore {
     pub fn get_inbox_stats(&self) -> Result<serde_json::Value> {
         let conn = self.conn.lock().unwrap();
 
-        let total: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM inbox_messages", [], |row| row.get(0),
-        ).unwrap_or(0);
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM inbox_messages", [], |row| row.get(0))
+            .unwrap_or(0);
 
-        let pending: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM inbox_messages WHERE status = 'pending'", [], |row| row.get(0),
-        ).unwrap_or(0);
+        let pending: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM inbox_messages WHERE status = 'pending'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
 
-        let acted: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM inbox_messages WHERE status = 'acted'", [], |row| row.get(0),
-        ).unwrap_or(0);
+        let acted: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM inbox_messages WHERE status = 'acted'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
 
         // By urgency (pending only)
         let mut by_urgency = serde_json::Map::new();
@@ -1680,7 +1930,9 @@ impl SqliteStore {
             let mut stmt = conn.prepare(
                 "SELECT urgency, COUNT(*) FROM inbox_messages WHERE status = 'pending' GROUP BY urgency"
             ).map_err(|e| GctlError::Storage(e.to_string()))?;
-            let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let mut rows = stmt
+                .query([])
+                .map_err(|e| GctlError::Storage(e.to_string()))?;
             while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
                 let urgency: String = row.get(0).unwrap_or_default();
                 let count: i64 = row.get(1).unwrap_or(0);
@@ -1694,7 +1946,9 @@ impl SqliteStore {
             let mut stmt = conn.prepare(
                 "SELECT kind, COUNT(*) FROM inbox_messages WHERE status = 'pending' GROUP BY kind"
             ).map_err(|e| GctlError::Storage(e.to_string()))?;
-            let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let mut rows = stmt
+                .query([])
+                .map_err(|e| GctlError::Storage(e.to_string()))?;
             while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
                 let kind: String = row.get(0).unwrap_or_default();
                 let count: i64 = row.get(1).unwrap_or(0);
@@ -1803,8 +2057,11 @@ impl SqliteStore {
             params_vec.push(Box::new(limit as i64));
         }
 
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
-        let mut stmt = conn.prepare(&sql).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         let entries = stmt
             .query_map(param_refs.as_slice(), row_to_context_entry)
             .map_err(|e| GctlError::Storage(e.to_string()))?
@@ -1813,7 +2070,10 @@ impl SqliteStore {
 
         // Post-filter by tag (SQLite JSON array filtering is simpler in Rust)
         let entries = if let Some(ref tag) = filter.tag {
-            entries.into_iter().filter(|e| e.tags.contains(tag)).collect()
+            entries
+                .into_iter()
+                .filter(|e| e.tags.contains(tag))
+                .collect()
         } else {
             entries
         };
@@ -1823,7 +2083,8 @@ impl SqliteStore {
 
     pub fn remove_context_entry(&self, id: &str) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
-        let affected = conn.execute("DELETE FROM context_entries WHERE id = ?1", [id])
+        let affected = conn
+            .execute("DELETE FROM context_entries WHERE id = ?1", [id])
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(affected > 0)
     }
@@ -1845,9 +2106,12 @@ impl SqliteStore {
 
         let mut by_kind = serde_json::Map::new();
         {
-            let mut stmt = conn.prepare("SELECT kind, COUNT(*) FROM context_entries GROUP BY kind ORDER BY kind")
+            let mut stmt = conn
+                .prepare("SELECT kind, COUNT(*) FROM context_entries GROUP BY kind ORDER BY kind")
                 .map_err(|e| GctlError::Storage(e.to_string()))?;
-            let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let mut rows = stmt
+                .query([])
+                .map_err(|e| GctlError::Storage(e.to_string()))?;
             while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
                 let kind: String = row.get(0).unwrap_or_default();
                 let count: i64 = row.get(1).unwrap_or(0);
@@ -1859,7 +2123,9 @@ impl SqliteStore {
         {
             let mut stmt = conn.prepare("SELECT source_type, COUNT(*) FROM context_entries GROUP BY source_type ORDER BY source_type")
                 .map_err(|e| GctlError::Storage(e.to_string()))?;
-            let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let mut rows = stmt
+                .query([])
+                .map_err(|e| GctlError::Storage(e.to_string()))?;
             while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
                 let source: String = row.get(0).unwrap_or_default();
                 let count: i64 = row.get(1).unwrap_or(0);
@@ -1907,7 +2173,8 @@ impl SqliteStore {
                     entry.device_id,
                     entry.name,
                 ],
-            ).map_err(|e| GctlError::Storage(e.to_string()))?;
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
             Ok(false)
         } else {
             conn.execute(
@@ -1970,7 +2237,9 @@ impl SqliteStore {
 
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             params_vec.iter().map(|p| p.as_ref()).collect();
-        let mut stmt = conn.prepare(&sql).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         let entries = stmt
             .query_map(param_refs.as_slice(), row_to_memory_entry)
             .map_err(|e| GctlError::Storage(e.to_string()))?
@@ -1978,7 +2247,10 @@ impl SqliteStore {
             .collect::<Vec<_>>();
 
         let entries = if let Some(ref tag) = filter.tag {
-            entries.into_iter().filter(|e| e.tags.contains(tag)).collect()
+            entries
+                .into_iter()
+                .filter(|e| e.tags.contains(tag))
+                .collect()
         } else {
             entries
         };
@@ -2002,7 +2274,11 @@ impl SqliteStore {
             .unwrap_or(0);
 
         let unsynced: i64 = conn
-            .query_row("SELECT COUNT(*) FROM memory_entries WHERE synced = 0", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM memory_entries WHERE synced = 0",
+                [],
+                |row| row.get(0),
+            )
             .unwrap_or(0);
 
         let mut by_type = Vec::new();
@@ -2010,7 +2286,9 @@ impl SqliteStore {
             let mut stmt = conn
                 .prepare("SELECT type, COUNT(*) FROM memory_entries GROUP BY type ORDER BY type")
                 .map_err(|e| GctlError::Storage(e.to_string()))?;
-            let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let mut rows = stmt
+                .query([])
+                .map_err(|e| GctlError::Storage(e.to_string()))?;
             while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
                 let ty: String = row.get(0).unwrap_or_default();
                 let count: i64 = row.get(1).unwrap_or(0);
@@ -2047,8 +2325,10 @@ impl SqliteStore {
         let conn = self.conn.lock().unwrap();
         let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
         let sql = format!("UPDATE memory_entries SET synced = 1 WHERE id IN ({placeholders})");
-        let params_vec: Vec<&dyn rusqlite::types::ToSql> =
-            ids.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
+        let params_vec: Vec<&dyn rusqlite::types::ToSql> = ids
+            .iter()
+            .map(|s| s as &dyn rusqlite::types::ToSql)
+            .collect();
         conn.execute(&sql, params_vec.as_slice())
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
@@ -2196,7 +2476,8 @@ fn row_to_board_issue(row: &rusqlite::Row<'_>) -> rusqlite::Result<gctrl_core::B
         project_id: row.get(1)?,
         title: row.get(2)?,
         description: row.get(3)?,
-        status: gctrl_core::IssueStatus::from_str(&status_str).unwrap_or(gctrl_core::IssueStatus::Backlog),
+        status: gctrl_core::IssueStatus::from_str(&status_str)
+            .unwrap_or(gctrl_core::IssueStatus::Backlog),
         priority: row.get(5)?,
         assignee_id: row.get(6)?,
         assignee_name: row.get(7)?,
@@ -2216,14 +2497,48 @@ fn row_to_board_issue(row: &rusqlite::Row<'_>) -> rusqlite::Result<gctrl_core::B
         blocking: serde_json::from_str(&blocking_str).unwrap_or_default(),
         session_ids: serde_json::from_str(&session_ids_str).unwrap_or_default(),
         total_cost_usd: row.get(19)?,
-        total_tokens: { let v: i64 = row.get(20)?; v as u64 },
+        total_tokens: {
+            let v: i64 = row.get(20)?;
+            v as u64
+        },
         pr_numbers: serde_json::from_str(&pr_numbers_str).unwrap_or_default(),
         content_hash: row.get(22)?,
         source_path: row.get(23)?,
-        github_issue_number: { let v: Option<i32> = row.get(24)?; v.map(|n| n as u32) },
+        github_issue_number: {
+            let v: Option<i32> = row.get(24)?;
+            v.map(|n| n as u32)
+        },
         github_url: row.get(25)?,
         start_date: row.get(26)?,
         due_date: row.get(27)?,
+        acceptance_criteria: row.get(28)?,
+    })
+}
+
+fn row_to_acceptance_check(row: &rusqlite::Row<'_>) -> rusqlite::Result<AcceptanceCheckRow> {
+    let kind_str: String = row.get(3)?;
+    let status_str: String = row.get(5)?;
+    let last_run_at_str: Option<String> = row.get(7)?;
+    let created_at_str: String = row.get(9)?;
+    let updated_at_str: String = row.get(10)?;
+    Ok(AcceptanceCheckRow {
+        id: row.get(0)?,
+        issue_id: row.get(1)?,
+        check_idx: row.get(2)?,
+        kind: AcceptanceKind::from_str(&kind_str).unwrap_or(AcceptanceKind::Shell),
+        command: row.get(4)?,
+        status: AcceptanceStatus::from_str(&status_str).unwrap_or(AcceptanceStatus::Pending),
+        last_session_id: row.get(6)?,
+        last_run_at: last_run_at_str
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc)),
+        output: row.get(8)?,
+        created_at: chrono::DateTime::parse_from_rfc3339(&created_at_str)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now()),
+        updated_at: chrono::DateTime::parse_from_rfc3339(&updated_at_str)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now()),
     })
 }
 
@@ -2242,7 +2557,10 @@ fn row_to_inbox_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<InboxMessag
         status: row.get(8)?,
         requires_action: row.get(9)?,
         payload: payload_str.and_then(|s| serde_json::from_str(&s).ok()),
-        duplicate_count: { let v: i32 = row.get(11)?; v as u32 },
+        duplicate_count: {
+            let v: i32 = row.get(11)?;
+            v as u32
+        },
         snoozed_until: row.get(12)?,
         expires_at: row.get(13)?,
         created_at: row.get(14)?,
@@ -2455,6 +2773,7 @@ mod tests {
             github_url: None,
             start_date: None,
             due_date: None,
+            acceptance_criteria: None,
         };
         store.insert_board_issue(&issue).unwrap();
 
@@ -2474,7 +2793,9 @@ mod tests {
         assert_eq!(issues.len(), 1);
 
         // Update status
-        store.update_board_issue_status("TEST-1", "todo", "user-1", "Alice", "human").unwrap();
+        store
+            .update_board_issue_status("TEST-1", "todo", "user-1", "Alice", "human")
+            .unwrap();
         let updated = store.get_board_issue("TEST-1").unwrap().unwrap();
         assert_eq!(updated.status, IssueStatus::Todo);
     }
@@ -2483,9 +2804,9 @@ mod tests {
     fn test_create_and_list_inbox_messages() {
         let store = test_store();
 
-        let thread = store.get_or_create_inbox_thread(
-            "pr", "org/repo#42", "PR #42: Fix stuff", Some("BOARD"),
-        ).unwrap();
+        let thread = store
+            .get_or_create_inbox_thread("pr", "org/repo#42", "PR #42: Fix stuff", Some("BOARD"))
+            .unwrap();
         assert_eq!(thread.context_type, "pr");
         assert_eq!(thread.pending_count, 0);
 
@@ -2581,11 +2902,21 @@ mod tests {
         let now = Utc::now().to_rfc3339();
 
         // Create
-        let created = store.upsert_context_entry(
-            "ctx-1", "document", "notes/test.md", "Test Note",
-            "human", None, 42, "hash123",
-            &["test".into()], &now, &now,
-        ).unwrap();
+        let created = store
+            .upsert_context_entry(
+                "ctx-1",
+                "document",
+                "notes/test.md",
+                "Test Note",
+                "human",
+                None,
+                42,
+                "hash123",
+                &["test".into()],
+                &now,
+                &now,
+            )
+            .unwrap();
         assert!(created);
 
         // Get
@@ -2598,11 +2929,21 @@ mod tests {
         assert_eq!(fetched.tags, vec!["test".to_string()]);
 
         // Upsert (update by path)
-        let updated = store.upsert_context_entry(
-            "ctx-1", "document", "notes/test.md", "Updated Title",
-            "human", None, 50, "hash456",
-            &["test".into(), "updated".into()], &now, &now,
-        ).unwrap();
+        let updated = store
+            .upsert_context_entry(
+                "ctx-1",
+                "document",
+                "notes/test.md",
+                "Updated Title",
+                "human",
+                None,
+                50,
+                "hash456",
+                &["test".into(), "updated".into()],
+                &now,
+                &now,
+            )
+            .unwrap();
         assert!(!updated); // was update, not create
 
         let fetched = store.get_context_entry("ctx-1").unwrap().unwrap();
@@ -2610,7 +2951,9 @@ mod tests {
         assert_eq!(fetched.word_count, 50);
 
         // List
-        let all = store.list_context_entries(&ContextFilter::default()).unwrap();
+        let all = store
+            .list_context_entries(&ContextFilter::default())
+            .unwrap();
         assert_eq!(all.len(), 1);
 
         // Remove
@@ -2624,12 +2967,36 @@ mod tests {
         let store = test_store();
         let now = Utc::now().to_rfc3339();
 
-        store.upsert_context_entry(
-            "ctx-1", "document", "a.md", "A", "human", None, 10, "h1", &[], &now, &now,
-        ).unwrap();
-        store.upsert_context_entry(
-            "ctx-2", "config", "b.md", "B", "system", Some("board"), 20, "h2", &[], &now, &now,
-        ).unwrap();
+        store
+            .upsert_context_entry(
+                "ctx-1",
+                "document",
+                "a.md",
+                "A",
+                "human",
+                None,
+                10,
+                "h1",
+                &[],
+                &now,
+                &now,
+            )
+            .unwrap();
+        store
+            .upsert_context_entry(
+                "ctx-2",
+                "config",
+                "b.md",
+                "B",
+                "system",
+                Some("board"),
+                20,
+                "h2",
+                &[],
+                &now,
+                &now,
+            )
+            .unwrap();
 
         let stats = store.get_context_stats().unwrap();
         assert_eq!(stats["total_entries"], 2);
@@ -2683,24 +3050,34 @@ mod tests {
     #[test]
     fn test_memory_list_and_filter() {
         let store = test_store();
-        store.upsert_memory(&make_memory("m_user", MemoryType::User, "dev-a")).unwrap();
-        store.upsert_memory(&make_memory("m_fb", MemoryType::Feedback, "dev-a")).unwrap();
-        store.upsert_memory(&make_memory("m_ref", MemoryType::Reference, "dev-a")).unwrap();
+        store
+            .upsert_memory(&make_memory("m_user", MemoryType::User, "dev-a"))
+            .unwrap();
+        store
+            .upsert_memory(&make_memory("m_fb", MemoryType::Feedback, "dev-a"))
+            .unwrap();
+        store
+            .upsert_memory(&make_memory("m_ref", MemoryType::Reference, "dev-a"))
+            .unwrap();
 
         let all = store.list_memories(&MemoryFilter::default()).unwrap();
         assert_eq!(all.len(), 3);
 
-        let fb_only = store.list_memories(&MemoryFilter {
-            memory_type: Some(MemoryType::Feedback),
-            ..Default::default()
-        }).unwrap();
+        let fb_only = store
+            .list_memories(&MemoryFilter {
+                memory_type: Some(MemoryType::Feedback),
+                ..Default::default()
+            })
+            .unwrap();
         assert_eq!(fb_only.len(), 1);
         assert_eq!(fb_only[0].name, "m_fb");
 
-        let searched = store.list_memories(&MemoryFilter {
-            search: Some("user".into()),
-            ..Default::default()
-        }).unwrap();
+        let searched = store
+            .list_memories(&MemoryFilter {
+                search: Some("user".into()),
+                ..Default::default()
+            })
+            .unwrap();
         assert_eq!(searched.len(), 1);
         assert_eq!(searched[0].name, "m_user");
     }
@@ -2708,8 +3085,12 @@ mod tests {
     #[test]
     fn test_memory_unique_per_device() {
         let store = test_store();
-        store.upsert_memory(&make_memory("shared_name", MemoryType::Project, "dev-a")).unwrap();
-        store.upsert_memory(&make_memory("shared_name", MemoryType::Project, "dev-b")).unwrap();
+        store
+            .upsert_memory(&make_memory("shared_name", MemoryType::Project, "dev-a"))
+            .unwrap();
+        store
+            .upsert_memory(&make_memory("shared_name", MemoryType::Project, "dev-b"))
+            .unwrap();
 
         let all = store.list_memories(&MemoryFilter::default()).unwrap();
         assert_eq!(all.len(), 2, "same name on different devices must coexist");
@@ -2718,8 +3099,12 @@ mod tests {
     #[test]
     fn test_memory_sync_roundtrip() {
         let store = test_store();
-        store.upsert_memory(&make_memory("a", MemoryType::User, "dev-a")).unwrap();
-        store.upsert_memory(&make_memory("b", MemoryType::User, "dev-a")).unwrap();
+        store
+            .upsert_memory(&make_memory("a", MemoryType::User, "dev-a"))
+            .unwrap();
+        store
+            .upsert_memory(&make_memory("b", MemoryType::User, "dev-a"))
+            .unwrap();
 
         let pending = store.list_unsynced_memories(100).unwrap();
         assert_eq!(pending.len(), 2);
@@ -2741,14 +3126,24 @@ mod tests {
     #[test]
     fn test_memory_stats() {
         let store = test_store();
-        store.upsert_memory(&make_memory("u1", MemoryType::User, "dev-a")).unwrap();
-        store.upsert_memory(&make_memory("u2", MemoryType::User, "dev-a")).unwrap();
-        store.upsert_memory(&make_memory("f1", MemoryType::Feedback, "dev-a")).unwrap();
+        store
+            .upsert_memory(&make_memory("u1", MemoryType::User, "dev-a"))
+            .unwrap();
+        store
+            .upsert_memory(&make_memory("u2", MemoryType::User, "dev-a"))
+            .unwrap();
+        store
+            .upsert_memory(&make_memory("f1", MemoryType::Feedback, "dev-a"))
+            .unwrap();
 
         let stats = store.get_memory_stats().unwrap();
         assert_eq!(stats.total_entries, 3);
         assert_eq!(stats.unsynced, 3);
-        let user_count = stats.by_type.iter().find(|(k, _)| k == "user").map(|(_, v)| *v);
+        let user_count = stats
+            .by_type
+            .iter()
+            .find(|(k, _)| k == "user")
+            .map(|(_, v)| *v);
         assert_eq!(user_count, Some(2));
     }
 
@@ -2783,19 +3178,22 @@ mod tests {
             github_url: None,
             start_date: None,
             due_date: None,
+            acceptance_criteria: None,
         }
     }
 
     #[test]
     fn board_writes_stamp_device_and_unsynced() {
         let store = SqliteStore::open_with_device(":memory:", "dev-1").unwrap();
-        store.create_board_project(&BoardProject {
-            id: "p1".into(),
-            name: "P".into(),
-            key: "P".into(),
-            counter: 0,
-            github_repo: None,
-        }).unwrap();
+        store
+            .create_board_project(&BoardProject {
+                id: "p1".into(),
+                name: "P".into(),
+                key: "P".into(),
+                counter: 0,
+                github_repo: None,
+            })
+            .unwrap();
         store.insert_board_issue(&make_issue("P-1", "p1")).unwrap();
 
         let projects = store.list_unsynced_board_projects(10).unwrap();
@@ -2812,17 +3210,21 @@ mod tests {
     #[test]
     fn board_round_trip_mark_synced() {
         let store = SqliteStore::open_with_device(":memory:", "dev-1").unwrap();
-        store.create_board_project(&BoardProject {
-            id: "p1".into(),
-            name: "P".into(),
-            key: "P".into(),
-            counter: 0,
-            github_repo: None,
-        }).unwrap();
+        store
+            .create_board_project(&BoardProject {
+                id: "p1".into(),
+                name: "P".into(),
+                key: "P".into(),
+                counter: 0,
+                github_repo: None,
+            })
+            .unwrap();
         store.insert_board_issue(&make_issue("P-1", "p1")).unwrap();
 
         // Status change emits an event AND bumps issue updated_at.
-        store.update_board_issue_status("P-1", "todo", "u", "u", "human").unwrap();
+        store
+            .update_board_issue_status("P-1", "todo", "u", "u", "human")
+            .unwrap();
 
         let comment = BoardComment {
             id: "c1".into(),
@@ -2837,14 +3239,30 @@ mod tests {
         store.insert_board_comment(&comment).unwrap();
 
         // Fetch unsynced, mark them, expect zero unsynced after.
-        let projects: Vec<String> = store.list_unsynced_board_projects(10).unwrap()
-            .into_iter().map(|p| p.id).collect();
-        let issues: Vec<String> = store.list_unsynced_board_issues(10).unwrap()
-            .into_iter().map(|i| i.id).collect();
-        let events: Vec<String> = store.list_unsynced_board_events(10).unwrap()
-            .into_iter().map(|e| e.id).collect();
-        let comments: Vec<String> = store.list_unsynced_board_comments(10).unwrap()
-            .into_iter().map(|c| c.id).collect();
+        let projects: Vec<String> = store
+            .list_unsynced_board_projects(10)
+            .unwrap()
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        let issues: Vec<String> = store
+            .list_unsynced_board_issues(10)
+            .unwrap()
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
+        let events: Vec<String> = store
+            .list_unsynced_board_events(10)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        let comments: Vec<String> = store
+            .list_unsynced_board_comments(10)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
 
         assert!(!projects.is_empty());
         assert!(!issues.is_empty());
@@ -2863,22 +3281,30 @@ mod tests {
     #[test]
     fn board_update_resets_synced_flag() {
         let store = SqliteStore::open_with_device(":memory:", "dev-1").unwrap();
-        store.create_board_project(&BoardProject {
-            id: "p1".into(),
-            name: "P".into(),
-            key: "P".into(),
-            counter: 0,
-            github_repo: None,
-        }).unwrap();
+        store
+            .create_board_project(&BoardProject {
+                id: "p1".into(),
+                name: "P".into(),
+                key: "P".into(),
+                counter: 0,
+                github_repo: None,
+            })
+            .unwrap();
         store.insert_board_issue(&make_issue("P-1", "p1")).unwrap();
 
-        let issues: Vec<String> = store.list_unsynced_board_issues(10).unwrap()
-            .into_iter().map(|i| i.id).collect();
+        let issues: Vec<String> = store
+            .list_unsynced_board_issues(10)
+            .unwrap()
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
         store.mark_board_issues_synced(&issues).unwrap();
         assert_eq!(store.list_unsynced_board_issues(10).unwrap().len(), 0);
 
         // A subsequent local edit must mark the row unsynced again.
-        store.assign_board_issue("P-1", "u2", "User 2", "human").unwrap();
+        store
+            .assign_board_issue("P-1", "u2", "User 2", "human")
+            .unwrap();
         assert_eq!(store.list_unsynced_board_issues(10).unwrap().len(), 1);
     }
 
@@ -2895,6 +3321,27 @@ mod tests {
             last_synced_at: None,
             created_at: now,
             updated_at: now,
+        }
+    }
+
+    fn setup_issue_for_acceptance(store: &SqliteStore) {
+        store
+            .create_board_project(&BoardProject {
+                id: "p1".into(),
+                name: "P".into(),
+                key: "P".into(),
+                counter: 0,
+                github_repo: None,
+            })
+            .unwrap();
+        store.insert_board_issue(&make_issue("P-1", "p1")).unwrap();
+    }
+
+    fn shell(idx: usize, cmd: &str) -> AcceptanceCheck {
+        AcceptanceCheck {
+            idx,
+            kind: AcceptanceKind::Shell,
+            command: cmd.into(),
         }
     }
 
@@ -2955,5 +3402,108 @@ mod tests {
         let m = store.get_vault_mount("ext").unwrap().unwrap();
         assert_eq!(m.last_commit_sha.as_deref(), Some("abc123def"));
         assert!(m.last_synced_at.is_some());
+    }
+
+    #[test]
+    fn seed_inserts_pending_rows_in_index_order() {
+        let store = test_store();
+        setup_issue_for_acceptance(&store);
+        let checks = vec![shell(0, "curl a"), shell(1, "curl b")];
+        store.seed_acceptance_checks("P-1", &checks).unwrap();
+
+        let rows = store.list_acceptance_checks("P-1").unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].check_idx, 0);
+        assert_eq!(rows[1].check_idx, 1);
+        assert_eq!(rows[0].status, AcceptanceStatus::Pending);
+        assert_eq!(rows[0].command, "curl a");
+    }
+
+    #[test]
+    fn seed_preserves_status_for_unchanged_checks() {
+        let store = test_store();
+        setup_issue_for_acceptance(&store);
+        let checks = vec![shell(0, "curl a")];
+        store.seed_acceptance_checks("P-1", &checks).unwrap();
+        store
+            .upsert_acceptance_result("P-1", 0, AcceptanceStatus::Pass, Some("ok"), Some("sess1"))
+            .unwrap();
+
+        store.seed_acceptance_checks("P-1", &checks).unwrap();
+        let rows = store.list_acceptance_checks("P-1").unwrap();
+        assert_eq!(rows[0].status, AcceptanceStatus::Pass);
+        assert_eq!(rows[0].output.as_deref(), Some("ok"));
+        assert_eq!(rows[0].last_session_id.as_deref(), Some("sess1"));
+    }
+
+    #[test]
+    fn seed_resets_status_when_check_content_changes() {
+        let store = test_store();
+        setup_issue_for_acceptance(&store);
+        store
+            .seed_acceptance_checks("P-1", &[shell(0, "curl a")])
+            .unwrap();
+        store
+            .upsert_acceptance_result("P-1", 0, AcceptanceStatus::Pass, Some("ok"), None)
+            .unwrap();
+
+        store
+            .seed_acceptance_checks("P-1", &[shell(0, "curl DIFFERENT")])
+            .unwrap();
+        let rows = store.list_acceptance_checks("P-1").unwrap();
+        assert_eq!(rows[0].command, "curl DIFFERENT");
+        assert_eq!(rows[0].status, AcceptanceStatus::Pending);
+        assert_eq!(rows[0].output, None);
+        assert_eq!(rows[0].last_session_id, None);
+    }
+
+    #[test]
+    fn seed_deletes_trailing_rows_when_list_shrinks() {
+        let store = test_store();
+        setup_issue_for_acceptance(&store);
+        store
+            .seed_acceptance_checks("P-1", &[shell(0, "a"), shell(1, "b"), shell(2, "c")])
+            .unwrap();
+        store
+            .seed_acceptance_checks("P-1", &[shell(0, "a")])
+            .unwrap();
+
+        let rows = store.list_acceptance_checks("P-1").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].command, "a");
+    }
+
+    #[test]
+    fn upsert_result_returns_false_when_row_missing() {
+        let store = test_store();
+        setup_issue_for_acceptance(&store);
+        let updated = store
+            .upsert_acceptance_result("P-1", 99, AcceptanceStatus::Pass, None, None)
+            .unwrap();
+        assert!(!updated);
+    }
+
+    #[test]
+    fn rollup_counts_by_status() {
+        let store = test_store();
+        setup_issue_for_acceptance(&store);
+        store
+            .seed_acceptance_checks("P-1", &[shell(0, "a"), shell(1, "b"), shell(2, "c")])
+            .unwrap();
+        store
+            .upsert_acceptance_result("P-1", 0, AcceptanceStatus::Pass, None, None)
+            .unwrap();
+        store
+            .upsert_acceptance_result("P-1", 1, AcceptanceStatus::Fail, Some("boom"), None)
+            .unwrap();
+
+        let rollup = store.acceptance_rollup("P-1").unwrap();
+        assert_eq!(rollup.total, 3);
+        assert_eq!(rollup.passed, 1);
+        assert_eq!(rollup.failed, 1);
+        assert_eq!(rollup.pending, 1);
+        assert_eq!(rollup.running, 0);
+        assert_eq!(rollup.checks.len(), 3);
+        assert_eq!(rollup.checks[1].output.as_deref(), Some("boom"));
     }
 }

@@ -28,4 +28,9 @@ pub struct OrchConfig {
     /// If true, don't spawn anything — just log what would happen and
     /// return the task to the Unclaimed pool.
     pub dry_run: bool,
+
+    /// Base URL the agent uses to POST acceptance-check results back to the
+    /// kernel (e.g. `http://127.0.0.1:4318`). Injected into the brief's
+    /// `## Acceptance Tests` section.
+    pub kernel_base_url: String,
 }

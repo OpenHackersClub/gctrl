@@ -99,6 +99,7 @@ pub fn create_issue(
         github_url: None,
         start_date: None,
         due_date: None,
+        acceptance_criteria: None,
     };
 
     store.insert_board_issue(&issue)?;

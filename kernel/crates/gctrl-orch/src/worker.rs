@@ -90,7 +90,12 @@ impl Worker {
             .get_board_issue(issue_id)?
             .ok_or_else(|| anyhow::anyhow!("issue {issue_id} disappeared"))?;
         let comments = self.store.list_board_comments(issue_id)?;
-        let prompt = prompt::build_prompt(&issue, &comments);
+        let checks = issue
+            .acceptance_criteria
+            .as_deref()
+            .map(gctrl_core::parse_acceptance_criteria)
+            .unwrap_or_default();
+        let prompt = prompt::build_prompt(&issue, &comments, &checks, &self.config.kernel_base_url);
 
         if self.config.dry_run {
             tracing::info!(
@@ -111,28 +116,21 @@ impl Worker {
         // Spawn first, *then* transition Claimed → Running. This matches the
         // Lean spec: `dispatchFailed` (Claimed → Released) vs `agentLaunched`
         // (Claimed → Running) vs `agentExitAbnormal` (Running → RetryQueued).
-        let child = match agent::spawn_agent(
-            &self.config.agent_cmd,
-            &self.config.working_dir,
-            &prompt,
-        )
-        .await
-        {
-            Ok(c) => c,
-            Err(e) => {
-                let body = format!("## Agent run failed (spawn)\n\n{e}");
-                self.post_completion_comment(issue_id, &body, false)?;
-                self.strict_transition(
-                    &task.id,
-                    Task::CLAIM_CLAIMED,
-                    Task::CLAIM_RELEASED,
-                )?;
-                tracing::warn!(task_id = %task.id, err = %e, "orch: dispatchFailed");
-                return Ok(DispatchOutcome::Retried {
-                    task_id: task.id.clone(),
-                });
-            }
-        };
+        let child =
+            match agent::spawn_agent(&self.config.agent_cmd, &self.config.working_dir, &prompt)
+                .await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    let body = format!("## Agent run failed (spawn)\n\n{e}");
+                    self.post_completion_comment(issue_id, &body, false)?;
+                    self.strict_transition(&task.id, Task::CLAIM_CLAIMED, Task::CLAIM_RELEASED)?;
+                    tracing::warn!(task_id = %task.id, err = %e, "orch: dispatchFailed");
+                    return Ok(DispatchOutcome::Retried {
+                        task_id: task.id.clone(),
+                    });
+                }
+            };
 
         // agentLaunched.
         self.strict_transition(&task.id, Task::CLAIM_CLAIMED, Task::CLAIM_RUNNING)?;
@@ -140,11 +138,7 @@ impl Worker {
         match agent::await_agent(child, self.config.task_timeout).await {
             Ok(result) => {
                 self.post_completion_comment(issue_id, &result.stdout, true)?;
-                self.strict_transition(
-                    &task.id,
-                    Task::CLAIM_RUNNING,
-                    Task::CLAIM_RELEASED,
-                )?;
+                self.strict_transition(&task.id, Task::CLAIM_RUNNING, Task::CLAIM_RELEASED)?;
                 tracing::info!(task_id = %task.id, "orch: released on clean exit");
                 Ok(DispatchOutcome::Released {
                     task_id: task.id.clone(),
@@ -153,11 +147,7 @@ impl Worker {
             Err(e) => {
                 let body = format!("## Agent run failed\n\n{e}");
                 self.post_completion_comment(issue_id, &body, false)?;
-                self.strict_transition(
-                    &task.id,
-                    Task::CLAIM_RUNNING,
-                    Task::CLAIM_RETRY_QUEUED,
-                )?;
+                self.strict_transition(&task.id, Task::CLAIM_RUNNING, Task::CLAIM_RETRY_QUEUED)?;
                 tracing::warn!(task_id = %task.id, err = %e, "orch: retry-queued");
                 Ok(DispatchOutcome::Retried {
                     task_id: task.id.clone(),

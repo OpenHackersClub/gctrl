@@ -50,6 +50,7 @@ fn seed_dispatchable_issue(store: &SqliteStore, issue_id: &str) -> Task {
         github_url: None,
         start_date: None,
         due_date: None,
+        acceptance_criteria: None,
     };
     store.insert_board_issue(&issue).unwrap();
 
@@ -67,7 +68,9 @@ fn seed_dispatchable_issue(store: &SqliteStore, issue_id: &str) -> Task {
     };
     store.insert_board_comment(&comment).unwrap();
 
-    store.promote_issue_to_task(issue_id, "claude-code").unwrap()
+    store
+        .promote_issue_to_task(issue_id, "claude-code")
+        .unwrap()
 }
 
 fn cat_config() -> OrchConfig {
@@ -78,6 +81,7 @@ fn cat_config() -> OrchConfig {
         max_per_pass: 4,
         task_timeout: Duration::from_secs(5),
         dry_run: false,
+        kernel_base_url: "http://127.0.0.1:4318".into(),
     }
 }
 

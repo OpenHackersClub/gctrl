@@ -3,11 +3,10 @@ use std::sync::Mutex;
 
 use duckdb::{params, Connection};
 use gctrl_core::{
-    AgentAnalytics, AlertEvent, AlertRule, Analytics, DailyAggregate, GctlError, ModelAnalytics,
-    InboxAction, InboxActionFilter, InboxMessage, InboxMessageFilter, InboxThread,
-    PersonaDefinition, PersonaReviewRule,
-    PromptVersion, Result, Score, Session, SessionId, SessionStatus, Span, SpanStatus, SpanType, Tag,
-    TrafficFilter, TrafficRecord, TrafficStats,
+    AgentAnalytics, AlertEvent, AlertRule, Analytics, DailyAggregate, GctlError, InboxAction,
+    InboxActionFilter, InboxMessage, InboxMessageFilter, InboxThread, ModelAnalytics,
+    PersonaDefinition, PersonaReviewRule, PromptVersion, Result, Score, Session, SessionId,
+    SessionStatus, Span, SpanStatus, SpanType, Tag, TrafficFilter, TrafficRecord, TrafficStats,
 };
 
 use crate::schema;
@@ -197,7 +196,12 @@ impl DuckDbStore {
         Ok(sessions)
     }
 
-    pub fn list_sessions_filtered(&self, limit: usize, agent: Option<&str>, status: Option<&str>) -> Result<Vec<Session>> {
+    pub fn list_sessions_filtered(
+        &self,
+        limit: usize,
+        agent: Option<&str>,
+        status: Option<&str>,
+    ) -> Result<Vec<Session>> {
         let conn = self.conn.lock().unwrap();
         let mut sql = "SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens FROM sessions WHERE 1=1".to_string();
         let mut bound_params: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
@@ -213,9 +217,14 @@ impl DuckDbStore {
         sql.push_str(" ORDER BY started_at DESC");
         sql.push_str(&format!(" LIMIT {}", limit));
 
-        let mut stmt = conn.prepare(&sql).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let params_refs: Vec<&dyn duckdb::ToSql> = bound_params.iter().map(|p| p.as_ref()).collect();
-        let mut rows = stmt.query(params_refs.as_slice()).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let params_refs: Vec<&dyn duckdb::ToSql> =
+            bound_params.iter().map(|p| p.as_ref()).collect();
+        let mut rows = stmt
+            .query(params_refs.as_slice())
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
 
         let mut sessions = Vec::new();
         while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
@@ -291,7 +300,8 @@ impl DuckDbStore {
             let _ = param_idx;
         }
 
-        let params_refs: Vec<&dyn duckdb::ToSql> = bound_params.iter().map(|p| p.as_ref()).collect();
+        let params_refs: Vec<&dyn duckdb::ToSql> =
+            bound_params.iter().map(|p| p.as_ref()).collect();
         let mut rows = stmt
             .query(params_refs.as_slice())
             .map_err(|e| GctlError::Storage(e.to_string()))?;
@@ -356,9 +366,12 @@ impl DuckDbStore {
             let mut stmt = conn
                 .prepare("SELECT agent_name, COUNT(*), COALESCE(SUM(total_cost_usd), 0) FROM sessions GROUP BY agent_name ORDER BY SUM(total_cost_usd) DESC")
                 .map_err(|e| GctlError::Storage(e.to_string()))?;
-            let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let mut rows = stmt
+                .query([])
+                .map_err(|e| GctlError::Storage(e.to_string()))?;
             while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
-                let agent_name: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+                let agent_name: String =
+                    row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
                 let count: i64 = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
                 let cost: f64 = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
                 by_agent.push(AgentAnalytics {
@@ -375,7 +388,9 @@ impl DuckDbStore {
             let mut stmt = conn
                 .prepare("SELECT model, COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(cost_usd), 0) FROM spans WHERE model IS NOT NULL GROUP BY model ORDER BY SUM(cost_usd) DESC")
                 .map_err(|e| GctlError::Storage(e.to_string()))?;
-            let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let mut rows = stmt
+                .query([])
+                .map_err(|e| GctlError::Storage(e.to_string()))?;
             while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
                 let model: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
                 let count: i64 = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
@@ -418,7 +433,9 @@ impl DuckDbStore {
         let mut stmt = conn.prepare(
             "SELECT id, target_type, target_id, name, value, comment, source, scored_by, created_at FROM scores WHERE target_type = ? AND target_id = ? ORDER BY created_at DESC"
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let mut rows = stmt.query(params![target_type, target_id]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query(params![target_type, target_id])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         let mut scores = Vec::new();
         while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
             scores.push(row_to_score(row)?);
@@ -429,15 +446,27 @@ impl DuckDbStore {
     pub fn get_score_summary(&self, name: &str) -> Result<(u64, u64, f64)> {
         // Returns (pass_count, fail_count, avg_value)
         let conn = self.conn.lock().unwrap();
-        let total: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM scores WHERE name = ?", params![name], |row| row.get(0)
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let pass: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM scores WHERE name = ? AND value >= 1.0", params![name], |row| row.get(0)
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let avg: f64 = conn.query_row(
-            "SELECT COALESCE(AVG(value), 0) FROM scores WHERE name = ?", params![name], |row| row.get(0)
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let total: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM scores WHERE name = ?",
+                params![name],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let pass: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM scores WHERE name = ? AND value >= 1.0",
+                params![name],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let avg: f64 = conn
+            .query_row(
+                "SELECT COALESCE(AVG(value), 0) FROM scores WHERE name = ?",
+                params![name],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok((pass as u64, (total - pass) as u64, avg))
     }
 
@@ -459,7 +488,10 @@ impl DuckDbStore {
         });
 
         // Score: error_count
-        let error_count = spans.iter().filter(|s| matches!(s.status, SpanStatus::Error(_))).count();
+        let error_count = spans
+            .iter()
+            .filter(|s| matches!(s.status, SpanStatus::Error(_)))
+            .count();
         scores.push(Score {
             id: format!("auto-{session_id}-error_count"),
             target_type: "session".into(),
@@ -473,7 +505,10 @@ impl DuckDbStore {
         });
 
         // Score: generation_count
-        let gen_count = spans.iter().filter(|s| s.span_type == SpanType::Generation).count();
+        let gen_count = spans
+            .iter()
+            .filter(|s| s.span_type == SpanType::Generation)
+            .count();
         scores.push(Score {
             id: format!("auto-{session_id}-generation_count"),
             target_type: "session".into(),
@@ -526,7 +561,9 @@ impl DuckDbStore {
         let mut stmt = conn.prepare(
             "SELECT id, target_type, target_id, key, value FROM tags WHERE target_type = ? AND target_id = ?"
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let mut rows = stmt.query(params![target_type, target_id]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query(params![target_type, target_id])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         let mut tags = Vec::new();
         while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
             let id: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
@@ -534,7 +571,13 @@ impl DuckDbStore {
             let ti: String = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
             let k: String = row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?;
             let v: String = row.get(4).map_err(|e| GctlError::Storage(e.to_string()))?;
-            tags.push(Tag { id, target_type: tt, target_id: ti, key: k, value: v });
+            tags.push(Tag {
+                id,
+                target_type: tt,
+                target_id: ti,
+                key: k,
+                value: v,
+            });
         }
         Ok(tags)
     }
@@ -554,7 +597,8 @@ impl DuckDbStore {
         conn.execute(
             "INSERT OR IGNORE INTO session_prompts (session_id, prompt_hash) VALUES (?, ?)",
             params![session_id, prompt_hash],
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        )
+        .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
     }
 
@@ -563,7 +607,9 @@ impl DuckDbStore {
         let mut stmt = conn.prepare(
             "SELECT hash, content, file_path, label, created_at, token_count FROM prompt_versions WHERE hash = ?"
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let mut rows = stmt.query(params![hash]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query(params![hash])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         if let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
             Ok(Some(row_to_prompt_version(row)?))
         } else {
@@ -576,7 +622,9 @@ impl DuckDbStore {
         let mut stmt = conn.prepare(
             "SELECT hash, content, file_path, label, created_at, token_count FROM prompt_versions ORDER BY created_at DESC"
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         let mut pvs = Vec::new();
         while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
             pvs.push(row_to_prompt_version(row)?);
@@ -599,14 +647,21 @@ impl DuckDbStore {
         let mut stmt = conn.prepare(
             "SELECT date, metric, dimension, value FROM daily_aggregates ORDER BY date DESC LIMIT ?"
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let mut rows = stmt.query(params![(days * 10) as i64]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query(params![(days * 10) as i64])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         let mut aggs = Vec::new();
         while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
             let date: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
             let metric: String = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
             let dimension: String = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
             let value: f64 = row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?;
-            aggs.push(DailyAggregate { date, metric, dimension, value });
+            aggs.push(DailyAggregate {
+                date,
+                metric,
+                dimension,
+                value,
+            });
         }
         Ok(aggs)
     }
@@ -617,20 +672,34 @@ impl DuckDbStore {
         let mut aggs = Vec::new();
 
         // Total cost for the day
-        let cost: f64 = conn.query_row(
-            "SELECT COALESCE(SUM(total_cost_usd), 0) FROM sessions WHERE started_at LIKE ?",
-            params![format!("{date}%")],
-            |row| row.get(0),
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        aggs.push(DailyAggregate { date: date.into(), metric: "cost".into(), dimension: "total".into(), value: cost });
+        let cost: f64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(total_cost_usd), 0) FROM sessions WHERE started_at LIKE ?",
+                params![format!("{date}%")],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        aggs.push(DailyAggregate {
+            date: date.into(),
+            metric: "cost".into(),
+            dimension: "total".into(),
+            value: cost,
+        });
 
         // Session count
-        let sessions: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sessions WHERE started_at LIKE ?",
-            params![format!("{date}%")],
-            |row| row.get(0),
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        aggs.push(DailyAggregate { date: date.into(), metric: "sessions".into(), dimension: "total".into(), value: sessions as f64 });
+        let sessions: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE started_at LIKE ?",
+                params![format!("{date}%")],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        aggs.push(DailyAggregate {
+            date: date.into(),
+            metric: "sessions".into(),
+            dimension: "total".into(),
+            value: sessions as f64,
+        });
 
         // Total tokens
         let tokens: i64 = conn.query_row(
@@ -638,15 +707,27 @@ impl DuckDbStore {
             params![format!("{date}%")],
             |row| row.get(0),
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        aggs.push(DailyAggregate { date: date.into(), metric: "tokens".into(), dimension: "total".into(), value: tokens as f64 });
+        aggs.push(DailyAggregate {
+            date: date.into(),
+            metric: "tokens".into(),
+            dimension: "total".into(),
+            value: tokens as f64,
+        });
 
         // Span count
-        let spans: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM spans WHERE started_at LIKE ?",
-            params![format!("{date}%")],
-            |row| row.get(0),
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        aggs.push(DailyAggregate { date: date.into(), metric: "spans".into(), dimension: "total".into(), value: spans as f64 });
+        let spans: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM spans WHERE started_at LIKE ?",
+                params![format!("{date}%")],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        aggs.push(DailyAggregate {
+            date: date.into(),
+            metric: "spans".into(),
+            dimension: "total".into(),
+            value: spans as f64,
+        });
 
         drop(conn);
 
@@ -672,7 +753,9 @@ impl DuckDbStore {
         let mut stmt = conn.prepare(
             "SELECT id, name, condition_type, threshold, action, enabled FROM alert_rules WHERE enabled = TRUE"
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         let mut rules = Vec::new();
         while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
             let id: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
@@ -681,7 +764,14 @@ impl DuckDbStore {
             let threshold: f64 = row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?;
             let action: String = row.get(4).map_err(|e| GctlError::Storage(e.to_string()))?;
             let enabled: bool = row.get(5).map_err(|e| GctlError::Storage(e.to_string()))?;
-            rules.push(AlertRule { id, name, condition_type: ct, threshold, action, enabled });
+            rules.push(AlertRule {
+                id,
+                name,
+                condition_type: ct,
+                threshold,
+                action,
+                enabled,
+            });
         }
         Ok(rules)
     }
@@ -701,7 +791,9 @@ impl DuckDbStore {
         let mut stmt = conn.prepare(
             "SELECT model, COALESCE(SUM(cost_usd), 0), COUNT(*) FROM spans WHERE model IS NOT NULL GROUP BY model ORDER BY SUM(cost_usd) DESC"
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
             let model: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
@@ -717,7 +809,9 @@ impl DuckDbStore {
         let mut stmt = conn.prepare(
             "SELECT agent_name, COALESCE(SUM(total_cost_usd), 0), COUNT(*) FROM sessions GROUP BY agent_name ORDER BY SUM(total_cost_usd) DESC"
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
             let agent: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
@@ -729,12 +823,17 @@ impl DuckDbStore {
     }
 
     /// Get per-model cost breakdown for a specific session.
-    pub fn get_session_cost_breakdown(&self, session_id: &str) -> Result<Vec<(String, f64, u64, u64, u64)>> {
+    pub fn get_session_cost_breakdown(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<(String, f64, u64, u64, u64)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT COALESCE(model, 'unknown'), COALESCE(SUM(cost_usd), 0), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COUNT(*) FROM spans WHERE session_id = ? GROUP BY model ORDER BY SUM(cost_usd) DESC"
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let mut rows = stmt.query(params![session_id]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query(params![session_id])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
             let model: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
@@ -750,15 +849,20 @@ impl DuckDbStore {
     /// Get span type distribution: count of Generation, Span, Event types.
     pub fn get_span_type_distribution(&self) -> Result<Vec<(String, u64, f64)>> {
         let conn = self.conn.lock().unwrap();
-        let total: i64 = conn.query_row("SELECT COUNT(*) FROM spans", [], |row| row.get(0))
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM spans", [], |row| row.get(0))
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         if total == 0 {
             return Ok(Vec::new());
         }
-        let mut stmt = conn.prepare(
-            "SELECT span_type, COUNT(*) FROM spans GROUP BY span_type ORDER BY COUNT(*) DESC"
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT span_type, COUNT(*) FROM spans GROUP BY span_type ORDER BY COUNT(*) DESC",
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
             let span_type: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
@@ -772,13 +876,21 @@ impl DuckDbStore {
     /// Return table counts for health endpoint.
     pub fn get_health_info(&self) -> Result<serde_json::Value> {
         let conn = self.conn.lock().unwrap();
-        let sessions: i64 = conn.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+        let sessions: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
             .map_err(|e| GctlError::Storage(e.to_string()))?;
-        let spans: i64 = conn.query_row("SELECT COUNT(*) FROM spans", [], |row| row.get(0))
+        let spans: i64 = conn
+            .query_row("SELECT COUNT(*) FROM spans", [], |row| row.get(0))
             .map_err(|e| GctlError::Storage(e.to_string()))?;
-        let traffic: i64 = conn.query_row("SELECT COUNT(*) FROM traffic", [], |row| row.get(0))
+        let traffic: i64 = conn
+            .query_row("SELECT COUNT(*) FROM traffic", [], |row| row.get(0))
             .map_err(|e| GctlError::Storage(e.to_string()))?;
-        let alerts: i64 = conn.query_row("SELECT COUNT(*) FROM alert_rules WHERE enabled = TRUE", [], |row| row.get(0))
+        let alerts: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM alert_rules WHERE enabled = TRUE",
+                [],
+                |row| row.get(0),
+            )
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(serde_json::json!({
             "sessions": sessions,
@@ -795,7 +907,9 @@ impl DuckDbStore {
         let mut stmt = conn.prepare(
             "SELECT model, PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_ms), PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms), PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY duration_ms) FROM spans WHERE model IS NOT NULL GROUP BY model"
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
             let model: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
@@ -834,22 +948,28 @@ impl DuckDbStore {
                     github_repo: row.get(4)?,
                 })
             },
-        ).ok().map(Ok).transpose()
+        )
+        .ok()
+        .map(Ok)
+        .transpose()
     }
 
     pub fn list_board_projects(&self) -> Result<Vec<gctrl_core::BoardProject>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, name, key, counter, github_repo FROM board_projects ORDER BY name")
+        let mut stmt = conn
+            .prepare("SELECT id, name, key, counter, github_repo FROM board_projects ORDER BY name")
             .map_err(|e| GctlError::Storage(e.to_string()))?;
-        let rows = stmt.query_map([], |row| {
-            Ok(gctrl_core::BoardProject {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                key: row.get(2)?,
-                counter: row.get(3)?,
-                github_repo: row.get(4)?,
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(gctrl_core::BoardProject {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    key: row.get(2)?,
+                    counter: row.get(3)?,
+                    github_repo: row.get(4)?,
+                })
             })
-        }).map_err(|e| GctlError::Storage(e.to_string()))?;
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
@@ -858,7 +978,8 @@ impl DuckDbStore {
         conn.execute(
             "UPDATE board_projects SET github_repo = ?1 WHERE id = ?2",
             params![github_repo, id],
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        )
+        .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
     }
 
@@ -867,20 +988,23 @@ impl DuckDbStore {
         conn.execute(
             "UPDATE board_projects SET counter = counter + 1 WHERE id = ?1",
             [project_id],
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let counter: i32 = conn.query_row(
-            "SELECT counter FROM board_projects WHERE id = ?1",
-            [project_id],
-            |row| row.get(0),
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        )
+        .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let counter: i32 = conn
+            .query_row(
+                "SELECT counter FROM board_projects WHERE id = ?1",
+                [project_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(counter)
     }
 
     pub fn insert_board_issue(&self, issue: &gctrl_core::BoardIssue) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO board_issues (id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url, start_date, due_date)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO board_issues (id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url, start_date, due_date, acceptance_criteria)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 issue.id,
                 issue.project_id,
@@ -910,6 +1034,7 @@ impl DuckDbStore {
                 issue.github_url,
                 issue.start_date,
                 issue.due_date,
+                issue.acceptance_criteria,
             ],
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
@@ -929,8 +1054,8 @@ impl DuckDbStore {
                 "UPDATE board_issues SET title = ?1, description = ?2, status = ?3, priority = ?4,
                  assignee_id = ?5, assignee_name = ?6, assignee_type = ?7,
                  labels = ?8, parent_id = ?9, updated_at = ?10,
-                 content_hash = ?11, source_path = ?12
-                 WHERE id = ?13",
+                 content_hash = ?11, source_path = ?12, acceptance_criteria = ?13
+                 WHERE id = ?14",
                 params![
                     issue.title,
                     issue.description,
@@ -944,9 +1069,11 @@ impl DuckDbStore {
                     chrono::Utc::now().to_rfc3339(),
                     issue.content_hash,
                     issue.source_path,
+                    issue.acceptance_criteria,
                     issue.id,
                 ],
-            ).map_err(|e| GctlError::Storage(e.to_string()))?;
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
             Ok(true)
         } else {
             self.insert_board_issue(issue)?;
@@ -957,16 +1084,19 @@ impl DuckDbStore {
     pub fn get_board_issue(&self, id: &str) -> Result<Option<gctrl_core::BoardIssue>> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url, start_date, due_date FROM board_issues WHERE id = ?1",
+            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url, start_date, due_date, acceptance_criteria FROM board_issues WHERE id = ?1",
             [id],
             row_to_board_issue,
         ).ok().map(Ok).transpose()
     }
 
-    pub fn list_board_issues(&self, filter: &gctrl_core::BoardIssueFilter) -> Result<Vec<gctrl_core::BoardIssue>> {
+    pub fn list_board_issues(
+        &self,
+        filter: &gctrl_core::BoardIssueFilter,
+    ) -> Result<Vec<gctrl_core::BoardIssue>> {
         let conn = self.conn.lock().unwrap();
         let mut sql = String::from(
-            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url, start_date, due_date FROM board_issues WHERE 1=1"
+            "SELECT id, project_id, title, description, status, priority, assignee_id, assignee_name, assignee_type, labels, parent_id, created_at, updated_at, created_by_id, created_by_name, created_by_type, blocked_by, blocking, session_ids, total_cost_usd, total_tokens, pr_numbers, content_hash, source_path, github_issue_number, github_url, start_date, due_date, acceptance_criteria FROM board_issues WHERE 1=1"
         );
         let mut params_vec: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
         let mut idx = 1;
@@ -993,23 +1123,35 @@ impl DuckDbStore {
         }
 
         let param_refs: Vec<&dyn duckdb::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
-        let mut stmt = conn.prepare(&sql).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let rows = stmt.query_map(param_refs.as_slice(), row_to_board_issue)
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map(param_refs.as_slice(), row_to_board_issue)
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    pub fn update_board_issue_status(&self, id: &str, status: &str, actor_id: &str, actor_name: &str, actor_type: &str) -> Result<()> {
+    pub fn update_board_issue_status(
+        &self,
+        id: &str,
+        status: &str,
+        actor_id: &str,
+        actor_name: &str,
+        actor_type: &str,
+    ) -> Result<()> {
         let target = gctrl_core::IssueStatus::from_str(status)
             .ok_or_else(|| GctlError::Storage(format!("invalid status: {}", status)))?;
 
         // Get current status
         let conn = self.conn.lock().unwrap();
-        let current_str: String = conn.query_row(
-            "SELECT status FROM board_issues WHERE id = ?1",
-            [id],
-            |row| row.get(0),
-        ).map_err(|e| GctlError::Storage(format!("issue not found: {} ({})", id, e)))?;
+        let current_str: String = conn
+            .query_row(
+                "SELECT status FROM board_issues WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(format!("issue not found: {} ({})", id, e)))?;
 
         let current = gctrl_core::IssueStatus::from_str(&current_str)
             .unwrap_or(gctrl_core::IssueStatus::Backlog);
@@ -1024,7 +1166,12 @@ impl DuckDbStore {
                 "invalid transition: {} → {} (allowed: {})",
                 current.as_str(),
                 target.as_str(),
-                current.valid_transitions().iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
+                current
+                    .valid_transitions()
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
             )));
         };
 
@@ -1036,7 +1183,8 @@ impl DuckDbStore {
             conn.execute(
                 "UPDATE board_issues SET status = ?1, updated_at = ?2 WHERE id = ?3",
                 params![step_str, now.to_rfc3339(), id],
-            ).map_err(|e| GctlError::Storage(e.to_string()))?;
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
 
             let event_id = uuid::Uuid::new_v4().to_string();
             conn.execute(
@@ -1053,7 +1201,13 @@ impl DuckDbStore {
         Ok(())
     }
 
-    pub fn assign_board_issue(&self, id: &str, assignee_id: &str, assignee_name: &str, assignee_type: &str) -> Result<()> {
+    pub fn assign_board_issue(
+        &self,
+        id: &str,
+        assignee_id: &str,
+        assignee_name: &str,
+        assignee_type: &str,
+    ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let now = chrono::Utc::now().to_rfc3339();
         conn.execute(
@@ -1083,22 +1237,24 @@ impl DuckDbStore {
         let mut stmt = conn.prepare(
             "SELECT id, issue_id, type, actor_id, actor_name, actor_type, timestamp, data FROM board_events WHERE issue_id = ?1 ORDER BY timestamp"
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let rows = stmt.query_map([issue_id], |row| {
-            let ts: String = row.get(6)?;
-            let data_str: String = row.get(7)?;
-            Ok(gctrl_core::BoardEvent {
-                id: row.get(0)?,
-                issue_id: row.get(1)?,
-                event_type: row.get(2)?,
-                actor_id: row.get(3)?,
-                actor_name: row.get(4)?,
-                actor_type: row.get(5)?,
-                timestamp: chrono::DateTime::parse_from_rfc3339(&ts)
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .unwrap_or_else(|_| chrono::Utc::now()),
-                data: serde_json::from_str(&data_str).unwrap_or(serde_json::Value::Null),
+        let rows = stmt
+            .query_map([issue_id], |row| {
+                let ts: String = row.get(6)?;
+                let data_str: String = row.get(7)?;
+                Ok(gctrl_core::BoardEvent {
+                    id: row.get(0)?,
+                    issue_id: row.get(1)?,
+                    event_type: row.get(2)?,
+                    actor_id: row.get(3)?,
+                    actor_name: row.get(4)?,
+                    actor_type: row.get(5)?,
+                    timestamp: chrono::DateTime::parse_from_rfc3339(&ts)
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now()),
+                    data: serde_json::from_str(&data_str).unwrap_or(serde_json::Value::Null),
+                })
             })
-        }).map_err(|e| GctlError::Storage(e.to_string()))?;
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
@@ -1121,34 +1277,44 @@ impl DuckDbStore {
         let mut stmt = conn.prepare(
             "SELECT id, issue_id, author_id, author_name, author_type, body, created_at, session_id FROM board_comments WHERE issue_id = ?1 ORDER BY created_at"
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let rows = stmt.query_map([issue_id], |row| {
-            let ts: String = row.get(6)?;
-            Ok(gctrl_core::BoardComment {
-                id: row.get(0)?,
-                issue_id: row.get(1)?,
-                author_id: row.get(2)?,
-                author_name: row.get(3)?,
-                author_type: row.get(4)?,
-                body: row.get(5)?,
-                created_at: chrono::DateTime::parse_from_rfc3339(&ts)
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .unwrap_or_else(|_| chrono::Utc::now()),
-                session_id: row.get(7)?,
+        let rows = stmt
+            .query_map([issue_id], |row| {
+                let ts: String = row.get(6)?;
+                Ok(gctrl_core::BoardComment {
+                    id: row.get(0)?,
+                    issue_id: row.get(1)?,
+                    author_id: row.get(2)?,
+                    author_name: row.get(3)?,
+                    author_type: row.get(4)?,
+                    body: row.get(5)?,
+                    created_at: chrono::DateTime::parse_from_rfc3339(&ts)
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now()),
+                    session_id: row.get(7)?,
+                })
             })
-        }).map_err(|e| GctlError::Storage(e.to_string()))?;
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    pub fn link_session_to_issue(&self, issue_id: &str, session_id: &str, cost: f64, tokens: u64) -> Result<()> {
+    pub fn link_session_to_issue(
+        &self,
+        issue_id: &str,
+        session_id: &str,
+        cost: f64,
+        tokens: u64,
+    ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let now = chrono::Utc::now().to_rfc3339();
 
         // Read current session_ids, append, write back
-        let current: String = conn.query_row(
-            "SELECT session_ids FROM board_issues WHERE id = ?1",
-            [issue_id],
-            |row| row.get(0),
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let current: String = conn
+            .query_row(
+                "SELECT session_ids FROM board_issues WHERE id = ?1",
+                [issue_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
 
         let mut ids: Vec<String> = serde_json::from_str(&current).unwrap_or_default();
         if !ids.contains(&session_id.to_string()) {
@@ -1164,7 +1330,8 @@ impl DuckDbStore {
                 updated_at = ?4
              WHERE id = ?5",
             params![ids_json, cost, tokens as i64, now, issue_id],
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        )
+        .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
     }
 
@@ -1179,11 +1346,13 @@ impl DuckDbStore {
         let specs_json = serde_json::to_string(&persona.key_specs).unwrap_or_else(|_| "[]".into());
 
         // Check if exists
-        let exists: bool = conn.query_row(
-            "SELECT COUNT(*) > 0 FROM persona_definitions WHERE id = ?1",
-            [&persona.id],
-            |row| row.get(0),
-        ).unwrap_or(false);
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM persona_definitions WHERE id = ?1",
+                [&persona.id],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
 
         if exists {
             conn.execute(
@@ -1229,7 +1398,9 @@ impl DuckDbStore {
         let mut stmt = conn.prepare(
             "SELECT id, name, focus, prompt_prefix, owns, review_focus, pushes_back, tools, key_specs, source_hash FROM persona_definitions ORDER BY name"
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         let mut personas = Vec::new();
         while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
             let tools_str: String = row.get(7).unwrap_or_default();
@@ -1252,7 +1423,8 @@ impl DuckDbStore {
 
     pub fn delete_persona(&self, id: &str) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
-        let affected = conn.execute("DELETE FROM persona_definitions WHERE id = ?1", [id])
+        let affected = conn
+            .execute("DELETE FROM persona_definitions WHERE id = ?1", [id])
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(affected > 0)
     }
@@ -1263,11 +1435,13 @@ impl DuckDbStore {
         let ids_json = serde_json::to_string(&rule.persona_ids).unwrap_or_else(|_| "[]".into());
 
         // Check if exists by id
-        let exists: bool = conn.query_row(
-            "SELECT COUNT(*) > 0 FROM persona_review_rules WHERE id = ?1",
-            [&rule.id],
-            |row| row.get(0),
-        ).unwrap_or(false);
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM persona_review_rules WHERE id = ?1",
+                [&rule.id],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
 
         if exists {
             conn.execute(
@@ -1286,10 +1460,12 @@ impl DuckDbStore {
 
     pub fn list_review_rules(&self) -> Result<Vec<PersonaReviewRule>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, pr_type, persona_ids FROM persona_review_rules ORDER BY pr_type"
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut stmt = conn
+            .prepare("SELECT id, pr_type, persona_ids FROM persona_review_rules ORDER BY pr_type")
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         let mut rules = Vec::new();
         while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
             let ids_str: String = row.get(2).unwrap_or_default();
@@ -1315,7 +1491,10 @@ impl DuckDbStore {
                     persona_ids: serde_json::from_str(&ids_str).unwrap_or_default(),
                 })
             },
-        ).ok().map(Ok).transpose()
+        )
+        .ok()
+        .map(Ok)
+        .transpose()
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -1408,7 +1587,11 @@ impl DuckDbStore {
         let conn = self.conn.lock().unwrap();
         let needs_join = filter.project.is_some();
         let col = |name: &str| -> String {
-            if needs_join { format!("m.{}", name) } else { name.to_string() }
+            if needs_join {
+                format!("m.{}", name)
+            } else {
+                name.to_string()
+            }
         };
 
         let base = if needs_join {
@@ -1460,8 +1643,11 @@ impl DuckDbStore {
         }
 
         let param_refs: Vec<&dyn duckdb::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
-        let mut stmt = conn.prepare(&sql).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let rows = stmt.query_map(param_refs.as_slice(), row_to_inbox_message)
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map(param_refs.as_slice(), row_to_inbox_message)
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
@@ -1507,8 +1693,11 @@ impl DuckDbStore {
         }
 
         let param_refs: Vec<&dyn duckdb::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
-        let mut stmt = conn.prepare(&sql).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let rows = stmt.query_map(param_refs.as_slice(), row_to_inbox_thread)
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map(param_refs.as_slice(), row_to_inbox_thread)
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
@@ -1517,11 +1706,13 @@ impl DuckDbStore {
         let conn = self.conn.lock().unwrap();
 
         // Validate message is pending
-        let status: String = conn.query_row(
-            "SELECT status FROM inbox_messages WHERE id = ?1",
-            [&action.message_id],
-            |row| row.get(0),
-        ).map_err(|e| GctlError::Storage(format!("message not found: {}", e)))?;
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM inbox_messages WHERE id = ?1",
+                [&action.message_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(format!("message not found: {}", e)))?;
 
         if status != "pending" {
             return Err(GctlError::Storage(format!(
@@ -1552,7 +1743,8 @@ impl DuckDbStore {
         conn.execute(
             "UPDATE inbox_messages SET status = 'acted', updated_at = ?1 WHERE id = ?2",
             params![now, action.message_id],
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        )
+        .map_err(|e| GctlError::Storage(e.to_string()))?;
 
         // Recalc thread counts
         self.recalc_thread_counts_with_conn(&conn, &action.thread_id)?;
@@ -1591,8 +1783,11 @@ impl DuckDbStore {
         }
 
         let param_refs: Vec<&dyn duckdb::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
-        let mut stmt = conn.prepare(&sql).map_err(|e| GctlError::Storage(e.to_string()))?;
-        let rows = stmt.query_map(param_refs.as_slice(), row_to_inbox_action)
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map(param_refs.as_slice(), row_to_inbox_action)
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
@@ -1602,16 +1797,14 @@ impl DuckDbStore {
         self.recalc_thread_counts_with_conn(&conn, thread_id)
     }
 
-    fn recalc_thread_counts_with_conn(
-        &self,
-        conn: &Connection,
-        thread_id: &str,
-    ) -> Result<()> {
-        let pending_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM inbox_messages WHERE thread_id = ?1 AND status = 'pending'",
-            [thread_id],
-            |row| row.get(0),
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+    fn recalc_thread_counts_with_conn(&self, conn: &Connection, thread_id: &str) -> Result<()> {
+        let pending_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM inbox_messages WHERE thread_id = ?1 AND status = 'pending'",
+                [thread_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
 
         // Compute latest_urgency as the highest urgency among pending messages
         let urgency_order = ["critical", "high", "medium", "low", "info"];
@@ -1620,7 +1813,9 @@ impl DuckDbStore {
             let mut stmt = conn.prepare(
                 "SELECT DISTINCT urgency FROM inbox_messages WHERE thread_id = ?1 AND status = 'pending'"
             ).map_err(|e| GctlError::Storage(e.to_string()))?;
-            let mut rows = stmt.query([thread_id]).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let mut rows = stmt
+                .query([thread_id])
+                .map_err(|e| GctlError::Storage(e.to_string()))?;
             while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
                 let u: String = row.get(0).unwrap_or_default();
                 let u_pos = urgency_order.iter().position(|&x| x == u).unwrap_or(4);
@@ -1646,17 +1841,25 @@ impl DuckDbStore {
     pub fn get_inbox_stats(&self) -> Result<serde_json::Value> {
         let conn = self.conn.lock().unwrap();
 
-        let total: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM inbox_messages", [], |row| row.get(0),
-        ).unwrap_or(0);
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM inbox_messages", [], |row| row.get(0))
+            .unwrap_or(0);
 
-        let pending: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM inbox_messages WHERE status = 'pending'", [], |row| row.get(0),
-        ).unwrap_or(0);
+        let pending: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM inbox_messages WHERE status = 'pending'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
 
-        let acted: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM inbox_messages WHERE status = 'acted'", [], |row| row.get(0),
-        ).unwrap_or(0);
+        let acted: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM inbox_messages WHERE status = 'acted'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
 
         // By urgency (pending only)
         let mut by_urgency = serde_json::Map::new();
@@ -1664,7 +1867,9 @@ impl DuckDbStore {
             let mut stmt = conn.prepare(
                 "SELECT urgency, COUNT(*) FROM inbox_messages WHERE status = 'pending' GROUP BY urgency"
             ).map_err(|e| GctlError::Storage(e.to_string()))?;
-            let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let mut rows = stmt
+                .query([])
+                .map_err(|e| GctlError::Storage(e.to_string()))?;
             while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
                 let urgency: String = row.get(0).unwrap_or_default();
                 let count: i64 = row.get(1).unwrap_or(0);
@@ -1678,7 +1883,9 @@ impl DuckDbStore {
             let mut stmt = conn.prepare(
                 "SELECT kind, COUNT(*) FROM inbox_messages WHERE status = 'pending' GROUP BY kind"
             ).map_err(|e| GctlError::Storage(e.to_string()))?;
-            let mut rows = stmt.query([]).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let mut rows = stmt
+                .query([])
+                .map_err(|e| GctlError::Storage(e.to_string()))?;
             while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
                 let kind: String = row.get(0).unwrap_or_default();
                 let count: i64 = row.get(1).unwrap_or(0);
@@ -1711,7 +1918,8 @@ fn row_to_board_issue(row: &duckdb::Row<'_>) -> duckdb::Result<gctrl_core::Board
         project_id: row.get(1)?,
         title: row.get(2)?,
         description: row.get(3)?,
-        status: gctrl_core::IssueStatus::from_str(&status_str).unwrap_or(gctrl_core::IssueStatus::Backlog),
+        status: gctrl_core::IssueStatus::from_str(&status_str)
+            .unwrap_or(gctrl_core::IssueStatus::Backlog),
         priority: row.get(5)?,
         assignee_id: row.get(6)?,
         assignee_name: row.get(7)?,
@@ -1731,14 +1939,21 @@ fn row_to_board_issue(row: &duckdb::Row<'_>) -> duckdb::Result<gctrl_core::Board
         blocking: serde_json::from_str(&blocking_str).unwrap_or_default(),
         session_ids: serde_json::from_str(&session_ids_str).unwrap_or_default(),
         total_cost_usd: row.get(19)?,
-        total_tokens: { let v: i64 = row.get(20)?; v as u64 },
+        total_tokens: {
+            let v: i64 = row.get(20)?;
+            v as u64
+        },
         pr_numbers: serde_json::from_str(&pr_numbers_str).unwrap_or_default(),
         content_hash: row.get(22)?,
         source_path: row.get(23)?,
-        github_issue_number: { let v: Option<i32> = row.get(24)?; v.map(|n| n as u32) },
+        github_issue_number: {
+            let v: Option<i32> = row.get(24)?;
+            v.map(|n| n as u32)
+        },
         github_url: row.get(25)?,
         start_date: row.get(26)?,
         due_date: row.get(27)?,
+        acceptance_criteria: row.get(28)?,
     })
 }
 
@@ -1779,7 +1994,8 @@ fn row_to_session(row: &duckdb::Row<'_>) -> Result<Session> {
 fn row_to_span(row: &duckdb::Row<'_>) -> Result<Span> {
     let span_id: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
     let trace_id: String = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
-    let parent_span_id: Option<String> = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let parent_span_id: Option<String> =
+        row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
     let session_id: String = row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?;
     let agent_name: String = row.get(4).map_err(|e| GctlError::Storage(e.to_string()))?;
     let operation_name: String = row.get(5).map_err(|e| GctlError::Storage(e.to_string()))?;
@@ -1789,7 +2005,8 @@ fn row_to_span(row: &duckdb::Row<'_>) -> Result<Span> {
     let output_tokens: i64 = row.get(9).map_err(|e| GctlError::Storage(e.to_string()))?;
     let cost_usd: f64 = row.get(10).map_err(|e| GctlError::Storage(e.to_string()))?;
     let status: String = row.get(11).map_err(|e| GctlError::Storage(e.to_string()))?;
-    let error_message: Option<String> = row.get(12).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let error_message: Option<String> =
+        row.get(12).map_err(|e| GctlError::Storage(e.to_string()))?;
     let started_at: String = row.get(13).map_err(|e| GctlError::Storage(e.to_string()))?;
     let duration_ms: i64 = row.get(14).map_err(|e| GctlError::Storage(e.to_string()))?;
     let attributes: String = row.get(15).map_err(|e| GctlError::Storage(e.to_string()))?;
@@ -1860,7 +2077,14 @@ fn row_to_score(row: &duckdb::Row<'_>) -> Result<Score> {
     let scored_by: Option<String> = row.get(7).map_err(|e| GctlError::Storage(e.to_string()))?;
     let created_at: String = row.get(8).map_err(|e| GctlError::Storage(e.to_string()))?;
     Ok(Score {
-        id, target_type, target_id, name, value, comment, source, scored_by,
+        id,
+        target_type,
+        target_id,
+        name,
+        value,
+        comment,
+        source,
+        scored_by,
         created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
             .map_err(|e| GctlError::Storage(format!("parse timestamp: {e}")))?
             .with_timezone(&chrono::Utc),
@@ -1875,7 +2099,10 @@ fn row_to_prompt_version(row: &duckdb::Row<'_>) -> Result<PromptVersion> {
     let created_at: String = row.get(4).map_err(|e| GctlError::Storage(e.to_string()))?;
     let token_count: Option<i32> = row.get(5).map_err(|e| GctlError::Storage(e.to_string()))?;
     Ok(PromptVersion {
-        hash, content, file_path, label,
+        hash,
+        content,
+        file_path,
+        label,
         created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
             .map_err(|e| GctlError::Storage(format!("parse timestamp: {e}")))?
             .with_timezone(&chrono::Utc),
@@ -1898,7 +2125,10 @@ fn row_to_inbox_message(row: &duckdb::Row<'_>) -> duckdb::Result<InboxMessage> {
         status: row.get(8)?,
         requires_action: row.get(9)?,
         payload: payload_str.and_then(|s| serde_json::from_str(&s).ok()),
-        duplicate_count: { let v: i32 = row.get(11)?; v as u32 },
+        duplicate_count: {
+            let v: i32 = row.get(11)?;
+            v as u32
+        },
         snoozed_until: row.get(12)?,
         expires_at: row.get(13)?,
         created_at: row.get(14)?,
@@ -2004,7 +2234,9 @@ mod tests {
     fn test_list_sessions() {
         let store = test_store();
         for i in 0..5 {
-            store.insert_session(&make_session(&format!("s{i}"))).unwrap();
+            store
+                .insert_session(&make_session(&format!("s{i}")))
+                .unwrap();
         }
         let sessions = store.list_sessions(3).unwrap();
         assert_eq!(sessions.len(), 3);
@@ -2096,7 +2328,7 @@ mod tests {
 
         // Session should now have aggregated totals
         let session = store.get_session(&SessionId("s1".into())).unwrap().unwrap();
-        assert_eq!(session.total_input_tokens, 3000);  // 3 * 1000
+        assert_eq!(session.total_input_tokens, 3000); // 3 * 1000
         assert_eq!(session.total_output_tokens, 1500); // 3 * 500
         assert!((session.total_cost_usd - 0.15).abs() < 0.001); // 3 * 0.05
     }
@@ -2250,11 +2482,13 @@ mod tests {
     fn test_cost_by_model() {
         let store = test_store();
         store.insert_session(&make_session("s1")).unwrap();
-        store.insert_spans(&[make_span("sp1", "s1"), make_span("sp2", "s1")]).unwrap();
+        store
+            .insert_spans(&[make_span("sp1", "s1"), make_span("sp2", "s1")])
+            .unwrap();
         let costs = store.get_cost_by_model().unwrap();
         assert_eq!(costs.len(), 1);
         assert_eq!(costs[0].0, "claude-opus-4-6");
-        assert!((costs[0].1 - 0.10).abs() < 0.001);  // 2 * 0.05
+        assert!((costs[0].1 - 0.10).abs() < 0.001); // 2 * 0.05
         assert_eq!(costs[0].2, 2);
     }
 
@@ -2272,7 +2506,9 @@ mod tests {
     fn test_latency_by_model() {
         let store = test_store();
         store.insert_session(&make_session("s1")).unwrap();
-        store.insert_spans(&[make_span("sp1", "s1"), make_span("sp2", "s1")]).unwrap();
+        store
+            .insert_spans(&[make_span("sp1", "s1"), make_span("sp2", "s1")])
+            .unwrap();
         let latencies = store.get_latency_by_model().unwrap();
         assert_eq!(latencies.len(), 1);
         assert_eq!(latencies[0].0, "claude-opus-4-6");
@@ -2282,7 +2518,9 @@ mod tests {
     fn test_auto_score_session() {
         let store = test_store();
         store.insert_session(&make_session("s1")).unwrap();
-        store.insert_spans(&[make_span("sp1", "s1"), make_span("sp2", "s1")]).unwrap();
+        store
+            .insert_spans(&[make_span("sp1", "s1"), make_span("sp2", "s1")])
+            .unwrap();
 
         let scores = store.auto_score_session("s1").unwrap();
         assert!(scores.len() >= 3);
@@ -2292,8 +2530,11 @@ mod tests {
         assert!((span_count.value - 2.0).abs() < f64::EPSILON);
 
         // Check generation_count
-        let gen_count = scores.iter().find(|s| s.name == "generation_count").unwrap();
-        assert!((gen_count.value - 2.0).abs() < f64::EPSILON);  // make_span creates Generation type
+        let gen_count = scores
+            .iter()
+            .find(|s| s.name == "generation_count")
+            .unwrap();
+        assert!((gen_count.value - 2.0).abs() < f64::EPSILON); // make_span creates Generation type
     }
 
     #[test]
@@ -2356,7 +2597,9 @@ mod tests {
         event_span.span_type = SpanType::Event;
         event_span.model = None;
 
-        store.insert_spans(&[gen_span, tool_span, event_span]).unwrap();
+        store
+            .insert_spans(&[gen_span, tool_span, event_span])
+            .unwrap();
 
         let dist = store.get_span_type_distribution().unwrap();
         assert_eq!(dist.len(), 3);
@@ -2389,7 +2632,9 @@ mod tests {
         store.insert_session(&s1).unwrap();
         store.insert_session(&s2).unwrap();
 
-        let filtered = store.list_sessions_filtered(20, Some("claude"), None).unwrap();
+        let filtered = store
+            .list_sessions_filtered(20, Some("claude"), None)
+            .unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].agent_name, "claude");
     }
@@ -2401,7 +2646,9 @@ mod tests {
         store.end_session("s1", "completed").unwrap();
         store.insert_session(&make_session("s2")).unwrap();
 
-        let filtered = store.list_sessions_filtered(20, None, Some("completed")).unwrap();
+        let filtered = store
+            .list_sessions_filtered(20, None, Some("completed"))
+            .unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id.0, "s1");
     }
@@ -2438,7 +2685,9 @@ mod tests {
     fn test_compute_daily_aggregates() {
         let store = test_store();
         store.insert_session(&make_session("s1")).unwrap();
-        store.insert_spans(&[make_span("sp1", "s1"), make_span("sp2", "s1")]).unwrap();
+        store
+            .insert_spans(&[make_span("sp1", "s1"), make_span("sp2", "s1")])
+            .unwrap();
 
         // Get the date from the session's started_at
         let session = store.get_session(&SessionId("s1".into())).unwrap().unwrap();
@@ -2501,6 +2750,7 @@ mod tests {
             github_url: None,
             start_date: None,
             due_date: None,
+            acceptance_criteria: None,
         }
     }
 
@@ -2521,7 +2771,9 @@ mod tests {
     #[test]
     fn test_board_project_counter() {
         let store = test_store();
-        store.create_board_project(&make_project("p1", "BACK")).unwrap();
+        store
+            .create_board_project(&make_project("p1", "BACK"))
+            .unwrap();
 
         let c1 = store.increment_project_counter("p1").unwrap();
         assert_eq!(c1, 1);
@@ -2532,7 +2784,9 @@ mod tests {
     #[test]
     fn test_board_issue_crud() {
         let store = test_store();
-        store.create_board_project(&make_project("p1", "BACK")).unwrap();
+        store
+            .create_board_project(&make_project("p1", "BACK"))
+            .unwrap();
 
         let issue = make_issue("i1", "p1");
         store.insert_board_issue(&issue).unwrap();
@@ -2546,36 +2800,50 @@ mod tests {
     #[test]
     fn test_board_issue_list_filter() {
         let store = test_store();
-        store.create_board_project(&make_project("p1", "BACK")).unwrap();
-        store.create_board_project(&make_project("p2", "FRONT")).unwrap();
+        store
+            .create_board_project(&make_project("p1", "BACK"))
+            .unwrap();
+        store
+            .create_board_project(&make_project("p2", "FRONT"))
+            .unwrap();
 
         store.insert_board_issue(&make_issue("i1", "p1")).unwrap();
         store.insert_board_issue(&make_issue("i2", "p1")).unwrap();
         store.insert_board_issue(&make_issue("i3", "p2")).unwrap();
 
-        let all = store.list_board_issues(&gctrl_core::BoardIssueFilter::default()).unwrap();
+        let all = store
+            .list_board_issues(&gctrl_core::BoardIssueFilter::default())
+            .unwrap();
         assert_eq!(all.len(), 3);
 
-        let p1_only = store.list_board_issues(&gctrl_core::BoardIssueFilter {
-            project_id: Some("p1".into()),
-            ..Default::default()
-        }).unwrap();
+        let p1_only = store
+            .list_board_issues(&gctrl_core::BoardIssueFilter {
+                project_id: Some("p1".into()),
+                ..Default::default()
+            })
+            .unwrap();
         assert_eq!(p1_only.len(), 2);
     }
 
     #[test]
     fn test_board_issue_status_update() {
         let store = test_store();
-        store.create_board_project(&make_project("p1", "BACK")).unwrap();
+        store
+            .create_board_project(&make_project("p1", "BACK"))
+            .unwrap();
         store.insert_board_issue(&make_issue("i1", "p1")).unwrap();
 
         // backlog → todo (valid)
-        store.update_board_issue_status("i1", "todo", "u1", "Alice", "human").unwrap();
+        store
+            .update_board_issue_status("i1", "todo", "u1", "Alice", "human")
+            .unwrap();
         let fetched = store.get_board_issue("i1").unwrap().unwrap();
         assert_eq!(fetched.status, gctrl_core::IssueStatus::Todo);
 
         // todo → in_progress (valid)
-        store.update_board_issue_status("i1", "in_progress", "u1", "Alice", "human").unwrap();
+        store
+            .update_board_issue_status("i1", "in_progress", "u1", "Alice", "human")
+            .unwrap();
         let fetched = store.get_board_issue("i1").unwrap().unwrap();
         assert_eq!(fetched.status, gctrl_core::IssueStatus::InProgress);
 
@@ -2588,11 +2856,15 @@ mod tests {
     #[test]
     fn test_board_auto_transit_forward() {
         let store = test_store();
-        store.create_board_project(&make_project("p1", "BACK")).unwrap();
+        store
+            .create_board_project(&make_project("p1", "BACK"))
+            .unwrap();
         store.insert_board_issue(&make_issue("i1", "p1")).unwrap();
 
         // backlog → in_progress auto-transits through todo
-        store.update_board_issue_status("i1", "in_progress", "u1", "Alice", "human").unwrap();
+        store
+            .update_board_issue_status("i1", "in_progress", "u1", "Alice", "human")
+            .unwrap();
         let fetched = store.get_board_issue("i1").unwrap().unwrap();
         assert_eq!(fetched.status, gctrl_core::IssueStatus::InProgress);
 
@@ -2602,7 +2874,9 @@ mod tests {
 
         // backlog → done auto-transits through all intermediate steps
         store.insert_board_issue(&make_issue("i2", "p1")).unwrap();
-        store.update_board_issue_status("i2", "done", "u1", "Alice", "human").unwrap();
+        store
+            .update_board_issue_status("i2", "done", "u1", "Alice", "human")
+            .unwrap();
         let fetched = store.get_board_issue("i2").unwrap().unwrap();
         assert_eq!(fetched.status, gctrl_core::IssueStatus::Done);
         let events = store.list_board_events("i2").unwrap();
@@ -2612,11 +2886,15 @@ mod tests {
     #[test]
     fn test_board_backward_transition_rejected() {
         let store = test_store();
-        store.create_board_project(&make_project("p1", "BACK")).unwrap();
+        store
+            .create_board_project(&make_project("p1", "BACK"))
+            .unwrap();
         store.insert_board_issue(&make_issue("i1", "p1")).unwrap();
 
         // Move to in_progress
-        store.update_board_issue_status("i1", "in_progress", "u1", "Alice", "human").unwrap();
+        store
+            .update_board_issue_status("i1", "in_progress", "u1", "Alice", "human")
+            .unwrap();
 
         // in_progress → backlog is backward (not a direct valid transition, not forward)
         let result = store.update_board_issue_status("i1", "backlog", "u1", "Alice", "human");
@@ -2632,14 +2910,24 @@ mod tests {
     #[test]
     fn test_board_terminal_state_no_transitions() {
         let store = test_store();
-        store.create_board_project(&make_project("p1", "BACK")).unwrap();
+        store
+            .create_board_project(&make_project("p1", "BACK"))
+            .unwrap();
         store.insert_board_issue(&make_issue("i1", "p1")).unwrap();
 
         // Walk to done: backlog → todo → in_progress → in_review → done
-        store.update_board_issue_status("i1", "todo", "u1", "Alice", "human").unwrap();
-        store.update_board_issue_status("i1", "in_progress", "u1", "Alice", "human").unwrap();
-        store.update_board_issue_status("i1", "in_review", "u1", "Alice", "human").unwrap();
-        store.update_board_issue_status("i1", "done", "u1", "Alice", "human").unwrap();
+        store
+            .update_board_issue_status("i1", "todo", "u1", "Alice", "human")
+            .unwrap();
+        store
+            .update_board_issue_status("i1", "in_progress", "u1", "Alice", "human")
+            .unwrap();
+        store
+            .update_board_issue_status("i1", "in_review", "u1", "Alice", "human")
+            .unwrap();
+        store
+            .update_board_issue_status("i1", "done", "u1", "Alice", "human")
+            .unwrap();
 
         // done → anything (rejected)
         let result = store.update_board_issue_status("i1", "backlog", "u1", "Alice", "human");
@@ -2649,29 +2937,47 @@ mod tests {
     #[test]
     fn test_board_cancel_from_any_non_terminal() {
         let store = test_store();
-        store.create_board_project(&make_project("p1", "BACK")).unwrap();
+        store
+            .create_board_project(&make_project("p1", "BACK"))
+            .unwrap();
 
         // Cancel from backlog
         store.insert_board_issue(&make_issue("i1", "p1")).unwrap();
-        store.update_board_issue_status("i1", "cancelled", "u1", "Alice", "human").unwrap();
-        assert_eq!(store.get_board_issue("i1").unwrap().unwrap().status, gctrl_core::IssueStatus::Cancelled);
+        store
+            .update_board_issue_status("i1", "cancelled", "u1", "Alice", "human")
+            .unwrap();
+        assert_eq!(
+            store.get_board_issue("i1").unwrap().unwrap().status,
+            gctrl_core::IssueStatus::Cancelled
+        );
 
         // Cancel from in_progress
         let mut issue2 = make_issue("i2", "p1");
         issue2.status = gctrl_core::IssueStatus::Todo;
         store.insert_board_issue(&issue2).unwrap();
-        store.update_board_issue_status("i2", "in_progress", "u1", "Alice", "human").unwrap();
-        store.update_board_issue_status("i2", "cancelled", "u1", "Alice", "human").unwrap();
-        assert_eq!(store.get_board_issue("i2").unwrap().unwrap().status, gctrl_core::IssueStatus::Cancelled);
+        store
+            .update_board_issue_status("i2", "in_progress", "u1", "Alice", "human")
+            .unwrap();
+        store
+            .update_board_issue_status("i2", "cancelled", "u1", "Alice", "human")
+            .unwrap();
+        assert_eq!(
+            store.get_board_issue("i2").unwrap().unwrap().status,
+            gctrl_core::IssueStatus::Cancelled
+        );
     }
 
     #[test]
     fn test_board_issue_assign() {
         let store = test_store();
-        store.create_board_project(&make_project("p1", "BACK")).unwrap();
+        store
+            .create_board_project(&make_project("p1", "BACK"))
+            .unwrap();
         store.insert_board_issue(&make_issue("i1", "p1")).unwrap();
 
-        store.assign_board_issue("i1", "agent1", "claude-code", "agent").unwrap();
+        store
+            .assign_board_issue("i1", "agent1", "claude-code", "agent")
+            .unwrap();
         let fetched = store.get_board_issue("i1").unwrap().unwrap();
         assert_eq!(fetched.assignee_id, Some("agent1".into()));
         assert_eq!(fetched.assignee_name, Some("claude-code".into()));
@@ -2681,7 +2987,9 @@ mod tests {
     #[test]
     fn test_board_events() {
         let store = test_store();
-        store.create_board_project(&make_project("p1", "BACK")).unwrap();
+        store
+            .create_board_project(&make_project("p1", "BACK"))
+            .unwrap();
         store.insert_board_issue(&make_issue("i1", "p1")).unwrap();
 
         let event = gctrl_core::BoardEvent {
@@ -2704,7 +3012,9 @@ mod tests {
     #[test]
     fn test_board_comments() {
         let store = test_store();
-        store.create_board_project(&make_project("p1", "BACK")).unwrap();
+        store
+            .create_board_project(&make_project("p1", "BACK"))
+            .unwrap();
         store.insert_board_issue(&make_issue("i1", "p1")).unwrap();
 
         let comment = gctrl_core::BoardComment {
@@ -2727,11 +3037,17 @@ mod tests {
     #[test]
     fn test_board_link_session() {
         let store = test_store();
-        store.create_board_project(&make_project("p1", "BACK")).unwrap();
+        store
+            .create_board_project(&make_project("p1", "BACK"))
+            .unwrap();
         store.insert_board_issue(&make_issue("i1", "p1")).unwrap();
 
-        store.link_session_to_issue("i1", "sess-1", 1.50, 5000).unwrap();
-        store.link_session_to_issue("i1", "sess-2", 0.75, 2500).unwrap();
+        store
+            .link_session_to_issue("i1", "sess-1", 1.50, 5000)
+            .unwrap();
+        store
+            .link_session_to_issue("i1", "sess-2", 0.75, 2500)
+            .unwrap();
 
         let fetched = store.get_board_issue("i1").unwrap().unwrap();
         assert!((fetched.total_cost_usd - 2.25).abs() < 0.01);
@@ -2806,10 +3122,16 @@ mod tests {
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].persona_ids.len(), 3);
 
-        let found = store.get_review_rule_by_type("new_kernel_primitive").unwrap().unwrap();
+        let found = store
+            .get_review_rule_by_type("new_kernel_primitive")
+            .unwrap()
+            .unwrap();
         assert_eq!(found.persona_ids, vec!["engineer", "security", "tech-lead"]);
 
-        assert!(store.get_review_rule_by_type("nonexistent").unwrap().is_none());
+        assert!(store
+            .get_review_rule_by_type("nonexistent")
+            .unwrap()
+            .is_none());
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -2843,9 +3165,9 @@ mod tests {
         let store = test_store();
 
         // Create thread first
-        let thread = store.get_or_create_inbox_thread(
-            "issue", "BACK-42", "BACK-42: Fix auth", Some("BACK"),
-        ).unwrap();
+        let thread = store
+            .get_or_create_inbox_thread("issue", "BACK-42", "BACK-42: Fix auth", Some("BACK"))
+            .unwrap();
         assert_eq!(thread.context_type, "issue");
         assert_eq!(thread.context_ref, "BACK-42");
         assert_eq!(thread.pending_count, 0);
@@ -2866,19 +3188,25 @@ mod tests {
         assert_eq!(t.latest_urgency, "high");
 
         // List with filter
-        let all = store.list_inbox_messages(&InboxMessageFilter::default()).unwrap();
+        let all = store
+            .list_inbox_messages(&InboxMessageFilter::default())
+            .unwrap();
         assert_eq!(all.len(), 1);
 
-        let by_urgency = store.list_inbox_messages(&InboxMessageFilter {
-            urgency: Some("high".into()),
-            ..Default::default()
-        }).unwrap();
+        let by_urgency = store
+            .list_inbox_messages(&InboxMessageFilter {
+                urgency: Some("high".into()),
+                ..Default::default()
+            })
+            .unwrap();
         assert_eq!(by_urgency.len(), 1);
 
-        let by_low = store.list_inbox_messages(&InboxMessageFilter {
-            urgency: Some("low".into()),
-            ..Default::default()
-        }).unwrap();
+        let by_low = store
+            .list_inbox_messages(&InboxMessageFilter {
+                urgency: Some("low".into()),
+                ..Default::default()
+            })
+            .unwrap();
         assert_eq!(by_low.len(), 0);
 
         // Not found
@@ -2889,9 +3217,9 @@ mod tests {
     fn test_inbox_action_idempotency() {
         let store = test_store();
 
-        let thread = store.get_or_create_inbox_thread(
-            "issue", "BACK-42", "BACK-42: Fix auth", Some("BACK"),
-        ).unwrap();
+        let thread = store
+            .get_or_create_inbox_thread("issue", "BACK-42", "BACK-42: Fix auth", Some("BACK"))
+            .unwrap();
 
         let msg = make_inbox_message("msg-1", &thread.id, "high");
         store.create_inbox_message(&msg).unwrap();
@@ -2937,22 +3265,22 @@ mod tests {
         let store = test_store();
 
         // First call creates thread
-        let t1 = store.get_or_create_inbox_thread(
-            "issue", "BACK-42", "BACK-42: Fix auth", Some("BACK"),
-        ).unwrap();
+        let t1 = store
+            .get_or_create_inbox_thread("issue", "BACK-42", "BACK-42: Fix auth", Some("BACK"))
+            .unwrap();
 
         // Second call with same context_type + context_ref returns same thread
-        let t2 = store.get_or_create_inbox_thread(
-            "issue", "BACK-42", "Different title", Some("BACK"),
-        ).unwrap();
+        let t2 = store
+            .get_or_create_inbox_thread("issue", "BACK-42", "Different title", Some("BACK"))
+            .unwrap();
 
         assert_eq!(t1.id, t2.id);
         assert_eq!(t1.title, "BACK-42: Fix auth"); // Title from first creation
 
         // Different context_ref creates new thread
-        let t3 = store.get_or_create_inbox_thread(
-            "issue", "BACK-43", "BACK-43: New feature", Some("BACK"),
-        ).unwrap();
+        let t3 = store
+            .get_or_create_inbox_thread("issue", "BACK-43", "BACK-43: New feature", Some("BACK"))
+            .unwrap();
         assert_ne!(t1.id, t3.id);
 
         // Two messages with same context join same thread
@@ -2969,9 +3297,9 @@ mod tests {
     fn test_inbox_thread_pending_count() {
         let store = test_store();
 
-        let thread = store.get_or_create_inbox_thread(
-            "issue", "BACK-42", "BACK-42: Fix auth", Some("BACK"),
-        ).unwrap();
+        let thread = store
+            .get_or_create_inbox_thread("issue", "BACK-42", "BACK-42: Fix auth", Some("BACK"))
+            .unwrap();
 
         // Create 3 messages
         for i in 1..=3 {
@@ -3033,9 +3361,9 @@ mod tests {
     fn test_inbox_stats() {
         let store = test_store();
 
-        let thread = store.get_or_create_inbox_thread(
-            "issue", "BACK-42", "BACK-42: Fix auth", Some("BACK"),
-        ).unwrap();
+        let thread = store
+            .get_or_create_inbox_thread("issue", "BACK-42", "BACK-42: Fix auth", Some("BACK"))
+            .unwrap();
 
         // Create messages with different urgencies and kinds
         let mut msg1 = make_inbox_message("msg-1", &thread.id, "critical");
@@ -3061,12 +3389,12 @@ mod tests {
     fn test_inbox_list_threads() {
         let store = test_store();
 
-        let t1 = store.get_or_create_inbox_thread(
-            "issue", "BACK-42", "BACK-42: Fix auth", Some("BACK"),
-        ).unwrap();
-        let t2 = store.get_or_create_inbox_thread(
-            "issue", "FRONT-10", "FRONT-10: Dashboard", Some("FRONT"),
-        ).unwrap();
+        let t1 = store
+            .get_or_create_inbox_thread("issue", "BACK-42", "BACK-42: Fix auth", Some("BACK"))
+            .unwrap();
+        let t2 = store
+            .get_or_create_inbox_thread("issue", "FRONT-10", "FRONT-10: Dashboard", Some("FRONT"))
+            .unwrap();
 
         // Add a pending message to t1 only
         let msg = make_inbox_message("msg-1", &t1.id, "high");
@@ -3096,9 +3424,9 @@ mod tests {
     fn test_inbox_list_actions() {
         let store = test_store();
 
-        let thread = store.get_or_create_inbox_thread(
-            "issue", "BACK-42", "BACK-42: Fix auth", Some("BACK"),
-        ).unwrap();
+        let thread = store
+            .get_or_create_inbox_thread("issue", "BACK-42", "BACK-42: Fix auth", Some("BACK"))
+            .unwrap();
 
         let msg = make_inbox_message("msg-1", &thread.id, "high");
         store.create_inbox_message(&msg).unwrap();
@@ -3117,21 +3445,27 @@ mod tests {
         store.create_inbox_action(&action).unwrap();
 
         // List all actions
-        let actions = store.list_inbox_actions(&InboxActionFilter::default()).unwrap();
+        let actions = store
+            .list_inbox_actions(&InboxActionFilter::default())
+            .unwrap();
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].action_type, "approve");
 
         // Filter by actor
-        let by_actor = store.list_inbox_actions(&InboxActionFilter {
-            actor_id: Some("user-1".into()),
-            ..Default::default()
-        }).unwrap();
+        let by_actor = store
+            .list_inbox_actions(&InboxActionFilter {
+                actor_id: Some("user-1".into()),
+                ..Default::default()
+            })
+            .unwrap();
         assert_eq!(by_actor.len(), 1);
 
-        let by_other = store.list_inbox_actions(&InboxActionFilter {
-            actor_id: Some("user-999".into()),
-            ..Default::default()
-        }).unwrap();
+        let by_other = store
+            .list_inbox_actions(&InboxActionFilter {
+                actor_id: Some("user-999".into()),
+                ..Default::default()
+            })
+            .unwrap();
         assert_eq!(by_other.len(), 0);
     }
 }

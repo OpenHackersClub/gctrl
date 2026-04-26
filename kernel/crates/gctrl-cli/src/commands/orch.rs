@@ -33,6 +33,8 @@ pub async fn run(
         max_per_pass,
         task_timeout: Duration::from_secs(timeout_secs),
         dry_run,
+        kernel_base_url: std::env::var("GCTL_KERNEL_BASE_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:4318".to_string()),
     };
 
     tracing::info!(
