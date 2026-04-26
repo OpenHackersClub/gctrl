@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react"
-import { api } from "@/api/client"
+import { api, type AnalyticsSyncStatus } from "@/api/client"
 import type {
   AnalyticsOverview,
   CostAnalytics,
@@ -161,6 +161,7 @@ function OverviewTab({ kind }: { kind: SessionKind }) {
   const [cost, setCost] = useState<CostAnalytics | null>(null)
   const [liveCount, setLiveCount] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [syncStatus, setSyncStatus] = useState<AnalyticsSyncStatus | null>(null)
 
   // Live count respects the kind filter — operators expect "live
   // sessions now" to track the same population as the rest of the page.
@@ -169,14 +170,18 @@ function OverviewTab({ kind }: { kind: SessionKind }) {
   // that out in the KPI label rather than silently fudging.
   const refresh = useCallback(async () => {
     try {
-      const [o, c, live] = await Promise.all([
+      const [o, c, live, sync] = await Promise.all([
         api.analytics.overview(),
         api.analytics.cost(),
+        // Kernel's /api/analytics rollup has no active_sessions field;
+        // count from sessions.list?status=active instead.
         api.sessions.list({ status: "active", limit: 200, kind }),
+        api.analytics.syncStatus().catch(() => null),
       ])
       setOverview(o)
       setCost(c)
       setLiveCount(live.length)
+      setSyncStatus(sync)
       setError(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -213,12 +218,59 @@ function OverviewTab({ kind }: { kind: SessionKind }) {
   })
 
   if (error) {
+    // Hint depends on deployment shape: in dev (Vite) the page hits the kernel
+    // directly via :4318; in preview/prod the Worker serves from D1 and pulls
+    // from KERNEL_URL on a cron. Surface whichever is relevant.
+    const hint =
+      syncStatus === null
+        ? "Is the kernel running on :4318? (or the Worker on the configured host)"
+        : !syncStatus.kernel_url_configured
+          ? "Worker is running but KERNEL_URL is not configured — set it via `wrangler secret put KERNEL_URL`."
+          : "Last sync state is below — check resources marked `error`."
     return (
       <div className="p-8 text-rose-400 font-mono text-sm">
         Failed to load overview: {error}
-        <div className="mt-2 text-zinc-500">
-          Is the kernel running on :4318?
-        </div>
+        <div className="mt-2 text-zinc-500">{hint}</div>
+        {syncStatus && <SyncStatusPanel status={syncStatus} />}
+      </div>
+    )
+  }
+
+  // Empty state — analytics tables exist but never synced. The Worker returns
+  // zeros rather than 404, so we detect "never synced" via sync-status.
+  const neverSynced =
+    overview.total_sessions === 0 &&
+    syncStatus !== null &&
+    syncStatus.resources.length === 0
+  if (neverSynced) {
+    return (
+      <div className="p-8 text-zinc-400 font-mono text-sm space-y-3">
+        <div className="text-zinc-200">No analytics data yet.</div>
+        {syncStatus.kernel_url_configured ? (
+          <>
+            <div>The kernel sync hasn't run yet — it ticks every 2 minutes.</div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={async () => {
+                try {
+                  const s = await api.analytics.sync()
+                  setSyncStatus(s)
+                  refresh()
+                } catch (e) {
+                  setError(e instanceof Error ? e.message : String(e))
+                }
+              }}
+            >
+              Sync now
+            </Button>
+          </>
+        ) : (
+          <div>
+            KERNEL_URL is not configured on this Worker — analytics will stay
+            empty until it's set.
+          </div>
+        )}
       </div>
     )
   }
@@ -1313,5 +1365,36 @@ function ScoreKpi({
         </div>
       </CardContent>
     </Card>
+  )
+}
+
+function SyncStatusPanel({ status }: { status: AnalyticsSyncStatus }) {
+  if (status.resources.length === 0) {
+    return (
+      <div className="mt-4 text-zinc-500 text-xs">
+        No sync attempts recorded yet.
+      </div>
+    )
+  }
+  return (
+    <div className="mt-4 text-xs">
+      <div className="text-zinc-400 mb-1">Sync state by resource:</div>
+      <ul className="space-y-0.5">
+        {status.resources.map((r) => (
+          <li key={r.resource} className="flex gap-2">
+            <span
+              className={cn(
+                "font-mono",
+                r.last_status === "ok" ? "text-emerald-400" : "text-rose-400",
+              )}
+            >
+              {r.last_status === "ok" ? "✓" : "✗"} {r.resource}
+            </span>
+            <span className="text-zinc-500">{r.last_synced_at}</span>
+            {r.last_error && <span className="text-rose-400">{r.last_error}</span>}
+          </li>
+        ))}
+      </ul>
+    </div>
   )
 }

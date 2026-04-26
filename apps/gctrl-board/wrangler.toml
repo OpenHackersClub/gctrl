@@ -3,6 +3,18 @@ compatibility_date = "2025-04-01"
 compatibility_flags = ["nodejs_compat"]
 main = "src/worker.ts"
 
+# Kernel facade — unmatched /api/* paths are proxied to KERNEL_URL.
+# Set per-env via `wrangler secret put KERNEL_URL --env <env>` so the Worker
+# can reach a publicly-routable kernel (tunnel, hosted instance, etc.).
+# Leave unset to keep returning 404 for unmatched API paths.
+[vars]
+# KERNEL_URL = "https://kernel.example.com"
+
+# Analytics sync cron — pulls /api/analytics/* + /api/sessions from KERNEL_URL
+# into D1 every 2 minutes. No-op when KERNEL_URL is unset.
+[triggers]
+crons = ["*/2 * * * *"]
+
 # Workers Static Assets — serves the Vite SPA build output
 [assets]
 directory = "dist-web"
@@ -23,6 +35,9 @@ migrations_dir = "migrations"
 # ── Preview environment (PR deploys) ──
 [env.preview]
 name = "gctrl-board-preview"
+
+[env.preview.vars]
+# KERNEL_URL = "https://kernel-preview.example.com"
 
 [[env.preview.d1_databases]]
 binding = "DB"
