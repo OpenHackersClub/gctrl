@@ -2,13 +2,13 @@
 
 How work flows through gctrl — from ideation to merged PR. This is gctrl's own workflow.
 
-> **Workflow specs**: Opinionated product workflows (issue lifecycle, product cycle, PR review, PRD template) live in `apps/gctrl-board/specs/workflows/`. Kernel-level orchestration and dispatch are defined in `specs/architecture/kernel/`.
+> **Workflow specs**: Opinionated product workflows (issue lifecycle, product cycle, PR review, PRD template) live in `apps/gctrl-board/specs/workflows/`. Kernel-level orchestration and dispatch are defined in `vault/specs/architecture/kernel/`.
 
 ---
 
 ## 1. Task Planning
 
-Task planning (decomposition, dependency DAG, promotion to issues) is handled internally by the kernel Scheduler. See [specs/architecture/kernel/scheduler.md](../../architecture/kernel/scheduler.md).
+Task planning (decomposition, dependency DAG, promotion to issues) is handled internally by the kernel Scheduler. See [vault/specs/architecture/kernel/scheduler.md](../../architecture/kernel/scheduler.md).
 
 ### gctrl-Specific CLI
 
@@ -80,8 +80,8 @@ Follows [pr-review.md](../../apps/gctrl-board/specs/workflows/pr-review.md).
 
 gctrl-specific additions:
 
-- Reviewers SHOULD check crate ownership rules (see `specs/principles.md`, Crate Ownership #1-5).
-- Reviewers SHOULD check architectural invariants (see `specs/principles.md`, Architectural Invariants #1-5).
+- Reviewers SHOULD check crate ownership rules (see `vault/specs/principles.md`, Crate Ownership #1-5).
+- Reviewers SHOULD check architectural invariants (see `vault/specs/principles.md`, Architectural Invariants #1-5).
 - Squash commit messages use conventional commits with project key: `feat(BACK-42): add rate limiting`.
 
 ---
@@ -122,6 +122,6 @@ gctrl-specific additions:
 
 ## 6. WORKFLOW.md File Format
 
-See [specs/architecture/kernel/workflow-format.md](../architecture/kernel/workflow-format.md) for the full file format specification.
+See [vault/specs/architecture/kernel/workflow-format.md](../architecture/kernel/workflow-format.md) for the full file format specification.
 
 gctrl applications MAY define a `WORKFLOW.md` file in their repository root to configure automated agent dispatch. The file uses YAML frontmatter for configuration and a Markdown body as the per-issue prompt template.

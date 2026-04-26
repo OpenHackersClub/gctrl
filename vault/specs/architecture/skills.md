@@ -131,7 +131,7 @@ The model activates a skill by reading `SKILL.md` via its existing Read tool (no
 
 **Enforcement rule:** when an agent session attempts a tool call, Guardrails compares the call against the **union** of:
 
-1. The persona's capability grant (`specs/team/personas.md § tools`).
+1. The persona's capability grant (`vault/specs/team/personas.md § tools`).
 2. The currently activated skill's `allowed-tools` (if any).
 3. Any task-scoped capability grants (equivalent to `sudo` for one Task — see [os.md § 6.2](os.md#62-persona--unix-analogy)).
 
@@ -175,7 +175,7 @@ Where skills need to hand off structured data (not free-text), they SHOULD persi
 Skills and memory are orthogonal layers with a well-defined interaction:
 
 - **Skills are read-only code.** They do not mutate memory on their own.
-- **Memory is shared state.** The entity graph (see `specs/architecture/kernel/knowledgebase.md` and the forthcoming `entity_*` tables) is the kernel-owned filesystem that skills read from and write to via kernel HTTP.
+- **Memory is shared state.** The entity graph (see `vault/specs/architecture/kernel/knowledgebase.md` and the forthcoming `entity_*` tables) is the kernel-owned filesystem that skills read from and write to via kernel HTTP.
 - **A skill invocation MAY append observations** (e.g. `/review` could post `entity_observations` for the reviewed entity). This happens through the kernel's memory API, not through skill-local state.
 
 Unix parallel: skills are `grep`/`jq`, memory is the filesystem. `grep` doesn't have its own on-disk state; it reads files and writes to stdout.
@@ -234,7 +234,7 @@ estimated cost, and any unresolved prerequisites.
 
 1. `gctrl board issues view <id>` → fetch issue + blockers
 2. `gctrl gh pr list --linked <id>` → check for in-flight work
-3. Match persona by `review_focus` tags (see specs/team/personas.md)
+3. Match persona by `review_focus` tags (see vault/specs/team/personas.md)
 4. Render WORKFLOW.md template; return dispatch recommendation as JSON
 ```
 
@@ -259,6 +259,6 @@ last 24h for the active user. Group by project.
 
 - [agentskills spec](https://github.com/agentskills/agentskills) — canonical format and progressive-disclosure protocol.
 - [os.md § 4 Utilities](os.md#4-utilities--small-single-purpose-tools) — layer-level framing.
-- [specs/team/personas.md](../team/personas.md) — persona definitions and capability grants.
-- [specs/architecture/kernel/orchestrator.md](kernel/orchestrator.md) — where `<available_skills>` injection happens at dispatch.
-- [specs/architecture/kernel/knowledgebase.md](kernel/knowledgebase.md) — entity graph and memory API skills may call.
+- [vault/specs/team/personas.md](../team/personas.md) — persona definitions and capability grants.
+- [vault/specs/architecture/kernel/orchestrator.md](kernel/orchestrator.md) — where `<available_skills>` injection happens at dispatch.
+- [vault/specs/architecture/kernel/knowledgebase.md](kernel/knowledgebase.md) — entity graph and memory API skills may call.

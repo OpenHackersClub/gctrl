@@ -1,7 +1,7 @@
 //! Tier 2 integration tests: HTTP side-effects on `POST /api/board/issues/:id/move`.
 //!
 //! Response envelope contract (from
-//! specs/architecture/session-trigger-from-board.md §HTTP):
+//! vault/specs/architecture/session-trigger-from-board.md §HTTP):
 //!
 //! ```json
 //! { "issue": { ... }, "task_id": "<ISSUE_ID>.T<N>", "dispatched": true }

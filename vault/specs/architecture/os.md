@@ -521,7 +521,7 @@ An extension of the Unix metaphor to cover processes and users — humans and ag
 
 > **Issues are not in this model.** Issues are an application-level concept owned by gctrl-board. The kernel only knows about Tasks (Scheduler) and Sessions (Telemetry/Orchestrator). Applications observe Task and Session events via kernel IPC and update their own work items (Issues) accordingly.
 >
-> **Multi-agent normalization.** The kernel tracks Tasks and prompts uniformly across all agent systems — Claude Code, Codex, Aider, OpenAI API, and custom executables. Every Task records `agent_kind`, `prompt_hash`, and `context` so the full audit trail of who did what is queryable regardless of which agent system was used. See `specs/architecture/kernel/scheduler.md` for the `AgentKind` enum and `SchedulerPort` interface.
+> **Multi-agent normalization.** The kernel tracks Tasks and prompts uniformly across all agent systems — Claude Code, Codex, Aider, OpenAI API, and custom executables. Every Task records `agent_kind`, `prompt_hash`, and `context` so the full audit trail of who did what is queryable regardless of which agent system was used. See `vault/specs/architecture/kernel/scheduler.md` for the `AgentKind` enum and `SchedulerPort` interface.
 
 ---
 

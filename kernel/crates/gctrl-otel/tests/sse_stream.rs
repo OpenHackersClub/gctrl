@@ -1,6 +1,6 @@
 //! Integration test for the SSE live-stream endpoints
 //! (`/api/sessions/stream`, `/api/sessions/{id}/stream`) per
-//! `specs/architecture/apps/gctrl-analytics.md` §5.
+//! `vault/specs/architecture/apps/gctrl-analytics.md` §5.
 //!
 //! We don't bring up a full HTTP server — we drive the router via
 //! `tower::ServiceExt::oneshot` and read the SSE chunks off the

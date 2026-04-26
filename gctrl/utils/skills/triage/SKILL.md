@@ -44,7 +44,7 @@ Dedupe by title similarity; surface potential duplicates for the human to resolv
 ### 2. Load persona catalog
 
 ```sh
-gctrl context show specs/team/personas.md --format json
+gctrl context show vault/specs/team/personas.md --format json
 ```
 
 Extract each persona's `review_focus` tags and `tools` allowlist. These become the matching surface.

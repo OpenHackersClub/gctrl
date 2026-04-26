@@ -2,7 +2,7 @@
 
 **Status**: accepted
 **Scope**: gctrl-analytics, gctrl-board, future observability surfaces
-**Drives**: `specs/architecture/apps/gctrl-analytics.md`
+**Drives**: `vault/specs/architecture/apps/gctrl-analytics.md`
 
 ## Context
 

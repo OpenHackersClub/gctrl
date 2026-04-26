@@ -4,20 +4,20 @@ Audit the gctrl specs for compliance with the project's principles, guidelines, 
 
 ## Instructions
 
-You are performing a spec audit. This skill is a thin wrapper — it loads the rules from gctrl specs, applies them to every file under `specs/`, and reports violations.
+You are performing a spec audit. This skill is a thin wrapper — it loads the rules from gctrl specs, applies them to every file under `vault/specs/`, and reports violations.
 
 ### 1. Load the Rules
 
 Read these files to understand the rules:
 
-- `specs/principles.md` — Unix philosophy, design principles, vendor independence, architectural invariants, crate ownership, Effect-TS invariants, testing invariants, git workflow
+- `vault/specs/principles.md` — Unix philosophy, design principles, vendor independence, architectural invariants, crate ownership, Effect-TS invariants, testing invariants, git workflow
 - `AGENTS.md` — Documentation standards, specs table of contents, invariants quick reference
-- `specs/architecture/README.md` — Unix layers, hexagonal architecture, data flow
-- `specs/architecture/os.md` — Layer definitions, what belongs where, extension rules
+- `vault/specs/architecture/README.md` — Unix layers, hexagonal architecture, data flow
+- `vault/specs/architecture/os.md` — Layer definitions, what belongs where, extension rules
 
 ### 2. Load the Spec Files
 
-Read every `.md` file under `specs/` to audit.
+Read every `.md` file under `vault/specs/` to audit.
 
 ### 3. Apply Checklist
 
@@ -53,7 +53,7 @@ For each spec file, check:
 **Spec Organization (AGENTS.md)**
 1. Content is in the right file per specs table of contents
 2. No duplication — each fact lives in exactly one place
-3. Implementation details in `specs/implementation/`, not in architecture specs
+3. Implementation details in `vault/specs/implementation/`, not in architecture specs
 4. Cross-references use relative paths and are not broken
 
 ### 4. Output Format
@@ -61,7 +61,7 @@ For each spec file, check:
 For each file audited:
 
 ```
-### specs/<path>
+### vault/specs/<path>
 
 **Status**: PASS | WARN | FAIL
 

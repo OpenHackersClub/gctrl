@@ -62,7 +62,7 @@ const mockPersona = {
   review_focus: "Hexagonal boundaries",
   pushes_back: "Shortcuts bypass shell",
   tools: ["cargo build", "cargo test"],
-  key_specs: ["specs/architecture/"],
+  key_specs: ["vault/specs/architecture/"],
   source_hash: "abc123",
 }
 
@@ -79,7 +79,7 @@ const mockRecommendation = {
       review_focus: "Hexagonal boundaries",
       pushes_back: "Shortcuts bypass shell",
       tools: ["cargo build", "cargo test"],
-      key_specs: ["specs/architecture/"],
+      key_specs: ["vault/specs/architecture/"],
     },
   ],
   rationale: "Matched review rule 'new_kernel_primitive'",
@@ -137,7 +137,7 @@ describe("Persona commands (via KernelClient)", () => {
     expect(result.id).toBe("engineer")
     expect(result.focus).toBe("Architecture, code quality")
     expect(result.tools).toEqual(["cargo build", "cargo test"])
-    expect(result.key_specs).toEqual(["specs/architecture/"])
+    expect(result.key_specs).toEqual(["vault/specs/architecture/"])
     expect(result.source_hash).toBe("abc123")
   })
 

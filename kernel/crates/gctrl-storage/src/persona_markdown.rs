@@ -2,7 +2,7 @@
 //!
 //! Vault layout (mirrors how `board_markdown` handles board issues):
 //!
-//!   gctrl/personas/
+//!   vault/personas/
 //!     <id>.md            ← one PersonaDefinition per file
 //!     rules/
 //!       <pr-type>.md     ← one PersonaReviewRule per file
@@ -196,7 +196,7 @@ owns: kernel crates, shell, Effect-TS apps
 review_focus: Hexagonal boundaries respected, no leaky abstractions
 pushes_back: Adapters depend on each other instead of ports
 tools: [cargo build, cargo test, pnpm run test]
-key_specs: [specs/architecture/, specs/principles.md]
+key_specs: [vault/specs/architecture/, vault/specs/principles.md]
 ---
 
 You are a Principal Fullstack Engineer. You own the entire stack.

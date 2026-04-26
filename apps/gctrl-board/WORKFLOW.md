@@ -207,5 +207,5 @@ Rules:
 | Rust CLI commands | `crates/gctrl-cli/src/commands/board.rs` |
 | DuckDB table DDL | `crates/gctrl-storage/src/schema.rs` (`board_*` tables) |
 | Domain types | `crates/gctrl-core/src/types.rs` (`BoardIssue`, `BoardProject`, etc.) |
-| Architecture spec | `specs/architecture/apps/gctrl-board.md` |
-| Tracker spec | `specs/architecture/apps/tracker.md` |
+| Architecture spec | `vault/specs/architecture/apps/gctrl-board.md` |
+| Tracker spec | `vault/specs/architecture/apps/tracker.md` |

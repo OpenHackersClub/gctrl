@@ -166,7 +166,7 @@ Local daemon + vault is always the source of truth during development. Cloud dep
 
 ## Required Secrets (kernel-managed)
 
-Secrets MUST live in kernel driver configs, NOT in the Uebermensch app or profile. Per [os.md](../../specs/architecture/os.md), the shell and apps MUST NOT hold external API keys.
+Secrets MUST live in kernel driver configs, NOT in the Uebermensch app or profile. Per [os.md](../../vault/specs/architecture/os.md), the shell and apps MUST NOT hold external API keys.
 
 | Secret | Consumer driver |
 |--------|----------------|

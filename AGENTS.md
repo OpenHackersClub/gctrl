@@ -4,34 +4,34 @@
 
 GroundCtrl (gctrl) is a local-first operating system for human+agent teams. Follows the **Unix layered model**: a **Kernel** (Rust — telemetry, storage, guardrails, query, network, browser, sync; exposes HTTP API on `:4318`), a **Shell** (Effect-TS CLI — invokes kernel via HTTP, communicates with external tools like GitHub via direct REST API), **Native Applications & Utilities** (Effect-TS — board, eval, capacity), and **External Applications** (Linear, Plane, Notion, Phoenix — connected via drivers). DuckDB storage. Unix philosophy throughout; DDD for domain modeling.
 
-**Dogfooding:** We use gctrl to build gctrl. gctrl's own issue tracking, agent dispatch, and PR workflow are defined in `specs/gctrl/`. Opinionated product workflows (issue lifecycle, sprint cycle, PR review, PRD template) live in `apps/gctrl-board/specs/workflows/`. Kernel-level orchestration and dispatch format are defined in `specs/architecture/kernel/`. The telemetry, task tracking, guardrails, and CLI tools are exercised daily during development. If a feature isn't useful for building gctrl itself, question whether it belongs. Bugs found during dogfooding are the highest-priority fixes.
+**Dogfooding:** We use gctrl to build gctrl. gctrl's own issue tracking, agent dispatch, and PR workflow are defined in `vault/specs/gctrl/`. Opinionated product workflows (issue lifecycle, sprint cycle, PR review, PRD template) live in `apps/gctrl-board/specs/workflows/`. Kernel-level orchestration and dispatch format are defined in `vault/specs/architecture/kernel/`. The telemetry, task tracking, guardrails, and CLI tools are exercised daily during development. If a feature isn't useful for building gctrl itself, question whether it belongs. Bugs found during dogfooding are the highest-priority fixes.
 
 ## Specs Table of Contents
 
-The `specs/` directory is the single source of truth. Each file has a clear scope — put content in the right place.
+The `vault/specs/` directory is the single source of truth for cross-cutting design (architecture, principles, glossary, gctrl PRD/WORKFLOW). App-specific specs live under `apps/{app}/specs/` (will move to `apps/{app}/vault/specs/` in a follow-up). Each file has a clear scope — put content in the right place.
 
 ### Glossary
 
 | Document | Scope | Content that belongs here |
 |----------|-------|--------------------------|
-| `specs/glossary.md` | Term definitions | Canonical definitions for all domain terms (Task, Session, Issue, Span, User, Persona, AgentKind, Driver, etc.). When a term is used in specs, it MUST carry the meaning defined here. |
+| `vault/specs/glossary.md` | Term definitions | Canonical definitions for all domain terms (Task, Session, Issue, Span, User, Persona, AgentKind, Driver, etc.). When a term is used in specs, it MUST carry the meaning defined here. |
 
 ### Product & Strategy
 
 | Document | Scope | Content that belongs here |
 |----------|-------|--------------------------|
-| `specs/gctrl/PRD.md` | Product requirements | Goals, non-goals, use cases, roadmap (→ issues), success criteria. Instantiates the [PRD template](apps/gctrl-board/specs/workflows/prd-template.md). MUST NOT contain architecture or implementation details. |
+| `vault/specs/gctrl/PRD.md` | Product requirements | Goals, non-goals, use cases, roadmap (→ issues), success criteria. Instantiates the [PRD template](apps/gctrl-board/specs/workflows/prd-template.md). MUST NOT contain architecture or implementation details. |
 
 ### Architecture & Boundaries
 
-> **Convention:** Architecture and implementation specs for all layers (kernel, shell, apps) live together under `specs/` rather than co-located with source code. This makes it easy to mount the entire `specs/` folder as agent context in a single operation.
+> **Convention:** Cross-cutting architecture and implementation specs for the kernel and shell live under `vault/specs/`. App-specific specs live under `apps/{app}/specs/` (moving to `apps/{app}/vault/specs/` in a follow-up). The workspace vault is Obsidian-mountable on its own; mounting it gives an agent the full kernel + shell design context. Mounting an app's vault gives that app's product + design context.
 
 | Document | Scope | Content that belongs here |
 |----------|-------|--------------------------|
-| `specs/architecture/` | System structure | Unix layers (Kernel/Shell/Apps), hexagonal layout, data flow, OS layer guide (`os.md`). Subdirs: `kernel/` (orchestrator, scheduler, browser), `shell/` (CLI). App-specific architecture lives under `apps/{app}/specs/`. See `specs/architecture/README.md` for index. MUST NOT dictate specific implementation patterns. |
-| `specs/principles.md` | Design invariants | Design principles, architectural invariants, crate ownership rules, Effect-TS invariants, testing invariants, git workflow. The "constitution" — rules that MUST NOT be violated. |
-| `specs/architecture/domain-model.md` | Types & schemas | Domain types, traits, storage schema (all SQL DDL), Effect-TS schemas, entity relationships. The "data dictionary." |
-| `specs/gctrl/` | gctrl's own workflow | gctrl's PRD and WORKFLOW files. See "gctrl Kernel Workflow" section below. |
+| `vault/specs/architecture/` | System structure | Unix layers (Kernel/Shell/Apps), hexagonal layout, data flow, OS layer guide (`os.md`). Subdirs: `kernel/` (orchestrator, scheduler, browser), `shell/` (CLI). App-specific architecture lives under `apps/{app}/specs/`. See `vault/specs/architecture/README.md` for index. MUST NOT dictate specific implementation patterns. |
+| `vault/specs/principles.md` | Design invariants | Design principles, architectural invariants, crate ownership rules, Effect-TS invariants, testing invariants, git workflow. The "constitution" — rules that MUST NOT be violated. |
+| `vault/specs/architecture/domain-model.md` | Types & schemas | Domain types, traits, storage schema (all SQL DDL), Effect-TS schemas, entity relationships. The "data dictionary." |
+| `vault/specs/gctrl/` | gctrl's own workflow | gctrl's PRD and WORKFLOW files. See "gctrl Kernel Workflow" section below. |
 
 ### Kernel Architecture — Orchestration & Dispatch
 
@@ -39,8 +39,8 @@ Kernel-level orchestration and the WORKFLOW.md file format are architecture spec
 
 | Document | Scope | Content that belongs here |
 |----------|-------|--------------------------|
-| `specs/architecture/kernel/orchestrator.md` | Orchestration state machine | Kernel-level dispatch, retry, reconciliation, agent-agnostic execution. Claim states, transition triggers, concurrency control, workspace management. |
-| `specs/architecture/kernel/workflow-format.md` | WORKFLOW.md file format | YAML frontmatter + prompt template file format for agent dispatch. |
+| `vault/specs/architecture/kernel/orchestrator.md` | Orchestration state machine | Kernel-level dispatch, retry, reconciliation, agent-agnostic execution. Claim states, transition triggers, concurrency control, workspace management. |
+| `vault/specs/architecture/kernel/workflow-format.md` | WORKFLOW.md file format | YAML frontmatter + prompt template file format for agent dispatch. |
 
 ### Application Workflows (`apps/gctrl-board/specs/workflows/`)
 
@@ -78,44 +78,44 @@ apps/
     └── WORKFLOW.md
 ```
 
-This separates each app's product context from the kernel specs. Agents working on a specific app load that app's `PRD.md` and `WORKFLOW.md` for context — not the entire `specs/` tree.
+This separates each app's product context from the kernel specs. Agents working on a specific app load that app's `PRD.md` and `WORKFLOW.md` for context — not the entire `vault/specs/` tree.
 
 ### gctrl Kernel Workflow (Dogfooding)
 
 | Document | Scope | Content that belongs here |
 |----------|-------|--------------------------|
-| `specs/gctrl/WORKFLOW.md` | gctrl kernel's active workflow | gctrl's instantiation of the templates above: project keys, agent config, PR conventions. This is the live dogfooding doc for kernel development. |
-| `specs/gctrl/PRD.md` | gctrl kernel PRD | Product requirements for the kernel + shell (not applications). |
+| `vault/specs/gctrl/WORKFLOW.md` | gctrl kernel's active workflow | gctrl's instantiation of the templates above: project keys, agent config, PR conventions. This is the live dogfooding doc for kernel development. |
+| `vault/specs/gctrl/PRD.md` | gctrl kernel PRD | Product requirements for the kernel + shell (not applications). |
 
 ### Implementation Details
 
-Detailed programming patterns, code examples, and how-to guides live under `specs/implementation/`, organized by layer. These MAY change frequently as the codebase evolves.
+Detailed programming patterns, code examples, and how-to guides live under `vault/specs/implementation/`, organized by layer. These MAY change frequently as the codebase evolves.
 
 | Directory / File | Scope | Content that belongs here |
 |-----------------|-------|--------------------------|
-| `specs/implementation/kernel/` | Kernel implementation | Rust crate map, dependency graph, subsystem details (OTel, guardrails, context, proxy, sync, net, scheduler), kernel style guide, orchestrator, tracker. |
-| `specs/implementation/shell/` | Shell implementation | Effect-TS CLI (`@effect/cli`), KernelClient/GitHubClient adapters, kernel↔shell HTTP communication patterns. |
-| `specs/implementation/apps/` | Application implementation | Effect-TS package structure, gctrl-board details, app style guide, integration modes (sidecar, embedded). |
-| `specs/implementation/formal/` | Formal spec conventions | Lean 4 style: Mathlib, generic theorems, state machine file structure, proof style, naming conventions. |
-| `specs/implementation/repo.md` | Monorepo structure | Nx + Cargo workspace setup, directory layout, cross-language orchestration. |
-| `specs/implementation/kernel/orchestrator.md` | Orchestration implementation | gctrl-orch Rust crate, agent adapters, retry constants, conformance testing. |
+| `vault/specs/implementation/kernel/` | Kernel implementation | Rust crate map, dependency graph, subsystem details (OTel, guardrails, context, proxy, sync, net, scheduler), kernel style guide, orchestrator, tracker. |
+| `vault/specs/implementation/shell/` | Shell implementation | Effect-TS CLI (`@effect/cli`), KernelClient/GitHubClient adapters, kernel↔shell HTTP communication patterns. |
+| `vault/specs/implementation/apps/` | Application implementation | Effect-TS package structure, gctrl-board details, app style guide, integration modes (sidecar, embedded). |
+| `vault/specs/implementation/formal/` | Formal spec conventions | Lean 4 style: Mathlib, generic theorems, state machine file structure, proof style, naming conventions. |
+| `vault/specs/implementation/repo.md` | Monorepo structure | Nx + Cargo workspace setup, directory layout, cross-language orchestration. |
+| `vault/specs/implementation/kernel/orchestrator.md` | Orchestration implementation | gctrl-orch Rust crate, agent adapters, retry constants, conformance testing. |
 
 ### Team
 
 | Document | Scope | Content that belongs here |
 |----------|-------|--------------------------|
-| `specs/team/personas.md` | Agent personas | 7 specialist roles agents impersonate (Engineer, PM, UX, QA, DevSecOps, Security, Tech Lead). Prompt prefixes, review focus, multi-persona review rules. |
+| `vault/specs/team/personas.md` | Agent personas | 7 specialist roles agents impersonate (Engineer, PM, UX, QA, DevSecOps, Security, Tech Lead). Prompt prefixes, review focus, multi-persona review rules. |
 
 ### Other
 
 | Document | Scope | Content that belongs here |
 |----------|-------|--------------------------|
-| `specs/architecture/kernel/browser.md` | Browser control | CDP daemon spec, ref system, tab management. |
-| `Request.md` | Deferred work | Gaps and open items by phase. |
+| `vault/specs/architecture/kernel/browser.md` | Browser control | CDP daemon spec, ref system, tab management. |
+| `vault/Request.md` | Deferred work | Gaps and open items by phase. |
 
 ## Invariants
 
-> Quick reference. Canonical rules with full context live in `specs/principles.md`.
+> Quick reference. Canonical rules with full context live in `vault/specs/principles.md`.
 
 1. Dependencies MUST flow inward: Shell → Kernel → Domain, never reverse.
 2. DuckDB is single-writer: the daemon MUST hold the lock; shell and apps MUST use the HTTP API.
@@ -201,19 +201,19 @@ cargo test && cd shell/gctrl-shell && pnpm test && cd ../.. && npx biome lint sh
 
 ## Local Documentation
 
-Before researching on the internet, check `specs/` and crawled documentation:
+Before researching on the internet, check `vault/specs/` and crawled documentation:
 - `<domain>/DOMAIN_CONTEXT_INDEX.md` for available external docs
 - Always use mermaid for architecture diagrams
 
 ## Documentation Standards
 
-1. **Numbered lists for all rules.** All lists of principles, constraints, invariants, conventions, and rules in `specs/` documents MUST be numbered (1, 2, 3…), not bulleted. This enables precise cross-referencing (e.g., "see Invariant #3") and makes it clear when items are added or removed.
+1. **Numbered lists for all rules** (`vault/specs/` only). All lists of principles, constraints, invariants, conventions, and rules in `vault/specs/` documents MUST be numbered (1, 2, 3…), not bulleted. This enables precise cross-referencing (e.g., "see Invariant #3") and makes it clear when items are added or removed. App vaults (`apps/{app}/vault/`) MAY use bulleted lists where appropriate.
 
-2. **Raw Markdown only.** All `specs/` documents MUST use standard CommonMark / GitHub-Flavored Markdown. Obsidian-specific syntax (wikilinks `[[...]]`, callouts `> [!note]`, empty-text links `[](url)`, block references `^block-id`) MUST NOT be used. Files MUST render correctly in any Markdown viewer.
+2. **Raw Markdown for cross-cutting specs** (`vault/specs/`). All `vault/specs/` documents MUST use standard CommonMark / GitHub-Flavored Markdown. Obsidian-specific syntax (wikilinks `[[...]]`, callouts `> [!note]`, empty-text links `[](url)`, block references `^block-id`) MUST NOT be used in `vault/specs/`. These files MUST render correctly in any Markdown viewer (e.g. on GitHub). App vaults (`apps/{app}/vault/`) MAY use Obsidian wikilinks for issue/operational refs (e.g. `[[BOARD-1]]`), since they are primarily consumed via Obsidian.
 
-3. **Mermaid diagrams only — no ASCII art.** All diagrams in `specs/` documents MUST use Mermaid (```` ```mermaid ````). ASCII box-drawing diagrams (using `┌─┐│└`, `+--+|`, or similar characters) MUST NOT be used. Use Mermaid `flowchart` for component and flow diagrams, `sequenceDiagram` for sequence diagrams, and `graph` for dependency/data-flow diagrams. This ensures diagrams render in Obsidian, GitHub, and any Markdown viewer with Mermaid support.
+3. **Mermaid diagrams only — no ASCII art.** All diagrams in spec documents (`vault/specs/` and `apps/{app}/specs/` alike) MUST use Mermaid (```` ```mermaid ````). ASCII box-drawing diagrams (using `┌─┐│└`, `+--+|`, or similar characters) MUST NOT be used. Use Mermaid `flowchart` for component and flow diagrams, `sequenceDiagram` for sequence diagrams, and `graph` for dependency/data-flow diagrams. This ensures diagrams render in Obsidian, GitHub, and any Markdown viewer with Mermaid support.
 
-4. **Instructive language (RFC 2119).** All `specs/` documents MUST use instructive RFC 2119 keywords:
+4. **Instructive language (RFC 2119).** All spec documents (`vault/specs/` and `apps/{app}/specs/` alike) MUST use instructive RFC 2119 keywords:
    - **MUST** / **MUST NOT** — absolute requirement or prohibition
    - **SHOULD** / **SHOULD NOT** — recommended, with documented exceptions
    - **MAY** — truly optional

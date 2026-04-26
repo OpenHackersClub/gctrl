@@ -145,8 +145,8 @@ enum Commands {
 enum PersonasCmd {
     /// Import personas and review rules from a vault directory
     Import {
-        /// Vault directory (default: gctrl/personas)
-        #[arg(long, default_value = "gctrl/personas")]
+        /// Vault directory (default: vault/personas)
+        #[arg(long, default_value = "vault/personas")]
         dir: String,
     },
     /// List personas and review rules currently in the store

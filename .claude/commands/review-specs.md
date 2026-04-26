@@ -10,22 +10,22 @@ You are performing a spec review focused on **completeness and consistency**. Un
 
 Read these files to build your mental model of the system:
 
-- `specs/principles.md` — Design principles, invariants, vendor independence
+- `vault/specs/principles.md` — Design principles, invariants, vendor independence
 - `AGENTS.md` — Specs table of contents, documentation standards, invariants
-- `specs/architecture/README.md` — Unix layers, hexagonal architecture, data flow
-- `specs/architecture/os.md` — Layer definitions, what belongs where, extension rules
-- `specs/architecture/domain-model.md` — Domain types, storage schema
-- `specs/architecture/apps/tracker.md` — Issue & task graph, lifecycle state machines
-- `specs/architecture/apps/gctrl-board.md` — Board application
-- `specs/gctrl/PRD.md` — Product requirements (skim for feature scope)
-- `specs/implementation/kernel/components.md` — Kernel crate map
-- `specs/implementation/repo.md` — Monorepo structure (Rust, Effect-TS, Lean 4)
-- `specs/implementation/kernel/orchestrator.md` — Orchestration implementation
-- `specs/implementation/repo.md` — Skill catalog and conventions
+- `vault/specs/architecture/README.md` — Unix layers, hexagonal architecture, data flow
+- `vault/specs/architecture/os.md` — Layer definitions, what belongs where, extension rules
+- `vault/specs/architecture/domain-model.md` — Domain types, storage schema
+- `vault/specs/architecture/apps/tracker.md` — Issue & task graph, lifecycle state machines
+- `vault/specs/architecture/apps/gctrl-board.md` — Board application
+- `vault/specs/gctrl/PRD.md` — Product requirements (skim for feature scope)
+- `vault/specs/implementation/kernel/components.md` — Kernel crate map
+- `vault/specs/implementation/repo.md` — Monorepo structure (Rust, Effect-TS, Lean 4)
+- `vault/specs/implementation/kernel/orchestrator.md` — Orchestration implementation
+- `vault/specs/implementation/repo.md` — Skill catalog and conventions
 
 ### 2. Analyze for Gaps
 
-For every spec file under `specs/`, look for:
+For every spec file under `vault/specs/`, look for:
 
 **Missing Parts**
 - Undefined terms or concepts referenced but never specified
@@ -67,7 +67,7 @@ Group questions by category and priority:
 ```
 ## Contradictions (resolve first)
 
-### C1. [specs/file-a.md vs specs/file-b.md] — Short description
+### C1. [vault/specs/file-a.md vs vault/specs/file-b.md] — Short description
 **Context:** File A says X (line ~N). File B says Y (line ~M).
 **Question:** Which is correct? Options:
   a) Keep X, update file B
@@ -76,13 +76,13 @@ Group questions by category and priority:
 
 ## Missing Parts (gaps to fill)
 
-### M1. [specs/file.md] — Short description
+### M1. [vault/specs/file.md] — Short description
 **Context:** Section Z references "FooPort" but no spec defines it.
 **Question:** Should this be specified in architecture/ or implementation/?
 
 ## Ambiguities (clarify intent)
 
-### A1. [specs/file.md] — Short description
+### A1. [vault/specs/file.md] — Short description
 **Context:** Section Z says "sync periodically" without specifying interval.
 **Question:** What is the intended default? Options:
   a) Fixed 5-minute interval

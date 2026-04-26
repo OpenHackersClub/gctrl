@@ -1,6 +1,6 @@
 # Glossary
 
-Canonical definitions for gctrl domain terms. When terms are used in specs, they MUST carry these meanings. For Unix analogies and layer terminology, see `specs/architecture/os.md`.
+Canonical definitions for gctrl domain terms. When terms are used in specs, they MUST carry these meanings. For Unix analogies and layer terminology, see `vault/specs/architecture/os.md`.
 
 ---
 

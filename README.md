@@ -10,7 +10,7 @@ Install, run `gctrl serve`, and you have a working ground control station. No co
 - **Individual workflow is personal.** Team workflows like Scrum are often similar across organizations, but how an individual developer works with their agents is highly personalized. gctrl gives you the primitives to build *your* workflow, not a prescribed one.
 - **Malleable by design.** Prompts (AGENTS.md, WORKFLOW.md) are the first-class extension surface. Load drivers, add CLI commands, or rewrite policies — without forking. A gentle slope from user to creator.
 
-Read more at [specs/principles.md](specs/principles.md).
+Read more at [vault/specs/principles.md](vault/specs/principles.md).
 
 ## Quick Start
 
@@ -76,4 +76,4 @@ Shell:        CLI dispatcher, HTTP API, query engine
 Apps/Utils:   gctrl-board, observe & eval, net fetch/crawl/compact, ...
 ```
 
-See [specs/architecture/](specs/architecture/), [specs/comparison.md](specs/comparison.md), and [AGENTS.md](AGENTS.md) for the full knowledge base.
+See [vault/specs/architecture/](vault/specs/architecture/), [vault/specs/comparison.md](vault/specs/comparison.md), and [AGENTS.md](AGENTS.md) for the full knowledge base.

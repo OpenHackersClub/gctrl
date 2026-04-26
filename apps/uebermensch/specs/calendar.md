@@ -337,7 +337,7 @@ Distinct from morning brief. Reminders fire at specific times and target a speci
 
 ## Drivers
 
-Three drivers feed the calendar; each is feature-gated as a kernel LKM (per [os.md § 5](../../specs/architecture/os.md)).
+Three drivers feed the calendar; each is feature-gated as a kernel LKM (per [os.md § 5](../../vault/specs/architecture/os.md)).
 
 ### `driver-markets` (extends existing)
 
@@ -381,7 +381,7 @@ New kernel LKM. Read-only by default, write-back opt-in per calendar.
 - On any `source: user` event create/update under `calendar/`, push to the configured Google Calendar after a 5s debounce.
 - Conflict policy: **local-wins** for fields the user owns (title, body, times, tz); Google-side updates to those fields fire an inbox alert rather than overwriting.
 - Bidirectional sync inherits the same idempotency fields (`external_id`, `external_etag`).
-- The driver MUST authenticate via OAuth 2.0 with the kernel holding the refresh token — Uebermensch app code never sees the token (per [os.md § Dependency Direction](../../specs/architecture/os.md#dependency-direction-invariant)).
+- The driver MUST authenticate via OAuth 2.0 with the kernel holding the refresh token — Uebermensch app code never sees the token (per [os.md § Dependency Direction](../../vault/specs/architecture/os.md#dependency-direction-invariant)).
 
 ## Visualization (Extension)
 

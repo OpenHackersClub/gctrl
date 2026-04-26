@@ -241,7 +241,7 @@ CREATE TABLE scores (
 );
 ```
 
-Uebermensch writes `target_type IN ('uber_brief', 'uber_brief_item', 'prompt_version')`. Per [principles.md invariant #4](../../../specs/principles.md#architectural-invariants), apps do not introduce new cross-cutting kernel tables — they reuse the existing ones.
+Uebermensch writes `target_type IN ('uber_brief', 'uber_brief_item', 'prompt_version')`. Per [principles.md invariant #4](../../../vault/specs/principles.md#architectural-invariants), apps do not introduce new cross-cutting kernel tables — they reuse the existing ones.
 
 ## Eval Pipeline
 
@@ -351,4 +351,4 @@ Eval is part of the brief's total cost — the cost of the judge call rolls up i
 - [delivery.md § Delivery Health](delivery.md#observability) — delivery metrics
 - [domain-model.md § 2.4](domain-model.md#24-alert) — alert shape
 - [domain-model.md § 5](domain-model.md#5-alert-payload-shapes) — alert payload schemas
-- [kernel guardrails spec](../../../specs/architecture/kernel/guardrails.md) — policy engine
+- [kernel guardrails spec](../../../vault/specs/architecture/kernel/guardrails.md) — policy engine

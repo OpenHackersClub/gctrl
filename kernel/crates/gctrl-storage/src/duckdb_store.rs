@@ -3069,7 +3069,7 @@ mod tests {
             review_focus: "Hexagonal boundaries".into(),
             pushes_back: "Shortcuts bypass the shell".into(),
             tools: vec!["cargo build".into(), "cargo test".into()],
-            key_specs: vec!["specs/architecture/".into()],
+            key_specs: vec!["vault/specs/architecture/".into()],
             source_hash: Some("hash123".into()),
         }
     }
