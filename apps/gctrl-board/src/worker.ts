@@ -43,14 +43,9 @@ async function proxyAcceptanceRollup(id: string, env: Env): Promise<Response> {
   const base = (env.KERNEL_URL ?? KERNEL_URL_DEFAULT).replace(/\/$/, "")
   try {
     const upstream = await fetch(`${base}/api/board/issues/${id}/acceptance`)
-    const body = await upstream.text()
-    return new Response(body, {
-      status: upstream.status,
-      headers: {
-        "Content-Type": upstream.headers.get("Content-Type") ?? "application/json",
-        "Access-Control-Allow-Origin": "*",
-      },
-    })
+    if (!upstream.ok) return jsonResponse(EMPTY_ROLLUP)
+    const data = await upstream.json()
+    return jsonResponse(data)
   } catch {
     return jsonResponse(EMPTY_ROLLUP)
   }
