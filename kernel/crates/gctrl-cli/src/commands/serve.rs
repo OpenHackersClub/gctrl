@@ -2,13 +2,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use gctrl_core::{NetConfig, SchedulerConfig, SyncConfig};
+use gctrl_core::{NetConfig, ProxyConfig, SchedulerConfig, SyncConfig};
 use gctrl_scheduler::ScheduleRunner;
 use gctrl_storage::{DuckDbStore, SqliteStore};
 
 use super::watch;
 
-pub async fn run(host: String, port: u16, db_path: &str, board_dir: Option<PathBuf>) -> Result<()> {
+pub async fn run(
+    host: String,
+    port: u16,
+    db_path: &str,
+    board_dir: Option<PathBuf>,
+    proxy_enabled: bool,
+) -> Result<()> {
     let store = Arc::new(DuckDbStore::open(db_path)?);
 
     // SQLite for board/inbox/persona — co-located with DuckDB
@@ -68,6 +74,32 @@ pub async fn run(host: String, port: u16, db_path: &str, board_dir: Option<PathB
     tracing::info!("database: {db_path}");
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, router).await?;
+    let axum_fut = axum::serve(listener, router);
+
+    // Spawn the MITM proxy alongside the receiver if enabled. Both share the
+    // same DuckDbStore so traffic rows go through the kernel's single-writer
+    // lock — no parallel data path.
+    if proxy_enabled {
+        let mut proxy_config = ProxyConfig::default();
+        if let Ok(p) = std::env::var("GCTRL_PROXY_PORT") {
+            if let Ok(p) = p.parse::<u16>() {
+                proxy_config.listen_port = p;
+            }
+        }
+        let proxy_store = Arc::clone(&store);
+        let proxy_cfg = proxy_config.clone();
+        tokio::spawn(async move {
+            if let Err(e) = gctrl_proxy::run(proxy_store, proxy_cfg).await {
+                tracing::error!(error = %e, "proxy exited with error");
+            }
+        });
+        tracing::info!(
+            "MITM proxy enabled on {}:{}",
+            proxy_config.listen_host,
+            proxy_config.listen_port
+        );
+    }
+
+    axum_fut.await?;
     Ok(())
 }
