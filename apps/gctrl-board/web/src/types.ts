@@ -134,7 +134,10 @@ export interface TraceTreeResponse {
  *  loss-tolerant on inference. */
 export interface ContributionRow {
   type: "pr" | "commit"
+  /** PR number for `type=pr`; `0` for `type=commit` (SHA-keyed). */
   number: number
+  /** Commit SHA — present only on `type=commit` rows. */
+  sha?: string
   title: string
   url: string
   state: string
