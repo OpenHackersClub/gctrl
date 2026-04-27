@@ -30,6 +30,10 @@ enum Commands {
         /// Disable board directory file watcher
         #[arg(long, default_value = "false")]
         no_watch: bool,
+        /// Run the MITM proxy alongside the OTel receiver. Listens on
+        /// 127.0.0.1:8080 (configurable via GCTRL_PROXY_PORT).
+        #[arg(long, default_value = "false")]
+        proxy: bool,
     },
     /// List recent sessions
     Sessions {
@@ -540,7 +544,7 @@ async fn main() -> Result<()> {
     let db_path = resolve_db_path(&cli.db);
 
     match cli.command {
-        Commands::Serve { port, host, board_dir, no_watch } => {
+        Commands::Serve { port, host, board_dir, no_watch, proxy } => {
             let dir = if no_watch {
                 None
             } else {
@@ -553,7 +557,7 @@ async fn main() -> Result<()> {
                     })
                     .and_then(|p| p.canonicalize().ok())
             };
-            commands::serve::run(host, port, &db_path, dir).await
+            commands::serve::run(host, port, &db_path, dir, proxy).await
         }
         Commands::Sessions { limit, format, agent, status } => commands::sessions::run(limit, &format, agent.as_deref(), status.as_deref(), &db_path),
         Commands::Spans { session_id, format } => commands::spans::run(&session_id, &format, &db_path),

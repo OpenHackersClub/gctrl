@@ -118,6 +118,8 @@ fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         // OTel ingestion
         .route("/v1/traces", post(ingest_traces))
+        .route("/v1/logs", post(ingest_logs))
+        .route("/v1/metrics", post(ingest_metrics))
         // Query endpoints
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{session_id}", get(get_session))
@@ -210,6 +212,9 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/net/render", post(net_render))
         .route("/api/net/scrape", post(net_scrape))
         .route("/api/net/screenshot", post(net_screenshot))
+        .route("/api/net/logs", get(net_traffic_logs))
+        .route("/api/net/stats", get(net_traffic_stats))
+        .route("/api/net/ca", get(net_proxy_ca))
         // Persona management (kernel extension)
         .route("/api/personas", get(persona_list).post(persona_upsert))
         .route("/api/personas/seed", post(persona_seed))
@@ -912,6 +917,123 @@ async fn ingest_traces(
             tracing::error!(error = %e, "failed to store spans");
             StatusCode::INTERNAL_SERVER_ERROR
         }
+    }
+}
+
+// --- OTel logs/metrics — accept-and-count ---
+//
+// We accept payloads on `/v1/logs` and `/v1/metrics` so OTel-emitting agents
+// (Claude Code, Aider, etc.) don't get 404s on every export tick. Today we
+// just log the record count via tracing — structured persistence is a
+// follow-up (will mirror the spans pipeline). Returning 200 OK with no body
+// satisfies the OTLP/HTTP exporter contract.
+
+async fn ingest_logs(
+    State(_state): State<Arc<AppState>>,
+    Json(payload): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let count = count_otlp_records(&payload, "resourceLogs", "scopeLogs", "logRecords");
+    tracing::debug!(count, "received OTLP log batch");
+    StatusCode::OK
+}
+
+async fn ingest_metrics(
+    State(_state): State<Arc<AppState>>,
+    Json(payload): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let count = count_otlp_records(&payload, "resourceMetrics", "scopeMetrics", "metrics");
+    tracing::debug!(count, "received OTLP metric batch");
+    StatusCode::OK
+}
+
+fn count_otlp_records(
+    payload: &serde_json::Value,
+    resource_key: &str,
+    scope_key: &str,
+    leaf_key: &str,
+) -> usize {
+    payload
+        .get(resource_key)
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .flat_map(|r| r.get(scope_key).and_then(|s| s.as_array()).into_iter().flatten())
+                .filter_map(|s| s.get(leaf_key).and_then(|l| l.as_array()))
+                .map(|l| l.len())
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+// --- Net traffic — proxy reads ---
+
+#[derive(Deserialize)]
+struct TrafficLogParams {
+    host: Option<String>,
+    since: Option<String>,
+    limit: Option<usize>,
+}
+
+async fn net_traffic_logs(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<TrafficLogParams>,
+) -> impl IntoResponse {
+    let since = params
+        .since
+        .as_deref()
+        .and_then(parse_since)
+        .map(|d| chrono::Utc::now() - d);
+    let filter = gctrl_core::TrafficFilter {
+        host: params.host,
+        since,
+        limit: params.limit,
+    };
+    match state.store.query_traffic(&filter) {
+        Ok(rows) => Json(serde_json::to_value(&rows).unwrap()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn net_traffic_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match state.store.get_traffic_stats() {
+        Ok(stats) => Json(serde_json::to_value(&stats).unwrap()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn net_proxy_ca(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
+    let cert_path = gctrl_core::ProxyConfig::ca_dir().join("ca.cer");
+    match std::fs::read_to_string(&cert_path) {
+        Ok(pem) => (
+            [(axum::http::header::CONTENT_TYPE, "application/x-pem-file")],
+            pem,
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::NOT_FOUND,
+            format!(
+                "CA cert not found at {} — start the daemon with --proxy to generate it",
+                cert_path.display()
+            ),
+        )
+            .into_response(),
+    }
+}
+
+/// Parse `1h`, `2d`, `30m`, `15s` into a `chrono::Duration`.
+fn parse_since(s: &str) -> Option<chrono::Duration> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let (num, unit) = s.split_at(s.len() - 1);
+    let n: i64 = num.parse().ok()?;
+    match unit {
+        "s" => Some(chrono::Duration::seconds(n)),
+        "m" => Some(chrono::Duration::minutes(n)),
+        "h" => Some(chrono::Duration::hours(n)),
+        "d" => Some(chrono::Duration::days(n)),
+        _ => None,
     }
 }
 
