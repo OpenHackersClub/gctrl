@@ -2207,9 +2207,13 @@ async fn list_contributions(
     Query(params): Query<ContributionsQuery>,
 ) -> impl IntoResponse {
     let limit_str = params.limit.to_string();
-    // `gh pr list` returns body so we can scan trailers without a
+    let prov_filter =
+        parse_created_by_filter(params.created_by.as_deref(), params.kind.as_deref());
+    let store = state.store.clone();
+
+    // PRs — `gh pr list` returns body so we scan trailers without a
     // second `gh pr view` per row.
-    let raw = match gh_exec(&[
+    let pr_raw = match gh_exec(&[
         "pr",
         "list",
         "--repo",
@@ -2227,24 +2231,47 @@ async fn list_contributions(
         Err((status, msg)) => return (status, msg).into_response(),
     };
 
-    let prov_filter =
-        parse_created_by_filter(params.created_by.as_deref(), params.kind.as_deref());
+    // Commits — `gh api repos/{repo}/commits` returns the full message
+    // body so trailers from squash-merged commits surface even when the
+    // PR body itself was empty. `gh search commits` would also work but
+    // requires a non-empty query, so the per-repo listing is simpler.
+    let commit_path = format!("repos/{}/commits?per_page={}", params.repo, params.limit);
+    let commit_raw = match gh_exec(&["api", &commit_path]).await {
+        Ok(v) => v,
+        Err((status, msg)) => return (status, msg).into_response(),
+    };
 
-    let prs = raw.as_array().cloned().unwrap_or_default();
-    let store = state.store.clone();
-    let mut rows = Vec::with_capacity(prs.len());
-    for pr in prs {
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    for pr in pr_raw.as_array().cloned().unwrap_or_default() {
         let row = build_contribution_row(&pr, |sid| {
             store
                 .get_session(&gctrl_core::SessionId(sid.into()))
                 .ok()
                 .flatten()
         });
-        if !contribution_passes_filter(&row, prov_filter.as_deref()) {
-            continue;
+        if contribution_passes_filter(&row, prov_filter.as_deref()) {
+            rows.push(row);
         }
-        rows.push(row);
     }
+    for c in commit_raw.as_array().cloned().unwrap_or_default() {
+        let row = build_commit_row(&c, |sid| {
+            store
+                .get_session(&gctrl_core::SessionId(sid.into()))
+                .ok()
+                .flatten()
+        });
+        if contribution_passes_filter(&row, prov_filter.as_deref()) {
+            rows.push(row);
+        }
+    }
+
+    // Sort merged list by created_at desc — null timestamps sort last
+    // (treat as oldest) so dated rows always land first.
+    rows.sort_by(|a, b| {
+        let ka = a.get("created_at").and_then(|v| v.as_str()).unwrap_or("");
+        let kb = b.get("created_at").and_then(|v| v.as_str()).unwrap_or("");
+        kb.cmp(ka)
+    });
 
     Json(serde_json::json!({ "contributions": rows })).into_response()
 }
@@ -2285,6 +2312,82 @@ where
         "merged_at": pr.get("mergedAt").cloned().unwrap_or(serde_json::Value::Null),
         "created_at": pr.get("createdAt").cloned().unwrap_or(serde_json::Value::Null),
         "branch": pr.get("headRefName").cloned().unwrap_or(serde_json::Value::Null),
+        "author": author,
+        "session_id": session_id,
+        "session_agent": session_meta.as_ref().map(|s| s.agent_name.clone()),
+        "created_by": session_meta.as_ref().map(|s| s.created_by.as_str()),
+    })
+}
+
+/// Same shape as `build_contribution_row`, but for raw GitHub API
+/// commit JSON (`gh api repos/{owner}/{repo}/commits`). Commits don't
+/// carry a `state`; they're always landed, so we synthesize
+/// `state="merged"` so the UI's state badge stays consistent.
+///
+/// `number` is set to `0` because commits are referenced by SHA, not
+/// number — the UI displays `sha[..7]` instead. We keep `number: 0`
+/// rather than `null` so the UI renderer doesn't have to special-case
+/// missing integer keys.
+pub(crate) fn build_commit_row<F>(
+    commit: &serde_json::Value,
+    lookup_session: F,
+) -> serde_json::Value
+where
+    F: FnOnce(&str) -> Option<gctrl_core::Session>,
+{
+    let message = commit
+        .get("commit")
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.as_str())
+        .unwrap_or("");
+    let session_id = crate::contributions::parse_session_trailer(message);
+    let session_meta = session_id.as_deref().and_then(lookup_session);
+
+    // Subject line = first non-empty line of the commit message.
+    let title = message
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .to_string();
+    let sha = commit
+        .get("sha")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+    let author = commit
+        .get("commit")
+        .and_then(|c| c.get("author"))
+        .and_then(|a| a.get("name"))
+        .and_then(|n| n.as_str())
+        .or_else(|| {
+            commit
+                .get("author")
+                .and_then(|a| a.get("login"))
+                .and_then(|l| l.as_str())
+        })
+        .unwrap_or("")
+        .to_string();
+    let created_at = commit
+        .get("commit")
+        .and_then(|c| c.get("author"))
+        .and_then(|a| a.get("date"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let url = commit
+        .get("html_url")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
+    serde_json::json!({
+        "type": "commit",
+        "number": 0,
+        "sha": sha,
+        "title": title,
+        "url": url,
+        "state": "merged",
+        "merged_at": created_at,
+        "created_at": created_at,
+        "branch": serde_json::Value::Null,
         "author": author,
         "session_id": session_id,
         "session_agent": session_meta.as_ref().map(|s| s.agent_name.clone()),
@@ -4877,5 +4980,52 @@ Getting User settings...
 
         let row_otel = serde_json::json!({"created_by": "otel_ingest"});
         assert!(!contribution_passes_filter(&row_otel, Some(filter)));
+    }
+
+    #[test]
+    fn commit_row_extracts_subject_and_trailer() {
+        let sid = "11111111-2222-3333-4444-555555555555";
+        let commit = serde_json::json!({
+            "sha": "abcdef1234567890",
+            "html_url": "https://github.com/o/r/commit/abcdef1",
+            "commit": {
+                "message": format!(
+                    "feat: add thing\n\nLong body explaining why.\n\nSession-Id: {sid}\n",
+                ),
+                "author": { "name": "Bot Bot", "date": "2026-04-26T12:00:00Z" }
+            },
+            "author": { "login": "bot-bot" }
+        });
+        let row = build_commit_row(&commit, |id| {
+            (id == sid).then(|| fixture_session(sid, gctrl_core::CreatedBy::Scheduler))
+        });
+        assert_eq!(row["type"], serde_json::json!("commit"));
+        assert_eq!(row["sha"], serde_json::json!("abcdef1234567890"));
+        assert_eq!(row["title"], serde_json::json!("feat: add thing"));
+        assert_eq!(row["author"], serde_json::json!("Bot Bot"));
+        assert_eq!(row["session_id"], serde_json::json!(sid));
+        assert_eq!(row["created_by"], serde_json::json!("scheduler"));
+        assert_eq!(row["state"], serde_json::json!("merged"));
+        assert_eq!(row["created_at"], serde_json::json!("2026-04-26T12:00:00Z"));
+    }
+
+    #[test]
+    fn commit_row_falls_back_to_author_login() {
+        // Commits authored via the GitHub web UI sometimes have a
+        // different `commit.author.name` ("GitHub") and a richer
+        // `author.login` — our fallback prefers commit.author.name
+        // when present, but uses author.login when name is missing.
+        let commit = serde_json::json!({
+            "sha": "deadbeef",
+            "html_url": "https://example.com/c/deadbeef",
+            "commit": {
+                "message": "subject\n\nbody\n",
+                "author": { "date": "2026-04-25T08:00:00Z" }
+            },
+            "author": { "login": "web-ui-user" }
+        });
+        let row = build_commit_row(&commit, |_| None);
+        assert_eq!(row["author"], serde_json::json!("web-ui-user"));
+        assert!(row["session_id"].is_null());
     }
 }
