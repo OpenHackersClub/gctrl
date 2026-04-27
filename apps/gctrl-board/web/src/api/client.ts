@@ -23,6 +23,10 @@ import type {
   ScoreSummary,
   AlertRule,
   ContributionsResponse,
+  NetTrafficStats,
+  NetDomainsResponse,
+  NetDailyResponse,
+  NetTrafficRecord,
 } from "../types"
 
 const BASE = "/api/board"
@@ -314,6 +318,35 @@ export const api = {
       if (params.limit !== undefined) qs.set("limit", String(params.limit))
       if (params.since) qs.set("since", params.since)
       return request<ContributionsResponse>(`/api/contributions?${qs.toString()}`)
+    },
+  },
+
+  /// Network traffic — proxied requests recorded by `gctrl-proxy`.
+  /// All calls accept the same `since` shorthand the kernel parses
+  /// (`15m`, `1h`, `24h`, `7d`); omit for all-time.
+  net: {
+    stats: (since?: string) => {
+      const q = since ? `?since=${encodeURIComponent(since)}` : ""
+      return request<NetTrafficStats>(`/api/net/stats${q}`)
+    },
+    domains: (params?: { since?: string; top?: number }) => {
+      const qs = new URLSearchParams()
+      if (params?.since) qs.set("since", params.since)
+      if (params?.top !== undefined) qs.set("top", String(params.top))
+      const q = qs.toString()
+      return request<NetDomainsResponse>(`/api/net/domains${q ? `?${q}` : ""}`)
+    },
+    daily: (days?: number) => {
+      const q = days !== undefined ? `?days=${days}` : ""
+      return request<NetDailyResponse>(`/api/net/daily${q}`)
+    },
+    logs: (params?: { host?: string; since?: string; limit?: number }) => {
+      const qs = new URLSearchParams()
+      if (params?.host) qs.set("host", params.host)
+      if (params?.since) qs.set("since", params.since)
+      if (params?.limit !== undefined) qs.set("limit", String(params.limit))
+      const q = qs.toString()
+      return request<NetTrafficRecord[]>(`/api/net/logs${q ? `?${q}` : ""}`)
     },
   },
 }

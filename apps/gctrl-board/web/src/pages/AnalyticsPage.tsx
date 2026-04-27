@@ -12,6 +12,9 @@ import type {
   SpanAnalytics,
   ScoreSummary,
   AlertRule,
+  NetTrafficStats,
+  NetDomain,
+  NetTrafficRecord,
 } from "@/types"
 import type { Route } from "@/hooks/useRoute"
 import { useSessionStream } from "@/hooks/useSessionStream"
@@ -1067,12 +1070,244 @@ function UsageTab({ kind }: { kind: SessionKind }) {
         )}
       </Panel>
 
+      <NetworkSubPanel />
+    </div>
+  )
+}
+
+// ───────────────────────── Network sub-panel (M4) ─────────────────────────
+
+type NetWindow = "1h" | "24h" | "7d" | "all"
+
+function NetworkSubPanel() {
+  const [netWindow, setNetWindow] = useState<NetWindow>("24h")
+  const [stats, setStats] = useState<NetTrafficStats | null>(null)
+  const [domains, setDomains] = useState<NetDomain[] | null>(null)
+  const [recent, setRecent] = useState<NetTrafficRecord[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const since = netWindow === "all" ? undefined : netWindow
+
+  const refresh = useCallback(async () => {
+    try {
+      const [s, d, r] = await Promise.all([
+        api.net.stats(since),
+        api.net.domains({ since, top: 10 }),
+        api.net.logs({ since, limit: 20 }),
+      ])
+      setStats(s)
+      setDomains(d.domains)
+      setRecent(r)
+      setError(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [since])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  if (error) {
+    // Empty proxy table or proxy not running both surface as fetch
+    // errors; the kernel returns 200 + zeros when the table is empty,
+    // so a real error here means the kernel is unreachable.
+    return (
+      <div className="p-4 text-rose-400 font-mono text-sm border border-zinc-800">
+        Failed to load network: {error}
+        <div className="mt-1 text-zinc-500 text-[11px]">
+          Start the kernel with{" "}
+          <code className="text-foreground">gctrld serve --proxy</code> to
+          generate the CA cert and start capturing traffic.
+        </div>
+      </div>
+    )
+  }
+
+  const empty =
+    stats !== null &&
+    stats.total_requests === 0 &&
+    (domains?.length ?? 0) === 0
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-[13px] font-mono text-zinc-300 uppercase tracking-wider">
+          Proxied network traffic
+        </h3>
+        <ToggleGroup
+          type="single"
+          value={netWindow}
+          onValueChange={(v) => {
+            if (v) setNetWindow(v as NetWindow)
+          }}
+        >
+          <ToggleGroupItem value="1h">1h</ToggleGroupItem>
+          <ToggleGroupItem value="24h">24h</ToggleGroupItem>
+          <ToggleGroupItem value="7d">7d</ToggleGroupItem>
+          <ToggleGroupItem value="all">all</ToggleGroupItem>
+        </ToggleGroup>
+      </div>
+
+      {empty && (
+        <div className="text-[12px] font-mono text-zinc-500 border border-zinc-800 p-4">
+          No proxied requests in this window. Run{" "}
+          <code className="text-foreground">gctrl net setup</code> for the
+          shell env block, then start an agent — its outbound traffic will
+          flow through the local proxy and appear here.
+        </div>
+      )}
+
+      {!empty && stats && (
+        <div className="grid grid-cols-3 gap-3">
+          <Kpi label="Requests" value={stats.total_requests.toLocaleString()} />
+          <Kpi
+            label="Out (req body)"
+            value={formatBytes(stats.total_request_bytes)}
+          />
+          <Kpi
+            label="In (resp body)"
+            value={formatBytes(stats.total_response_bytes)}
+          />
+        </div>
+      )}
+
+      {!empty && domains && domains.length > 0 && (
+        <Panel
+          title="Top domains"
+          subtitle={`${domains.length} host${domains.length === 1 ? "" : "s"}`}
+        >
+          <SimpleTable
+            columns={["Host", "Requests", "Out", "In"]}
+            aligns={["left", "right", "right", "right"]}
+            rows={domains.map((d) => ({
+              key: d.host,
+              cells: [
+                <span className="text-zinc-200 truncate">{d.host}</span>,
+                <span className="text-zinc-400">{d.requests}</span>,
+                <span className="text-zinc-500">
+                  {formatBytes(d.request_bytes)}
+                </span>,
+                <span className="text-emerald-400">
+                  {formatBytes(d.response_bytes)}
+                </span>,
+              ],
+            }))}
+          />
+        </Panel>
+      )}
+
+      {!empty && stats && stats.by_status.length > 0 && (
+        <Panel title="Status code distribution">
+          <ul className="divide-y divide-zinc-800">
+            {stats.by_status.map(([code, count]) => {
+              const pct =
+                stats.total_requests > 0
+                  ? (count / stats.total_requests) * 100
+                  : 0
+              return (
+                <li
+                  key={code}
+                  className="flex items-center gap-3 px-4 py-2 text-[13px] font-mono"
+                >
+                  <span
+                    className={cn(
+                      "w-12 truncate",
+                      code >= 500
+                        ? "text-rose-400"
+                        : code >= 400
+                          ? "text-amber-400"
+                          : code >= 300
+                            ? "text-zinc-400"
+                            : "text-emerald-400",
+                    )}
+                  >
+                    {code}
+                  </span>
+                  <div className="flex-1 h-2 bg-zinc-900 border border-zinc-800 relative overflow-hidden">
+                    <div
+                      className={cn(
+                        "absolute inset-y-0 left-0",
+                        code >= 500
+                          ? "bg-rose-500/40"
+                          : code >= 400
+                            ? "bg-amber-500/40"
+                            : "bg-emerald-500/40",
+                      )}
+                      style={{ width: `${Math.min(100, pct)}%` }}
+                    />
+                  </div>
+                  <span className="w-16 text-right text-zinc-400">
+                    {count}
+                  </span>
+                  <span className="w-14 text-right text-zinc-500">
+                    {pct.toFixed(1)}%
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
+        </Panel>
+      )}
+
+      {!empty && recent && recent.length > 0 && (
+        <Panel
+          title="Recent requests"
+          subtitle={`latest ${recent.length}`}
+        >
+          <SimpleTable
+            columns={["Time", "Method", "Host", "Path", "Status", "Latency"]}
+            aligns={["left", "left", "left", "left", "right", "right"]}
+            rows={recent.map((r) => ({
+              key: r.id,
+              cells: [
+                <span className="text-zinc-500 text-[11px] tabular-nums">
+                  {new Date(r.timestamp).toLocaleTimeString()}
+                </span>,
+                <span className="text-zinc-300">{r.method}</span>,
+                <span className="text-zinc-200 truncate">{r.host}</span>,
+                <span className="text-zinc-400 truncate text-[12px]">
+                  {pathOf(r.url)}
+                </span>,
+                <HttpStatusBadge code={r.status_code} />,
+                <span className="text-zinc-500 tabular-nums">
+                  {r.duration_ms}ms
+                </span>,
+              ],
+            }))}
+          />
+        </Panel>
+      )}
+
       <div className="text-[11px] font-mono text-zinc-600 px-1">
-        Network sub-panel lands in M4 (depends on kernel proxy Phase 2 +
-        /api/net/*).
+        Per-session attribution lands when the proxy starts tagging
+        outbound traffic with <code>Session-Id</code> (spec Kernel Deps §2).
+        Until then, requests show host/process-level grouping only.
       </div>
     </div>
   )
+}
+
+function HttpStatusBadge({ code }: { code: number }) {
+  if (code >= 500) return <Badge variant="muted">{code}</Badge>
+  if (code >= 400) return <Badge variant="muted">{code}</Badge>
+  if (code >= 300) return <Badge variant="muted">{code}</Badge>
+  return <Badge variant="success">{code}</Badge>
+}
+
+function pathOf(url: string): string {
+  try {
+    return new URL(url).pathname || "/"
+  } catch {
+    return url
+  }
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n}B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)}MB`
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)}GB`
 }
 
 function Panel({
