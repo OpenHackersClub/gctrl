@@ -3,10 +3,10 @@ use gctrl_storage::DuckDbStore;
 
 pub fn run(db_path: &str) -> Result<()> {
     let store = DuckDbStore::open(db_path)?;
-    let analytics = store.get_analytics()?;
-    let cost_by_model = store.get_cost_by_model().unwrap_or_default();
-    let cost_by_agent = store.get_cost_by_agent().unwrap_or_default();
-    let latencies = store.get_latency_by_model().unwrap_or_default();
+    let analytics = store.get_analytics(None)?;
+    let cost_by_model = store.get_cost_by_model(None).unwrap_or_default();
+    let cost_by_agent = store.get_cost_by_agent(None).unwrap_or_default();
+    let latencies = store.get_latency_by_model(None).unwrap_or_default();
 
     println!("=== GroundCtrl Analytics ===\n");
     println!("Sessions:      {}", analytics.total_sessions);

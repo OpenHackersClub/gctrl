@@ -3,7 +3,7 @@ use gctrl_storage::DuckDbStore;
 
 pub fn run(db_path: &str) -> Result<()> {
     let store = DuckDbStore::open(db_path)?;
-    let latencies = store.get_latency_by_model()?;
+    let latencies = store.get_latency_by_model(None)?;
 
     println!("=== Latency by Model (ms) ===");
     if latencies.is_empty() {

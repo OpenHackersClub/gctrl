@@ -13,6 +13,7 @@ import type {
   InboxStats,
   GanttView,
   SessionSummary,
+  SessionKind,
   AnalyticsOverview,
   CostAnalytics,
   DailyEntry,
@@ -24,6 +25,13 @@ import type {
 } from "../types"
 
 const BASE = "/api/board"
+
+/// `?kind=` shorthand suffix for analytics rollup endpoints.
+/// `all` and undefined both mean "no filter" — emit no param so the
+/// kernel returns population-wide totals.
+function kindQuery(kind?: SessionKind): string {
+  return kind && kind !== "all" ? `?kind=${kind}` : ""
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -260,14 +268,23 @@ export const api = {
   },
 
   analytics: {
-    overview: () => request<AnalyticsOverview>("/api/analytics"),
-    cost: () => request<CostAnalytics>("/api/analytics/cost"),
+    // `kind` threads through to /api/analytics/* per analytics spec M3
+    // follow-up. `all` ⇒ no filter (population-wide totals); `internal`
+    // ⇒ {scheduler, api}; `external` ⇒ {otel_ingest}. The kernel
+    // accepts `kind` directly, so we only attach the param when it
+    // narrows the population.
+    overview: (kind?: SessionKind) =>
+      request<AnalyticsOverview>(`/api/analytics${kindQuery(kind)}`),
+    cost: (kind?: SessionKind) =>
+      request<CostAnalytics>(`/api/analytics/cost${kindQuery(kind)}`),
     daily: (days?: number) => {
       const q = days !== undefined ? `?days=${days}` : ""
       return request<DailyEntry[]>(`/api/analytics/daily${q}`)
     },
-    latency: () => request<LatencyAnalytics>("/api/analytics/latency"),
-    spans: () => request<SpanAnalytics>("/api/analytics/spans"),
+    latency: (kind?: SessionKind) =>
+      request<LatencyAnalytics>(`/api/analytics/latency${kindQuery(kind)}`),
+    spans: (kind?: SessionKind) =>
+      request<SpanAnalytics>(`/api/analytics/spans${kindQuery(kind)}`),
     score: (name: string) =>
       request<ScoreSummary>(
         `/api/analytics/scores?name=${encodeURIComponent(name)}`,
