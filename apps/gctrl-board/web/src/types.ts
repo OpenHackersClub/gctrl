@@ -126,6 +126,33 @@ export interface TraceTreeResponse {
   tags?: Array<{ key: string; value: string }>
 }
 
+// ── Contributions (analytics §M5) ──
+
+/** A single PR (commits will follow when the route adds them) joined
+ *  to a kernel session via its `Session-Id:` trailer. Rows without a
+ *  session_id are unattributed but still surfaced — the spec is
+ *  loss-tolerant on inference. */
+export interface ContributionRow {
+  type: "pr" | "commit"
+  number: number
+  title: string
+  url: string
+  state: string
+  branch: string | null
+  author: string
+  created_at: string | null
+  merged_at: string | null
+  /** Trailer-extracted session id; null when no trailer / no match. */
+  session_id: string | null
+  session_agent: string | null
+  /** Provenance of the joined session — null when unattributed. */
+  created_by: CreatedBy | null
+}
+
+export interface ContributionsResponse {
+  contributions: ContributionRow[]
+}
+
 export type IssueStatus =
   | "backlog"
   | "todo"

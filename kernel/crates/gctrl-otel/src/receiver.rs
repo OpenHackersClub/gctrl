@@ -133,6 +133,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/analytics/score", post(create_score))
         .route("/api/analytics/tag", post(create_tag))
         .route("/api/analytics/alerts", get(list_alerts))
+        .route("/api/contributions", get(list_contributions))
         // Trace tree (Langfuse-style)
         .route("/api/sessions/{session_id}/tree", get(get_trace_tree))
         // SSE live streams — global + per-session (gctrl-analytics §5)
@@ -2291,6 +2292,146 @@ async fn gh_get_run(Path(run_id): Path<u64>, Query(q): Query<GhRepoQuery>) -> im
         }
         Err((status, msg)) => (status, msg).into_response(),
     }
+}
+
+// --- Contributions: trailer-inferred join from gh artifacts → kernel sessions ---
+//
+// Spec: vault/specs/architecture/apps/gctrl-analytics.md Kernel Deps §4
+// + Milestone M5. Inference-first: agents append `Session-Id: <uuid>`
+// trailers; this route extracts them at query time and joins to local
+// sessions. Missing trailer = "unattributed" row, still shown.
+
+#[derive(Deserialize)]
+struct ContributionsQuery {
+    repo: String,
+    /// PR fetch limit (commits track 1:1 with PRs in this initial cut —
+    /// promote to a separate `gh search commits` pass when the spec's
+    /// "closed issues" surface lands).
+    #[serde(default = "default_contributions_limit")]
+    limit: usize,
+    /// Filter joined sessions by `?kind=internal|external` *or*
+    /// `?created_by=...`, mirroring the analytics rollup vocabulary.
+    /// Rows whose joined session falls outside the filter are dropped;
+    /// rows with no joined session are kept iff `kind` is unset
+    /// (otherwise the operator asked for a known population).
+    #[serde(default)]
+    created_by: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+}
+
+fn default_contributions_limit() -> usize {
+    20
+}
+
+async fn list_contributions(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ContributionsQuery>,
+) -> impl IntoResponse {
+    let limit_str = params.limit.to_string();
+    // `gh pr list` returns body so we can scan trailers without a
+    // second `gh pr view` per row.
+    let raw = match gh_exec(&[
+        "pr",
+        "list",
+        "--repo",
+        &params.repo,
+        "--limit",
+        &limit_str,
+        "--state",
+        "all",
+        "--json",
+        "number,title,body,author,headRefName,url,state,mergedAt,createdAt",
+    ])
+    .await
+    {
+        Ok(v) => v,
+        Err((status, msg)) => return (status, msg).into_response(),
+    };
+
+    let prov_filter =
+        parse_created_by_filter(params.created_by.as_deref(), params.kind.as_deref());
+
+    let prs = raw.as_array().cloned().unwrap_or_default();
+    let store = state.store.clone();
+    let mut rows = Vec::with_capacity(prs.len());
+    for pr in prs {
+        let row = build_contribution_row(&pr, |sid| {
+            store
+                .get_session(&gctrl_core::SessionId(sid.into()))
+                .ok()
+                .flatten()
+        });
+        if !contribution_passes_filter(&row, prov_filter.as_deref()) {
+            continue;
+        }
+        rows.push(row);
+    }
+
+    Json(serde_json::json!({ "contributions": rows })).into_response()
+}
+
+/// Join a single PR-shaped JSON value to a local session via the
+/// `Session-Id:` trailer in its body. Returns the contribution row in
+/// the wire shape the UI consumes.
+///
+/// Pure of storage: takes a `lookup_session` closure so tests don't
+/// need a router or DuckDB instance — just a `HashMap` shim.
+pub(crate) fn build_contribution_row<F>(
+    pr: &serde_json::Value,
+    lookup_session: F,
+) -> serde_json::Value
+where
+    F: FnOnce(&str) -> Option<gctrl_core::Session>,
+{
+    let body = pr.get("body").and_then(|b| b.as_str()).unwrap_or("");
+    let session_id = crate::contributions::parse_session_trailer(body);
+
+    // Look up the session — we want both the `created_by` (for the
+    // kind filter) and `agent_name` (for the row label).
+    let session_meta = session_id.as_deref().and_then(lookup_session);
+
+    let author = pr
+        .get("author")
+        .and_then(|a| a.get("login"))
+        .and_then(|l| l.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    serde_json::json!({
+        "type": "pr",
+        "number": pr.get("number").cloned().unwrap_or(serde_json::Value::Null),
+        "title": pr.get("title").cloned().unwrap_or(serde_json::Value::Null),
+        "url": pr.get("url").cloned().unwrap_or(serde_json::Value::Null),
+        "state": pr.get("state").cloned().unwrap_or(serde_json::Value::Null),
+        "merged_at": pr.get("mergedAt").cloned().unwrap_or(serde_json::Value::Null),
+        "created_at": pr.get("createdAt").cloned().unwrap_or(serde_json::Value::Null),
+        "branch": pr.get("headRefName").cloned().unwrap_or(serde_json::Value::Null),
+        "author": author,
+        "session_id": session_id,
+        "session_agent": session_meta.as_ref().map(|s| s.agent_name.clone()),
+        "created_by": session_meta.as_ref().map(|s| s.created_by.as_str()),
+    })
+}
+
+/// Apply the `kind`/`created_by` filter to a contribution row. When
+/// the filter is absent every row passes; when present, rows without a
+/// joined session are dropped (the operator narrowed to a known
+/// population, so unattributed rows would mislead the totals).
+pub(crate) fn contribution_passes_filter(
+    row: &serde_json::Value,
+    prov_filter: Option<&[gctrl_core::CreatedBy]>,
+) -> bool {
+    let Some(filter) = prov_filter else {
+        return true;
+    };
+    let Some(created_by_str) = row.get("created_by").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    let Some(prov) = gctrl_core::CreatedBy::from_str(created_by_str) else {
+        return false;
+    };
+    filter.contains(&prov)
 }
 
 /// Normalize `gh issue list` JSON: flatten author.login, labels[].name
@@ -4753,5 +4894,110 @@ Getting User settings...
             "unexpected status {}",
             resp.status()
         );
+    }
+
+    // --- Contributions inference (M5, gctrl-analytics §4) ---
+
+    fn fixture_session(id: &str, prov: gctrl_core::CreatedBy) -> gctrl_core::Session {
+        gctrl_core::Session {
+            id: gctrl_core::SessionId(id.into()),
+            workspace_id: gctrl_core::WorkspaceId("ws".into()),
+            device_id: gctrl_core::DeviceId("dev".into()),
+            agent_name: "claude-code".into(),
+            started_at: chrono::Utc::now(),
+            ended_at: None,
+            status: gctrl_core::SessionStatus::Active,
+            total_cost_usd: 0.0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            created_by: prov,
+        }
+    }
+
+    #[test]
+    fn contribution_row_joins_trailer_to_session() {
+        let sid = "11111111-2222-3333-4444-555555555555";
+        let pr = serde_json::json!({
+            "number": 42,
+            "title": "feat: thing",
+            "body": format!("subject\n\nbody\n\nSession-Id: {sid}\n"),
+            "author": {"login": "bot"},
+            "state": "MERGED",
+            "url": "https://example.com/pulls/42",
+            "headRefName": "feat/x",
+            "mergedAt": "2026-04-27T00:00:00Z",
+            "createdAt": "2026-04-26T00:00:00Z",
+        });
+        let row = build_contribution_row(&pr, |id| {
+            (id == sid).then(|| fixture_session(sid, gctrl_core::CreatedBy::Api))
+        });
+        assert_eq!(row["session_id"], serde_json::json!(sid));
+        assert_eq!(row["session_agent"], serde_json::json!("claude-code"));
+        assert_eq!(row["created_by"], serde_json::json!("api"));
+        assert_eq!(row["author"], serde_json::json!("bot"));
+        assert_eq!(row["type"], serde_json::json!("pr"));
+    }
+
+    #[test]
+    fn contribution_row_keeps_unattributed_rows() {
+        // Spec invariant: missing trailer = unattributed, still shown.
+        let pr = serde_json::json!({
+            "number": 1,
+            "title": "chore: untrailed",
+            "body": "no trailer here",
+            "author": {"login": "human"},
+            "state": "OPEN",
+            "url": "https://example.com/pulls/1",
+            "headRefName": "main",
+            "mergedAt": serde_json::Value::Null,
+            "createdAt": "2026-04-25T00:00:00Z",
+        });
+        let row = build_contribution_row(&pr, |_| None);
+        assert!(row["session_id"].is_null());
+        assert!(row["session_agent"].is_null());
+        assert!(row["created_by"].is_null());
+    }
+
+    #[test]
+    fn contribution_row_drops_session_meta_when_session_missing() {
+        // Trailer points at a session that no longer exists locally —
+        // we still surface the trailer's id so operators can debug,
+        // but session_meta is null.
+        let sid = "deadbeef-2222-3333-4444-555555555555";
+        let pr = serde_json::json!({
+            "number": 7,
+            "title": "feat: ghost",
+            "body": format!("Session-Id: {sid}\n"),
+            "author": {"login": "bot"},
+            "state": "OPEN",
+            "url": "https://example.com/pulls/7",
+            "headRefName": "x",
+            "mergedAt": serde_json::Value::Null,
+            "createdAt": "2026-04-25T00:00:00Z",
+        });
+        let row = build_contribution_row(&pr, |_| None);
+        assert_eq!(row["session_id"], serde_json::json!(sid));
+        assert!(row["session_agent"].is_null());
+        assert!(row["created_by"].is_null());
+    }
+
+    #[test]
+    fn filter_drops_unattributed_when_kind_set() {
+        let row = serde_json::json!({"created_by": serde_json::Value::Null});
+        let filter: &[gctrl_core::CreatedBy] = &[gctrl_core::CreatedBy::OtelIngest];
+        assert!(!contribution_passes_filter(&row, Some(filter)));
+        // No filter ⇒ keep unattributed rows.
+        assert!(contribution_passes_filter(&row, None));
+    }
+
+    #[test]
+    fn filter_matches_internal_set() {
+        let row = serde_json::json!({"created_by": "api"});
+        let filter: &[gctrl_core::CreatedBy] =
+            &[gctrl_core::CreatedBy::Scheduler, gctrl_core::CreatedBy::Api];
+        assert!(contribution_passes_filter(&row, Some(filter)));
+
+        let row_otel = serde_json::json!({"created_by": "otel_ingest"});
+        assert!(!contribution_passes_filter(&row_otel, Some(filter)));
     }
 }

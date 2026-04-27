@@ -643,6 +643,30 @@ export default {
           /^\/api\/board\/issues\/([^/]+)\/acceptance$/,
         )
         if (acc) return proxyAcceptanceRollup(acc[1], env)
+
+        // Analytics rollups: when the operator narrows by `?kind=`, the
+        // D1 mirror can't satisfy the request — those tables are
+        // population-wide rollups (cost_by_model/agent, span_dist) and
+        // don't carry `created_by`. Forward to the kernel so the
+        // kind-filtered totals from `analytics_kind_filter.rs` flow
+        // through. Without `?kind` (the default), fall through to the
+        // D1 path so the dashboard keeps working when the kernel is
+        // unreachable. See gctrl-analytics §M3 follow-up.
+        const isKindFilteredRollup =
+          (url.pathname === "/api/analytics" ||
+            url.pathname === "/api/analytics/cost" ||
+            url.pathname === "/api/analytics/spans") &&
+          (url.searchParams.get("kind") === "internal" ||
+            url.searchParams.get("kind") === "external" ||
+            url.searchParams.has("created_by"))
+        if (isKindFilteredRollup && env.KERNEL_URL) {
+          try {
+            return await proxyToKernel(request, env.KERNEL_URL, url)
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e)
+            return errorResponse(`Kernel unreachable: ${msg}`, 502)
+          }
+        }
       }
 
       const effect = matchRoute(request, url.pathname)

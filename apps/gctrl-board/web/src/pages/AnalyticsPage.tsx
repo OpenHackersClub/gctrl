@@ -3,6 +3,7 @@ import { api, type AnalyticsSyncStatus } from "@/api/client"
 import type {
   AnalyticsOverview,
   CostAnalytics,
+  ContributionRow,
   SessionSummary,
   SessionKind,
   TraceTreeNode,
@@ -49,13 +50,14 @@ interface AnalyticsPageProps {
   navigate: (path: string) => void
 }
 
-const TABS = ["overview", "sessions", "usage", "evals"] as const
+const TABS = ["overview", "sessions", "usage", "evals", "contributions"] as const
 
 const TAB_PATH: Record<(typeof TABS)[number], string> = {
   overview: "/analytics/overview",
   sessions: "/analytics/sessions",
   usage: "/analytics/usage",
   evals: "/analytics/evals",
+  contributions: "/analytics/contributions",
 }
 
 export function AnalyticsPage({ route, navigate }: AnalyticsPageProps) {
@@ -82,6 +84,7 @@ export function AnalyticsPage({ route, navigate }: AnalyticsPageProps) {
               <TabsTrigger value="sessions">Sessions</TabsTrigger>
               <TabsTrigger value="usage">Usage</TabsTrigger>
               <TabsTrigger value="evals">Evals</TabsTrigger>
+              <TabsTrigger value="contributions">Contributions</TabsTrigger>
             </TabsList>
           </Tabs>
           <KindFilter kind={kind} onChange={setKind} />
@@ -113,6 +116,7 @@ export function AnalyticsPage({ route, navigate }: AnalyticsPageProps) {
           )}
           {route.tab === "usage" && <UsageTab kind={kind} />}
           {route.tab === "evals" && <EvalsTab />}
+          {route.tab === "contributions" && <ContributionsTab kind={kind} />}
         </div>
       </div>
     </TooltipProvider>
@@ -1364,6 +1368,168 @@ function ScoreKpi({
         </div>
       </CardContent>
     </Card>
+  )
+}
+
+// ───────────────────────── Contributions ─────────────────────────
+
+// Until the kernel exposes a workspace→repo mapping, the operator
+// configures it locally. Most of the dogfooding happens against the
+// gctrl repo itself, so default to that. Stored under localStorage so
+// the choice survives reloads without bloating the URL.
+const CONTRIB_REPO_KEY = "gctrl.analytics.contribRepo"
+const DEFAULT_CONTRIB_REPO = "OpenHackersClub/gctrl"
+
+function ContributionsTab({ kind }: { kind: SessionKind }) {
+  const [repo, setRepo] = useState<string>(
+    () =>
+      (typeof window !== "undefined" &&
+        window.localStorage.getItem(CONTRIB_REPO_KEY)) ||
+      DEFAULT_CONTRIB_REPO,
+  )
+  const [rows, setRows] = useState<ContributionRow[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await api.contributions.list({ repo, kind, limit: 30 })
+      setRows(res.contributions)
+      setError(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      setRows(null)
+    } finally {
+      setLoading(false)
+    }
+  }, [repo, kind])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  return (
+    <div className="p-6 space-y-6">
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between gap-4">
+          <div>
+            <CardTitle>Contributions</CardTitle>
+            <span className="text-[11px] font-mono text-muted-foreground/70">
+              PRs joined to sessions via{" "}
+              <code className="text-foreground">Session-Id:</code> commit
+              trailers — see analytics spec §M5
+            </span>
+          </div>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              window.localStorage.setItem(CONTRIB_REPO_KEY, repo)
+              refresh()
+            }}
+            className="flex items-center gap-2"
+          >
+            <input
+              value={repo}
+              onChange={(e) => setRepo(e.target.value)}
+              placeholder="owner/repo"
+              className="bg-background border border-input px-3 py-1.5 text-[13px] font-mono text-foreground w-56
+                focus:outline-none focus:border-ring"
+            />
+            <Button type="submit" size="sm" disabled={!repo.trim() || loading}>
+              {loading ? "Loading…" : "Refresh"}
+            </Button>
+          </form>
+        </CardHeader>
+
+        {error && (
+          <CardContent className="text-rose-400 font-mono text-sm">
+            Failed to load: {error}
+            <div className="mt-1 text-muted-foreground/70 text-[11px]">
+              The kernel shells out to <code>gh pr list</code> for this route — make sure{" "}
+              <code>gh auth status</code> is OK on the kernel host.
+            </div>
+          </CardContent>
+        )}
+
+        {!error && rows && rows.length === 0 && (
+          <EmptyRow
+            text={
+              kind === "all"
+                ? `No PRs found in ${repo}.`
+                : `No PRs in ${repo} match kind=${kind}. Unattributed PRs are dropped when a kind filter is active — switch back to "all" to see them.`
+            }
+          />
+        )}
+
+        {rows && rows.length > 0 && (
+          <SimpleTable
+            columns={["", "PR", "Title", "Author", "Session", "State"]}
+            aligns={["left", "right", "left", "left", "left", "left"]}
+            rows={rows.map((r) => ({
+              key: `${r.type}-${r.number}`,
+              cells: [
+                <ContribTypeBadge type={r.type} />,
+                <a
+                  href={r.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-primary hover:underline tabular-nums"
+                >
+                  #{r.number}
+                </a>,
+                <span className="text-zinc-200 truncate">{r.title}</span>,
+                <span className="text-zinc-400 text-[12px]">{r.author}</span>,
+                <ContribSessionCell row={r} />,
+                <ContribStateBadge state={r.state} />,
+              ],
+            }))}
+          />
+        )}
+      </Card>
+
+      <div className="text-[11px] font-mono text-zinc-600 px-1">
+        Initial cut surfaces PRs only. <code>gh search commits</code> +
+        closed-issues join land in a follow-up; missing trailers are
+        kept as <span className="text-zinc-400">unattributed</span>{" "}
+        rows per spec §4 (loss-tolerant inference).
+      </div>
+    </div>
+  )
+}
+
+function ContribTypeBadge({ type }: { type: "pr" | "commit" }) {
+  return type === "pr" ? (
+    <Badge variant="muted">pr</Badge>
+  ) : (
+    <Badge variant="muted">commit</Badge>
+  )
+}
+
+function ContribStateBadge({ state }: { state: string }) {
+  const upper = state?.toUpperCase()
+  if (upper === "MERGED") return <Badge variant="success">merged</Badge>
+  if (upper === "CLOSED") return <Badge variant="muted">closed</Badge>
+  if (upper === "OPEN") return <Badge variant="success" dot>open</Badge>
+  return <Badge variant="muted">{state || "—"}</Badge>
+}
+
+function ContribSessionCell({ row }: { row: ContributionRow }) {
+  if (!row.session_id) {
+    return (
+      <span className="text-muted-foreground/60 text-[12px] italic">
+        unattributed
+      </span>
+    )
+  }
+  return (
+    <a
+      href={`/analytics/sessions/${row.session_id}`}
+      className="text-primary hover:underline text-[12px] font-mono"
+      title={`agent ${row.session_agent ?? "?"}, kind ${row.created_by ?? "?"}`}
+    >
+      {row.session_agent ?? row.session_id.slice(0, 8)}
+    </a>
   )
 }
 
