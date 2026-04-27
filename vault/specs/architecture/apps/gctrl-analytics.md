@@ -102,14 +102,9 @@ Light-weight routes backing the Prompts tab:
 - `GET /api/sessions/{id}/prompts` — ordered list of prompt turns for a session.
 - `GET /api/prompts?group_by=fingerprint&since=...` — prompt instances grouped by normalized-text hash, with counts, avg cost, and linked sessions.
 
-**Storage is not free today.** `SpanType` in `kernel/crates/gctrl-core/src/types.rs:135` is `Generation | Span | Event` — there is no `prompt` / `user_turn` variant, so a prompts tab cannot be "a query over existing spans." M3 must choose one of:
+**Storage is not free today.** `SpanType` in `kernel/crates/gctrl-core/src/types.rs:191` is `Generation | Span | Event` — there is no `prompt` / `user_turn` variant, so a prompts tab cannot be "a query over existing spans." Decision: **a dedicated `prompts` table keyed by `(session_id, turn_ordinal)`** — see [ADR: Prompts live in a dedicated table](./adr-prompts-storage.md). The OTLP ingest path fans out from `Generation` spans carrying `gen_ai.prompt.*` / `gen_ai.completion.*` attributes into per-turn `prompts` rows with an indexed `fingerprint`, so fingerprint group-bys for the Prompts tab and content joins for eval rules both run on a B-tree index, not JSON scans.
 
-1. **Extend `SpanType`** with `UserTurn` and `AssistantTurn` (or a single `Turn` + role attr), and emit them from the OTLP ingest path. Cheapest option, keeps everything in the span table; cost is a migration + every ingest path learning the new variants.
-2. **Add a dedicated `prompts` table** keyed by `(session_id, turn_ordinal)` with `role`, `text`, `fingerprint`, `tokens_in`, `tokens_out`, `cost_usd`, `span_id` (link). Cleanest schema for the Prompts tab, but a new table to sync.
-
-Leaning toward (1) unless eval tooling needs random-access joins on prompt text that the span table can't give cheaply. Decide in the M3 ADR; do **not** ship the Prompts tab before this lands.
-
-Route shapes stay the same under either option — the Prompts UI binds to the route, not the table.
+Route shapes (`/api/sessions/{id}/prompts`, `/api/prompts?group_by=fingerprint&since=...`) bind to the table chosen in the ADR.
 
 ### 4. `GET /api/contributions` (inference-first)
 
@@ -285,11 +280,11 @@ Each milestone lists one falsifiable acceptance criterion per shipped tab; it's 
 2. **M1 — Usage + Evals**: Usage tab (providers, tools, performance — no network sub-panel yet), Evals tab (scores, alerts). Zero new kernel work.
    - *Accept Usage*: provider spend on the Usage tab over any window matches `gctrl analytics cost --since <window>` to the cent.
    - *Accept Evals*: every alert rule that's `firing` in `gctrl analytics alerts` appears as `firing` on the Evals tab within one refresh.
-3. **M2 — Prompts + Activity views**: split for delivery — Activity views (M2a) ship as pure-UI without kernel work; Prompts (M2b) remain blocked on the kernel ADR (extended `SpanType` variants **or** a `prompts` table — decide in the M2 ADR).
+3. **M2 — Prompts + Activity views**: split for delivery — Activity views (M2a) ship as pure-UI without kernel work; Prompts (M2b) needs kernel storage work (the M2 ADR has now landed; see [adr-prompts-storage.md](./adr-prompts-storage.md)).
    - **M2a — Sessions Activity views** *(shipped)*: Timeline and Heatmap view modes on the Sessions tab. View-mode is local component state in `SessionsTab`; the underlying `sessions` query is shared across List/Timeline/Heatmap.
      - Timeline: lanes per `agent_name`, bars per session, colored by status; live sessions pulse; tooltip shows time range and cost; click drills into the detail pane.
      - Heatmap: agent × hour-of-day grid with a `count`/`cost` toggle; quantized 5-bucket emerald scale so adjacent intensities are eye-readable; click drills into the first session in the cell.
-   - **M2b — Prompts tab** *(blocked on M2 ADR)*: not yet shipped.
+   - **M2b — Prompts tab** *(unblocked, not yet shipped)*: ADR resolved in favour of a dedicated `prompts` table keyed by `(session_id, turn_ordinal)` with indexed `fingerprint` (see ADR for rationale). Implementation lands as: kernel storage migration + ingest fan-out → `/api/sessions/{id}/prompts` + `/api/prompts?group_by=fingerprint` → seventh Analytics tab.
    - *Accept M2a (Sessions views)*: switching list → timeline → heatmap does not re-fetch — same query, three renderings — verified by watching the Network tab. **Verified.**
    - *Accept M2b (Prompts)*: grouping by fingerprint over a known test corpus produces the same group counts as the kernel query used to back the route (diff the JSON, expect zero rows).
 4. **M3 — Attribution** *(shipped, including kind-aware rollups)*:
@@ -329,4 +324,4 @@ Out of scope for the initial build. Noted here so the Sessions model is not pain
 3. Chart library: `recharts` (friendly, battery-included) vs. `visx` (more control, more code). Defer until we know what charts M1 actually needs.
 4. Is Agent Activity as a view-mode on Sessions sufficient, or do operators expect it as a top-level tab? Easy to promote later if the toggle proves too buried. (Codify the decision in the "Session is the spine" ADR landing with M0.)
 5. Should Prompts and Evals be merged into one "Quality" tab? Kept separate because the entities (prompt template vs. eval rule) and the operator tasks (authoring vs. regression monitoring) differ — revisit after M2.
-6. M2 Prompts storage: extend `SpanType` with `UserTurn` / `AssistantTurn` (option A) vs. dedicated `prompts` table (option B). Decide in the M2 ADR — the trigger for (B) is random-access joins on prompt text that the span table can't serve cheaply.
+6. ~~M2 Prompts storage: extend `SpanType` with `UserTurn` / `AssistantTurn` (option A) vs. dedicated `prompts` table (option B).~~ **Resolved** — option B (dedicated table). See [adr-prompts-storage.md](./adr-prompts-storage.md) for rationale: fingerprint-indexed group-bys for the Prompts tab + content joins for eval rules can't run cheaply against `json_extract(spans.attributes, ...)`.
