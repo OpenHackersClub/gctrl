@@ -1380,6 +1380,8 @@ function ScoreKpi({
 const CONTRIB_REPO_KEY = "gctrl.analytics.contribRepo"
 const DEFAULT_CONTRIB_REPO = "OpenHackersClub/gctrl"
 
+type ContribSince = "all" | "7d" | "30d" | "90d"
+
 function ContributionsTab({ kind }: { kind: SessionKind }) {
   const [repo, setRepo] = useState<string>(
     () =>
@@ -1387,6 +1389,7 @@ function ContributionsTab({ kind }: { kind: SessionKind }) {
         window.localStorage.getItem(CONTRIB_REPO_KEY)) ||
       DEFAULT_CONTRIB_REPO,
   )
+  const [since, setSince] = useState<ContribSince>("30d")
   const [rows, setRows] = useState<ContributionRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -1394,7 +1397,12 @@ function ContributionsTab({ kind }: { kind: SessionKind }) {
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await api.contributions.list({ repo, kind, limit: 30 })
+      const res = await api.contributions.list({
+        repo,
+        kind,
+        limit: 30,
+        since: since === "all" ? undefined : since,
+      })
       setRows(res.contributions)
       setError(null)
     } catch (e) {
@@ -1403,7 +1411,7 @@ function ContributionsTab({ kind }: { kind: SessionKind }) {
     } finally {
       setLoading(false)
     }
-  }, [repo, kind])
+  }, [repo, kind, since])
 
   useEffect(() => {
     refresh()
@@ -1429,6 +1437,18 @@ function ContributionsTab({ kind }: { kind: SessionKind }) {
             }}
             className="flex items-center gap-2"
           >
+            <ToggleGroup
+              type="single"
+              value={since}
+              onValueChange={(v) => {
+                if (v) setSince(v as ContribSince)
+              }}
+            >
+              <ToggleGroupItem value="7d">7d</ToggleGroupItem>
+              <ToggleGroupItem value="30d">30d</ToggleGroupItem>
+              <ToggleGroupItem value="90d">90d</ToggleGroupItem>
+              <ToggleGroupItem value="all">all</ToggleGroupItem>
+            </ToggleGroup>
             <input
               value={repo}
               onChange={(e) => setRepo(e.target.value)}

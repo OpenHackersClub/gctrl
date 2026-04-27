@@ -301,10 +301,18 @@ export const api = {
      *  drops rows whose joined session falls outside the population —
      *  unattributed rows are kept iff `kind` is `all`/undefined. See
      *  analytics spec M5. */
-    list: (params: { repo: string; kind?: SessionKind; limit?: number }) => {
+    list: (params: {
+      repo: string
+      kind?: SessionKind
+      limit?: number
+      /** `7d` / `30d` / `90d` / `YYYY-MM-DD` — kernel resolves both shapes
+       *  (see receiver.rs::resolve_since). Empty / undefined ⇒ no filter. */
+      since?: string
+    }) => {
       const qs = new URLSearchParams({ repo: params.repo })
       if (params.kind && params.kind !== "all") qs.set("kind", params.kind)
       if (params.limit !== undefined) qs.set("limit", String(params.limit))
+      if (params.since) qs.set("since", params.since)
       return request<ContributionsResponse>(`/api/contributions?${qs.toString()}`)
     },
   },
