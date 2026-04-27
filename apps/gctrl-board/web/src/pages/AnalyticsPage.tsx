@@ -1464,20 +1464,16 @@ function ContributionsTab({ kind }: { kind: SessionKind }) {
 
         {rows && rows.length > 0 && (
           <SimpleTable
-            columns={["", "PR", "Title", "Author", "Session", "State"]}
-            aligns={["left", "right", "left", "left", "left", "left"]}
+            columns={["", "Ref", "Title", "Author", "Session", "State"]}
+            aligns={["left", "left", "left", "left", "left", "left"]}
             rows={rows.map((r) => ({
-              key: `${r.type}-${r.number}`,
+              // Commits are SHA-keyed (number=0); PRs are number-keyed.
+              // Both have `url`, which is unique per row, so use it as
+              // the React key to avoid commit/PR collision.
+              key: r.url,
               cells: [
                 <ContribTypeBadge type={r.type} />,
-                <a
-                  href={r.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-primary hover:underline tabular-nums"
-                >
-                  #{r.number}
-                </a>,
+                <ContribRefCell row={r} />,
                 <span className="text-zinc-200 truncate">{r.title}</span>,
                 <span className="text-zinc-400 text-[12px]">{r.author}</span>,
                 <ContribSessionCell row={r} />,
@@ -1489,10 +1485,13 @@ function ContributionsTab({ kind }: { kind: SessionKind }) {
       </Card>
 
       <div className="text-[11px] font-mono text-zinc-600 px-1">
-        Initial cut surfaces PRs only. <code>gh search commits</code> +
-        closed-issues join land in a follow-up; missing trailers are
-        kept as <span className="text-zinc-400">unattributed</span>{" "}
-        rows per spec §4 (loss-tolerant inference).
+        PRs ({" "}
+        <code className="text-zinc-500">gh pr list</code>) and commits ({" "}
+        <code className="text-zinc-500">gh api repos/&hellip;/commits</code>)
+        merged by date. Closed-issues join lands in a follow-up; missing
+        trailers are kept as{" "}
+        <span className="text-zinc-400">unattributed</span> rows per
+        spec §4 (loss-tolerant inference).
       </div>
     </div>
   )
@@ -1503,6 +1502,21 @@ function ContribTypeBadge({ type }: { type: "pr" | "commit" }) {
     <Badge variant="muted">pr</Badge>
   ) : (
     <Badge variant="muted">commit</Badge>
+  )
+}
+
+function ContribRefCell({ row }: { row: ContributionRow }) {
+  // PRs get a `#42` link; commits get a 7-char SHA link.
+  const label = row.type === "pr" ? `#${row.number}` : (row.sha ?? "").slice(0, 7)
+  return (
+    <a
+      href={row.url}
+      target="_blank"
+      rel="noreferrer"
+      className="text-primary hover:underline font-mono text-[12px]"
+    >
+      {label}
+    </a>
   )
 }
 
