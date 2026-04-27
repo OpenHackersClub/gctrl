@@ -2,7 +2,12 @@ import { useState, useCallback, useEffect } from "react"
 
 export type BoardView = "kanban" | "gantt"
 
-export type AnalyticsTab = "overview" | "sessions" | "usage" | "evals"
+export type AnalyticsTab =
+  | "overview"
+  | "sessions"
+  | "usage"
+  | "evals"
+  | "contributions"
 
 export type Route =
   | { page: "board"; projectKey: string | null; view: BoardView }
@@ -17,7 +22,9 @@ function parseRoute(pathname: string): Route {
   }
 
   // /analytics/:tab
-  const analyticsTab = pathname.match(/^\/analytics\/(overview|sessions|usage|evals)\/?$/)
+  const analyticsTab = pathname.match(
+    /^\/analytics\/(overview|sessions|usage|evals|contributions)\/?$/,
+  )
   if (analyticsTab) {
     return { page: "analytics", tab: analyticsTab[1] as AnalyticsTab, sessionId: null }
   }

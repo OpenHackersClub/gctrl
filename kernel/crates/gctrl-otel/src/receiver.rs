@@ -133,6 +133,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/analytics/score", post(create_score))
         .route("/api/analytics/tag", post(create_tag))
         .route("/api/analytics/alerts", get(list_alerts))
+        .route("/api/contributions", get(list_contributions))
         // Trace tree (Langfuse-style)
         .route("/api/sessions/{session_id}/tree", get(get_trace_tree))
         // SSE live streams — global + per-session (gctrl-analytics §5)
@@ -2291,6 +2292,297 @@ async fn gh_get_run(Path(run_id): Path<u64>, Query(q): Query<GhRepoQuery>) -> im
         }
         Err((status, msg)) => (status, msg).into_response(),
     }
+}
+
+// --- Contributions: trailer-inferred join from gh artifacts → kernel sessions ---
+//
+// Spec: vault/specs/architecture/apps/gctrl-analytics.md Kernel Deps §4
+// + Milestone M5. Inference-first: agents append `Session-Id: <uuid>`
+// trailers; this route extracts them at query time and joins to local
+// sessions. Missing trailer = "unattributed" row, still shown.
+
+#[derive(Deserialize)]
+struct ContributionsQuery {
+    repo: String,
+    /// Per-source row cap (PRs and commits each pull up to `limit`).
+    #[serde(default = "default_contributions_limit")]
+    limit: usize,
+    /// Optional time floor as `YYYY-MM-DD` *or* a relative shorthand
+    /// `7d`, `30d`, `90d`. Relative values are resolved server-side
+    /// against `Utc::now()` so cached responses stay coherent. Empty
+    /// or omitted ⇒ no time filter (today's `gh pr list` default).
+    #[serde(default)]
+    since: Option<String>,
+    /// Filter joined sessions by `?kind=internal|external` *or*
+    /// `?created_by=...`, mirroring the analytics rollup vocabulary.
+    /// Rows whose joined session falls outside the filter are dropped;
+    /// rows with no joined session are kept iff `kind` is unset
+    /// (otherwise the operator asked for a known population).
+    #[serde(default)]
+    created_by: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+}
+
+fn default_contributions_limit() -> usize {
+    20
+}
+
+/// Resolve `?since=` into an ISO-8601 date string (`YYYY-MM-DD`)
+/// suitable for both `gh pr list --search created:>=...` and the
+/// commits API's `since=...` param. Returns `None` for empty / invalid
+/// input rather than 400ing — the route is read-only and a malformed
+/// `since` is recoverable by simply ignoring it.
+pub(crate) fn resolve_since(raw: &str, now: chrono::DateTime<chrono::Utc>) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Relative shorthand: `7d`, `30d`, `90d`, etc.
+    if let Some(days_str) = trimmed.strip_suffix('d') {
+        if let Ok(days) = days_str.parse::<i64>() {
+            if days > 0 {
+                let cutoff = now - chrono::Duration::days(days);
+                return Some(cutoff.format("%Y-%m-%d").to_string());
+            }
+        }
+        return None;
+    }
+    // Absolute: accept `YYYY-MM-DD` exactly. We deliberately don't try
+    // to parse arbitrary ISO timestamps — any time-of-day precision is
+    // lost when GitHub's `created:>=` operator only honours the date.
+    if chrono::NaiveDate::parse_from_str(trimmed, "%Y-%m-%d").is_ok() {
+        return Some(trimmed.to_string());
+    }
+    None
+}
+
+async fn list_contributions(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ContributionsQuery>,
+) -> impl IntoResponse {
+    let limit_str = params.limit.to_string();
+    let prov_filter =
+        parse_created_by_filter(params.created_by.as_deref(), params.kind.as_deref());
+    let store = state.store.clone();
+
+    let since_iso = params
+        .since
+        .as_deref()
+        .and_then(|s| resolve_since(s, chrono::Utc::now()));
+
+    // PRs — `gh pr list` returns body so we scan trailers without a
+    // second `gh pr view` per row. When `since` is present, narrow
+    // via GitHub's search syntax — `created:>=YYYY-MM-DD`.
+    let mut pr_args: Vec<String> = vec![
+        "pr".into(),
+        "list".into(),
+        "--repo".into(),
+        params.repo.clone(),
+        "--limit".into(),
+        limit_str.clone(),
+        "--state".into(),
+        "all".into(),
+        "--json".into(),
+        "number,title,body,author,headRefName,url,state,mergedAt,createdAt".into(),
+    ];
+    if let Some(since) = since_iso.as_deref() {
+        pr_args.push("--search".into());
+        pr_args.push(format!("created:>={since}"));
+    }
+    let pr_arg_refs: Vec<&str> = pr_args.iter().map(|s| s.as_str()).collect();
+    let pr_raw = match gh_exec(&pr_arg_refs).await {
+        Ok(v) => v,
+        Err((status, msg)) => return (status, msg).into_response(),
+    };
+
+    // Commits — `gh api repos/{repo}/commits` returns the full message
+    // body so trailers from squash-merged commits surface even when the
+    // PR body itself was empty. `gh search commits` would also work but
+    // requires a non-empty query, so the per-repo listing is simpler.
+    // GitHub's commits API takes `since=YYYY-MM-DDTHH:MM:SSZ` natively;
+    // we pad the resolved date with `T00:00:00Z`.
+    let mut commit_path = format!("repos/{}/commits?per_page={}", params.repo, params.limit);
+    if let Some(since) = since_iso.as_deref() {
+        commit_path.push_str(&format!("&since={since}T00:00:00Z"));
+    }
+    let commit_raw = match gh_exec(&["api", &commit_path]).await {
+        Ok(v) => v,
+        Err((status, msg)) => return (status, msg).into_response(),
+    };
+
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    for pr in pr_raw.as_array().cloned().unwrap_or_default() {
+        let row = build_contribution_row(&pr, |sid| {
+            store
+                .get_session(&gctrl_core::SessionId(sid.into()))
+                .ok()
+                .flatten()
+        });
+        if contribution_passes_filter(&row, prov_filter.as_deref()) {
+            rows.push(row);
+        }
+    }
+    for c in commit_raw.as_array().cloned().unwrap_or_default() {
+        let row = build_commit_row(&c, |sid| {
+            store
+                .get_session(&gctrl_core::SessionId(sid.into()))
+                .ok()
+                .flatten()
+        });
+        if contribution_passes_filter(&row, prov_filter.as_deref()) {
+            rows.push(row);
+        }
+    }
+
+    // Sort merged list by created_at desc — null timestamps sort last
+    // (treat as oldest) so dated rows always land first.
+    rows.sort_by(|a, b| {
+        let ka = a.get("created_at").and_then(|v| v.as_str()).unwrap_or("");
+        let kb = b.get("created_at").and_then(|v| v.as_str()).unwrap_or("");
+        kb.cmp(ka)
+    });
+
+    Json(serde_json::json!({ "contributions": rows })).into_response()
+}
+
+/// Join a single PR-shaped JSON value to a local session via the
+/// `Session-Id:` trailer in its body. Returns the contribution row in
+/// the wire shape the UI consumes.
+///
+/// Pure of storage: takes a `lookup_session` closure so tests don't
+/// need a router or DuckDB instance — just a `HashMap` shim.
+pub(crate) fn build_contribution_row<F>(
+    pr: &serde_json::Value,
+    lookup_session: F,
+) -> serde_json::Value
+where
+    F: FnOnce(&str) -> Option<gctrl_core::Session>,
+{
+    let body = pr.get("body").and_then(|b| b.as_str()).unwrap_or("");
+    let session_id = crate::contributions::parse_session_trailer(body);
+
+    // Look up the session — we want both the `created_by` (for the
+    // kind filter) and `agent_name` (for the row label).
+    let session_meta = session_id.as_deref().and_then(lookup_session);
+
+    let author = pr
+        .get("author")
+        .and_then(|a| a.get("login"))
+        .and_then(|l| l.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    serde_json::json!({
+        "type": "pr",
+        "number": pr.get("number").cloned().unwrap_or(serde_json::Value::Null),
+        "title": pr.get("title").cloned().unwrap_or(serde_json::Value::Null),
+        "url": pr.get("url").cloned().unwrap_or(serde_json::Value::Null),
+        "state": pr.get("state").cloned().unwrap_or(serde_json::Value::Null),
+        "merged_at": pr.get("mergedAt").cloned().unwrap_or(serde_json::Value::Null),
+        "created_at": pr.get("createdAt").cloned().unwrap_or(serde_json::Value::Null),
+        "branch": pr.get("headRefName").cloned().unwrap_or(serde_json::Value::Null),
+        "author": author,
+        "session_id": session_id,
+        "session_agent": session_meta.as_ref().map(|s| s.agent_name.clone()),
+        "created_by": session_meta.as_ref().map(|s| s.created_by.as_str()),
+    })
+}
+
+/// Same shape as `build_contribution_row`, but for raw GitHub API
+/// commit JSON (`gh api repos/{owner}/{repo}/commits`). Commits don't
+/// carry a `state`; they're always landed, so we synthesize
+/// `state="merged"` so the UI's state badge stays consistent.
+///
+/// `number` is set to `0` because commits are referenced by SHA, not
+/// number — the UI displays `sha[..7]` instead. We keep `number: 0`
+/// rather than `null` so the UI renderer doesn't have to special-case
+/// missing integer keys.
+pub(crate) fn build_commit_row<F>(
+    commit: &serde_json::Value,
+    lookup_session: F,
+) -> serde_json::Value
+where
+    F: FnOnce(&str) -> Option<gctrl_core::Session>,
+{
+    let message = commit
+        .get("commit")
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.as_str())
+        .unwrap_or("");
+    let session_id = crate::contributions::parse_session_trailer(message);
+    let session_meta = session_id.as_deref().and_then(lookup_session);
+
+    // Subject line = first non-empty line of the commit message.
+    let title = message
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .to_string();
+    let sha = commit
+        .get("sha")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+    let author = commit
+        .get("commit")
+        .and_then(|c| c.get("author"))
+        .and_then(|a| a.get("name"))
+        .and_then(|n| n.as_str())
+        .or_else(|| {
+            commit
+                .get("author")
+                .and_then(|a| a.get("login"))
+                .and_then(|l| l.as_str())
+        })
+        .unwrap_or("")
+        .to_string();
+    let created_at = commit
+        .get("commit")
+        .and_then(|c| c.get("author"))
+        .and_then(|a| a.get("date"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let url = commit
+        .get("html_url")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
+    serde_json::json!({
+        "type": "commit",
+        "number": 0,
+        "sha": sha,
+        "title": title,
+        "url": url,
+        "state": "merged",
+        "merged_at": created_at,
+        "created_at": created_at,
+        "branch": serde_json::Value::Null,
+        "author": author,
+        "session_id": session_id,
+        "session_agent": session_meta.as_ref().map(|s| s.agent_name.clone()),
+        "created_by": session_meta.as_ref().map(|s| s.created_by.as_str()),
+    })
+}
+
+/// Apply the `kind`/`created_by` filter to a contribution row. When
+/// the filter is absent every row passes; when present, rows without a
+/// joined session are dropped (the operator narrowed to a known
+/// population, so unattributed rows would mislead the totals).
+pub(crate) fn contribution_passes_filter(
+    row: &serde_json::Value,
+    prov_filter: Option<&[gctrl_core::CreatedBy]>,
+) -> bool {
+    let Some(filter) = prov_filter else {
+        return true;
+    };
+    let Some(created_by_str) = row.get("created_by").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    let Some(prov) = gctrl_core::CreatedBy::from_str(created_by_str) else {
+        return false;
+    };
+    filter.contains(&prov)
 }
 
 /// Normalize `gh issue list` JSON: flatten author.login, labels[].name
@@ -4753,5 +5045,187 @@ Getting User settings...
             "unexpected status {}",
             resp.status()
         );
+    }
+
+    // --- Contributions inference (M5, gctrl-analytics §4) ---
+
+    fn fixture_session(id: &str, prov: gctrl_core::CreatedBy) -> gctrl_core::Session {
+        gctrl_core::Session {
+            id: gctrl_core::SessionId(id.into()),
+            workspace_id: gctrl_core::WorkspaceId("ws".into()),
+            device_id: gctrl_core::DeviceId("dev".into()),
+            agent_name: "claude-code".into(),
+            started_at: chrono::Utc::now(),
+            ended_at: None,
+            status: gctrl_core::SessionStatus::Active,
+            total_cost_usd: 0.0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            created_by: prov,
+        }
+    }
+
+    #[test]
+    fn contribution_row_joins_trailer_to_session() {
+        let sid = "11111111-2222-3333-4444-555555555555";
+        let pr = serde_json::json!({
+            "number": 42,
+            "title": "feat: thing",
+            "body": format!("subject\n\nbody\n\nSession-Id: {sid}\n"),
+            "author": {"login": "bot"},
+            "state": "MERGED",
+            "url": "https://example.com/pulls/42",
+            "headRefName": "feat/x",
+            "mergedAt": "2026-04-27T00:00:00Z",
+            "createdAt": "2026-04-26T00:00:00Z",
+        });
+        let row = build_contribution_row(&pr, |id| {
+            (id == sid).then(|| fixture_session(sid, gctrl_core::CreatedBy::Api))
+        });
+        assert_eq!(row["session_id"], serde_json::json!(sid));
+        assert_eq!(row["session_agent"], serde_json::json!("claude-code"));
+        assert_eq!(row["created_by"], serde_json::json!("api"));
+        assert_eq!(row["author"], serde_json::json!("bot"));
+        assert_eq!(row["type"], serde_json::json!("pr"));
+    }
+
+    #[test]
+    fn contribution_row_keeps_unattributed_rows() {
+        // Spec invariant: missing trailer = unattributed, still shown.
+        let pr = serde_json::json!({
+            "number": 1,
+            "title": "chore: untrailed",
+            "body": "no trailer here",
+            "author": {"login": "human"},
+            "state": "OPEN",
+            "url": "https://example.com/pulls/1",
+            "headRefName": "main",
+            "mergedAt": serde_json::Value::Null,
+            "createdAt": "2026-04-25T00:00:00Z",
+        });
+        let row = build_contribution_row(&pr, |_| None);
+        assert!(row["session_id"].is_null());
+        assert!(row["session_agent"].is_null());
+        assert!(row["created_by"].is_null());
+    }
+
+    #[test]
+    fn contribution_row_drops_session_meta_when_session_missing() {
+        // Trailer points at a session that no longer exists locally —
+        // we still surface the trailer's id so operators can debug,
+        // but session_meta is null.
+        let sid = "deadbeef-2222-3333-4444-555555555555";
+        let pr = serde_json::json!({
+            "number": 7,
+            "title": "feat: ghost",
+            "body": format!("Session-Id: {sid}\n"),
+            "author": {"login": "bot"},
+            "state": "OPEN",
+            "url": "https://example.com/pulls/7",
+            "headRefName": "x",
+            "mergedAt": serde_json::Value::Null,
+            "createdAt": "2026-04-25T00:00:00Z",
+        });
+        let row = build_contribution_row(&pr, |_| None);
+        assert_eq!(row["session_id"], serde_json::json!(sid));
+        assert!(row["session_agent"].is_null());
+        assert!(row["created_by"].is_null());
+    }
+
+    #[test]
+    fn filter_drops_unattributed_when_kind_set() {
+        let row = serde_json::json!({"created_by": serde_json::Value::Null});
+        let filter: &[gctrl_core::CreatedBy] = &[gctrl_core::CreatedBy::OtelIngest];
+        assert!(!contribution_passes_filter(&row, Some(filter)));
+        // No filter ⇒ keep unattributed rows.
+        assert!(contribution_passes_filter(&row, None));
+    }
+
+    #[test]
+    fn filter_matches_internal_set() {
+        let row = serde_json::json!({"created_by": "api"});
+        let filter: &[gctrl_core::CreatedBy] =
+            &[gctrl_core::CreatedBy::Scheduler, gctrl_core::CreatedBy::Api];
+        assert!(contribution_passes_filter(&row, Some(filter)));
+
+        let row_otel = serde_json::json!({"created_by": "otel_ingest"});
+        assert!(!contribution_passes_filter(&row_otel, Some(filter)));
+    }
+
+    #[test]
+    fn commit_row_extracts_subject_and_trailer() {
+        let sid = "11111111-2222-3333-4444-555555555555";
+        let commit = serde_json::json!({
+            "sha": "abcdef1234567890",
+            "html_url": "https://github.com/o/r/commit/abcdef1",
+            "commit": {
+                "message": format!(
+                    "feat: add thing\n\nLong body explaining why.\n\nSession-Id: {sid}\n",
+                ),
+                "author": { "name": "Bot Bot", "date": "2026-04-26T12:00:00Z" }
+            },
+            "author": { "login": "bot-bot" }
+        });
+        let row = build_commit_row(&commit, |id| {
+            (id == sid).then(|| fixture_session(sid, gctrl_core::CreatedBy::Scheduler))
+        });
+        assert_eq!(row["type"], serde_json::json!("commit"));
+        assert_eq!(row["sha"], serde_json::json!("abcdef1234567890"));
+        assert_eq!(row["title"], serde_json::json!("feat: add thing"));
+        assert_eq!(row["author"], serde_json::json!("Bot Bot"));
+        assert_eq!(row["session_id"], serde_json::json!(sid));
+        assert_eq!(row["created_by"], serde_json::json!("scheduler"));
+        assert_eq!(row["state"], serde_json::json!("merged"));
+        assert_eq!(row["created_at"], serde_json::json!("2026-04-26T12:00:00Z"));
+    }
+
+    #[test]
+    fn resolve_since_handles_relative_days() {
+        use chrono::TimeZone;
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 4, 27, 12, 0, 0)
+            .unwrap();
+        assert_eq!(resolve_since("7d", now), Some("2026-04-20".into()));
+        assert_eq!(resolve_since("30d", now), Some("2026-03-28".into()));
+        assert_eq!(resolve_since("  90d  ", now), Some("2026-01-27".into()));
+    }
+
+    #[test]
+    fn resolve_since_handles_absolute_date() {
+        let now = chrono::Utc::now();
+        assert_eq!(
+            resolve_since("2026-04-01", now),
+            Some("2026-04-01".into()),
+        );
+    }
+
+    #[test]
+    fn resolve_since_returns_none_for_invalid_input() {
+        let now = chrono::Utc::now();
+        assert_eq!(resolve_since("", now), None);
+        assert_eq!(resolve_since("yesterday", now), None);
+        assert_eq!(resolve_since("0d", now), None); // zero days = no window
+        assert_eq!(resolve_since("-3d", now), None); // negative = invalid
+        assert_eq!(resolve_since("2026/04/01", now), None); // wrong separator
+    }
+
+    #[test]
+    fn commit_row_falls_back_to_author_login() {
+        // Commits authored via the GitHub web UI sometimes have a
+        // different `commit.author.name` ("GitHub") and a richer
+        // `author.login` — our fallback prefers commit.author.name
+        // when present, but uses author.login when name is missing.
+        let commit = serde_json::json!({
+            "sha": "deadbeef",
+            "html_url": "https://example.com/c/deadbeef",
+            "commit": {
+                "message": "subject\n\nbody\n",
+                "author": { "date": "2026-04-25T08:00:00Z" }
+            },
+            "author": { "login": "web-ui-user" }
+        });
+        let row = build_commit_row(&commit, |_| None);
+        assert_eq!(row["author"], serde_json::json!("web-ui-user"));
+        assert!(row["session_id"].is_null());
     }
 }

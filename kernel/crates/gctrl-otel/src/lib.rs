@@ -1,3 +1,4 @@
+pub mod contributions;
 pub mod event_bus;
 pub mod receiver;
 pub mod span_processor;
