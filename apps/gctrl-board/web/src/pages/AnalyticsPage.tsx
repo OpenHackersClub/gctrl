@@ -1269,7 +1269,7 @@ function NetworkSubPanel() {
                 <span className="text-zinc-400 truncate text-[12px]">
                   {pathOf(r.url)}
                 </span>,
-                <StatusBadge code={r.status_code} />,
+                <HttpStatusBadge code={r.status_code} />,
                 <span className="text-zinc-500 tabular-nums">
                   {r.duration_ms}ms
                 </span>,
@@ -1288,7 +1288,7 @@ function NetworkSubPanel() {
   )
 }
 
-function StatusBadge({ code }: { code: number }) {
+function HttpStatusBadge({ code }: { code: number }) {
   if (code >= 500) return <Badge variant="muted">{code}</Badge>
   if (code >= 400) return <Badge variant="muted">{code}</Badge>
   if (code >= 300) return <Badge variant="muted">{code}</Badge>
