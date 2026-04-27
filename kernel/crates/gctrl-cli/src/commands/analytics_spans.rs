@@ -3,7 +3,7 @@ use gctrl_storage::DuckDbStore;
 
 pub fn run(db_path: &str) -> Result<()> {
     let store = DuckDbStore::open(db_path)?;
-    let dist = store.get_span_type_distribution()?;
+    let dist = store.get_span_type_distribution(None)?;
 
     if dist.is_empty() {
         println!("No spans found.");

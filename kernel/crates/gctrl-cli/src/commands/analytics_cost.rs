@@ -4,8 +4,8 @@ use gctrl_storage::DuckDbStore;
 pub fn run(db_path: &str) -> Result<()> {
     let store = DuckDbStore::open(db_path)?;
 
-    let cost_by_model = store.get_cost_by_model()?;
-    let cost_by_agent = store.get_cost_by_agent()?;
+    let cost_by_model = store.get_cost_by_model(None)?;
+    let cost_by_agent = store.get_cost_by_agent(None)?;
 
     println!("=== Cost by Model ===");
     if cost_by_model.is_empty() {

@@ -652,31 +652,68 @@ async fn session_cost_breakdown(
     }
 }
 
-async fn get_analytics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.store.get_analytics() {
+/// Shared `?kind=` / `?created_by=` query params for the analytics
+/// rollup routes. Mirrors `ListParams` so the same provenance vocabulary
+/// works on `/api/sessions` and `/api/analytics/*`. See
+/// specs/architecture/apps/gctrl-analytics.md §1, M3 follow-up.
+#[derive(Deserialize, Default)]
+struct AnalyticsParams {
+    created_by: Option<String>,
+    kind: Option<String>,
+}
+
+async fn get_analytics(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<AnalyticsParams>,
+) -> impl IntoResponse {
+    let provenances =
+        parse_created_by_filter(params.created_by.as_deref(), params.kind.as_deref());
+    match state.store.get_analytics(provenances.as_deref()) {
         Ok(analytics) => Json(serde_json::to_value(&analytics).unwrap()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
-async fn analytics_cost(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let cost_by_model = state.store.get_cost_by_model().unwrap_or_default();
-    let cost_by_agent = state.store.get_cost_by_agent().unwrap_or_default();
+async fn analytics_cost(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<AnalyticsParams>,
+) -> impl IntoResponse {
+    let provenances =
+        parse_created_by_filter(params.created_by.as_deref(), params.kind.as_deref());
+    let prov_slice = provenances.as_deref();
+    let cost_by_model = state.store.get_cost_by_model(prov_slice).unwrap_or_default();
+    let cost_by_agent = state.store.get_cost_by_agent(prov_slice).unwrap_or_default();
     Json(serde_json::json!({
         "by_model": cost_by_model.iter().map(|(m, c, n)| serde_json::json!({"model": m, "cost": c, "calls": n})).collect::<Vec<_>>(),
         "by_agent": cost_by_agent.iter().map(|(a, c, n)| serde_json::json!({"agent": a, "cost": c, "sessions": n})).collect::<Vec<_>>(),
     })).into_response()
 }
 
-async fn analytics_latency(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let latencies = state.store.get_latency_by_model().unwrap_or_default();
+async fn analytics_latency(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<AnalyticsParams>,
+) -> impl IntoResponse {
+    let provenances =
+        parse_created_by_filter(params.created_by.as_deref(), params.kind.as_deref());
+    let latencies = state
+        .store
+        .get_latency_by_model(provenances.as_deref())
+        .unwrap_or_default();
     Json(serde_json::json!({
         "by_model": latencies.iter().map(|(m, p50, p95, p99)| serde_json::json!({"model": m, "p50_ms": p50, "p95_ms": p95, "p99_ms": p99})).collect::<Vec<_>>(),
     })).into_response()
 }
 
-async fn analytics_spans(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let dist = state.store.get_span_type_distribution().unwrap_or_default();
+async fn analytics_spans(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<AnalyticsParams>,
+) -> impl IntoResponse {
+    let provenances =
+        parse_created_by_filter(params.created_by.as_deref(), params.kind.as_deref());
+    let dist = state
+        .store
+        .get_span_type_distribution(provenances.as_deref())
+        .unwrap_or_default();
     Json(serde_json::json!({
         "distribution": dist.iter().map(|(t, c, p)| serde_json::json!({"type": t, "count": c, "percentage": p})).collect::<Vec<_>>(),
     })).into_response()

@@ -111,7 +111,7 @@ export function AnalyticsPage({ route, navigate }: AnalyticsPageProps) {
               kind={kind}
             />
           )}
-          {route.tab === "usage" && <UsageTab />}
+          {route.tab === "usage" && <UsageTab kind={kind} />}
           {route.tab === "evals" && <EvalsTab />}
         </div>
       </div>
@@ -163,16 +163,15 @@ function OverviewTab({ kind }: { kind: SessionKind }) {
   const [error, setError] = useState<string | null>(null)
   const [syncStatus, setSyncStatus] = useState<AnalyticsSyncStatus | null>(null)
 
-  // Live count respects the kind filter — operators expect "live
-  // sessions now" to track the same population as the rest of the page.
-  // The cost/overview aggregates are not yet kind-filtered server-side
-  // (kernel's /api/analytics rollup is still population-wide); call
-  // that out in the KPI label rather than silently fudging.
+  // Live count + the rollup KPIs all respect the kind filter — kernel
+  // /api/analytics and /api/analytics/cost accept `?kind=` since the M3
+  // follow-up shipped, so the page no longer mixes filtered and
+  // population-wide totals on the same row.
   const refresh = useCallback(async () => {
     try {
       const [o, c, live, sync] = await Promise.all([
-        api.analytics.overview(),
-        api.analytics.cost(),
+        api.analytics.overview(kind),
+        api.analytics.cost(kind),
         // Kernel's /api/analytics rollup has no active_sessions field;
         // count from sessions.list?status=active instead.
         api.sessions.list({ status: "active", limit: 200, kind }),
@@ -279,12 +278,9 @@ function OverviewTab({ kind }: { kind: SessionKind }) {
     return <div className="p-8 text-zinc-500 font-mono text-sm">Loading…</div>
   }
 
-  // Live KPI follows the kind filter; the rollup KPIs are still
-  // population-wide because the kernel's /api/analytics endpoint
-  // doesn't accept a kind param yet. Annotate them so operators know.
-  const liveLabel =
-    kind === "all" ? "Live sessions" : `Live (${kind})`
-  const rollupSuffix = kind === "all" ? "" : " · all kinds"
+  // Every KPI now reflects the active kind filter — no more split label.
+  const kindSuffix = kind === "all" ? "" : ` (${kind})`
+  const liveLabel = kind === "all" ? "Live sessions" : `Live (${kind})`
 
   return (
     <div className="p-6 space-y-6">
@@ -292,12 +288,15 @@ function OverviewTab({ kind }: { kind: SessionKind }) {
       <div className="grid grid-cols-4 gap-4">
         <Kpi label={liveLabel} value={liveCount ?? "—"} accent />
         <Kpi
-          label={`Total sessions${rollupSuffix}`}
+          label={`Total sessions${kindSuffix}`}
           value={overview.total_sessions}
         />
-        <Kpi label={`Spans${rollupSuffix}`} value={overview.total_spans.toLocaleString()} />
         <Kpi
-          label={`Total cost${rollupSuffix}`}
+          label={`Spans${kindSuffix}`}
+          value={overview.total_spans.toLocaleString()}
+        />
+        <Kpi
+          label={`Total cost${kindSuffix}`}
           value={`$${overview.total_cost_usd.toFixed(4)}`}
         />
       </div>
@@ -912,7 +911,7 @@ function SpanNode({ node, depth }: { node: TraceTreeNode; depth: number }) {
 
 // ───────────────────────── Usage ─────────────────────────
 
-function UsageTab() {
+function UsageTab({ kind }: { kind: SessionKind }) {
   const [cost, setCost] = useState<CostAnalytics | null>(null)
   const [latency, setLatency] = useState<LatencyAnalytics | null>(null)
   const [spans, setSpans] = useState<SpanAnalytics | null>(null)
@@ -921,9 +920,9 @@ function UsageTab() {
   const refresh = useCallback(async () => {
     try {
       const [c, l, s] = await Promise.all([
-        api.analytics.cost(),
-        api.analytics.latency(),
-        api.analytics.spans(),
+        api.analytics.cost(kind),
+        api.analytics.latency(kind),
+        api.analytics.spans(kind),
       ])
       setCost(c)
       setLatency(l)
@@ -932,11 +931,11 @@ function UsageTab() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [])
+  }, [kind])
 
-  // Initial fetch on mount; aggregates only change meaningfully when a
-  // session ends (totals are session-scoped) so we re-pull on
-  // `session.ended` rather than on every span.
+  // Initial fetch on mount + on kind change; aggregates only change
+  // meaningfully when a session ends (totals are session-scoped) so we
+  // re-pull on `session.ended` rather than on every span.
   useEffect(() => {
     refresh()
   }, [refresh])
