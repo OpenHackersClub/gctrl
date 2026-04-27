@@ -215,6 +215,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/net/screenshot", post(net_screenshot))
         .route("/api/net/logs", get(net_traffic_logs))
         .route("/api/net/stats", get(net_traffic_stats))
+        .route("/api/net/domains", get(net_traffic_domains))
+        .route("/api/net/daily", get(net_traffic_daily))
         .route("/api/net/ca", get(net_proxy_ca))
         // Persona management (kernel extension)
         .route("/api/personas", get(persona_list).post(persona_upsert))
@@ -1032,9 +1034,85 @@ async fn net_traffic_logs(
     }
 }
 
-async fn net_traffic_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.store.get_traffic_stats() {
+#[derive(Deserialize)]
+struct NetStatsParams {
+    /// Time window: `15m`, `1h`, `24h`, `7d`. Omitted ⇒ all-time.
+    since: Option<String>,
+}
+
+async fn net_traffic_stats(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<NetStatsParams>,
+) -> impl IntoResponse {
+    let since = params
+        .since
+        .as_deref()
+        .and_then(parse_since)
+        .map(|d| chrono::Utc::now() - d);
+    match state.store.get_traffic_stats(since) {
         Ok(stats) => Json(serde_json::to_value(&stats).unwrap()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct NetDomainsParams {
+    since: Option<String>,
+    #[serde(default = "default_domains_top")]
+    top: usize,
+}
+
+fn default_domains_top() -> usize {
+    10
+}
+
+async fn net_traffic_domains(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<NetDomainsParams>,
+) -> impl IntoResponse {
+    let since = params
+        .since
+        .as_deref()
+        .and_then(parse_since)
+        .map(|d| chrono::Utc::now() - d);
+    match state.store.get_traffic_by_host(params.top, since) {
+        Ok(rows) => Json(serde_json::json!({
+            "domains": rows.iter().map(|(host, req, req_b, resp_b)| serde_json::json!({
+                "host": host,
+                "requests": req,
+                "request_bytes": req_b,
+                "response_bytes": resp_b,
+            })).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct NetDailyParams {
+    #[serde(default = "default_net_daily_days")]
+    days: u32,
+}
+
+fn default_net_daily_days() -> u32 {
+    7
+}
+
+async fn net_traffic_daily(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<NetDailyParams>,
+) -> impl IntoResponse {
+    match state.store.get_traffic_daily(params.days) {
+        Ok(rows) => Json(serde_json::json!({
+            "daily": rows.iter().map(|(date, req, req_b, resp_b)| serde_json::json!({
+                "date": date,
+                "requests": req,
+                "request_bytes": req_b,
+                "response_bytes": resp_b,
+            })).collect::<Vec<_>>(),
+        }))
+        .into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

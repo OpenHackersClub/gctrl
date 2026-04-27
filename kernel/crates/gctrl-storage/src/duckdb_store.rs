@@ -404,16 +404,158 @@ impl DuckDbStore {
         Ok(records)
     }
 
-    pub fn get_traffic_stats(&self) -> Result<TrafficStats> {
+    /// Aggregate stats over the `traffic` table. `since` is an optional
+    /// inclusive lower bound on `timestamp`; `None` ⇒ all-time.
+    /// Populates all `TrafficStats` fields — by_host/by_status sorted
+    /// descending and capped at 25 entries each so the response stays
+    /// bounded for hosts that produce many distinct hosts/status codes.
+    pub fn get_traffic_stats(
+        &self,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<TrafficStats> {
         let conn = self.conn.lock().unwrap();
-        let total: i64 = conn
-            .query_row("SELECT COUNT(*) FROM traffic", [], |row| row.get(0))
+        let (where_clause, since_iso) = match since {
+            Some(s) => (" WHERE timestamp >= ?".to_string(), Some(s.to_rfc3339())),
+            None => (String::new(), None),
+        };
+        let bind: Vec<&dyn duckdb::ToSql> = match since_iso.as_ref() {
+            Some(s) => vec![s],
+            None => Vec::new(),
+        };
+
+        let totals_sql = format!(
+            "SELECT COUNT(*), \
+                    COALESCE(SUM(request_size), 0), \
+                    COALESCE(SUM(response_size), 0) \
+             FROM traffic{where_clause}"
+        );
+        let (total, total_req_bytes, total_resp_bytes): (i64, i64, i64) = conn
+            .query_row(&totals_sql, bind.as_slice(), |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
             .map_err(|e| GctlError::Storage(e.to_string()))?;
+
+        let mut by_host = Vec::new();
+        {
+            let sql = format!(
+                "SELECT host, COUNT(*) FROM traffic{where_clause} \
+                 GROUP BY host ORDER BY COUNT(*) DESC LIMIT 25"
+            );
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| GctlError::Storage(e.to_string()))?;
+            let mut rows = stmt
+                .query(bind.as_slice())
+                .map_err(|e| GctlError::Storage(e.to_string()))?;
+            while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+                let host: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+                let count: i64 = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+                by_host.push((host, count as u64));
+            }
+        }
+
+        let mut by_status = Vec::new();
+        {
+            let sql = format!(
+                "SELECT status_code, COUNT(*) FROM traffic{where_clause} \
+                 GROUP BY status_code ORDER BY status_code"
+            );
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| GctlError::Storage(e.to_string()))?;
+            let mut rows = stmt
+                .query(bind.as_slice())
+                .map_err(|e| GctlError::Storage(e.to_string()))?;
+            while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+                let code: i32 = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+                let count: i64 = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+                by_status.push((code as u16, count as u64));
+            }
+        }
 
         Ok(TrafficStats {
             total_requests: total as u64,
-            ..Default::default()
+            total_request_bytes: total_req_bytes as u64,
+            total_response_bytes: total_resp_bytes as u64,
+            by_host,
+            by_status,
         })
+    }
+
+    /// Per-host aggregate richer than `get_traffic_stats.by_host` —
+    /// includes byte totals so the Network sub-panel can rank by either
+    /// request volume or transfer size. `top` caps the row count;
+    /// `since` is inclusive lower bound on `timestamp`.
+    pub fn get_traffic_by_host(
+        &self,
+        top: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Vec<(String, u64, u64, u64)>> {
+        // Returns (host, requests, request_bytes, response_bytes).
+        let conn = self.conn.lock().unwrap();
+        let (where_clause, since_iso) = match since {
+            Some(s) => (" WHERE timestamp >= ?".to_string(), Some(s.to_rfc3339())),
+            None => (String::new(), None),
+        };
+        let bind: Vec<&dyn duckdb::ToSql> = match since_iso.as_ref() {
+            Some(s) => vec![s],
+            None => Vec::new(),
+        };
+        let sql = format!(
+            "SELECT host, COUNT(*), \
+                    COALESCE(SUM(request_size), 0), \
+                    COALESCE(SUM(response_size), 0) \
+             FROM traffic{where_clause} \
+             GROUP BY host ORDER BY COUNT(*) DESC LIMIT {top}"
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query(bind.as_slice())
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            let host: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let req: i64 = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let req_b: i64 = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let resp_b: i64 = row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?;
+            out.push((host, req as u64, req_b as u64, resp_b as u64));
+        }
+        Ok(out)
+    }
+
+    /// Daily traffic totals for the most recent `days` calendar days
+    /// (newest first). Bucketed by `DATE(timestamp)`. Returns rows for
+    /// days that actually had traffic — empty days are not zero-filled
+    /// so a sparse log doesn't bloat the response.
+    pub fn get_traffic_daily(&self, days: u32) -> Result<Vec<(String, u64, u64, u64)>> {
+        // Returns (date, requests, request_bytes, response_bytes).
+        // Bucket on the leading 10 chars of `timestamp` — the column is
+        // a VARCHAR holding RFC-3339 (`YYYY-MM-DDTHH:MM:SS...Z`), so
+        // SUBSTR(timestamp, 1, 10) is the calendar date as text.
+        // Avoids needing a DuckDB FromSql impl for `chrono::NaiveDate`.
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT SUBSTR(timestamp, 1, 10) AS d, COUNT(*), \
+                        COALESCE(SUM(request_size), 0), \
+                        COALESCE(SUM(response_size), 0) \
+                 FROM traffic GROUP BY d ORDER BY d DESC LIMIT ?",
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query(params![days as i64])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            let date: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let req: i64 = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let req_b: i64 = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let resp_b: i64 = row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?;
+            out.push((date, req as u64, req_b as u64, resp_b as u64));
+        }
+        Ok(out)
     }
 
     pub fn get_analytics(&self, created_by: Option<&[CreatedBy]>) -> Result<Analytics> {

@@ -156,6 +156,57 @@ export interface ContributionsResponse {
   contributions: ContributionRow[]
 }
 
+// ── Network traffic (analytics §M4) ──
+
+/** Aggregate traffic stats from `/api/net/stats?since=`. Mirrors
+ *  `gctrl_core::TrafficStats`. by_host / by_status are tuples to match
+ *  the kernel wire format (`Vec<(String, u64)>` → `[host, count][]`). */
+export interface NetTrafficStats {
+  total_requests: number
+  total_request_bytes: number
+  total_response_bytes: number
+  by_host: Array<[string, number]>
+  by_status: Array<[number, number]>
+}
+
+export interface NetDomain {
+  host: string
+  requests: number
+  request_bytes: number
+  response_bytes: number
+}
+
+export interface NetDomainsResponse {
+  domains: NetDomain[]
+}
+
+export interface NetDailyEntry {
+  date: string
+  requests: number
+  request_bytes: number
+  response_bytes: number
+}
+
+export interface NetDailyResponse {
+  daily: NetDailyEntry[]
+}
+
+/** A single proxied request returned by `/api/net/logs`. session_id
+ *  stays null until the proxy gains per-session attribution (spec
+ *  Kernel Dependencies §2). */
+export interface NetTrafficRecord {
+  id: string
+  timestamp: string
+  method: string
+  url: string
+  host: string
+  status_code: number
+  request_size_bytes: number
+  response_size_bytes: number
+  duration_ms: number
+  session_id: string | null
+}
+
 export type IssueStatus =
   | "backlog"
   | "todo"

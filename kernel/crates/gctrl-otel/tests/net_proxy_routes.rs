@@ -81,6 +81,81 @@ async fn net_stats_returns_aggregates() {
     assert_eq!(status, 200);
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v["total_requests"], 1);
+    // M4: by_host / by_status are now populated, not zeroed.
+    assert_eq!(v["by_host"][0][0], "a.com");
+    assert_eq!(v["by_host"][0][1], 1);
+    assert_eq!(v["by_status"][0][0], 200);
+    assert_eq!(v["total_response_bytes"], 100);
+}
+
+#[tokio::test]
+async fn net_stats_since_filter_excludes_old_rows() {
+    let mut old = sample_record("a.com");
+    old.timestamp = Utc::now() - chrono::Duration::days(30);
+    let recent = sample_record("b.com");
+    let app = router_with_traffic(vec![old, recent]);
+
+    let (status, body) = get(&app, "/api/net/stats?since=1h").await;
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["total_requests"], 1);
+    assert_eq!(v["by_host"][0][0], "b.com");
+
+    let (_, all_body) = get(&app, "/api/net/stats").await;
+    let all: serde_json::Value = serde_json::from_str(&all_body).unwrap();
+    assert_eq!(all["total_requests"], 2);
+}
+
+#[tokio::test]
+async fn net_domains_orders_by_request_count() {
+    let app = router_with_traffic(vec![
+        sample_record("a.com"),
+        sample_record("a.com"),
+        sample_record("a.com"),
+        sample_record("b.com"),
+    ]);
+    let (status, body) = get(&app, "/api/net/domains").await;
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let domains = v["domains"].as_array().unwrap();
+    assert_eq!(domains[0]["host"], "a.com");
+    assert_eq!(domains[0]["requests"], 3);
+    assert_eq!(domains[0]["response_bytes"], 300);
+    assert_eq!(domains[1]["host"], "b.com");
+}
+
+#[tokio::test]
+async fn net_domains_top_caps_results() {
+    let mut records = Vec::new();
+    for i in 0..5 {
+        records.push(sample_record(&format!("host{i}.com")));
+    }
+    let app = router_with_traffic(records);
+    let (status, body) = get(&app, "/api/net/domains?top=2").await;
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["domains"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn net_daily_buckets_by_calendar_date() {
+    // Two rows on the same day + one on a different day → two buckets.
+    let mut today = sample_record("a.com");
+    today.timestamp = Utc::now();
+    let mut today_2 = sample_record("a.com");
+    today_2.timestamp = Utc::now();
+    let mut last_week = sample_record("b.com");
+    last_week.timestamp = Utc::now() - chrono::Duration::days(7);
+
+    let app = router_with_traffic(vec![today, today_2, last_week]);
+    let (status, body) = get(&app, "/api/net/daily?days=14").await;
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let daily = v["daily"].as_array().unwrap();
+    assert_eq!(daily.len(), 2, "expected 2 calendar buckets, got {daily:?}");
+    // Newest first; today has 2 requests, last week has 1.
+    assert_eq!(daily[0]["requests"], 2);
+    assert_eq!(daily[1]["requests"], 1);
 }
 
 #[tokio::test]
