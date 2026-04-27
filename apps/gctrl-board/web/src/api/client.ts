@@ -22,6 +22,7 @@ import type {
   SpanAnalytics,
   ScoreSummary,
   AlertRule,
+  ContributionsResponse,
 } from "../types"
 
 const BASE = "/api/board"
@@ -293,6 +294,19 @@ export const api = {
     syncStatus: () => request<AnalyticsSyncStatus>("/api/analytics/sync-status"),
     sync: () =>
       request<AnalyticsSyncStatus>("/api/analytics/sync", { method: "POST" }),
+  },
+
+  contributions: {
+    /** List PRs in `repo` with trailer-inferred session join. `kind`
+     *  drops rows whose joined session falls outside the population —
+     *  unattributed rows are kept iff `kind` is `all`/undefined. See
+     *  analytics spec M5. */
+    list: (params: { repo: string; kind?: SessionKind; limit?: number }) => {
+      const qs = new URLSearchParams({ repo: params.repo })
+      if (params.kind && params.kind !== "all") qs.set("kind", params.kind)
+      if (params.limit !== undefined) qs.set("limit", String(params.limit))
+      return request<ContributionsResponse>(`/api/contributions?${qs.toString()}`)
+    },
   },
 }
 
