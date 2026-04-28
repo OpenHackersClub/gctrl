@@ -21,9 +21,11 @@ const ANTHROPIC_OUTPUT_COST_PER_MTOK = 25.0;
 const MAX_CANDIDATE_EXCERPT = 2000;
 const DEFAULT_MAX_TOKENS = 16000;
 
-// Per-article summarization defaults to a smaller local variant. Override with
-// UBER_LLM_SUMMARY_MODEL.
-const DEFAULT_SUMMARY_MODEL = "google/gemma-3-12b-it";
+// Per-article summarization shares the curator default by design — LM Studio
+// typically has a single model loaded and echoes that name regardless of the
+// `model` field. Override with UBER_LLM_SUMMARY_MODEL when running a separate
+// smaller model on a second backend.
+const DEFAULT_SUMMARY_MODEL = "google/gemma-4-31b";
 const SUMMARY_INPUT_COST_PER_MTOK = 1.0;
 const SUMMARY_OUTPUT_COST_PER_MTOK = 5.0;
 const SUMMARY_MAX_TOKENS = 800;
