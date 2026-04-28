@@ -125,7 +125,7 @@ CREATE TABLE IF NOT EXISTS session_prompts (
 /// Per-turn prompt + completion bodies. Distinct from `prompt_versions`
 /// (which is hash-only template storage). Populated by the LLM relay in
 /// `gctrl-proxy` and, eventually, `driver-llm`. See
-/// `vault/specs/implementation/opencode-integration.md`.
+/// `vault/specs/implementation/llm-relay.md`.
 pub const CREATE_PROMPT_BODIES_TABLE: &str = r#"
 CREATE TABLE IF NOT EXISTS prompt_bodies (
     id              VARCHAR PRIMARY KEY,

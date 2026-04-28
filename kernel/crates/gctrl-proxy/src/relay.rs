@@ -26,9 +26,13 @@ use crate::capture::{
 pub struct RelayConfig {
     /// Upstream OpenAI-compat URL, e.g. `http://127.0.0.1:1234/v1/chat/completions`.
     pub upstream_url: String,
-    /// Header name the launcher writes the session UUID into.
-    /// Defaults to `x-session-id`. Falls back to `x-opencode-session-id`.
+    /// Header name the caller writes the session UUID into.
+    /// Defaults to `x-session-id`.
     pub session_header: String,
+    /// Header name the caller writes the service identifier into
+    /// (becomes the OTel `service.name` resource attribute and the
+    /// session's `agent_name`). Defaults to `x-service-name`.
+    pub service_header: String,
 }
 
 impl Default for RelayConfig {
@@ -36,6 +40,7 @@ impl Default for RelayConfig {
         Self {
             upstream_url: "http://127.0.0.1:1234/v1/chat/completions".to_string(),
             session_header: "x-session-id".to_string(),
+            service_header: "x-service-name".to_string(),
         }
     }
 }
@@ -69,7 +74,8 @@ async fn handle_chat_completions(
     headers: HeaderMap,
     body: String,
 ) -> impl IntoResponse {
-    let session_id = extract_session_id(&headers, &relay.cfg.session_header);
+    let session_id = extract_header(&headers, &relay.cfg.session_header);
+    let service_name = extract_header(&headers, &relay.cfg.service_header);
 
     // Parse for capture; if it fails, still forward verbatim. Telemetry
     // must never reject an otherwise-valid request.
@@ -107,13 +113,14 @@ async fn handle_chat_completions(
                     trace_id,
                     span_id,
                     model: req.model.clone(),
+                    gen_ai_system: derive_gen_ai_system(&relay.cfg.upstream_url),
                     prompt_tokens: rsp.usage.as_ref().and_then(|u| u.prompt_tokens),
                     completion_tokens: rsp.usage.as_ref().and_then(|u| u.completion_tokens),
                     start_unix_nano: unix_nanos(started_at),
                     end_unix_nano: unix_nanos(end_at),
                     status_ok: status.is_success(),
                 };
-                let _ = relay.capture.emit_otlp(&span_inputs).await;
+                let _ = relay.capture.emit_otlp_with_service(&span_inputs, service_name.as_deref()).await;
             }
 
             let json: JsonValue =
@@ -139,16 +146,15 @@ async fn handle_unimplemented() -> impl IntoResponse {
         Json(serde_json::json!({
             "error": {
                 "message": "gctrl-proxy LLM relay only supports POST /v1/chat/completions today.",
-                "spec": "vault/specs/implementation/opencode-integration.md"
+                "spec": "vault/specs/implementation/llm-relay.md"
             }
         })),
     )
 }
 
-fn extract_session_id(headers: &HeaderMap, primary: &str) -> Option<String> {
+fn extract_header(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
-        .get(primary)
-        .or_else(|| headers.get("x-opencode-session-id"))
+        .get(name)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
 }
@@ -157,6 +163,24 @@ fn unix_nanos(t: SystemTime) -> u64 {
     t.duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0)
+}
+
+/// Best-effort `gen_ai.system` derivation from the upstream URL host.
+/// Returns `None` rather than guessing wrong — operators can always
+/// add a per-request override later.
+fn derive_gen_ai_system(upstream_url: &str) -> Option<String> {
+    let lower = upstream_url.to_lowercase();
+    if lower.contains("127.0.0.1:1234") || lower.contains("localhost:1234") {
+        Some("lmstudio".into())
+    } else if lower.contains("api.openai.com") {
+        Some("openai".into())
+    } else if lower.contains("api.anthropic.com") {
+        Some("anthropic".into())
+    } else if lower.contains("ollama") || lower.contains(":11434") {
+        Some("ollama".into())
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -177,13 +201,14 @@ mod tests {
                 // Point OTLP at an unreachable host so emit_otlp logs +
                 // returns Ok without affecting the test outcome.
                 kernel_otlp_url: "http://127.0.0.1:1/v1/traces".to_string(),
-                default_service_name: "opencode".to_string(),
+                default_service_name: "test-svc".to_string(),
             },
         ));
         let relay = LlmRelay::new(
             RelayConfig {
                 upstream_url: upstream_url.to_string(),
                 session_header: "x-session-id".to_string(),
+                service_header: "x-service-name".to_string(),
             },
             capture,
         );
@@ -211,7 +236,7 @@ mod tests {
         assert!(body["error"]["spec"]
             .as_str()
             .unwrap()
-            .contains("opencode-integration"));
+            .contains("llm-relay"));
     }
 
     #[tokio::test]

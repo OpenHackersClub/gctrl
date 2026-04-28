@@ -435,7 +435,7 @@ pub struct PromptVersion {
 
 /// Per-turn prompt or completion body captured by the LLM relay.
 /// Distinct from `PromptVersion` (which is hash-only template storage).
-/// See `vault/specs/implementation/opencode-integration.md`.
+/// See `vault/specs/implementation/llm-relay.md`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptBody {
     pub id: String,

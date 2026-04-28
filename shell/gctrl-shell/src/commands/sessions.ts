@@ -90,6 +90,24 @@ const CostBreakdown = Schema.Struct({
   breakdown: Schema.Array(CostBreakdownEntry),
 })
 
+const PromptTurn = Schema.Struct({
+  id: Schema.String,
+  session_id: Schema.String,
+  turn_ordinal: Schema.Number,
+  role: Schema.String,
+  content: Schema.String,
+  fingerprint: Schema.String,
+  tokens: Schema.NullOr(Schema.Number),
+})
+const PromptList = Schema.Struct({
+  session_id: Schema.String,
+  count: Schema.Number,
+  prompts: Schema.Array(PromptTurn),
+})
+
+const truncate = (s: string, n: number): string =>
+  s.length <= n ? s : `${s.slice(0, n)}…`
+
 // --- shared options ---
 
 const agent = Options.text("agent").pipe(Options.optional)
@@ -281,6 +299,34 @@ const costCommand = Command.make(
     })
 )
 
+// --- prompts (per-session prompt+completion turn list) ---
+
+const truncateOpt = Options.integer("truncate").pipe(
+  Options.withDefault(200),
+  Options.withDescription("Truncate each turn body to N chars (0 = no truncation)")
+)
+
+const promptsCommand = Command.make(
+  "prompts",
+  { id: sessionId, truncate: truncateOpt },
+  ({ id, truncate: maxLen }) =>
+    Effect.gen(function* () {
+      const kernel = yield* KernelClient
+      const resp = yield* kernel.get(`/api/sessions/${id}/prompts`, PromptList)
+      if (resp.count === 0) {
+        yield* Console.log(`No prompt bodies captured for session ${id}.`)
+        return
+      }
+      yield* Console.log(`Prompts for ${resp.session_id} (${resp.count} turns):`)
+      yield* Console.log("-".repeat(60))
+      for (const turn of resp.prompts) {
+        const tokens = turn.tokens != null ? ` (${turn.tokens}t)` : ""
+        const body = maxLen > 0 ? truncate(turn.content, maxLen) : turn.content
+        yield* Console.log(`[${turn.turn_ordinal}] ${turn.role}${tokens}: ${body}`)
+      }
+    })
+)
+
 // --- sessions (parent) ---
 
 export const sessionsCommand = Command.make("sessions").pipe(
@@ -293,5 +339,6 @@ export const sessionsCommand = Command.make("sessions").pipe(
     autoScoreCommand,
     loopsCommand,
     costCommand,
+    promptsCommand,
   ])
 )

@@ -2,7 +2,7 @@
 //!   - `GET /api/sessions/{id}/prompts`
 //!   - `GET /api/prompts?group_by=fingerprint&since=...`
 //!
-//! Spec: `vault/specs/implementation/opencode-integration.md` §M1.
+//! Spec: `vault/specs/implementation/llm-relay.md` §M1.
 
 use axum::body::Body;
 use chrono::{TimeZone, Utc};

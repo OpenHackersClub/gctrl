@@ -11,10 +11,10 @@
 //! - **LLM relay** (`mod relay`, `mod capture`) — single-route HTTP
 //!   forward proxy for OpenAI-compat `/v1/chat/completions`. Captures
 //!   request + response bodies into `prompt_bodies` and emits an OTLP
-//!   span to the kernel's own `/v1/traces` endpoint. Used today by the
-//!   opencode + LMStudio path; agnostic to any specific client.
+//!   span to the kernel's own `/v1/traces` endpoint. Agnostic to any
+//!   specific client; opencode + LMStudio is the worked example.
 //!
-//! Spec: vault/specs/implementation/opencode-integration.md (LLM relay).
+//! Spec: vault/specs/implementation/llm-relay.md (LLM relay).
 
 mod ca;
 mod handler;

@@ -83,12 +83,13 @@ pub async fn run(
             Arc::clone(&store),
             CaptureConfig {
                 kernel_otlp_url,
-                default_service_name: "opencode".to_string(),
+                default_service_name: "llm-client".to_string(),
             },
         ));
         let relay_cfg = RelayConfig {
             upstream_url: opts.upstream.clone(),
             session_header: "x-session-id".to_string(),
+            service_header: "x-service-name".to_string(),
         };
         let relay_router = LlmRelay::new(relay_cfg, capture).router();
         tracing::info!(

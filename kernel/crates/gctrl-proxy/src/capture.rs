@@ -17,6 +17,9 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct CaptureConfig {
     pub kernel_otlp_url: String,
+    /// Fallback `service.name` resource attribute when the request
+    /// doesn't supply one via header. Kept neutral so the relay
+    /// doesn't bake in any one client.
     pub default_service_name: String,
 }
 
@@ -24,7 +27,7 @@ impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
             kernel_otlp_url: "http://localhost:4318/v1/traces".to_string(),
-            default_service_name: "opencode".to_string(),
+            default_service_name: "llm-client".to_string(),
         }
     }
 }
@@ -190,7 +193,20 @@ impl Capture {
     /// Best-effort OTLP emit. On failure, log and return Ok — the
     /// agent loop must not break because telemetry is down.
     pub async fn emit_otlp(&self, span: &OtlpSpanInputs) -> Result<()> {
-        let payload = build_otlp_payload(span, &self.cfg.default_service_name);
+        self.emit_otlp_with_service(span, None).await
+    }
+
+    /// Same as [`emit_otlp`] but lets the caller override the
+    /// `service.name` resource attribute per-request (e.g. from the
+    /// `x-service-name` header). Falls back to
+    /// `CaptureConfig::default_service_name` when `None`.
+    pub async fn emit_otlp_with_service(
+        &self,
+        span: &OtlpSpanInputs,
+        service_name: Option<&str>,
+    ) -> Result<()> {
+        let svc = service_name.unwrap_or(&self.cfg.default_service_name);
+        let payload = build_otlp_payload(span, svc);
         match self
             .http
             .post(&self.cfg.kernel_otlp_url)
@@ -217,6 +233,11 @@ pub struct OtlpSpanInputs {
     pub trace_id: String,
     pub span_id: String,
     pub model: String,
+    /// `gen_ai.system` per OpenTelemetry semantic conventions
+    /// (e.g. `lmstudio`, `openai`, `anthropic`). Optional — set by the
+    /// relay if it can derive it from the upstream URL or request
+    /// headers; otherwise omitted.
+    pub gen_ai_system: Option<String>,
     pub prompt_tokens: Option<i32>,
     pub completion_tokens: Option<i32>,
     pub start_unix_nano: u64,
@@ -229,10 +250,10 @@ pub struct OtlpSpanInputs {
 /// reads (`gen_ai.request.model`, `gen_ai.usage.*`, `service.name`,
 /// `session.id`).
 pub fn build_otlp_payload(s: &OtlpSpanInputs, service_name: &str) -> serde_json::Value {
-    let mut attrs = vec![
-        kv_string("gen_ai.request.model", &s.model),
-        kv_string("gen_ai.system", "lmstudio"),
-    ];
+    let mut attrs = vec![kv_string("gen_ai.request.model", &s.model)];
+    if let Some(system) = &s.gen_ai_system {
+        attrs.push(kv_string("gen_ai.system", system));
+    }
     if let Some(pt) = s.prompt_tokens {
         attrs.push(kv_int("gen_ai.usage.prompt_tokens", pt as i64));
     }
@@ -400,20 +421,41 @@ mod tests {
             trace_id: "0123456789abcdef0123456789abcdef".into(),
             span_id: "0123456789abcdef".into(),
             model: "gemma".into(),
+            gen_ai_system: Some("lmstudio".into()),
             prompt_tokens: Some(10),
             completion_tokens: Some(20),
             start_unix_nano: 1_000_000,
             end_unix_nano: 2_000_000,
             status_ok: true,
         };
-        let payload = build_otlp_payload(&inputs, "opencode");
+        let payload = build_otlp_payload(&inputs, "test-svc");
 
         let s = serde_json::to_string(&payload).unwrap();
         assert!(s.contains("\"service.name\""));
         assert!(s.contains("\"session.id\""));
         assert!(s.contains("\"gen_ai.request.model\""));
+        assert!(s.contains("\"gen_ai.system\""));
         assert!(s.contains("\"gen_ai.usage.prompt_tokens\""));
         assert!(s.contains("\"gen_ai.usage.completion_tokens\""));
+    }
+
+    #[test]
+    fn build_otlp_payload_omits_gen_ai_system_when_none() {
+        let inputs = OtlpSpanInputs {
+            session_id: "s".into(),
+            trace_id: "t".into(),
+            span_id: "sp".into(),
+            model: "m".into(),
+            gen_ai_system: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            start_unix_nano: 0,
+            end_unix_nano: 0,
+            status_ok: true,
+        };
+        let payload = build_otlp_payload(&inputs, "test-svc");
+        let s = serde_json::to_string(&payload).unwrap();
+        assert!(!s.contains("gen_ai.system"));
     }
 
     #[test]
@@ -426,13 +468,14 @@ mod tests {
             trace_id: "t".into(),
             span_id: "s".into(),
             model: "x".into(),
+            gen_ai_system: None,
             prompt_tokens: Some(7),
             completion_tokens: Some(3),
             start_unix_nano: 1700000000000000000,
             end_unix_nano: 1700000003000000000,
             status_ok: true,
         };
-        let payload = build_otlp_payload(&inputs, "opencode");
+        let payload = build_otlp_payload(&inputs, "test-svc");
         let span = &payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
 
         assert!(span["startTimeUnixNano"].is_number(), "startTimeUnixNano must be JSON number");
