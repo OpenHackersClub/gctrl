@@ -3,52 +3,118 @@
  *
  * Maps Effect-TS domain operations to REST calls against /api/board/*.
  */
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Schema } from "effect"
 import { BoardService } from "../services/BoardService.js"
-import { BoardError, IssueNotFoundError } from "../services/errors.js"
+import { BoardError, IssueNotFoundError, KernelError } from "../services/errors.js"
+import { AssigneeType, IssueStatus, Priority } from "../schema/Issue.js"
 import { KernelClient } from "./KernelClient.js"
-import type { Issue, IssueId, IssueStatus, IssueFilter, CreateIssueInput, Assignee, Project } from "../schema/index.js"
+import type {
+  Assignee,
+  CreateIssueInput,
+  Issue,
+  IssueFilter,
+  IssueId,
+  Project,
+} from "../schema/index.js"
 
-/**
- * Map kernel API JSON response to the Effect-TS Issue type.
- * The kernel uses snake_case; the TS schema uses camelCase.
- */
-// biome-ignore lint/suspicious/noExplicitAny: untyped JSON from kernel HTTP API
-const mapIssue = (raw: any): Issue => ({
+// Wire format: kernel API returns snake_case JSON. Decode-then-map so a
+// malformed payload surfaces as a tagged KernelError instead of a runtime
+// "cannot read property of undefined".
+const optionalNullable = <A, I>(s: Schema.Schema<A, I>) =>
+  Schema.optional(Schema.NullOr(s))
+
+const KernelIssue = Schema.Struct({
+  id: Schema.String,
+  project_id: Schema.String,
+  title: Schema.String,
+  description: optionalNullable(Schema.String),
+  status: IssueStatus,
+  priority: optionalNullable(Priority),
+  assignee_id: optionalNullable(Schema.String),
+  assignee_name: optionalNullable(Schema.String),
+  assignee_type: optionalNullable(AssigneeType),
+  labels: optionalNullable(Schema.Array(Schema.String)),
+  parent_id: optionalNullable(Schema.String),
+  created_at: Schema.String,
+  updated_at: Schema.String,
+  created_by_id: Schema.String,
+  created_by_name: Schema.String,
+  created_by_type: AssigneeType,
+  session_ids: optionalNullable(Schema.Array(Schema.String)),
+  total_cost_usd: optionalNullable(Schema.Number),
+  total_tokens: optionalNullable(Schema.Number),
+  pr_numbers: optionalNullable(Schema.Array(Schema.Number)),
+  blocked_by: optionalNullable(Schema.Array(Schema.String)),
+  blocking: optionalNullable(Schema.Array(Schema.String)),
+  acceptance_criteria: optionalNullable(Schema.Array(Schema.String)),
+})
+type KernelIssue = typeof KernelIssue.Type
+
+const KernelIssueArray = Schema.Array(KernelIssue)
+
+const KernelProject = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  key: Schema.String,
+  counter: optionalNullable(Schema.Number),
+})
+
+const KernelMoveResponse = Schema.Struct({ issue: KernelIssue })
+
+const decodeAs = <A, I>(schema: Schema.Schema<A, I>, raw: unknown, context: string) =>
+  Schema.decodeUnknown(schema)(raw).pipe(
+    Effect.mapError(
+      (e) => new KernelError({ message: `${context}: invalid kernel response — ${String(e)}` }),
+    ),
+  )
+
+const toIssue = (raw: KernelIssue): Issue => ({
   id: raw.id as IssueId,
-  projectId: raw.project_id,
+  projectId: raw.project_id as Issue["projectId"],
   title: raw.title,
   description: raw.description ?? undefined,
-  status: raw.status as IssueStatus,
+  status: raw.status,
   priority: raw.priority ?? "none",
   assignee: raw.assignee_id
-    ? { id: raw.assignee_id, name: raw.assignee_name, type: raw.assignee_type as "human" | "agent" }
+    ? {
+        id: raw.assignee_id,
+        name: raw.assignee_name ?? raw.assignee_id,
+        type: raw.assignee_type ?? "human",
+      }
     : undefined,
   labels: raw.labels ?? [],
-  parentId: raw.parent_id ?? undefined,
+  parentId: (raw.parent_id ?? undefined) as Issue["parentId"],
   createdAt: raw.created_at,
   updatedAt: raw.updated_at,
   createdBy: {
     id: raw.created_by_id,
     name: raw.created_by_name,
-    type: raw.created_by_type as "human" | "agent",
+    type: raw.created_by_type,
   },
   sessionIds: raw.session_ids ?? [],
   totalCostUsd: raw.total_cost_usd ?? 0,
   totalTokens: raw.total_tokens ?? 0,
   prNumbers: raw.pr_numbers ?? [],
-  blockedBy: raw.blocked_by ?? [],
-  blocking: raw.blocking ?? [],
+  blockedBy: (raw.blocked_by ?? []) as Issue["blockedBy"],
+  blocking: (raw.blocking ?? []) as Issue["blocking"],
   acceptanceCriteria: raw.acceptance_criteria ?? [],
 })
 
-// biome-ignore lint/suspicious/noExplicitAny: untyped JSON from kernel HTTP API
-const mapProject = (raw: any): Project => ({
+const toProject = (raw: typeof KernelProject.Type): Project => ({
   id: raw.id,
   name: raw.name,
   key: raw.key,
   autoIncrementCounter: raw.counter ?? 0,
 })
+
+const decodeIssue = (raw: unknown, context: string) =>
+  Effect.map(decodeAs(KernelIssue, raw, context), toIssue)
+
+const decodeIssueArray = (raw: unknown, context: string) =>
+  Effect.map(decodeAs(KernelIssueArray, raw, context), (xs) => xs.map(toIssue))
+
+const decodeProject = (raw: unknown, context: string) =>
+  Effect.map(decodeAs(KernelProject, raw, context), toProject)
 
 export const BoardServiceLive = Layer.effect(
   BoardService,
@@ -59,7 +125,7 @@ export const BoardServiceLive = Layer.effect(
       createProject: (name: string, key: string) =>
         Effect.gen(function* () {
           const raw = yield* client.post("/api/board/projects", { name, key })
-          return mapProject(raw)
+          return yield* decodeProject(raw, "createProject")
         }).pipe(
           Effect.catchTags({
             KernelError: (e) => Effect.fail(new BoardError({ message: e.message })),
@@ -80,7 +146,7 @@ export const BoardServiceLive = Layer.effect(
             created_by_name: input.createdBy.name,
             created_by_type: input.createdBy.type,
           })
-          return mapIssue(raw)
+          return yield* decodeIssue(raw, "createIssue")
         }).pipe(
           Effect.catchTags({
             KernelError: (e) => Effect.fail(new BoardError({ message: e.message })),
@@ -91,7 +157,7 @@ export const BoardServiceLive = Layer.effect(
       getIssue: (issueId: IssueId) =>
         Effect.gen(function* () {
           const raw = yield* client.get(`/api/board/issues/${issueId}`)
-          return mapIssue(raw)
+          return yield* decodeIssue(raw, "getIssue")
         }).pipe(
           Effect.catchTags({
             KernelError: (e): Effect.Effect<never, BoardError | IssueNotFoundError> =>
@@ -111,8 +177,7 @@ export const BoardServiceLive = Layer.effect(
           if (filter.label) params.set("label", filter.label)
           const qs = params.toString()
           const raw = yield* client.get(`/api/board/issues${qs ? `?${qs}` : ""}`)
-          // biome-ignore lint/suspicious/noExplicitAny: untyped JSON array from kernel HTTP API
-          return (raw as any[]).map(mapIssue)
+          return yield* decodeIssueArray(raw, "listIssues")
         }).pipe(
           Effect.catchTags({
             KernelError: (e) => Effect.fail(new BoardError({ message: e.message })),
@@ -128,8 +193,8 @@ export const BoardServiceLive = Layer.effect(
             actor_name: "gctrl-board",
             actor_type: "agent",
           })
-          const envelope = raw as { issue: unknown }
-          return mapIssue(envelope.issue)
+          const envelope = yield* decodeAs(KernelMoveResponse, raw, "moveIssue")
+          return toIssue(envelope.issue)
         }).pipe(
           Effect.catchTags({
             KernelError: (e): Effect.Effect<never, BoardError | IssueNotFoundError> =>
@@ -147,7 +212,7 @@ export const BoardServiceLive = Layer.effect(
             assignee_name: assignee.name,
             assignee_type: assignee.type,
           })
-          return mapIssue(raw)
+          return yield* decodeIssue(raw, "assignIssue")
         }).pipe(
           Effect.catchTags({
             KernelError: (e): Effect.Effect<never, BoardError | IssueNotFoundError> =>
@@ -162,9 +227,8 @@ export const BoardServiceLive = Layer.effect(
         Effect.gen(function* () {
           const issues: Issue[] = []
           for (const title of subTasks) {
-            // Get parent to inherit project
-            // biome-ignore lint/suspicious/noExplicitAny: untyped JSON from kernel HTTP API
-            const parent = (yield* client.get(`/api/board/issues/${parentId}`)) as any
+            const parentRaw = yield* client.get(`/api/board/issues/${parentId}`)
+            const parent = yield* decodeAs(KernelIssue, parentRaw, "decomposeIssue.parent")
             const raw = yield* client.post("/api/board/issues", {
               project_id: parent.project_id,
               title,
@@ -173,7 +237,7 @@ export const BoardServiceLive = Layer.effect(
               created_by_name: parent.created_by_name,
               created_by_type: parent.created_by_type,
             })
-            issues.push(mapIssue(raw))
+            issues.push(yield* decodeIssue(raw, "decomposeIssue.child"))
           }
           return issues
         }).pipe(
