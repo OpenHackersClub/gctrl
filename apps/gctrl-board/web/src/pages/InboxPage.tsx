@@ -57,7 +57,7 @@ export function InboxPage() {
     [selectedMessage, createAction]
   )
 
-  const unreadCount = stats?.unread ?? 0
+  const unreadCount = stats?.pending ?? 0
   const actionCount = stats?.requires_action ?? 0
 
   return (

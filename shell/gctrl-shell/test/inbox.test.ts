@@ -137,6 +137,7 @@ const MockLayer = createMockKernelClient(
     "/api/inbox/stats": mockStats,
   },
   {
+    "/api/inbox/messages": mockMessage,
     "/api/inbox/actions": mockActionResponse,
     "/api/inbox/batch-action": mockBatchResult,
   }
@@ -212,6 +213,32 @@ describe("Inbox commands (via KernelClient)", () => {
 
     const result = await Effect.runPromise(program.pipe(Effect.provide(MockLayer)))
     expect(result.pending).toBe(3)
+  })
+
+  it("post creates a message in a thread", async () => {
+    const program = Effect.gen(function* () {
+      const kernel = yield* KernelClient
+      return yield* kernel.post(
+        "/api/inbox/messages",
+        {
+          source: "agent",
+          kind: "agent_question",
+          title: "Should I delete the legacy column?",
+          body: "Migration 0042 references it but no live read paths do.",
+          urgency: "medium",
+          context_type: "issue",
+          context_ref: "BACK-42",
+          thread_title: "BACK-42: Fix auth",
+          project_key: "BACK",
+          requires_action: true,
+        },
+        InboxMessage
+      )
+    })
+
+    const result = await Effect.runPromise(program.pipe(Effect.provide(MockLayer)))
+    expect(result.id).toBe("msg-1")
+    expect(result.thread_id).toBe("thr-1")
   })
 
   it("approve creates action", async () => {

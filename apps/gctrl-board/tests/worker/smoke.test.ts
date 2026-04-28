@@ -22,16 +22,15 @@ describe("Worker API smoke tests", () => {
       }),
     ))
 
-  it("GET /api/inbox/stats returns stub data", () =>
+  it("GET /api/inbox/stats falls through to kernel facade", () =>
     runTest(
       Effect.gen(function* () {
         const client = yield* HttpClient.HttpClient
         const res = yield* client.get(`${HOST}/api/inbox/stats`)
-        expect(res.status).toBe(200)
-        const data = (yield* res.json) as Record<string, unknown>
-        expect(data.total).toBe(0)
-        expect(data.unread).toBe(0)
-        expect(data.requires_action).toBe(0)
+        // Worker no longer shadows the kernel; without KERNEL_URL set in the
+        // test env, an unmatched /api/* path returns 404 (vs. 502 if proxy is
+        // wired but the kernel is unreachable).
+        expect(res.status).toBe(404)
       }),
     ))
 

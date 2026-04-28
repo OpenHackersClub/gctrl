@@ -240,7 +240,7 @@ export function App() {
       <NavSidebar
         route={route}
         navigate={navigate}
-        unreadCount={inboxStats?.unread ?? 0}
+        unreadCount={inboxStats?.pending ?? 0}
       />
 
       {/* ── Main Content ── */}

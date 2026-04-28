@@ -3,7 +3,6 @@
  *
  * Routes:
  *   /api/board/*  → D1-backed board API (Effect-TS handlers)
- *   /api/inbox/*  → stub returning empty stats
  *   /api/*        → proxied to KERNEL_URL when configured (facade over kernel HTTP API)
  *   everything else → static assets (SPA with fallback routing)
  *
@@ -506,13 +505,6 @@ const projectGantt: ApiHandler = (_req, params) =>
     })
   })
 
-// Inbox stub
-
-const inboxStats: ApiHandler = () =>
-  Effect.succeed(
-    jsonResponse({ total: 0, unread: 0, requires_action: 0, by_urgency: {}, by_kind: {} }),
-  )
-
 // Sync status — per-table unsynced row counts and device watermarks.
 // Used by the Rust sync engine and acceptance tests to verify D1 schema health.
 
@@ -555,7 +547,6 @@ const routes: Route[] = [
   defineRoute("POST", "/api/board/issues/:id/link-session", linkSession),
   defineRoute("PATCH", "/api/board/issues/:id/schedule", scheduleIssue),
   defineRoute("GET", "/api/board/projects/:id/gantt", projectGantt),
-  defineRoute("GET", "/api/inbox/stats", inboxStats),
   defineRoute("GET", "/api/sync/status", syncStatus),
 
   // Analytics — D1-backed reads (kept in sync from kernel by the scheduled handler).

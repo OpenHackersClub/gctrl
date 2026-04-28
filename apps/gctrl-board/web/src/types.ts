@@ -326,7 +326,8 @@ export interface InboxAction {
 
 export interface InboxStats {
   total: number
-  unread: number
+  pending: number
+  acted: number
   requires_action: number
   by_urgency: Record<string, number>
   by_kind: Record<string, number>

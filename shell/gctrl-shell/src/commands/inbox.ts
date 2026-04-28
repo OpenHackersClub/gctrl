@@ -81,6 +81,104 @@ function urgencyIcon(urgency: string): string {
   return URGENCY_ICON[urgency] ?? "  "
 }
 
+// --- post command ---
+//
+// Agent-side ingestion: drop a message into the human inbox. Used when an
+// agent has a question, wants a review, or wants to share progress.
+// Server requires either --thread-id, or (--context-type + --context-ref)
+// so a thread can be auto-created/resolved.
+
+const VALID_KINDS = [
+  "permission_request",
+  "budget_warning",
+  "budget_exceeded",
+  "agent_question",
+  "clarification",
+  "review_request",
+  "eval_request",
+  "status_update",
+  "custom",
+] as const
+
+const VALID_URGENCIES = ["critical", "high", "medium", "low", "info"] as const
+
+const postSource = Options.text("source").pipe(
+  Options.withDescription("Sender identifier (e.g. agent, shell, guardrail, driver-github)")
+)
+const postKind = Options.choice("kind", [...VALID_KINDS])
+const postTitle = Options.text("title").pipe(
+  Options.withDescription("Short title shown in the inbox list")
+)
+const postBody = Options.text("body").pipe(
+  Options.optional,
+  Options.withDescription("Long-form message body (markdown allowed)")
+)
+const postUrgency = Options.choice("urgency", [...VALID_URGENCIES]).pipe(
+  Options.withDefault("medium")
+)
+const postContextType = Options.text("context-type").pipe(
+  Options.optional,
+  Options.withDescription('Thread context type (e.g. "issue", "session", "pr")')
+)
+const postContextRef = Options.text("context-ref").pipe(
+  Options.optional,
+  Options.withDescription('Thread context reference (e.g. "BACK-42")')
+)
+const postThreadTitle = Options.text("thread-title").pipe(
+  Options.optional,
+  Options.withDescription("Title for a newly-created thread")
+)
+const postProject = Options.text("project").pipe(
+  Options.optional,
+  Options.withDescription("Project key for thread grouping (e.g. BACK)")
+)
+const postThreadId = Options.text("thread-id").pipe(
+  Options.optional,
+  Options.withDescription("Post into an existing thread by id (alternative to context-type/ref)")
+)
+const postRequiresAction = Options.boolean("requires-action").pipe(
+  Options.withDefault(false),
+  Options.withDescription("Mark the message as requiring a human action")
+)
+
+const postCommand = Command.make(
+  "post",
+  {
+    source: postSource,
+    kind: postKind,
+    title: postTitle,
+    body: postBody,
+    urgency: postUrgency,
+    contextType: postContextType,
+    contextRef: postContextRef,
+    threadTitle: postThreadTitle,
+    project: postProject,
+    threadId: postThreadId,
+    requiresAction: postRequiresAction,
+  },
+  ({ source, kind, title, body, urgency, contextType, contextRef, threadTitle, project, threadId, requiresAction }) =>
+    Effect.gen(function* () {
+      const kernel = yield* KernelClient
+
+      const payload: Record<string, unknown> = {
+        source,
+        kind,
+        title,
+        urgency,
+        requires_action: requiresAction,
+      }
+      if (Option.isSome(body)) payload.body = body.value
+      if (Option.isSome(threadId)) payload.thread_id = threadId.value
+      if (Option.isSome(contextType)) payload.context_type = contextType.value
+      if (Option.isSome(contextRef)) payload.context_ref = contextRef.value
+      if (Option.isSome(threadTitle)) payload.thread_title = threadTitle.value
+      if (Option.isSome(project)) payload.project_key = project.value
+
+      const created = yield* kernel.post("/api/inbox/messages", payload, InboxMessage)
+      yield* Console.log(`Posted: ${created.id} (thread ${created.thread_id})`)
+    })
+)
+
 // --- count command ---
 
 const countCommand = Command.make("count", {}, () =>
@@ -468,6 +566,7 @@ const statsCommand = Command.make(
 
 export const inboxCommand = Command.make("inbox").pipe(
   Command.withSubcommands([
+    postCommand,
     countCommand,
     listCommand,
     viewCommand,

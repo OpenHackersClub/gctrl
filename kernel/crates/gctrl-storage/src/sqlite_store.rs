@@ -1952,6 +1952,14 @@ impl SqliteStore {
             )
             .unwrap_or(0);
 
+        let requires_action: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM inbox_messages WHERE status = 'pending' AND requires_action = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
         // By urgency (pending only)
         let mut by_urgency = serde_json::Map::new();
         {
@@ -1988,6 +1996,7 @@ impl SqliteStore {
             "total": total,
             "pending": pending,
             "acted": acted,
+            "requires_action": requires_action,
             "by_urgency": by_urgency,
             "by_kind": by_kind,
         }))
