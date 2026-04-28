@@ -34,6 +34,15 @@ enum Commands {
         /// 127.0.0.1:8080 (configurable via GCTRL_PROXY_PORT).
         #[arg(long, default_value = "false")]
         proxy: bool,
+        /// Port for the gctrl-proxy LLM relay (OpenAI-compat capture)
+        #[arg(long, default_value = "4319")]
+        relay_port: u16,
+        /// Default upstream for the LLM relay (e.g. LMStudio)
+        #[arg(long, default_value = "http://127.0.0.1:1234/v1/chat/completions")]
+        relay_upstream: String,
+        /// Disable the LLM relay
+        #[arg(long, default_value = "false")]
+        no_relay: bool,
     },
     /// List recent sessions
     Sessions {
@@ -544,7 +553,7 @@ async fn main() -> Result<()> {
     let db_path = resolve_db_path(&cli.db);
 
     match cli.command {
-        Commands::Serve { port, host, board_dir, no_watch, proxy } => {
+        Commands::Serve { port, host, board_dir, no_watch, proxy, relay_port, relay_upstream, no_relay } => {
             let dir = if no_watch {
                 None
             } else {
@@ -557,7 +566,12 @@ async fn main() -> Result<()> {
                     })
                     .and_then(|p| p.canonicalize().ok())
             };
-            commands::serve::run(host, port, &db_path, dir, proxy).await
+            let relay = if no_relay {
+                None
+            } else {
+                Some(commands::serve::RelayOpts { port: relay_port, upstream: relay_upstream })
+            };
+            commands::serve::run(host, port, &db_path, dir, proxy, relay).await
         }
         Commands::Sessions { limit, format, agent, status } => commands::sessions::run(limit, &format, agent.as_deref(), status.as_deref(), &db_path),
         Commands::Spans { session_id, format } => commands::spans::run(&session_id, &format, &db_path),

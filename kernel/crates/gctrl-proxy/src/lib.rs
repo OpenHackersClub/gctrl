@@ -1,15 +1,27 @@
-//! MITM proxy that captures HTTP/HTTPS traffic from agent processes.
+//! gctrl-proxy — agent-traffic capture for the kernel.
 //!
-//! - Generates a self-signed CA on first run (under `~/.local/share/gctrl/proxy/ca/`).
-//! - Intercepts via `hudsucker` + `rustls`.
-//! - Persists each completed request as a `TrafficRecord` in the kernel
-//!   `traffic` table (single-writer, owned by the daemon's `DuckDbStore`).
+//! Two complementary capture surfaces share this crate:
 //!
-//! The proxy is engine-only: lifecycle (flag + spawn) lives in `gctrl-cli`.
+//! - **MITM proxy** (`mod ca`, `mod handler`, `mod redact`, [`run`]) —
+//!   intercepts arbitrary HTTP/HTTPS traffic via `hudsucker` + a self-signed
+//!   CA, and persists each completed request as a `TrafficRecord` in the
+//!   kernel `traffic` table. Engine-only; lifecycle (`gctrld serve --proxy`)
+//!   lives in `gctrl-cli`.
+//!
+//! - **LLM relay** (`mod relay`, `mod capture`) — single-route HTTP
+//!   forward proxy for OpenAI-compat `/v1/chat/completions`. Captures
+//!   request + response bodies into `prompt_bodies` and emits an OTLP
+//!   span to the kernel's own `/v1/traces` endpoint. Agnostic to any
+//!   specific client; opencode + LMStudio is the worked example.
+//!
+//! Spec: vault/specs/implementation/llm-relay.md (LLM relay).
 
 mod ca;
 mod handler;
 mod redact;
+
+pub mod capture;
+pub mod relay;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -25,10 +37,12 @@ use hudsucker::{
 };
 
 pub use ca::{ensure_ca_cert, CaPaths};
+pub use capture::{Capture, CaptureConfig, CapturedTurn};
 pub use handler::TrafficLogger;
 pub use redact::redact_url;
+pub use relay::{LlmRelay, RelayConfig};
 
-/// Run the proxy until shutdown.
+/// Run the MITM proxy until shutdown.
 ///
 /// Binds `config.listen_host:config.listen_port`. Defaults to `127.0.0.1:8080`.
 /// Captured requests are written into `store`'s `traffic` table.

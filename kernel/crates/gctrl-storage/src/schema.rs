@@ -122,6 +122,25 @@ CREATE TABLE IF NOT EXISTS session_prompts (
 )
 "#;
 
+/// Per-turn prompt + completion bodies. Distinct from `prompt_versions`
+/// (which is hash-only template storage). Populated by the LLM relay in
+/// `gctrl-proxy` and, eventually, `driver-llm`. See
+/// `vault/specs/implementation/llm-relay.md`.
+pub const CREATE_PROMPT_BODIES_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS prompt_bodies (
+    id              VARCHAR PRIMARY KEY,
+    session_id      VARCHAR NOT NULL,
+    span_id         VARCHAR,
+    trace_id        VARCHAR,
+    turn_ordinal    INTEGER NOT NULL,
+    role            VARCHAR NOT NULL,
+    content         VARCHAR NOT NULL,
+    fingerprint     VARCHAR NOT NULL,
+    tokens          INTEGER,
+    created_at      VARCHAR NOT NULL
+)
+"#;
+
 pub const CREATE_DAILY_AGGREGATES_TABLE: &str = r#"
 CREATE TABLE IF NOT EXISTS daily_aggregates (
     date VARCHAR NOT NULL,
@@ -384,6 +403,8 @@ pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_tags_key ON tags(key, value)",
     "CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_aggregates(date)",
     "CREATE INDEX IF NOT EXISTS idx_session_prompts ON session_prompts(prompt_hash)",
+    "CREATE INDEX IF NOT EXISTS idx_prompt_bodies_session ON prompt_bodies(session_id)",
+    "CREATE INDEX IF NOT EXISTS idx_prompt_bodies_fingerprint ON prompt_bodies(fingerprint)",
     "CREATE INDEX IF NOT EXISTS idx_context_kind ON context_entries(kind)",
     "CREATE INDEX IF NOT EXISTS idx_context_source ON context_entries(source_type)",
     "CREATE INDEX IF NOT EXISTS idx_context_path ON context_entries(path)",
@@ -427,6 +448,7 @@ pub fn all_migrations() -> Vec<&'static str> {
         CREATE_TAGS_TABLE,
         CREATE_PROMPT_VERSIONS_TABLE,
         CREATE_SESSION_PROMPTS_TABLE,
+        CREATE_PROMPT_BODIES_TABLE,
         CREATE_DAILY_AGGREGATES_TABLE,
         CREATE_ALERT_RULES_TABLE,
         CREATE_ALERT_EVENTS_TABLE,
