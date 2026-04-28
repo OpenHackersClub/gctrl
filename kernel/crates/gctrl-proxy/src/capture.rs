@@ -165,6 +165,120 @@ fn stringify_content(v: &serde_json::Value) -> String {
     }
 }
 
+// --- SSE streaming response shapes ---
+//
+// Streaming chat completions arrive as `data: {json}\n\n` lines, each carrying
+// a partial choice (`delta.content`) and (per OpenAI 2024-04 onward) an
+// optional final `usage` chunk. LMStudio sends usage by default; OpenAI cloud
+// requires `stream_options.include_usage: true`. The relay does not require
+// usage to capture turns — it just leaves `tokens` NULL when absent.
+
+#[derive(Debug, Deserialize)]
+struct ChatCompletionsChunk {
+    #[serde(default)]
+    choices: Vec<ChatChunkChoice>,
+    #[serde(default)]
+    usage: Option<ChatUsage>,
+    #[serde(default)]
+    model: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatChunkChoice {
+    #[serde(default)]
+    index: u32,
+    #[serde(default)]
+    delta: Option<ChatChunkDelta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatChunkDelta {
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    content: Option<String>,
+}
+
+/// Parse an OpenAI-compatible SSE `text/event-stream` body into a synthetic
+/// non-streaming [`ChatCompletionsResponse`] suitable for [`extract_turns`].
+///
+/// Returns `None` if no parseable `data:` chunks are found (caller should
+/// fall back to JSON parsing). `data: [DONE]` is treated as terminator and
+/// non-JSON `data:` lines (LMStudio occasionally emits keepalives) are
+/// skipped silently — telemetry must never reject an otherwise-valid stream.
+pub fn parse_sse_to_response(body: &str) -> Option<ChatCompletionsResponse> {
+    use std::collections::BTreeMap;
+
+    let mut content_by_choice: BTreeMap<u32, String> = BTreeMap::new();
+    let mut role_by_choice: BTreeMap<u32, String> = BTreeMap::new();
+    let mut usage: Option<ChatUsage> = None;
+    let mut model: Option<String> = None;
+    let mut saw_chunk = false;
+
+    for line in body.lines() {
+        let payload = match line.strip_prefix("data:").map(str::trim) {
+            Some(p) => p,
+            None => continue,
+        };
+        if payload.is_empty() || payload == "[DONE]" {
+            continue;
+        }
+        let chunk: ChatCompletionsChunk = match serde_json::from_str(payload) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        saw_chunk = true;
+        if let Some(m) = chunk.model {
+            if model.is_none() {
+                model = Some(m);
+            }
+        }
+        if let Some(u) = chunk.usage {
+            usage = Some(u);
+        }
+        for choice in chunk.choices {
+            if let Some(delta) = choice.delta {
+                if let Some(role) = delta.role {
+                    role_by_choice
+                        .entry(choice.index)
+                        .or_insert(role);
+                }
+                if let Some(content) = delta.content {
+                    content_by_choice
+                        .entry(choice.index)
+                        .or_default()
+                        .push_str(&content);
+                }
+            }
+        }
+    }
+
+    if !saw_chunk {
+        return None;
+    }
+
+    let choices = content_by_choice
+        .into_iter()
+        .map(|(idx, content)| {
+            let role = role_by_choice
+                .remove(&idx)
+                .unwrap_or_else(|| "assistant".to_string());
+            ChatChoice {
+                message: Some(ChatMessage {
+                    role,
+                    content: serde_json::Value::String(content),
+                }),
+            }
+        })
+        .collect();
+
+    Some(ChatCompletionsResponse {
+        choices,
+        usage,
+        model,
+    })
+}
+
 // --- Capture sink: storage + OTLP ---
 
 pub struct Capture {
@@ -412,6 +526,50 @@ mod tests {
             tokens: None,
         };
         assert_eq!(t1.fingerprint(), t2.fingerprint());
+    }
+
+    #[test]
+    fn parse_sse_assembles_content_and_usage() {
+        // LMStudio-style stream: role on first delta, content deltas in
+        // the middle, usage on the final pre-[DONE] chunk.
+        let sse = "\
+data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}],\"model\":\"google/gemma-4-31b\"}\n\n\
+data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"po\"}}]}\n\n\
+data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ng\"}}]}\n\n\
+data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":2}}\n\n\
+data: [DONE]\n\n";
+
+        let resp = parse_sse_to_response(sse).expect("parses");
+        assert_eq!(resp.choices.len(), 1);
+        let msg = resp.choices[0].message.as_ref().unwrap();
+        assert_eq!(msg.role, "assistant");
+        assert_eq!(stringify_content(&msg.content), "pong");
+        assert_eq!(resp.usage.as_ref().unwrap().prompt_tokens, Some(7));
+        assert_eq!(resp.usage.as_ref().unwrap().completion_tokens, Some(2));
+        assert_eq!(resp.model.as_deref(), Some("google/gemma-4-31b"));
+    }
+
+    #[test]
+    fn parse_sse_returns_none_for_non_sse_body() {
+        // Non-streaming JSON should yield None so the caller falls back
+        // to the regular ChatCompletionsResponse parser.
+        let body = r#"{"choices":[{"message":{"role":"assistant","content":"hi"}}]}"#;
+        assert!(parse_sse_to_response(body).is_none());
+    }
+
+    #[test]
+    fn parse_sse_skips_keepalive_and_malformed_chunks() {
+        // OpenAI sends `: ping` keepalives; LMStudio occasionally emits
+        // `data: ` with an empty payload. Neither should derail capture.
+        let sse = "\
+: keepalive\n\n\
+data: \n\n\
+data: not-json\n\n\
+data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\n\
+data: [DONE]\n\n";
+
+        let resp = parse_sse_to_response(sse).expect("parses");
+        assert_eq!(stringify_content(&resp.choices[0].message.as_ref().unwrap().content), "ok");
     }
 
     #[test]

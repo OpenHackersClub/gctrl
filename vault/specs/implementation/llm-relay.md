@@ -102,7 +102,13 @@ In `kernel/crates/gctrl-proxy/`:
   1. Read body, parse `model`, `messages`. Forward verbatim to the
      upstream URL with original headers minus `Host`.
   2. On response, parse `choices[0].message`, `usage.prompt_tokens`,
-     `usage.completion_tokens`.
+     `usage.completion_tokens`. **Streaming responses** (upstream
+     `Content-Type: text/event-stream`) are tee'd: bytes pass through
+     to the client live so the agent's UX is preserved, while the
+     relay accumulates a copy and reassembles it via
+     `parse_sse_to_response` (concatenates per-choice `delta.content`,
+     reads `usage` from the final chunk, ignores `[DONE]` and
+     keepalives) before running the same capture path.
   3. Emit one OTLP span to `/v1/traces` with attributes:
      `service.name=<x-service-name or default>`, `session.id=<x-session-id>`,
      `gen_ai.request.model`, `gen_ai.usage.prompt_tokens`,
