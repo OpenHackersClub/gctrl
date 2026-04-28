@@ -51,6 +51,15 @@ const EMPTY_ROLLUP = {
   checks: [],
 }
 
+const EMPTY_INBOX_STATS = {
+  total: 0,
+  pending: 0,
+  acted: 0,
+  requires_action: 0,
+  by_urgency: {},
+  by_kind: {},
+}
+
 /**
  * Proxy `GET /api/board/issues/:id/acceptance` to the kernel. Kernel owns
  * the acceptance_checks table; the Worker is a read facade. Falls back to
@@ -65,6 +74,25 @@ async function proxyAcceptanceRollup(id: string, env: Env): Promise<Response> {
     return jsonResponse(data)
   } catch {
     return jsonResponse(EMPTY_ROLLUP)
+  }
+}
+
+/**
+ * Proxy `GET /api/inbox/stats` to the kernel. Kernel owns inbox state; the
+ * Worker is a read facade. Falls back to a zero-stats payload when the kernel
+ * is unreachable or `KERNEL_URL` is unset (preview/dev), so the UI's polling
+ * stats fetch doesn't surface as a failed request to the CDP observer.
+ */
+async function proxyInboxStats(env: Env): Promise<Response> {
+  if (!env.KERNEL_URL) return jsonResponse(EMPTY_INBOX_STATS)
+  const base = env.KERNEL_URL.replace(/\/$/, "")
+  try {
+    const upstream = await fetch(`${base}/api/inbox/stats`)
+    if (!upstream.ok) return jsonResponse(EMPTY_INBOX_STATS)
+    const data = await upstream.json()
+    return jsonResponse(data)
+  } catch {
+    return jsonResponse(EMPTY_INBOX_STATS)
   }
 }
 
@@ -634,6 +662,7 @@ export default {
           /^\/api\/board\/issues\/([^/]+)\/acceptance$/,
         )
         if (acc) return proxyAcceptanceRollup(acc[1], env)
+        if (url.pathname === "/api/inbox/stats") return proxyInboxStats(env)
       }
 
       const effect = matchRoute(request, url.pathname)
