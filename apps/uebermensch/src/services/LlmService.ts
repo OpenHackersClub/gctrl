@@ -21,6 +21,8 @@ export type BriefResponse = {
   readonly model: string;
 };
 
+export type FieldFamiliarity = "expert" | "novice";
+
 export type ReportInterestInput = {
   readonly slug: string;
   readonly title: string;
@@ -28,6 +30,38 @@ export type ReportInterestInput = {
   readonly topics: ReadonlyArray<string>;
   readonly notes: string;
   readonly candidates: ReadonlyArray<CandidateRef>;
+  readonly fieldFamiliarity: FieldFamiliarity;
+};
+
+export type SubtopicProposal = {
+  readonly slug: string;
+  readonly title: string;
+  readonly rationale: string;
+  readonly relevantCandidateIds: ReadonlyArray<string>;
+};
+
+export type SubtopicProposeRequest = {
+  readonly periodLabel: string;
+  readonly periodStart: string;
+  readonly periodEnd: string;
+  readonly profileName: string;
+  readonly interest: ReportInterestInput;
+};
+
+export type SubtopicProposeResponse = {
+  readonly selectedSlug: string;
+  readonly proposals: ReadonlyArray<SubtopicProposal>;
+  readonly promptHash: string;
+  readonly costUsd: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly model: string;
+};
+
+export type ReportSubtopic = {
+  readonly slug: string;
+  readonly title: string;
+  readonly rationale: string;
 };
 
 export type InterestReportRequest = {
@@ -37,6 +71,7 @@ export type InterestReportRequest = {
   readonly profileName: string;
   readonly interest: ReportInterestInput;
   readonly maxItems: number;
+  readonly subtopic: ReportSubtopic | null;
 };
 
 export type InterestReportResponse = {
@@ -90,6 +125,9 @@ export type ResearchQueryResponse = {
 export interface LlmServiceShape {
   readonly name: () => string;
   readonly generateBrief: (req: BriefRequest) => Effect.Effect<BriefResponse, LlmError>;
+  readonly proposeSubtopic: (
+    req: SubtopicProposeRequest,
+  ) => Effect.Effect<SubtopicProposeResponse, LlmError>;
   readonly generateInterestReport: (
     req: InterestReportRequest,
   ) => Effect.Effect<InterestReportResponse, LlmError>;

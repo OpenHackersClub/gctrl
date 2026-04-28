@@ -3,16 +3,106 @@ use std::sync::Mutex;
 
 use duckdb::{params, Connection};
 use gctrl_core::{
-    AgentAnalytics, AlertEvent, AlertRule, Analytics, DailyAggregate, GctlError, InboxAction,
-    InboxActionFilter, InboxMessage, InboxMessageFilter, InboxThread, ModelAnalytics,
-    PersonaDefinition, PersonaReviewRule, PromptVersion, Result, Score, Session, SessionId,
-    SessionStatus, Span, SpanStatus, SpanType, Tag, TrafficFilter, TrafficRecord, TrafficStats,
+    AgentAnalytics, AlertEvent, AlertRule, Analytics, CreatedBy, DailyAggregate, GctlError,
+    InboxAction, InboxActionFilter, InboxMessage, InboxMessageFilter, InboxThread, ModelAnalytics,
+    PersonaDefinition, PersonaReviewRule, PromptBody, PromptVersion, Result, Score, Session,
+    SessionId, SessionStatus, Span, SpanStatus, SpanType, Tag, TrafficFilter, TrafficRecord,
+    TrafficStats,
 };
 
 use crate::schema;
 
 pub struct DuckDbStore {
     conn: Mutex<Connection>,
+}
+
+/// Built WHERE-clause + bound params for filtering directly on
+/// `sessions.created_by`. Empty `where_clause` when `created_by` is `None`
+/// so the no-filter path stays scan-only (no IN check, no JOIN).
+struct SessionsFilter {
+    where_clause: String,
+    bound: Vec<String>,
+}
+
+impl SessionsFilter {
+    fn params(&self) -> Vec<&dyn duckdb::ToSql> {
+        self.bound.iter().map(|s| s as &dyn duckdb::ToSql).collect()
+    }
+}
+
+/// Built JOIN + WHERE for filtering spans by their session's
+/// provenance. Provenance lives on Session per
+/// specs/architecture/apps/gctrl-analytics.md §1, so spans inherit it
+/// via JOIN — kept aliased as `sp` so callers compose model/etc.
+/// predicates on the alias without ambiguity.
+struct SpansFilter {
+    join: String,
+    where_clause: String,
+    bound: Vec<String>,
+}
+
+impl SpansFilter {
+    fn params(&self) -> Vec<&dyn duckdb::ToSql> {
+        self.bound.iter().map(|s| s as &dyn duckdb::ToSql).collect()
+    }
+}
+
+fn sessions_provenance_filter(created_by: Option<&[CreatedBy]>) -> SessionsFilter {
+    match created_by {
+        Some(provs) if !provs.is_empty() => {
+            let placeholders = provs.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            SessionsFilter {
+                where_clause: format!(" WHERE created_by IN ({placeholders})"),
+                bound: provs.iter().map(|p| p.as_str().to_string()).collect(),
+            }
+        }
+        // `Some(&[])` deliberately matches no rows — caller passed only
+        // unrecognised tokens (`?created_by=garbage`). Use `1=0` rather
+        // than no clause so totals stay zero.
+        Some(_) => SessionsFilter {
+            where_clause: " WHERE 1=0".to_string(),
+            bound: Vec::new(),
+        },
+        None => SessionsFilter {
+            where_clause: String::new(),
+            bound: Vec::new(),
+        },
+    }
+}
+
+fn spans_provenance_join(created_by: Option<&[CreatedBy]>) -> SpansFilter {
+    match created_by {
+        Some(provs) if !provs.is_empty() => {
+            let placeholders = provs.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            SpansFilter {
+                join: " INNER JOIN sessions se ON se.id = sp.session_id".to_string(),
+                where_clause: format!(" WHERE se.created_by IN ({placeholders})"),
+                bound: provs.iter().map(|p| p.as_str().to_string()).collect(),
+            }
+        }
+        Some(_) => SpansFilter {
+            join: String::new(),
+            where_clause: " WHERE 1=0".to_string(),
+            bound: Vec::new(),
+        },
+        None => SpansFilter {
+            join: String::new(),
+            where_clause: String::new(),
+            bound: Vec::new(),
+        },
+    }
+}
+
+/// Aggregate row returned by [`DuckDbStore::group_prompt_bodies_by_fingerprint`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PromptFingerprintGroup {
+    pub fingerprint: String,
+    pub count: u64,
+    pub role: String,
+    pub sample_content: String,
+    pub total_tokens: u64,
+    pub last_seen: String,
+    pub session_count: u64,
 }
 
 impl DuckDbStore {
@@ -327,61 +417,213 @@ impl DuckDbStore {
         Ok(records)
     }
 
-    pub fn get_traffic_stats(&self) -> Result<TrafficStats> {
+    /// Aggregate stats over the `traffic` table. `since` is an optional
+    /// inclusive lower bound on `timestamp`; `None` ⇒ all-time.
+    /// Populates all `TrafficStats` fields — by_host/by_status sorted
+    /// descending and capped at 25 entries each so the response stays
+    /// bounded for hosts that produce many distinct hosts/status codes.
+    pub fn get_traffic_stats(
+        &self,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<TrafficStats> {
         let conn = self.conn.lock().unwrap();
-        let total: i64 = conn
-            .query_row("SELECT COUNT(*) FROM traffic", [], |row| row.get(0))
+        let (where_clause, since_iso) = match since {
+            Some(s) => (" WHERE timestamp >= ?".to_string(), Some(s.to_rfc3339())),
+            None => (String::new(), None),
+        };
+        let bind: Vec<&dyn duckdb::ToSql> = match since_iso.as_ref() {
+            Some(s) => vec![s],
+            None => Vec::new(),
+        };
+
+        let totals_sql = format!(
+            "SELECT COUNT(*), \
+                    COALESCE(SUM(request_size), 0), \
+                    COALESCE(SUM(response_size), 0) \
+             FROM traffic{where_clause}"
+        );
+        let (total, total_req_bytes, total_resp_bytes): (i64, i64, i64) = conn
+            .query_row(&totals_sql, bind.as_slice(), |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
             .map_err(|e| GctlError::Storage(e.to_string()))?;
+
+        let mut by_host = Vec::new();
+        {
+            let sql = format!(
+                "SELECT host, COUNT(*) FROM traffic{where_clause} \
+                 GROUP BY host ORDER BY COUNT(*) DESC LIMIT 25"
+            );
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| GctlError::Storage(e.to_string()))?;
+            let mut rows = stmt
+                .query(bind.as_slice())
+                .map_err(|e| GctlError::Storage(e.to_string()))?;
+            while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+                let host: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+                let count: i64 = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+                by_host.push((host, count as u64));
+            }
+        }
+
+        let mut by_status = Vec::new();
+        {
+            let sql = format!(
+                "SELECT status_code, COUNT(*) FROM traffic{where_clause} \
+                 GROUP BY status_code ORDER BY status_code"
+            );
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| GctlError::Storage(e.to_string()))?;
+            let mut rows = stmt
+                .query(bind.as_slice())
+                .map_err(|e| GctlError::Storage(e.to_string()))?;
+            while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+                let code: i32 = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+                let count: i64 = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+                by_status.push((code as u16, count as u64));
+            }
+        }
 
         Ok(TrafficStats {
             total_requests: total as u64,
-            ..Default::default()
+            total_request_bytes: total_req_bytes as u64,
+            total_response_bytes: total_resp_bytes as u64,
+            by_host,
+            by_status,
         })
     }
 
-    pub fn get_analytics(&self) -> Result<Analytics> {
+    /// Per-host aggregate richer than `get_traffic_stats.by_host` —
+    /// includes byte totals so the Network sub-panel can rank by either
+    /// request volume or transfer size. `top` caps the row count;
+    /// `since` is inclusive lower bound on `timestamp`.
+    pub fn get_traffic_by_host(
+        &self,
+        top: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Vec<(String, u64, u64, u64)>> {
+        // Returns (host, requests, request_bytes, response_bytes).
+        let conn = self.conn.lock().unwrap();
+        let (where_clause, since_iso) = match since {
+            Some(s) => (" WHERE timestamp >= ?".to_string(), Some(s.to_rfc3339())),
+            None => (String::new(), None),
+        };
+        let bind: Vec<&dyn duckdb::ToSql> = match since_iso.as_ref() {
+            Some(s) => vec![s],
+            None => Vec::new(),
+        };
+        let sql = format!(
+            "SELECT host, COUNT(*), \
+                    COALESCE(SUM(request_size), 0), \
+                    COALESCE(SUM(response_size), 0) \
+             FROM traffic{where_clause} \
+             GROUP BY host ORDER BY COUNT(*) DESC LIMIT {top}"
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query(bind.as_slice())
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            let host: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let req: i64 = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let req_b: i64 = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let resp_b: i64 = row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?;
+            out.push((host, req as u64, req_b as u64, resp_b as u64));
+        }
+        Ok(out)
+    }
+
+    /// Daily traffic totals for the most recent `days` calendar days
+    /// (newest first). Bucketed by `DATE(timestamp)`. Returns rows for
+    /// days that actually had traffic — empty days are not zero-filled
+    /// so a sparse log doesn't bloat the response.
+    pub fn get_traffic_daily(&self, days: u32) -> Result<Vec<(String, u64, u64, u64)>> {
+        // Returns (date, requests, request_bytes, response_bytes).
+        // Bucket on the leading 10 chars of `timestamp` — the column is
+        // a VARCHAR holding RFC-3339 (`YYYY-MM-DDTHH:MM:SS...Z`), so
+        // SUBSTR(timestamp, 1, 10) is the calendar date as text.
+        // Avoids needing a DuckDB FromSql impl for `chrono::NaiveDate`.
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT SUBSTR(timestamp, 1, 10) AS d, COUNT(*), \
+                        COALESCE(SUM(request_size), 0), \
+                        COALESCE(SUM(response_size), 0) \
+                 FROM traffic GROUP BY d ORDER BY d DESC LIMIT ?",
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query(params![days as i64])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            let date: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let req: i64 = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let req_b: i64 = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let resp_b: i64 = row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?;
+            out.push((date, req as u64, req_b as u64, resp_b as u64));
+        }
+        Ok(out)
+    }
+
+    pub fn get_analytics(&self, created_by: Option<&[CreatedBy]>) -> Result<Analytics> {
         let conn = self.conn.lock().unwrap();
 
-        let total_sessions: i64 = conn
-            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
-            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        // Sessions-side aggregates filter on `sessions.created_by` directly.
+        // Spans-side aggregates filter via JOIN — provenance lives on the
+        // session (see specs/architecture/apps/gctrl-analytics.md §1).
+        let sessions_filter = sessions_provenance_filter(created_by);
+        let spans_filter = spans_provenance_join(created_by);
+        let sess_params = sessions_filter.params();
+        let span_params = spans_filter.params();
 
-        let total_spans: i64 = conn
-            .query_row("SELECT COUNT(*) FROM spans", [], |row| row.get(0))
-            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let total_sessions: i64 = {
+            let sql = format!("SELECT COUNT(*) FROM sessions{}", sessions_filter.where_clause);
+            conn.query_row(&sql, sess_params.as_slice(), |row| row.get(0))
+                .map_err(|e| GctlError::Storage(e.to_string()))?
+        };
 
-        let total_cost: f64 = conn
-            .query_row(
-                "SELECT COALESCE(SUM(total_cost_usd), 0) FROM sessions",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let total_spans: i64 = {
+            let sql = format!(
+                "SELECT COUNT(*) FROM spans sp{}{}",
+                spans_filter.join, spans_filter.where_clause
+            );
+            conn.query_row(&sql, span_params.as_slice(), |row| row.get(0))
+                .map_err(|e| GctlError::Storage(e.to_string()))?
+        };
 
-        let total_input: i64 = conn
-            .query_row(
-                "SELECT COALESCE(SUM(total_input_tokens), 0) FROM sessions",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let (total_cost, total_input, total_output): (f64, i64, i64) = {
+            let sql = format!(
+                "SELECT COALESCE(SUM(total_cost_usd), 0), \
+                        COALESCE(SUM(total_input_tokens), 0), \
+                        COALESCE(SUM(total_output_tokens), 0) \
+                 FROM sessions{}",
+                sessions_filter.where_clause
+            );
+            conn.query_row(&sql, sess_params.as_slice(), |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .map_err(|e| GctlError::Storage(e.to_string()))?
+        };
 
-        let total_output: i64 = conn
-            .query_row(
-                "SELECT COALESCE(SUM(total_output_tokens), 0) FROM sessions",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|e| GctlError::Storage(e.to_string()))?;
-
-        // By agent
         let mut by_agent = Vec::new();
         {
+            let sql = format!(
+                "SELECT agent_name, COUNT(*), COALESCE(SUM(total_cost_usd), 0) \
+                 FROM sessions{} \
+                 GROUP BY agent_name ORDER BY SUM(total_cost_usd) DESC",
+                sessions_filter.where_clause
+            );
             let mut stmt = conn
-                .prepare("SELECT agent_name, COUNT(*), COALESCE(SUM(total_cost_usd), 0) FROM sessions GROUP BY agent_name ORDER BY SUM(total_cost_usd) DESC")
+                .prepare(&sql)
                 .map_err(|e| GctlError::Storage(e.to_string()))?;
             let mut rows = stmt
-                .query([])
+                .query(sess_params.as_slice())
                 .map_err(|e| GctlError::Storage(e.to_string()))?;
             while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
                 let agent_name: String =
@@ -396,14 +638,25 @@ impl DuckDbStore {
             }
         }
 
-        // By model
         let mut by_model = Vec::new();
         {
+            let model_clause = if spans_filter.where_clause.is_empty() {
+                " WHERE sp.model IS NOT NULL".to_string()
+            } else {
+                format!("{} AND sp.model IS NOT NULL", spans_filter.where_clause)
+            };
+            let sql = format!(
+                "SELECT sp.model, COUNT(*), COALESCE(SUM(sp.input_tokens), 0), \
+                        COALESCE(SUM(sp.output_tokens), 0), COALESCE(SUM(sp.cost_usd), 0) \
+                 FROM spans sp{}{} \
+                 GROUP BY sp.model ORDER BY SUM(sp.cost_usd) DESC",
+                spans_filter.join, model_clause
+            );
             let mut stmt = conn
-                .prepare("SELECT model, COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(cost_usd), 0) FROM spans WHERE model IS NOT NULL GROUP BY model ORDER BY SUM(cost_usd) DESC")
+                .prepare(&sql)
                 .map_err(|e| GctlError::Storage(e.to_string()))?;
             let mut rows = stmt
-                .query([])
+                .query(span_params.as_slice())
                 .map_err(|e| GctlError::Storage(e.to_string()))?;
             while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
                 let model: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
@@ -646,6 +899,93 @@ impl DuckDbStore {
         Ok(pvs)
     }
 
+    // --- Prompt Bodies (per-turn capture from LLM relay) ---
+
+    pub fn insert_prompt_body(&self, body: &PromptBody) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO prompt_bodies (id, session_id, span_id, trace_id, turn_ordinal, role, content, fingerprint, tokens, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                body.id,
+                body.session_id,
+                body.span_id,
+                body.trace_id,
+                body.turn_ordinal,
+                body.role,
+                body.content,
+                body.fingerprint,
+                body.tokens,
+                body.created_at.to_rfc3339(),
+            ],
+        )
+        .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn list_prompt_bodies_for_session(&self, session_id: &str) -> Result<Vec<PromptBody>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, span_id, trace_id, turn_ordinal, role, content, fingerprint, tokens, created_at \
+             FROM prompt_bodies WHERE session_id = ? ORDER BY turn_ordinal ASC, created_at ASC",
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query(params![session_id])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut bodies = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            bodies.push(row_to_prompt_body(row)?);
+        }
+        Ok(bodies)
+    }
+
+    /// Group prompt bodies by fingerprint with counts + a sample row.
+    /// `since_rfc3339` is an inclusive lower bound on `created_at`;
+    /// pass `None` for all-time. Returns rows ordered by count desc.
+    pub fn group_prompt_bodies_by_fingerprint(
+        &self,
+        since_rfc3339: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<PromptFingerprintGroup>> {
+        let conn = self.conn.lock().unwrap();
+        // Single SQL string; the `since` filter degenerates to "no
+        // bound" via a sentinel that always passes when the caller
+        // didn't supply one. This avoids the lifetime gymnastics of
+        // building a `params!` tuple in two arms.
+        let sql = "SELECT fingerprint, COUNT(*) AS n, MAX(role) AS role, MAX(content) AS content, \
+                   COALESCE(SUM(tokens), 0) AS tokens, MAX(created_at) AS last_seen, \
+                   COUNT(DISTINCT session_id) AS sessions \
+                   FROM prompt_bodies WHERE created_at >= ? \
+                   GROUP BY fingerprint ORDER BY n DESC LIMIT ?";
+        let since = since_rfc3339.unwrap_or("0000-01-01T00:00:00Z").to_string();
+        let limit_i = limit as i64;
+
+        let mut stmt = conn.prepare(sql).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query(params![since, limit_i])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            let fingerprint: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let count: i64 = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let role: String = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let content: String = row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let tokens: i64 = row.get(4).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let last_seen: String = row.get(5).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let sessions: i64 = row.get(6).map_err(|e| GctlError::Storage(e.to_string()))?;
+            out.push(PromptFingerprintGroup {
+                fingerprint,
+                count: count as u64,
+                role,
+                sample_content: content,
+                total_tokens: tokens as u64,
+                last_seen,
+                session_count: sessions as u64,
+            });
+        }
+        Ok(out)
+    }
+
     // --- Daily Aggregates ---
     pub fn upsert_daily_aggregate(&self, agg: &DailyAggregate) -> Result<()> {
         let conn = self.conn.lock().unwrap();
@@ -800,13 +1140,29 @@ impl DuckDbStore {
     }
 
     // --- Cost Analytics ---
-    pub fn get_cost_by_model(&self) -> Result<Vec<(String, f64, u64)>> {
+    pub fn get_cost_by_model(
+        &self,
+        created_by: Option<&[CreatedBy]>,
+    ) -> Result<Vec<(String, f64, u64)>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT model, COALESCE(SUM(cost_usd), 0), COUNT(*) FROM spans WHERE model IS NOT NULL GROUP BY model ORDER BY SUM(cost_usd) DESC"
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let spans = spans_provenance_join(created_by);
+        let span_params = spans.params();
+        let model_clause = if spans.where_clause.is_empty() {
+            " WHERE sp.model IS NOT NULL".to_string()
+        } else {
+            format!("{} AND sp.model IS NOT NULL", spans.where_clause)
+        };
+        let sql = format!(
+            "SELECT sp.model, COALESCE(SUM(sp.cost_usd), 0), COUNT(*) \
+             FROM spans sp{}{} \
+             GROUP BY sp.model ORDER BY SUM(sp.cost_usd) DESC",
+            spans.join, model_clause
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         let mut rows = stmt
-            .query([])
+            .query(span_params.as_slice())
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
@@ -818,13 +1174,24 @@ impl DuckDbStore {
         Ok(results)
     }
 
-    pub fn get_cost_by_agent(&self) -> Result<Vec<(String, f64, u64)>> {
+    pub fn get_cost_by_agent(
+        &self,
+        created_by: Option<&[CreatedBy]>,
+    ) -> Result<Vec<(String, f64, u64)>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT agent_name, COALESCE(SUM(total_cost_usd), 0), COUNT(*) FROM sessions GROUP BY agent_name ORDER BY SUM(total_cost_usd) DESC"
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let sessions = sessions_provenance_filter(created_by);
+        let sess_params = sessions.params();
+        let sql = format!(
+            "SELECT agent_name, COALESCE(SUM(total_cost_usd), 0), COUNT(*) \
+             FROM sessions{} \
+             GROUP BY agent_name ORDER BY SUM(total_cost_usd) DESC",
+            sessions.where_clause
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         let mut rows = stmt
-            .query([])
+            .query(sess_params.as_slice())
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
@@ -861,21 +1228,36 @@ impl DuckDbStore {
     }
 
     /// Get span type distribution: count of Generation, Span, Event types.
-    pub fn get_span_type_distribution(&self) -> Result<Vec<(String, u64, f64)>> {
+    pub fn get_span_type_distribution(
+        &self,
+        created_by: Option<&[CreatedBy]>,
+    ) -> Result<Vec<(String, u64, f64)>> {
         let conn = self.conn.lock().unwrap();
-        let total: i64 = conn
-            .query_row("SELECT COUNT(*) FROM spans", [], |row| row.get(0))
-            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let spans = spans_provenance_join(created_by);
+        let span_params = spans.params();
+
+        let total: i64 = {
+            let sql = format!(
+                "SELECT COUNT(*) FROM spans sp{}{}",
+                spans.join, spans.where_clause
+            );
+            conn.query_row(&sql, span_params.as_slice(), |row| row.get(0))
+                .map_err(|e| GctlError::Storage(e.to_string()))?
+        };
         if total == 0 {
             return Ok(Vec::new());
         }
+
+        let sql = format!(
+            "SELECT sp.span_type, COUNT(*) FROM spans sp{}{} \
+             GROUP BY sp.span_type ORDER BY COUNT(*) DESC",
+            spans.join, spans.where_clause
+        );
         let mut stmt = conn
-            .prepare(
-                "SELECT span_type, COUNT(*) FROM spans GROUP BY span_type ORDER BY COUNT(*) DESC",
-            )
+            .prepare(&sql)
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         let mut rows = stmt
-            .query([])
+            .query(span_params.as_slice())
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
@@ -915,14 +1297,33 @@ impl DuckDbStore {
     }
 
     // --- Latency Analytics ---
-    pub fn get_latency_by_model(&self) -> Result<Vec<(String, f64, f64, f64)>> {
+    pub fn get_latency_by_model(
+        &self,
+        created_by: Option<&[CreatedBy]>,
+    ) -> Result<Vec<(String, f64, f64, f64)>> {
         // Returns (model, p50_ms, p95_ms, p99_ms)
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT model, PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_ms), PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms), PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY duration_ms) FROM spans WHERE model IS NOT NULL GROUP BY model"
-        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let spans = spans_provenance_join(created_by);
+        let span_params = spans.params();
+        let model_clause = if spans.where_clause.is_empty() {
+            " WHERE sp.model IS NOT NULL".to_string()
+        } else {
+            format!("{} AND sp.model IS NOT NULL", spans.where_clause)
+        };
+        let sql = format!(
+            "SELECT sp.model, \
+                    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY sp.duration_ms), \
+                    PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY sp.duration_ms), \
+                    PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY sp.duration_ms) \
+             FROM spans sp{}{} \
+             GROUP BY sp.model",
+            spans.join, model_clause
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
         let mut rows = stmt
-            .query([])
+            .query(span_params.as_slice())
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         let mut results = Vec::new();
         while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
@@ -2143,6 +2544,33 @@ fn row_to_prompt_version(row: &duckdb::Row<'_>) -> Result<PromptVersion> {
     })
 }
 
+fn row_to_prompt_body(row: &duckdb::Row<'_>) -> Result<PromptBody> {
+    let id: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let session_id: String = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let span_id: Option<String> = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let trace_id: Option<String> = row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let turn_ordinal: i32 = row.get(4).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let role: String = row.get(5).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let content: String = row.get(6).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let fingerprint: String = row.get(7).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let tokens: Option<i32> = row.get(8).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let created_at: String = row.get(9).map_err(|e| GctlError::Storage(e.to_string()))?;
+    Ok(PromptBody {
+        id,
+        session_id,
+        span_id,
+        trace_id,
+        turn_ordinal,
+        role,
+        content,
+        fingerprint,
+        tokens,
+        created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+            .map_err(|e| GctlError::Storage(format!("parse timestamp: {e}")))?
+            .with_timezone(&chrono::Utc),
+    })
+}
+
 fn row_to_inbox_message(row: &duckdb::Row<'_>) -> duckdb::Result<InboxMessage> {
     let context_str: String = row.get(7)?;
     let payload_str: Option<String> = row.get(10)?;
@@ -2345,7 +2773,7 @@ mod tests {
     #[test]
     fn test_analytics_empty() {
         let store = test_store();
-        let analytics = store.get_analytics().unwrap();
+        let analytics = store.get_analytics(None).unwrap();
         assert_eq!(analytics.total_sessions, 0);
         assert_eq!(analytics.total_spans, 0);
         assert!(analytics.by_agent.is_empty());
@@ -2375,7 +2803,7 @@ mod tests {
         let spans: Vec<Span> = (0..2).map(|i| make_span(&format!("sp{i}"), "s1")).collect();
         store.insert_spans(&spans).unwrap();
 
-        let analytics = store.get_analytics().unwrap();
+        let analytics = store.get_analytics(None).unwrap();
         assert_eq!(analytics.total_sessions, 1);
         assert_eq!(analytics.total_spans, 2);
         assert!((analytics.total_cost_usd - 0.10).abs() < 0.001);
@@ -2519,7 +2947,7 @@ mod tests {
         store
             .insert_spans(&[make_span("sp1", "s1"), make_span("sp2", "s1")])
             .unwrap();
-        let costs = store.get_cost_by_model().unwrap();
+        let costs = store.get_cost_by_model(None).unwrap();
         assert_eq!(costs.len(), 1);
         assert_eq!(costs[0].0, "claude-opus-4-6");
         assert!((costs[0].1 - 0.10).abs() < 0.001); // 2 * 0.05
@@ -2531,7 +2959,7 @@ mod tests {
         let store = test_store();
         store.insert_session(&make_session("s1")).unwrap();
         store.insert_spans(&[make_span("sp1", "s1")]).unwrap();
-        let costs = store.get_cost_by_agent().unwrap();
+        let costs = store.get_cost_by_agent(None).unwrap();
         assert_eq!(costs.len(), 1);
         assert_eq!(costs[0].0, "claude");
     }
@@ -2543,7 +2971,7 @@ mod tests {
         store
             .insert_spans(&[make_span("sp1", "s1"), make_span("sp2", "s1")])
             .unwrap();
-        let latencies = store.get_latency_by_model().unwrap();
+        let latencies = store.get_latency_by_model(None).unwrap();
         assert_eq!(latencies.len(), 1);
         assert_eq!(latencies[0].0, "claude-opus-4-6");
     }
@@ -2635,7 +3063,7 @@ mod tests {
             .insert_spans(&[gen_span, tool_span, event_span])
             .unwrap();
 
-        let dist = store.get_span_type_distribution().unwrap();
+        let dist = store.get_span_type_distribution(None).unwrap();
         assert_eq!(dist.len(), 3);
         let total: u64 = dist.iter().map(|(_, c, _)| c).sum();
         assert_eq!(total, 3);
@@ -2644,7 +3072,7 @@ mod tests {
     #[test]
     fn test_span_type_distribution_empty() {
         let store = test_store();
-        let dist = store.get_span_type_distribution().unwrap();
+        let dist = store.get_span_type_distribution(None).unwrap();
         assert!(dist.is_empty());
     }
 

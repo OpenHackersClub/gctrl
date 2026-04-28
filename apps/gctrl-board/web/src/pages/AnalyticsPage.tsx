@@ -3,6 +3,7 @@ import { api, type AnalyticsSyncStatus } from "@/api/client"
 import type {
   AnalyticsOverview,
   CostAnalytics,
+  ContributionRow,
   SessionSummary,
   SessionKind,
   TraceTreeNode,
@@ -11,6 +12,9 @@ import type {
   SpanAnalytics,
   ScoreSummary,
   AlertRule,
+  NetTrafficStats,
+  NetDomain,
+  NetTrafficRecord,
 } from "@/types"
 import type { Route } from "@/hooks/useRoute"
 import { useSessionStream } from "@/hooks/useSessionStream"
@@ -49,13 +53,14 @@ interface AnalyticsPageProps {
   navigate: (path: string) => void
 }
 
-const TABS = ["overview", "sessions", "usage", "evals"] as const
+const TABS = ["overview", "sessions", "usage", "evals", "contributions"] as const
 
 const TAB_PATH: Record<(typeof TABS)[number], string> = {
   overview: "/analytics/overview",
   sessions: "/analytics/sessions",
   usage: "/analytics/usage",
   evals: "/analytics/evals",
+  contributions: "/analytics/contributions",
 }
 
 export function AnalyticsPage({ route, navigate }: AnalyticsPageProps) {
@@ -82,6 +87,7 @@ export function AnalyticsPage({ route, navigate }: AnalyticsPageProps) {
               <TabsTrigger value="sessions">Sessions</TabsTrigger>
               <TabsTrigger value="usage">Usage</TabsTrigger>
               <TabsTrigger value="evals">Evals</TabsTrigger>
+              <TabsTrigger value="contributions">Contributions</TabsTrigger>
             </TabsList>
           </Tabs>
           <KindFilter kind={kind} onChange={setKind} />
@@ -111,8 +117,9 @@ export function AnalyticsPage({ route, navigate }: AnalyticsPageProps) {
               kind={kind}
             />
           )}
-          {route.tab === "usage" && <UsageTab />}
+          {route.tab === "usage" && <UsageTab kind={kind} />}
           {route.tab === "evals" && <EvalsTab />}
+          {route.tab === "contributions" && <ContributionsTab kind={kind} />}
         </div>
       </div>
     </TooltipProvider>
@@ -163,16 +170,15 @@ function OverviewTab({ kind }: { kind: SessionKind }) {
   const [error, setError] = useState<string | null>(null)
   const [syncStatus, setSyncStatus] = useState<AnalyticsSyncStatus | null>(null)
 
-  // Live count respects the kind filter — operators expect "live
-  // sessions now" to track the same population as the rest of the page.
-  // The cost/overview aggregates are not yet kind-filtered server-side
-  // (kernel's /api/analytics rollup is still population-wide); call
-  // that out in the KPI label rather than silently fudging.
+  // Live count + the rollup KPIs all respect the kind filter — kernel
+  // /api/analytics and /api/analytics/cost accept `?kind=` since the M3
+  // follow-up shipped, so the page no longer mixes filtered and
+  // population-wide totals on the same row.
   const refresh = useCallback(async () => {
     try {
       const [o, c, live, sync] = await Promise.all([
-        api.analytics.overview(),
-        api.analytics.cost(),
+        api.analytics.overview(kind),
+        api.analytics.cost(kind),
         // Kernel's /api/analytics rollup has no active_sessions field;
         // count from sessions.list?status=active instead.
         api.sessions.list({ status: "active", limit: 200, kind }),
@@ -279,12 +285,9 @@ function OverviewTab({ kind }: { kind: SessionKind }) {
     return <div className="p-8 text-zinc-500 font-mono text-sm">Loading…</div>
   }
 
-  // Live KPI follows the kind filter; the rollup KPIs are still
-  // population-wide because the kernel's /api/analytics endpoint
-  // doesn't accept a kind param yet. Annotate them so operators know.
-  const liveLabel =
-    kind === "all" ? "Live sessions" : `Live (${kind})`
-  const rollupSuffix = kind === "all" ? "" : " · all kinds"
+  // Every KPI now reflects the active kind filter — no more split label.
+  const kindSuffix = kind === "all" ? "" : ` (${kind})`
+  const liveLabel = kind === "all" ? "Live sessions" : `Live (${kind})`
 
   return (
     <div className="p-6 space-y-6">
@@ -292,12 +295,15 @@ function OverviewTab({ kind }: { kind: SessionKind }) {
       <div className="grid grid-cols-4 gap-4">
         <Kpi label={liveLabel} value={liveCount ?? "—"} accent />
         <Kpi
-          label={`Total sessions${rollupSuffix}`}
+          label={`Total sessions${kindSuffix}`}
           value={overview.total_sessions}
         />
-        <Kpi label={`Spans${rollupSuffix}`} value={overview.total_spans.toLocaleString()} />
         <Kpi
-          label={`Total cost${rollupSuffix}`}
+          label={`Spans${kindSuffix}`}
+          value={overview.total_spans.toLocaleString()}
+        />
+        <Kpi
+          label={`Total cost${kindSuffix}`}
           value={`$${overview.total_cost_usd.toFixed(4)}`}
         />
       </div>
@@ -912,7 +918,7 @@ function SpanNode({ node, depth }: { node: TraceTreeNode; depth: number }) {
 
 // ───────────────────────── Usage ─────────────────────────
 
-function UsageTab() {
+function UsageTab({ kind }: { kind: SessionKind }) {
   const [cost, setCost] = useState<CostAnalytics | null>(null)
   const [latency, setLatency] = useState<LatencyAnalytics | null>(null)
   const [spans, setSpans] = useState<SpanAnalytics | null>(null)
@@ -921,9 +927,9 @@ function UsageTab() {
   const refresh = useCallback(async () => {
     try {
       const [c, l, s] = await Promise.all([
-        api.analytics.cost(),
-        api.analytics.latency(),
-        api.analytics.spans(),
+        api.analytics.cost(kind),
+        api.analytics.latency(kind),
+        api.analytics.spans(kind),
       ])
       setCost(c)
       setLatency(l)
@@ -932,11 +938,11 @@ function UsageTab() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [])
+  }, [kind])
 
-  // Initial fetch on mount; aggregates only change meaningfully when a
-  // session ends (totals are session-scoped) so we re-pull on
-  // `session.ended` rather than on every span.
+  // Initial fetch on mount + on kind change; aggregates only change
+  // meaningfully when a session ends (totals are session-scoped) so we
+  // re-pull on `session.ended` rather than on every span.
   useEffect(() => {
     refresh()
   }, [refresh])
@@ -1064,12 +1070,244 @@ function UsageTab() {
         )}
       </Panel>
 
+      <NetworkSubPanel />
+    </div>
+  )
+}
+
+// ───────────────────────── Network sub-panel (M4) ─────────────────────────
+
+type NetWindow = "1h" | "24h" | "7d" | "all"
+
+function NetworkSubPanel() {
+  const [netWindow, setNetWindow] = useState<NetWindow>("24h")
+  const [stats, setStats] = useState<NetTrafficStats | null>(null)
+  const [domains, setDomains] = useState<NetDomain[] | null>(null)
+  const [recent, setRecent] = useState<NetTrafficRecord[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const since = netWindow === "all" ? undefined : netWindow
+
+  const refresh = useCallback(async () => {
+    try {
+      const [s, d, r] = await Promise.all([
+        api.net.stats(since),
+        api.net.domains({ since, top: 10 }),
+        api.net.logs({ since, limit: 20 }),
+      ])
+      setStats(s)
+      setDomains(d.domains)
+      setRecent(r)
+      setError(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [since])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  if (error) {
+    // Empty proxy table or proxy not running both surface as fetch
+    // errors; the kernel returns 200 + zeros when the table is empty,
+    // so a real error here means the kernel is unreachable.
+    return (
+      <div className="p-4 text-rose-400 font-mono text-sm border border-zinc-800">
+        Failed to load network: {error}
+        <div className="mt-1 text-zinc-500 text-[11px]">
+          Start the kernel with{" "}
+          <code className="text-foreground">gctrld serve --proxy</code> to
+          generate the CA cert and start capturing traffic.
+        </div>
+      </div>
+    )
+  }
+
+  const empty =
+    stats !== null &&
+    stats.total_requests === 0 &&
+    (domains?.length ?? 0) === 0
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-[13px] font-mono text-zinc-300 uppercase tracking-wider">
+          Proxied network traffic
+        </h3>
+        <ToggleGroup
+          type="single"
+          value={netWindow}
+          onValueChange={(v) => {
+            if (v) setNetWindow(v as NetWindow)
+          }}
+        >
+          <ToggleGroupItem value="1h">1h</ToggleGroupItem>
+          <ToggleGroupItem value="24h">24h</ToggleGroupItem>
+          <ToggleGroupItem value="7d">7d</ToggleGroupItem>
+          <ToggleGroupItem value="all">all</ToggleGroupItem>
+        </ToggleGroup>
+      </div>
+
+      {empty && (
+        <div className="text-[12px] font-mono text-zinc-500 border border-zinc-800 p-4">
+          No proxied requests in this window. Run{" "}
+          <code className="text-foreground">gctrl net setup</code> for the
+          shell env block, then start an agent — its outbound traffic will
+          flow through the local proxy and appear here.
+        </div>
+      )}
+
+      {!empty && stats && (
+        <div className="grid grid-cols-3 gap-3">
+          <Kpi label="Requests" value={stats.total_requests.toLocaleString()} />
+          <Kpi
+            label="Out (req body)"
+            value={formatBytes(stats.total_request_bytes)}
+          />
+          <Kpi
+            label="In (resp body)"
+            value={formatBytes(stats.total_response_bytes)}
+          />
+        </div>
+      )}
+
+      {!empty && domains && domains.length > 0 && (
+        <Panel
+          title="Top domains"
+          subtitle={`${domains.length} host${domains.length === 1 ? "" : "s"}`}
+        >
+          <SimpleTable
+            columns={["Host", "Requests", "Out", "In"]}
+            aligns={["left", "right", "right", "right"]}
+            rows={domains.map((d) => ({
+              key: d.host,
+              cells: [
+                <span className="text-zinc-200 truncate">{d.host}</span>,
+                <span className="text-zinc-400">{d.requests}</span>,
+                <span className="text-zinc-500">
+                  {formatBytes(d.request_bytes)}
+                </span>,
+                <span className="text-emerald-400">
+                  {formatBytes(d.response_bytes)}
+                </span>,
+              ],
+            }))}
+          />
+        </Panel>
+      )}
+
+      {!empty && stats && stats.by_status.length > 0 && (
+        <Panel title="Status code distribution">
+          <ul className="divide-y divide-zinc-800">
+            {stats.by_status.map(([code, count]) => {
+              const pct =
+                stats.total_requests > 0
+                  ? (count / stats.total_requests) * 100
+                  : 0
+              return (
+                <li
+                  key={code}
+                  className="flex items-center gap-3 px-4 py-2 text-[13px] font-mono"
+                >
+                  <span
+                    className={cn(
+                      "w-12 truncate",
+                      code >= 500
+                        ? "text-rose-400"
+                        : code >= 400
+                          ? "text-amber-400"
+                          : code >= 300
+                            ? "text-zinc-400"
+                            : "text-emerald-400",
+                    )}
+                  >
+                    {code}
+                  </span>
+                  <div className="flex-1 h-2 bg-zinc-900 border border-zinc-800 relative overflow-hidden">
+                    <div
+                      className={cn(
+                        "absolute inset-y-0 left-0",
+                        code >= 500
+                          ? "bg-rose-500/40"
+                          : code >= 400
+                            ? "bg-amber-500/40"
+                            : "bg-emerald-500/40",
+                      )}
+                      style={{ width: `${Math.min(100, pct)}%` }}
+                    />
+                  </div>
+                  <span className="w-16 text-right text-zinc-400">
+                    {count}
+                  </span>
+                  <span className="w-14 text-right text-zinc-500">
+                    {pct.toFixed(1)}%
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
+        </Panel>
+      )}
+
+      {!empty && recent && recent.length > 0 && (
+        <Panel
+          title="Recent requests"
+          subtitle={`latest ${recent.length}`}
+        >
+          <SimpleTable
+            columns={["Time", "Method", "Host", "Path", "Status", "Latency"]}
+            aligns={["left", "left", "left", "left", "right", "right"]}
+            rows={recent.map((r) => ({
+              key: r.id,
+              cells: [
+                <span className="text-zinc-500 text-[11px] tabular-nums">
+                  {new Date(r.timestamp).toLocaleTimeString()}
+                </span>,
+                <span className="text-zinc-300">{r.method}</span>,
+                <span className="text-zinc-200 truncate">{r.host}</span>,
+                <span className="text-zinc-400 truncate text-[12px]">
+                  {pathOf(r.url)}
+                </span>,
+                <HttpStatusBadge code={r.status_code} />,
+                <span className="text-zinc-500 tabular-nums">
+                  {r.duration_ms}ms
+                </span>,
+              ],
+            }))}
+          />
+        </Panel>
+      )}
+
       <div className="text-[11px] font-mono text-zinc-600 px-1">
-        Network sub-panel lands in M4 (depends on kernel proxy Phase 2 +
-        /api/net/*).
+        Per-session attribution lands when the proxy starts tagging
+        outbound traffic with <code>Session-Id</code> (spec Kernel Deps §2).
+        Until then, requests show host/process-level grouping only.
       </div>
     </div>
   )
+}
+
+function HttpStatusBadge({ code }: { code: number }) {
+  if (code >= 500) return <Badge variant="muted">{code}</Badge>
+  if (code >= 400) return <Badge variant="muted">{code}</Badge>
+  if (code >= 300) return <Badge variant="muted">{code}</Badge>
+  return <Badge variant="success">{code}</Badge>
+}
+
+function pathOf(url: string): string {
+  try {
+    return new URL(url).pathname || "/"
+  } catch {
+    return url
+  }
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n}B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)}MB`
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)}GB`
 }
 
 function Panel({
@@ -1365,6 +1603,202 @@ function ScoreKpi({
         </div>
       </CardContent>
     </Card>
+  )
+}
+
+// ───────────────────────── Contributions ─────────────────────────
+
+// Until the kernel exposes a workspace→repo mapping, the operator
+// configures it locally. Most of the dogfooding happens against the
+// gctrl repo itself, so default to that. Stored under localStorage so
+// the choice survives reloads without bloating the URL.
+const CONTRIB_REPO_KEY = "gctrl.analytics.contribRepo"
+const DEFAULT_CONTRIB_REPO = "OpenHackersClub/gctrl"
+
+type ContribSince = "all" | "7d" | "30d" | "90d"
+
+function ContributionsTab({ kind }: { kind: SessionKind }) {
+  const [repo, setRepo] = useState<string>(
+    () =>
+      (typeof window !== "undefined" &&
+        window.localStorage.getItem(CONTRIB_REPO_KEY)) ||
+      DEFAULT_CONTRIB_REPO,
+  )
+  const [since, setSince] = useState<ContribSince>("30d")
+  const [rows, setRows] = useState<ContributionRow[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await api.contributions.list({
+        repo,
+        kind,
+        limit: 30,
+        since: since === "all" ? undefined : since,
+      })
+      setRows(res.contributions)
+      setError(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      setRows(null)
+    } finally {
+      setLoading(false)
+    }
+  }, [repo, kind, since])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  return (
+    <div className="p-6 space-y-6">
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between gap-4">
+          <div>
+            <CardTitle>Contributions</CardTitle>
+            <span className="text-[11px] font-mono text-muted-foreground/70">
+              PRs joined to sessions via{" "}
+              <code className="text-foreground">Session-Id:</code> commit
+              trailers — see analytics spec §M5
+            </span>
+          </div>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              window.localStorage.setItem(CONTRIB_REPO_KEY, repo)
+              refresh()
+            }}
+            className="flex items-center gap-2"
+          >
+            <ToggleGroup
+              type="single"
+              value={since}
+              onValueChange={(v) => {
+                if (v) setSince(v as ContribSince)
+              }}
+            >
+              <ToggleGroupItem value="7d">7d</ToggleGroupItem>
+              <ToggleGroupItem value="30d">30d</ToggleGroupItem>
+              <ToggleGroupItem value="90d">90d</ToggleGroupItem>
+              <ToggleGroupItem value="all">all</ToggleGroupItem>
+            </ToggleGroup>
+            <input
+              value={repo}
+              onChange={(e) => setRepo(e.target.value)}
+              placeholder="owner/repo"
+              className="bg-background border border-input px-3 py-1.5 text-[13px] font-mono text-foreground w-56
+                focus:outline-none focus:border-ring"
+            />
+            <Button type="submit" size="sm" disabled={!repo.trim() || loading}>
+              {loading ? "Loading…" : "Refresh"}
+            </Button>
+          </form>
+        </CardHeader>
+
+        {error && (
+          <CardContent className="text-rose-400 font-mono text-sm">
+            Failed to load: {error}
+            <div className="mt-1 text-muted-foreground/70 text-[11px]">
+              The kernel shells out to <code>gh pr list</code> for this route — make sure{" "}
+              <code>gh auth status</code> is OK on the kernel host.
+            </div>
+          </CardContent>
+        )}
+
+        {!error && rows && rows.length === 0 && (
+          <EmptyRow
+            text={
+              kind === "all"
+                ? `No PRs found in ${repo}.`
+                : `No PRs in ${repo} match kind=${kind}. Unattributed PRs are dropped when a kind filter is active — switch back to "all" to see them.`
+            }
+          />
+        )}
+
+        {rows && rows.length > 0 && (
+          <SimpleTable
+            columns={["", "Ref", "Title", "Author", "Session", "State"]}
+            aligns={["left", "left", "left", "left", "left", "left"]}
+            rows={rows.map((r) => ({
+              // Commits are SHA-keyed (number=0); PRs are number-keyed.
+              // Both have `url`, which is unique per row, so use it as
+              // the React key to avoid commit/PR collision.
+              key: r.url,
+              cells: [
+                <ContribTypeBadge type={r.type} />,
+                <ContribRefCell row={r} />,
+                <span className="text-zinc-200 truncate">{r.title}</span>,
+                <span className="text-zinc-400 text-[12px]">{r.author}</span>,
+                <ContribSessionCell row={r} />,
+                <ContribStateBadge state={r.state} />,
+              ],
+            }))}
+          />
+        )}
+      </Card>
+
+      <div className="text-[11px] font-mono text-zinc-600 px-1">
+        PRs ({" "}
+        <code className="text-zinc-500">gh pr list</code>) and commits ({" "}
+        <code className="text-zinc-500">gh api repos/&hellip;/commits</code>)
+        merged by date. Closed-issues join lands in a follow-up; missing
+        trailers are kept as{" "}
+        <span className="text-zinc-400">unattributed</span> rows per
+        spec §4 (loss-tolerant inference).
+      </div>
+    </div>
+  )
+}
+
+function ContribTypeBadge({ type }: { type: "pr" | "commit" }) {
+  return type === "pr" ? (
+    <Badge variant="muted">pr</Badge>
+  ) : (
+    <Badge variant="muted">commit</Badge>
+  )
+}
+
+function ContribRefCell({ row }: { row: ContributionRow }) {
+  // PRs get a `#42` link; commits get a 7-char SHA link.
+  const label = row.type === "pr" ? `#${row.number}` : (row.sha ?? "").slice(0, 7)
+  return (
+    <a
+      href={row.url}
+      target="_blank"
+      rel="noreferrer"
+      className="text-primary hover:underline font-mono text-[12px]"
+    >
+      {label}
+    </a>
+  )
+}
+
+function ContribStateBadge({ state }: { state: string }) {
+  const upper = state?.toUpperCase()
+  if (upper === "MERGED") return <Badge variant="success">merged</Badge>
+  if (upper === "CLOSED") return <Badge variant="muted">closed</Badge>
+  if (upper === "OPEN") return <Badge variant="success" dot>open</Badge>
+  return <Badge variant="muted">{state || "—"}</Badge>
+}
+
+function ContribSessionCell({ row }: { row: ContributionRow }) {
+  if (!row.session_id) {
+    return (
+      <span className="text-muted-foreground/60 text-[12px] italic">
+        unattributed
+      </span>
+    )
+  }
+  return (
+    <a
+      href={`/analytics/sessions/${row.session_id}`}
+      className="text-primary hover:underline text-[12px] font-mono"
+      title={`agent ${row.session_agent ?? "?"}, kind ${row.created_by ?? "?"}`}
+    >
+      {row.session_agent ?? row.session_id.slice(0, 8)}
+    </a>
   )
 }
 

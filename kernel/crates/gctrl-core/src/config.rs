@@ -67,18 +67,41 @@ impl Default for OtelConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyConfig {
     pub listen_port: u16,
+    pub listen_host: String,
     pub allowed_domains: Vec<String>,
     pub rate_limit_rps: Option<u32>,
+    /// Redact these query-string param names before persisting URLs.
+    pub redact_query_params: Vec<String>,
 }
 
 impl Default for ProxyConfig {
     fn default() -> Self {
         Self {
             listen_port: 8080,
+            listen_host: "127.0.0.1".into(),
             allowed_domains: vec![],
             rate_limit_rps: None,
+            redact_query_params: vec![
+                "access_token".into(),
+                "api_key".into(),
+                "code".into(),
+                "token".into(),
+            ],
         }
     }
+}
+
+impl ProxyConfig {
+    /// Directory where the MITM CA cert + key live.
+    /// Format matches gctrl convention: `~/.local/share/gctrl/proxy/ca/`.
+    pub fn ca_dir() -> PathBuf {
+        gctrl_data_dir().join("proxy/ca")
+    }
+}
+
+/// Public helper — `~/.local/share/gctrl/`.
+pub fn gctrl_data_dir() -> PathBuf {
+    dirs_default_data().join("gctrl")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

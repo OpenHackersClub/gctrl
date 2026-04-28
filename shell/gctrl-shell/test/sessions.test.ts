@@ -63,6 +63,31 @@ const mockCostBreakdown = {
   ],
 }
 
+const mockPrompts = {
+  session_id: "sess-001",
+  count: 2,
+  prompts: [
+    {
+      id: "p-1",
+      session_id: "sess-001",
+      turn_ordinal: 0,
+      role: "user",
+      content: "fix the failing test",
+      fingerprint: "fp-1",
+      tokens: 8,
+    },
+    {
+      id: "p-2",
+      session_id: "sess-001",
+      turn_ordinal: 1,
+      role: "assistant",
+      content: "looking at the test now",
+      fingerprint: "fp-2",
+      tokens: 6,
+    },
+  ],
+}
+
 const MockLayer = createMockKernelClient(
   {
     "/api/sessions": mockSessions,
@@ -71,6 +96,7 @@ const MockLayer = createMockKernelClient(
     "/api/sessions/sess-001/tree": mockTree,
     "/api/sessions/sess-001/loops": mockLoops,
     "/api/sessions/sess-001/cost-breakdown": mockCostBreakdown,
+    "/api/sessions/sess-001/prompts": mockPrompts,
   },
   {
     "/api/sessions/sess-001/end": { session_id: "sess-001", status: "completed", loops_detected: 0 },
@@ -208,6 +234,33 @@ describe("Sessions commands (via KernelClient)", () => {
 
     const result = await Effect.runPromise(program.pipe(Effect.provide(MockLayer)))
     expect(result.count).toBe(0)
+  })
+
+  it("prompts returns ordered turn list with role + tokens", async () => {
+    const PromptList = Schema.Struct({
+      session_id: Schema.String,
+      count: Schema.Number,
+      prompts: Schema.Array(
+        Schema.Struct({
+          turn_ordinal: Schema.Number,
+          role: Schema.String,
+          content: Schema.String,
+          tokens: Schema.NullOr(Schema.Number),
+        })
+      ),
+    })
+
+    const program = Effect.gen(function* () {
+      const kernel = yield* KernelClient
+      return yield* kernel.get("/api/sessions/sess-001/prompts", PromptList)
+    })
+
+    const result = await Effect.runPromise(program.pipe(Effect.provide(MockLayer)))
+    expect(result.count).toBe(2)
+    expect(result.prompts[0].role).toBe("user")
+    expect(result.prompts[0].turn_ordinal).toBe(0)
+    expect(result.prompts[1].role).toBe("assistant")
+    expect(result.prompts[1].tokens).toBe(6)
   })
 
   it("cost-breakdown returns per-model data", async () => {

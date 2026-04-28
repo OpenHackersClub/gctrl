@@ -45,16 +45,19 @@ const maxItemsOpt = Options.integer("max-items-per-interest").pipe(
   Options.withDefault(5),
 )
 
+// Default to 2: hosted gateways tolerate 3+, but local OpenAI-compat backends
+// (LM Studio, Ollama) often serialize requests and drop in-flight forwards
+// when more than ~2 land at once. Bump via UBER_REPORT_CONCURRENCY for cloud.
 const envConcurrency = (): number => {
   const raw = process.env.UBER_REPORT_CONCURRENCY
-  if (!raw) return 3
+  if (!raw) return 2
   const n = Number.parseInt(raw, 10)
-  return Number.isFinite(n) && n > 0 ? n : 3
+  return Number.isFinite(n) && n > 0 ? n : 2
 }
 
 const concurrencyOpt = Options.integer("concurrency").pipe(
   Options.withDescription(
-    "Concurrent LLM calls across interests (default 3, overridable via UBER_REPORT_CONCURRENCY)",
+    "Concurrent LLM calls across interests (default 2, overridable via UBER_REPORT_CONCURRENCY)",
   ),
   Options.withDefault(envConcurrency()),
 )
@@ -243,6 +246,7 @@ export const report = Command.make(
             topics: it.topics,
             notes: it.notes,
             candidates: cands,
+            fieldFamiliarity: it.fieldFamiliarity,
           }
         })
 
@@ -252,23 +256,91 @@ export const report = Command.make(
 
         const vaultSlugs = yield* vaultSvc.listSlugs()
 
-        // One LLM call per interest, run with bounded concurrency.
-        const responses: ReadonlyArray<{
+        // Two-pass per interest: (1) propose sub-topic for the week, (2) deep-
+        // dive on the chosen sub-topic with that subtopic's relevant candidates.
+        type DeepResponse = {
           readonly input: (typeof interestInputs)[number]
+          readonly subtopicSelected: {
+            readonly slug: string
+            readonly title: string
+            readonly rationale: string
+          } | null
+          readonly subtopicAlternatives: ReadonlyArray<{
+            readonly slug: string
+            readonly title: string
+            readonly rationale: string
+          }>
+          readonly proposeCostUsd: number
           readonly response: InterestReportResponse
-        }> = yield* Effect.all(
+        }
+        const responses: ReadonlyArray<DeepResponse> = yield* Effect.all(
           interestInputs.map((ii) =>
             Effect.gen(function* () {
-              yield* Console.log(`  → ${ii.slug}: requesting deep analysis ...`)
-              const response = yield* llm.generateInterestReport({
+              yield* Console.log(`  → ${ii.slug}: proposing subtopic ...`)
+              const propose = yield* llm.proposeSubtopic({
                 periodLabel,
                 periodStart,
                 periodEnd,
                 profileName: profile.profile.identity.name,
                 interest: ii,
-                maxItems,
               })
-              return { input: ii, response }
+              const selected = propose.proposals.find(
+                (p) => p.slug === propose.selectedSlug,
+              )
+              const subtopicSelected = selected
+                ? {
+                    slug: selected.slug,
+                    title: selected.title,
+                    rationale: selected.rationale,
+                  }
+                : null
+              const subtopicAlternatives = propose.proposals
+                .filter((p) => p.slug !== propose.selectedSlug)
+                .map((p) => ({
+                  slug: p.slug,
+                  title: p.title,
+                  rationale: p.rationale,
+                }))
+              // Pass 2 always sees the full candidate pool (top up to 20):
+              // the marked-relevant ones first, then the highest-scored
+              // unmarked ones as adjacent context. A narrow subtopic with only
+              // 1–2 marked candidates was starving pass 2 below the prompt's
+              // 600-word floor; topping up gives the model enough material to
+              // write a substantive deep-dive while the subtopic prompt keeps
+              // the framing focused.
+              const MIN_DEEP_CANDIDATES = 20
+              const relevantSet = new Set(selected?.relevantCandidateIds ?? [])
+              const marked = ii.candidates.filter((c) => relevantSet.has(c.id))
+              const markedIds = new Set(marked.map((c) => c.id))
+              const fillers = ii.candidates
+                .filter((c) => !markedIds.has(c.id))
+                .slice(0, Math.max(0, MIN_DEEP_CANDIDATES - marked.length))
+              const filteredCands = [...marked, ...fillers]
+              const interestForDeep: typeof ii = {
+                ...ii,
+                candidates: filteredCands,
+              }
+              yield* Console.log(
+                subtopicSelected
+                  ? `  → ${ii.slug}: deep-dive on subtopic '${subtopicSelected.title}' (${marked.length}/${ii.candidates.length} marked relevant)`
+                  : `  → ${ii.slug}: deep-dive (no subtopic selected)`,
+              )
+              const response = yield* llm.generateInterestReport({
+                periodLabel,
+                periodStart,
+                periodEnd,
+                profileName: profile.profile.identity.name,
+                interest: interestForDeep,
+                maxItems,
+                subtopic: subtopicSelected,
+              })
+              return {
+                input: ii,
+                subtopicSelected,
+                subtopicAlternatives,
+                proposeCostUsd: propose.costUsd,
+                response,
+              }
             }),
           ),
           { concurrency },
@@ -277,6 +349,7 @@ export const report = Command.make(
         // Render per-interest reports; drop empty ones (insight-only).
         type Written = {
           readonly interest: (typeof interestInputs)[number]
+          readonly subtopicSelected: DeepResponse["subtopicSelected"]
           readonly response: InterestReportResponse
           readonly markdown: string
           readonly reportSlug: string
@@ -287,8 +360,12 @@ export const report = Command.make(
         }
         const written: Array<Written> = []
         let totalCost = 0
-        for (const { input: ii, response } of responses) {
-          totalCost += response.costUsd
+        for (const r of responses) {
+          const ii = r.input
+          const response = r.response
+          // Total cost combines pass 1 (propose) and pass 2 (deep-dive).
+          const interestCost = response.costUsd + r.proposeCostUsd
+          totalCost += interestCost
           const analysisTrim = response.analysis_md.trim()
           if (analysisTrim.length === 0 && response.items.length === 0) {
             yield* Console.log(
@@ -303,12 +380,15 @@ export const report = Command.make(
             generator: llm.name(),
             model: response.model,
             promptHash: response.promptHash,
-            costUsd: response.costUsd,
+            costUsd: interestCost,
             profileName: profile.profile.identity.name,
             interestSlug: ii.slug,
             interestTitle: ii.title,
             interestQuestion: ii.question,
             interestTopics: ii.topics,
+            fieldFamiliarity: ii.fieldFamiliarity,
+            subtopic: r.subtopicSelected,
+            subtopicAlternatives: r.subtopicAlternatives,
             analysis_md: response.analysis_md,
             items: response.items,
             candidates: ii.candidates,
@@ -322,11 +402,12 @@ export const report = Command.make(
               `  ✓ ${w.relPath} (${w.contentHash}) — ${rendered.itemCount} item(s), ${rendered.citedClaims}/${rendered.totalClaims} claims cited`,
             )
             yield* Console.log(
-              `    cost: $${response.costUsd.toFixed(4)} (in=${response.inputTokens}t out=${response.outputTokens}t model=${response.model})`,
+              `    cost: $${interestCost.toFixed(4)} (propose=$${r.proposeCostUsd.toFixed(4)} deep=$${response.costUsd.toFixed(4)} in=${response.inputTokens}t out=${response.outputTokens}t model=${response.model})`,
             )
           }
           written.push({
             interest: ii,
+            subtopicSelected: r.subtopicSelected,
             response,
             markdown: rendered.markdown,
             reportSlug: rendered.slug,
@@ -342,6 +423,7 @@ export const report = Command.make(
           interestSlug: w.interest.slug,
           interestTitle: w.interest.title,
           interestQuestion: w.interest.question,
+          subtopicTitle: w.subtopicSelected?.title ?? null,
           reportSlug: w.reportSlug,
           publicUrl: publicReportUrl(w.reportSlug),
           itemCount: w.itemCount,

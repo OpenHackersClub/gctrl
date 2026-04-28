@@ -42,6 +42,7 @@ export type ResearchInterest = {
   readonly sources: ReadonlyArray<string>
   readonly horizon: "short" | "long" | "both" | null
   readonly weight: number | null
+  readonly fieldFamiliarity: "expert" | "novice"
   readonly notes: string
   readonly relPath: string
 }

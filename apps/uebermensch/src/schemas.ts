@@ -55,17 +55,43 @@ export const ProfileConfig = Schema.Struct({
   delivery: Delivery,
 })
 
+// Person topics open up name/alias matching and feed discovery.
+// `kind` defaults to "topic"; vault files written before this field landed
+// continue to load.
+export const TopicKind = Schema.Literal("topic", "person")
+export type TopicKind = typeof TopicKind.Type
+
+// Discovery config — currently only meaningful for person topics. When
+// `google_news` is true, `gctrl uber ingest person` auto-builds a Google News
+// RSS query from `title` (and optionally aliases) and ingests recent items.
+// `feeds` is a list of pre-built RSS/Atom URLs (e.g. a personal blog feed,
+// substack, or a curated YouTube interview channel).
+export const TopicDiscovery = Schema.Struct({
+  google_news: Schema.optional(Schema.Boolean),
+  interviews: Schema.optional(Schema.Boolean),
+  feeds: Schema.optional(Schema.Array(Schema.String)),
+})
+export type TopicDiscovery = typeof TopicDiscovery.Type
+
 export const TopicEntry = Schema.Struct({
   slug: Slug,
   title: Schema.String,
   horizon: Schema.Literal("short", "long", "both"),
   weight: Schema.Number,
+  kind: Schema.optional(TopicKind),
+  // Free-text surface forms used during classification: full name, handles,
+  // common short forms. Unlike `watchlist` (which is slug-shaped), aliases
+  // accept spaces, punctuation, and mixed case — "Sam Altman", "@sama".
+  aliases: Schema.optional(Schema.Array(Schema.String)),
   watchlist: Schema.optional(Schema.Array(Slug)),
+  discovery: Schema.optional(TopicDiscovery),
 })
 
 export const TopicsConfig = Schema.Struct({
   topics: Schema.Array(TopicEntry).pipe(Schema.minItems(1)),
 })
+
+export const SourceKind = Schema.Literal("news", "paper", "research-blog", "primary")
 
 export const SourceEntry = Schema.Struct({
   slug: Slug,
@@ -73,12 +99,17 @@ export const SourceEntry = Schema.Struct({
   cadence: Schema.String,
   topics: Schema.Array(Slug),
   url: Schema.optional(Schema.NullOr(Schema.String)),
+  // kind drives candidate ranking and renderer "Latest research" callout.
+  // Defaults to "news" when omitted (see SourceEntryDefaults).
+  kind: Schema.optional(SourceKind),
   config: Schema.optional(Schema.Unknown),
 })
 
 export const SourcesConfig = Schema.Struct({
   sources: Schema.Array(SourceEntry).pipe(Schema.minItems(1)),
 })
+
+export const FieldFamiliarity = Schema.Literal("expert", "novice")
 
 export const ResearchInterestFrontmatter = Schema.Struct({
   slug: Slug,
@@ -88,6 +119,9 @@ export const ResearchInterestFrontmatter = Schema.Struct({
   sources: Schema.optional(Schema.Array(Slug)),
   horizon: Schema.optional(Schema.Literal("short", "long", "both")),
   weight: Schema.optional(Schema.Number),
+  // expert = assume technical fluency; novice = ELI5 framing in deep-dives.
+  // Defaults to "expert" when omitted.
+  field_familiarity: Schema.optional(FieldFamiliarity),
 })
 
 export const PromptStatus = Schema.Literal("pending", "processed", "failed", "rerun")

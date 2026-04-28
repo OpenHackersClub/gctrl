@@ -31,7 +31,7 @@ impl<'a> QueryExecutor<'a> {
                     .map_err(|e| GctlError::Query(e.to_string()))?)
             }
             "analytics" => {
-                let analytics = self.store.get_analytics()?;
+                let analytics = self.store.get_analytics(None)?;
                 Ok(serde_json::to_value(&analytics)
                     .map_err(|e| GctlError::Query(e.to_string()))?)
             }

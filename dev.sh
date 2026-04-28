@@ -17,6 +17,15 @@ cleanup() {
 }
 trap cleanup INT TERM EXIT
 
+# If the launchd kernel agent (./scripts/install-launchd.sh) is loaded, it
+# already owns :4318 and `cargo run -- serve` will fail to bind. Detect and
+# bail out with a hint instead of thrashing.
+if launchctl print "gui/$UID/dev.gctrl.kernel" >/dev/null 2>&1; then
+  echo "[dev] dev.gctrl.kernel LaunchAgent is loaded — it already owns :4318" >&2
+  echo "[dev] stop it first: ./scripts/install-launchd.sh uninstall" >&2
+  exit 1
+fi
+
 echo "[dev] starting kernel on :4318..."
 ( cargo run -p gctrl-cli -- serve ) &
 pids+=($!)

@@ -379,7 +379,7 @@ The Observe & Eval application owns evaluation primitives across the full produc
 | `eval_cases` | Cases belonging to datasets — `input`, `expected`, `context` (JSON-typed; permissive schema) |
 | `eval_runs` | Run-level metadata grouping a batch of `Score`s: suite name, `baseline_run_id`, `git_sha`, env, model, prompt version |
 
-DDL lands in `kernel/crates/gctrl-storage/src/schema.rs` under `CREATE_EVAL_*_TABLE` constants when M4 implementation begins.
+DDL lands in `kernel/crates/gctrl-storage/src/schema.rs` under `CREATE_EVAL_*_TABLE` constants when M4 implementation begins. See [implementation/kernel/eval-storage.md](../implementation/kernel/eval-storage.md) for column-level shapes, JSON column conventions, indexes, and migration order.
 
 The earlier `eval_scores` prefix was folded into the kernel-owned `scores` table for the continuity reasons above; the `eval_*` namespace is reserved for app-owned tables that the kernel does not need to know about.
 

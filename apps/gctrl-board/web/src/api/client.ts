@@ -13,6 +13,7 @@ import type {
   InboxStats,
   GanttView,
   SessionSummary,
+  SessionKind,
   AnalyticsOverview,
   CostAnalytics,
   DailyEntry,
@@ -21,9 +22,21 @@ import type {
   SpanAnalytics,
   ScoreSummary,
   AlertRule,
+  ContributionsResponse,
+  NetTrafficStats,
+  NetDomainsResponse,
+  NetDailyResponse,
+  NetTrafficRecord,
 } from "../types"
 
 const BASE = "/api/board"
+
+/// `?kind=` shorthand suffix for analytics rollup endpoints.
+/// `all` and undefined both mean "no filter" — emit no param so the
+/// kernel returns population-wide totals.
+function kindQuery(kind?: SessionKind): string {
+  return kind && kind !== "all" ? `?kind=${kind}` : ""
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -260,14 +273,23 @@ export const api = {
   },
 
   analytics: {
-    overview: () => request<AnalyticsOverview>("/api/analytics"),
-    cost: () => request<CostAnalytics>("/api/analytics/cost"),
+    // `kind` threads through to /api/analytics/* per analytics spec M3
+    // follow-up. `all` ⇒ no filter (population-wide totals); `internal`
+    // ⇒ {scheduler, api}; `external` ⇒ {otel_ingest}. The kernel
+    // accepts `kind` directly, so we only attach the param when it
+    // narrows the population.
+    overview: (kind?: SessionKind) =>
+      request<AnalyticsOverview>(`/api/analytics${kindQuery(kind)}`),
+    cost: (kind?: SessionKind) =>
+      request<CostAnalytics>(`/api/analytics/cost${kindQuery(kind)}`),
     daily: (days?: number) => {
       const q = days !== undefined ? `?days=${days}` : ""
       return request<DailyEntry[]>(`/api/analytics/daily${q}`)
     },
-    latency: () => request<LatencyAnalytics>("/api/analytics/latency"),
-    spans: () => request<SpanAnalytics>("/api/analytics/spans"),
+    latency: (kind?: SessionKind) =>
+      request<LatencyAnalytics>(`/api/analytics/latency${kindQuery(kind)}`),
+    spans: (kind?: SessionKind) =>
+      request<SpanAnalytics>(`/api/analytics/spans${kindQuery(kind)}`),
     score: (name: string) =>
       request<ScoreSummary>(
         `/api/analytics/scores?name=${encodeURIComponent(name)}`,
@@ -276,6 +298,56 @@ export const api = {
     syncStatus: () => request<AnalyticsSyncStatus>("/api/analytics/sync-status"),
     sync: () =>
       request<AnalyticsSyncStatus>("/api/analytics/sync", { method: "POST" }),
+  },
+
+  contributions: {
+    /** List PRs in `repo` with trailer-inferred session join. `kind`
+     *  drops rows whose joined session falls outside the population —
+     *  unattributed rows are kept iff `kind` is `all`/undefined. See
+     *  analytics spec M5. */
+    list: (params: {
+      repo: string
+      kind?: SessionKind
+      limit?: number
+      /** `7d` / `30d` / `90d` / `YYYY-MM-DD` — kernel resolves both shapes
+       *  (see receiver.rs::resolve_since). Empty / undefined ⇒ no filter. */
+      since?: string
+    }) => {
+      const qs = new URLSearchParams({ repo: params.repo })
+      if (params.kind && params.kind !== "all") qs.set("kind", params.kind)
+      if (params.limit !== undefined) qs.set("limit", String(params.limit))
+      if (params.since) qs.set("since", params.since)
+      return request<ContributionsResponse>(`/api/contributions?${qs.toString()}`)
+    },
+  },
+
+  /// Network traffic — proxied requests recorded by `gctrl-proxy`.
+  /// All calls accept the same `since` shorthand the kernel parses
+  /// (`15m`, `1h`, `24h`, `7d`); omit for all-time.
+  net: {
+    stats: (since?: string) => {
+      const q = since ? `?since=${encodeURIComponent(since)}` : ""
+      return request<NetTrafficStats>(`/api/net/stats${q}`)
+    },
+    domains: (params?: { since?: string; top?: number }) => {
+      const qs = new URLSearchParams()
+      if (params?.since) qs.set("since", params.since)
+      if (params?.top !== undefined) qs.set("top", String(params.top))
+      const q = qs.toString()
+      return request<NetDomainsResponse>(`/api/net/domains${q ? `?${q}` : ""}`)
+    },
+    daily: (days?: number) => {
+      const q = days !== undefined ? `?days=${days}` : ""
+      return request<NetDailyResponse>(`/api/net/daily${q}`)
+    },
+    logs: (params?: { host?: string; since?: string; limit?: number }) => {
+      const qs = new URLSearchParams()
+      if (params?.host) qs.set("host", params.host)
+      if (params?.since) qs.set("since", params.since)
+      if (params?.limit !== undefined) qs.set("limit", String(params.limit))
+      const q = qs.toString()
+      return request<NetTrafficRecord[]>(`/api/net/logs${q ? `?${q}` : ""}`)
+    },
   },
 }
 

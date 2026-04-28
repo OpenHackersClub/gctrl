@@ -147,6 +147,7 @@ export const FileSystemVaultLive = (vaultDir: string) =>
             sources: decoded.sources ?? [],
             horizon: decoded.horizon ?? null,
             weight: decoded.weight ?? null,
+            fieldFamiliarity: decoded.field_familiarity ?? "expert",
             notes: parsed.content.trim(),
             relPath: f.rel,
           })

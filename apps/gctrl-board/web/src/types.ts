@@ -126,6 +126,87 @@ export interface TraceTreeResponse {
   tags?: Array<{ key: string; value: string }>
 }
 
+// ── Contributions (analytics §M5) ──
+
+/** A single PR (commits will follow when the route adds them) joined
+ *  to a kernel session via its `Session-Id:` trailer. Rows without a
+ *  session_id are unattributed but still surfaced — the spec is
+ *  loss-tolerant on inference. */
+export interface ContributionRow {
+  type: "pr" | "commit"
+  /** PR number for `type=pr`; `0` for `type=commit` (SHA-keyed). */
+  number: number
+  /** Commit SHA — present only on `type=commit` rows. */
+  sha?: string
+  title: string
+  url: string
+  state: string
+  branch: string | null
+  author: string
+  created_at: string | null
+  merged_at: string | null
+  /** Trailer-extracted session id; null when no trailer / no match. */
+  session_id: string | null
+  session_agent: string | null
+  /** Provenance of the joined session — null when unattributed. */
+  created_by: CreatedBy | null
+}
+
+export interface ContributionsResponse {
+  contributions: ContributionRow[]
+}
+
+// ── Network traffic (analytics §M4) ──
+
+/** Aggregate traffic stats from `/api/net/stats?since=`. Mirrors
+ *  `gctrl_core::TrafficStats`. by_host / by_status are tuples to match
+ *  the kernel wire format (`Vec<(String, u64)>` → `[host, count][]`). */
+export interface NetTrafficStats {
+  total_requests: number
+  total_request_bytes: number
+  total_response_bytes: number
+  by_host: Array<[string, number]>
+  by_status: Array<[number, number]>
+}
+
+export interface NetDomain {
+  host: string
+  requests: number
+  request_bytes: number
+  response_bytes: number
+}
+
+export interface NetDomainsResponse {
+  domains: NetDomain[]
+}
+
+export interface NetDailyEntry {
+  date: string
+  requests: number
+  request_bytes: number
+  response_bytes: number
+}
+
+export interface NetDailyResponse {
+  daily: NetDailyEntry[]
+}
+
+/** A single proxied request returned by `/api/net/logs`. session_id
+ *  stays null until the proxy gains per-session attribution (spec
+ *  Kernel Dependencies §2). */
+export interface NetTrafficRecord {
+  id: string
+  timestamp: string
+  method: string
+  url: string
+  host: string
+  status_code: number
+  request_size_bytes: number
+  response_size_bytes: number
+  duration_ms: number
+  session_id: string | null
+}
+
 export type IssueStatus =
   | "backlog"
   | "todo"

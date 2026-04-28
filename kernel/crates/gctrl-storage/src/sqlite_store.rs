@@ -435,6 +435,8 @@ impl SqliteStore {
             "ALTER TABLE board_issues ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE board_issues ADD COLUMN synced INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE board_issues ADD COLUMN acceptance_criteria TEXT",
+            "ALTER TABLE board_issues ADD COLUMN start_date TEXT",
+            "ALTER TABLE board_issues ADD COLUMN due_date TEXT",
             "ALTER TABLE board_events ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE board_events ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'))",
             "ALTER TABLE board_events ADD COLUMN synced INTEGER NOT NULL DEFAULT 0",
