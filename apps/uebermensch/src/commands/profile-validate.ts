@@ -1,6 +1,7 @@
 import { Command } from "@effect/cli"
 import { Console, Effect } from "effect"
 import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js"
+import { ProfileError } from "../errors.js"
 import { resolveVaultDir } from "../lib/env.js"
 import { ProfileService } from "../services/ProfileService.js"
 
@@ -18,7 +19,12 @@ const validate = Command.make("validate", {}, () =>
     }
     yield* Console.error("✗ validation issues:")
     for (const issue of issues) yield* Console.error(`  - ${issue}`)
-    yield* Effect.fail(new Error(`${issues.length} validation issue(s)`))
+    yield* Effect.fail(
+      new ProfileError({
+        message: `${issues.length} validation issue(s)`,
+        issues,
+      }),
+    )
   }),
 ).pipe(Command.withDescription("Validate profile.md + topics.md + sources.md frontmatter"))
 

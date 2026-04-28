@@ -2,7 +2,8 @@ import { cp, mkdir, rename, stat } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { Args, Command, Options } from "@effect/cli"
-import { Console, Effect } from "effect"
+import { Console, Effect, Option } from "effect"
+import { VaultError, vaultIo } from "../errors.js"
 
 const here = dirname(fileURLToPath(import.meta.url))
 const FIXTURE_ROOT = resolve(here, "../../tests/fixtures/vault")
@@ -19,8 +20,8 @@ const fromSeed = Options.text("from-seed").pipe(
 export const vaultInit = Command.make("init", { target, fromSeed }, ({ target, fromSeed }) =>
   Effect.gen(function* () {
     const abs = resolve(target)
-    const exists = yield* Effect.tryPromise({
-      try: async () => {
+    const exists = yield* vaultIo(
+      async () => {
         try {
           const s = await stat(abs)
           return s.isDirectory()
@@ -28,15 +29,20 @@ export const vaultInit = Command.make("init", { target, fromSeed }, ({ target, f
           return false
         }
       },
-      catch: (e) => new Error(String(e)),
-    })
+      { message: "stat target failed", path: abs },
+    )
     if (exists) {
       yield* Console.error(`target ${abs} already exists — refusing to overwrite`)
-      return yield* Effect.fail(new Error("target exists"))
+      return yield* Effect.fail(
+        new VaultError({ message: "target exists", path: abs, kind: "collision" }),
+      )
     }
-    const seed = fromSeed._tag === "Some" ? resolve(fromSeed.value) : FIXTURE_ROOT
-    yield* Effect.tryPromise({
-      try: async () => {
+    const seed = Option.match(fromSeed, {
+      onSome: (v) => resolve(v),
+      onNone: () => FIXTURE_ROOT,
+    })
+    yield* vaultIo(
+      async () => {
         await mkdir(dirname(abs), { recursive: true })
         await cp(seed, abs, { recursive: true })
         const tmpl = join(abs, "gitignore.template")
@@ -46,8 +52,8 @@ export const vaultInit = Command.make("init", { target, fromSeed }, ({ target, f
           // no template — fine
         }
       },
-      catch: (e) => new Error(`init failed: ${String(e)}`),
-    })
+      { message: "init failed", path: abs },
+    )
     yield* Console.log(`✓ initialized vault at ${abs} from ${seed}`)
     yield* Console.log(`  Set UBER_VAULT_DIR=${abs} and open it in Obsidian.`)
   }),
