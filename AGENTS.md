@@ -98,8 +98,8 @@ Detailed programming patterns, code examples, and how-to guides live under `vaul
 | Directory / File | Scope | Content that belongs here |
 |-----------------|-------|--------------------------|
 | `vault/specs/implementation/kernel/` | Kernel implementation | Rust crate map, dependency graph, subsystem details (OTel, guardrails, context, proxy, sync, net, scheduler), kernel style guide, orchestrator, tracker. |
-| `vault/specs/implementation/shell/` | Shell implementation | Effect-TS CLI (`@effect/cli`), KernelClient/GitHubClient adapters, kernel↔shell HTTP communication patterns. |
-| `vault/specs/implementation/apps/` | Application implementation | Effect-TS package structure, gctrl-board details, app style guide, integration modes (sidecar, embedded). |
+| `vault/specs/implementation/shell/` | Shell implementation | Effect-TS CLI (`@effect/cli`), KernelClient/GitHubClient adapters, kernel↔shell HTTP communication patterns. Includes `style.md` (shell-specific Effect-TS rules — `ExecError` for subprocesses, `Option.match` for optional args, no dynamic `require`). |
+| `vault/specs/implementation/apps/` | Application implementation | Effect-TS package structure, gctrl-board details, app style guide (`style.md` — Bad/Good examples for tagged errors, Schema decode, no barrel re-exports), integration modes (sidecar, embedded). |
 | `vault/specs/implementation/formal/` | Formal spec conventions | Lean 4 style: Mathlib, generic theorems, state machine file structure, proof style, naming conventions. |
 | `vault/specs/implementation/repo.md` | Monorepo structure | Nx + Cargo workspace setup, directory layout, cross-language orchestration. |
 | `vault/specs/implementation/kernel/orchestrator.md` | Orchestration implementation | gctrl-orch Rust crate, agent adapters, retry constants, conformance testing. |
@@ -124,7 +124,7 @@ Detailed programming patterns, code examples, and how-to guides live under `vaul
 1. Dependencies MUST flow inward: Shell → Kernel → Domain, never reverse.
 2. DuckDB is single-writer: the daemon MUST hold the lock; shell and apps MUST use the HTTP API.
 3. Application tables MUST use namespaced prefixes (`board_*`, `eval_*`, `capacity_*`, `inbox_*`).
-4. Code MUST NOT access Effect-TS `._tag` directly — use combinators (`Effect.catchTag`, `Match.tag`).
+4. Code MUST NOT access Effect-TS `._tag` directly — use combinators (`Effect.catchTag`, `Match.tag`, `Option.match`). Also: no bare `new Error` in Effect contexts (use `Schema.TaggedError`), no `as any` on external JSON (use `Schema.decodeUnknown`), no `export *` barrels, no dynamic `require` inside Effect generators. Full list with Bad/Good examples: `vault/specs/principles.md` § Effect-TS Invariants and `vault/specs/implementation/{apps,shell}/style.md`. Reviewer sweep: `rg -n 'new Error\(|Effect\.fail\(new Error|as any|: any\b|^export \*|require\(|\._tag\b' shell apps --type ts`.
 5. **TDD is the default.** Write a failing test first, then make it pass, then refactor. No production code without a pre-existing test.
 6. Every new public function MUST have at least one test. Coverage: storage CRUD + HTTP routes (happy + error) + shell commands.
 7. Contributors MUST use feature branches — MUST NOT push directly to main.
