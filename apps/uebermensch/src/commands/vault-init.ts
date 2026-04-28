@@ -38,8 +38,8 @@ export const vaultInit = Command.make("init", { target, fromSeed }, ({ target, f
       )
     }
     const seed = Option.match(fromSeed, {
-      onSome: (v) => resolve(v),
       onNone: () => FIXTURE_ROOT,
+      onSome: (value) => resolve(value),
     })
     yield* vaultIo(
       async () => {

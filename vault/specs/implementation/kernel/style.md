@@ -64,4 +64,3 @@ pub trait GuardrailPolicy: Send + Sync {
 - `DuckDbStore::open(":memory:")` for all DB tests
 - `tempfile::TempDir` for filesystem tests (gctrl-net, gctrl-context)
 - `tower::ServiceExt::oneshot` for axum router tests
-- See [testing.md](../testing.md) for the full test strategy

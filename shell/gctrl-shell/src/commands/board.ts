@@ -34,6 +34,11 @@ const BoardIssue = Schema.Struct({
 })
 const BoardIssueList = Schema.Array(BoardIssue)
 
+type BoardIssue = typeof BoardIssue.Type
+const hasGhIssueNumber = (i: BoardIssue): i is BoardIssue & { github_issue_number: number } =>
+  i.github_issue_number != null
+const isUnsynced = (i: BoardIssue) => !hasGhIssueNumber(i)
+
 const BoardComment = Schema.Struct({
   id: Schema.String,
   issue_id: Schema.String,
@@ -455,9 +460,7 @@ const syncPullCommand = Command.make(
       ])
 
       const existingGhNumbers = new Set(
-        boardIssues
-          .filter((i) => i.github_issue_number !== undefined)
-          .map((i) => i.github_issue_number)
+        boardIssues.filter(hasGhIssueNumber).map((i) => i.github_issue_number)
       )
       const newFromGh = ghIssues.filter((gi) => !existingGhNumbers.has(gi.number))
 
@@ -493,9 +496,7 @@ const syncPushCommand = Command.make(
       const proj = yield* resolveLinkedProject(project)
 
       const boardIssues = yield* kernel.get(`/api/board/issues?project_id=${proj.id}`, BoardIssueList)
-      const unsynced = boardIssues.filter(
-        (i) => i.github_issue_number === undefined || i.github_issue_number === null
-      )
+      const unsynced = boardIssues.filter(isUnsynced)
 
       yield* Effect.forEach(unsynced, (bi) =>
         Effect.gen(function* () {
@@ -532,8 +533,8 @@ const syncStatusCommand = Command.make(
 
       if (proj.github_repo) {
         const boardIssues = yield* kernel.get(`/api/board/issues?project_id=${proj.id}`, BoardIssueList)
-        const synced = boardIssues.filter((i) => i.github_issue_number !== undefined)
-        const unsynced = boardIssues.filter((i) => i.github_issue_number === undefined || i.github_issue_number === null)
+        const synced = boardIssues.filter(hasGhIssueNumber)
+        const unsynced = boardIssues.filter(isUnsynced)
         yield* Console.log(`Synced:   ${synced.length} issues`)
         yield* Console.log(`Unsynced: ${unsynced.length} board-only issues`)
       }
