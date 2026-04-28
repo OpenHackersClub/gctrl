@@ -279,6 +279,99 @@ pub fn parse_sse_to_response(body: &str) -> Option<ChatCompletionsResponse> {
     })
 }
 
+// --- Generic OpenAI-compat exchange capture (relay + driver-llm) ---
+//
+// Both the LLM relay and the kernel's `driver-llm` HTTP route forward
+// OpenAI-compat `/v1/chat/completions` calls to a configurable upstream.
+// They share the same capture target — `prompt_bodies` rows + a single
+// OTLP generation span — so the persist/emit logic lives here, not in
+// either caller. Skipping capture is silent and never blocks the agent
+// loop: missing session id, unparseable JSON, or a downstream OTLP failure
+// all degrade to "request still served, telemetry quietly dropped."
+
+use std::time::SystemTime;
+
+/// Run the capture path for one OpenAI-compat chat-completions exchange.
+///
+/// All fields that block capture are passed as `Option`/`Result` so a
+/// caller never has to short-circuit upstream — the function decides
+/// internally whether enough is present to write a row. This is the
+/// single entry point the relay and `driver-llm` both call.
+///
+/// `upstream_url` is used only for `gen_ai.system` heuristics
+/// (`lmstudio`/`ollama`/`openai`/...); pass the URL the request was
+/// forwarded to, not the URL the client called.
+pub async fn capture_oai_exchange(
+    capture: &Capture,
+    upstream_url: &str,
+    req_body_text: &str,
+    resp_body_text: &str,
+    session_id: Option<&str>,
+    service_name: Option<&str>,
+    started_at: SystemTime,
+    status_code: u16,
+) {
+    let Some(sid) = session_id else { return };
+    let Ok(req) = serde_json::from_str::<ChatCompletionsRequest>(req_body_text) else {
+        return;
+    };
+    let Ok(rsp) = serde_json::from_str::<ChatCompletionsResponse>(resp_body_text) else {
+        return;
+    };
+
+    let trace_id = format!("{:032x}", Uuid::new_v4().as_u128());
+    let span_id = format!(
+        "{:016x}",
+        (Uuid::new_v4().as_u128() & 0xffff_ffff_ffff_ffff)
+    );
+    let turns = extract_turns(&req, &rsp, sid, &trace_id, &span_id);
+    if let Err(e) = capture.persist(&turns) {
+        tracing::warn!(error = %e, "prompt body persist failed");
+    }
+
+    let span_inputs = OtlpSpanInputs {
+        session_id: sid.to_string(),
+        trace_id,
+        span_id,
+        model: req.model.clone(),
+        gen_ai_system: derive_gen_ai_system_from_url(upstream_url),
+        prompt_tokens: rsp.usage.as_ref().and_then(|u| u.prompt_tokens),
+        completion_tokens: rsp.usage.as_ref().and_then(|u| u.completion_tokens),
+        start_unix_nano: unix_nanos(started_at),
+        end_unix_nano: unix_nanos(SystemTime::now()),
+        status_ok: (200..300).contains(&status_code),
+    };
+    let _ = capture
+        .emit_otlp_with_service(&span_inputs, service_name)
+        .await;
+}
+
+/// Best-effort `gen_ai.system` derivation from the upstream URL host.
+/// Returns `None` rather than guessing wrong — operators can always
+/// add a per-request override later.
+pub fn derive_gen_ai_system_from_url(upstream_url: &str) -> Option<String> {
+    let lower = upstream_url.to_lowercase();
+    if lower.contains("127.0.0.1:1234") || lower.contains("localhost:1234") {
+        Some("lmstudio".into())
+    } else if lower.contains("api.openai.com") {
+        Some("openai".into())
+    } else if lower.contains("api.anthropic.com") {
+        Some("anthropic".into())
+    } else if lower.contains("ollama") || lower.contains(":11434") {
+        Some("ollama".into())
+    } else if lower.contains("gateway.ai.cloudflare.com") {
+        Some("cloudflare-ai-gateway".into())
+    } else {
+        None
+    }
+}
+
+fn unix_nanos(t: SystemTime) -> u64 {
+    t.duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
+
 // --- Capture sink: storage + OTLP ---
 
 pub struct Capture {

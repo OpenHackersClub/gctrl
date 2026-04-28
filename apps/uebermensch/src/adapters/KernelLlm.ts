@@ -46,6 +46,29 @@ const isWorkersAiModel = (model: string): boolean => !isAnthropicModel(model);
 const kernelBase = (): string =>
   (process.env.GCTRL_KERNEL_URL ?? "http://127.0.0.1:4318").replace(/\/+$/, "");
 
+// Identity headers consumed by the kernel's driver-llm capture path
+// (vault/specs/implementation/llm-relay.md § "Convergence with driver-llm").
+// Setting `x-session-id` makes the kernel persist a `prompt_bodies` row
+// per turn and emit a generation span — uebermensch then shows up in
+// /api/sessions and the analytics dashboard alongside opencode and the
+// rest. `UBER_SESSION_ID` is the operator's hook for tying a logical run
+// (e.g. one daily-brief invocation, one profile cycle) to a single
+// session; the fallback is a process-lifetime UUID so a forgotten env
+// var still produces *some* aggregated session rather than orphans.
+const SERVICE_NAME = "uebermensch";
+let processSessionId: string | null = null;
+const sessionIdFor = (): string => {
+  const explicit = process.env.UBER_SESSION_ID;
+  if (explicit && explicit.length > 0) return explicit;
+  if (processSessionId === null) {
+    processSessionId =
+      typeof globalThis.crypto?.randomUUID === "function"
+        ? globalThis.crypto.randomUUID()
+        : `uber-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+  return processSessionId;
+};
+
 const excerptOf = (body: string, max: number): string => {
   const trimmed = body.trim();
   if (trimmed.length <= max) return trimmed;
@@ -222,7 +245,11 @@ const fetchKernel = (
       try: () =>
         fetch(`${kernelBase()}${path}`, {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            "x-session-id": sessionIdFor(),
+            "x-service-name": SERVICE_NAME,
+          },
           body: JSON.stringify(body),
         }),
       catch: (e) =>
@@ -830,6 +857,8 @@ export const _internal = {
   DEFAULT_SUMMARY_MODEL,
   modelFor,
   summaryModelFor,
+  sessionIdFor,
+  SERVICE_NAME,
   isAnthropicModel,
   isWorkersAiModel,
 };

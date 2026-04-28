@@ -37,6 +37,15 @@ pub struct AppState {
     /// Live session-event bus (broadcast + replay ring) consumed by the
     /// SSE stream handlers — see spec/architecture/apps/gctrl-analytics.md §5.
     pub event_bus: Arc<EventBus>,
+    /// Shared capture sink for `/api/llm/{completions,messages}` exchanges.
+    /// Persists `prompt_bodies` rows and emits an OTLP generation span back
+    /// at this same kernel — same write path the LLM relay uses, so
+    /// driver-llm clients (uebermensch, anything calling `/api/llm/*`)
+    /// land in /api/sessions and the analytics dashboard with no extra
+    /// glue beyond setting `x-session-id` + `x-service-name` headers.
+    /// See vault/specs/implementation/llm-relay.md § "Convergence with
+    /// driver-llm".
+    pub llm_capture: Arc<gctrl_proxy::Capture>,
 }
 
 pub fn create_router(store: DuckDbStore) -> Router {
@@ -46,6 +55,7 @@ pub fn create_router(store: DuckDbStore) -> Router {
 /// Create router from a pre-shared Arc<DuckDbStore> (used when store is shared with other tasks).
 pub fn create_router_from_arc(store: Arc<DuckDbStore>) -> Router {
     let sqlite = Arc::new(SqliteStore::open(":memory:").expect("sqlite open"));
+    let llm_capture = build_llm_capture(Arc::clone(&store));
     let state = Arc::new(AppState {
         store: Arc::clone(&store),
         sqlite,
@@ -55,6 +65,7 @@ pub fn create_router_from_arc(store: Arc<DuckDbStore>) -> Router {
         net_config: Arc::new(NetConfig::default()),
         http_client: reqwest::Client::new(),
         event_bus: EventBus::default_capacity(),
+        llm_capture,
     });
     build_router(state)
 }
@@ -86,6 +97,7 @@ pub fn create_router_full(
     sync_config: Option<Arc<SyncConfig>>,
     net_config: Arc<NetConfig>,
 ) -> Router {
+    let llm_capture = build_llm_capture(Arc::clone(&store));
     let state = Arc::new(AppState {
         store,
         sqlite: Arc::clone(&sqlite),
@@ -95,14 +107,17 @@ pub fn create_router_full(
         net_config,
         http_client: reqwest::Client::new(),
         event_bus: EventBus::default_capacity(),
+        llm_capture,
     });
     build_router(state).merge(gctrl_scheduler::http::router(sqlite))
 }
 
 pub fn create_router_with_context(store: DuckDbStore, context: Option<ContextManager>) -> Router {
     let sqlite = Arc::new(SqliteStore::open(":memory:").expect("sqlite open"));
+    let store = Arc::new(store);
+    let llm_capture = build_llm_capture(Arc::clone(&store));
     let state = Arc::new(AppState {
-        store: Arc::new(store),
+        store,
         sqlite,
         context,
         started_at: std::time::Instant::now(),
@@ -110,8 +125,26 @@ pub fn create_router_with_context(store: DuckDbStore, context: Option<ContextMan
         net_config: Arc::new(NetConfig::default()),
         http_client: reqwest::Client::new(),
         event_bus: EventBus::default_capacity(),
+        llm_capture,
     });
     build_router(state)
+}
+
+/// Build the shared LLM capture sink. Sends OTLP back at this same kernel
+/// (the same daemon already terminates `/v1/traces`), and falls back to a
+/// neutral `service.name` when a caller doesn't supply `x-service-name`.
+/// `GCTRL_KERNEL_OTLP_URL` lets ops point at a sibling kernel for
+/// cross-machine analytics aggregation.
+fn build_llm_capture(store: Arc<DuckDbStore>) -> Arc<gctrl_proxy::Capture> {
+    let kernel_otlp_url = std::env::var("GCTRL_KERNEL_OTLP_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:4318/v1/traces".to_string());
+    Arc::new(gctrl_proxy::Capture::new(
+        store,
+        gctrl_proxy::CaptureConfig {
+            kernel_otlp_url,
+            default_service_name: "llm-client".to_string(),
+        },
+    ))
 }
 
 fn build_router(state: Arc<AppState>) -> Router {
@@ -4145,12 +4178,24 @@ const LMSTUDIO_DEFAULT_URL: &str = "http://127.0.0.1:1234/v1/chat/completions";
 
 async fn llm_completions(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     // Local-first: anything other than `GCTRL_LLM_PROVIDER=cloudflare` routes
     // to a local OpenAI-compat backend.
     let provider =
         std::env::var("GCTRL_LLM_PROVIDER").unwrap_or_else(|_| "lmstudio".to_string());
+
+    // Capture identity headers — the kernel is the relay's twin here. When
+    // a client (e.g. uebermensch via KernelLlm.ts) supplies x-session-id +
+    // x-service-name, this exchange will land in `prompt_bodies` and the
+    // sessions/cost/latency rollups exactly like a relay-routed call.
+    // Missing headers ⇒ no capture (we don't write orphan rows), request
+    // still served. Spec: vault/specs/implementation/llm-relay.md.
+    let session_id = llm_capture_header(&headers, "x-session-id");
+    let service_name = llm_capture_header(&headers, "x-service-name");
+    let req_body_text = serde_json::to_string(&body).unwrap_or_default();
+    let started_at = std::time::SystemTime::now();
 
     if provider != "cloudflare" {
         let local_url = std::env::var("GCTRL_LLM_LOCAL_URL")
@@ -4167,6 +4212,17 @@ async fn llm_completions(
                 let status = resp.status();
                 let text = resp.text().await.unwrap_or_default();
                 if status.is_success() {
+                    gctrl_proxy::capture_oai_exchange(
+                        &state.llm_capture,
+                        &local_url,
+                        &req_body_text,
+                        &text,
+                        session_id.as_deref(),
+                        service_name.as_deref(),
+                        started_at,
+                        status.as_u16(),
+                    )
+                    .await;
                     match serde_json::from_str::<serde_json::Value>(&text) {
                         Ok(v) => Json(v).into_response(),
                         Err(_) => (StatusCode::BAD_GATEWAY, text).into_response(),
@@ -4216,6 +4272,17 @@ async fn llm_completions(
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
             if status.is_success() {
+                gctrl_proxy::capture_oai_exchange(
+                    &state.llm_capture,
+                    &url,
+                    &req_body_text,
+                    &text,
+                    session_id.as_deref(),
+                    service_name.as_deref(),
+                    started_at,
+                    status.as_u16(),
+                )
+                .await;
                 match serde_json::from_str::<serde_json::Value>(&text) {
                     Ok(v) => Json(v).into_response(),
                     Err(_) => (StatusCode::BAD_GATEWAY, text).into_response(),
@@ -4230,6 +4297,13 @@ async fn llm_completions(
         )
             .into_response(),
     }
+}
+
+fn llm_capture_header(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
 }
 
 #[cfg(test)]

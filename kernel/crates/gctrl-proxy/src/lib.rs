@@ -37,7 +37,9 @@ use hudsucker::{
 };
 
 pub use ca::{ensure_ca_cert, CaPaths};
-pub use capture::{Capture, CaptureConfig, CapturedTurn};
+pub use capture::{
+    capture_oai_exchange, derive_gen_ai_system_from_url, Capture, CaptureConfig, CapturedTurn,
+};
 pub use handler::TrafficLogger;
 pub use redact::redact_url;
 pub use relay::{LlmRelay, RelayConfig};
