@@ -2,7 +2,7 @@
 
 > Time-bound events live alongside the wiki. Personal commitments (meetings, deadlines, travel) and market-moving dates (earnings, FOMC, CPI prints, dividend ex-dates, lockup expiries, election days) share one storage shape and one query surface — filtered by source/kind for display.
 >
-> Related: [profile.md § Vault Layout](profile.md#vault-layout) (where calendar files live), [briefing-pipeline.md](briefing-pipeline.md) (how today's events surface in the morning brief), [knowledge-base.md § Wikilink Conventions](knowledge-base.md#wikilink-conventions) (link rules events follow), [delivery.md](delivery.md) (how reminders fan out).
+> Related: [profile.md § Vault Layout](profile.md#vault-layout) (where calendar files live), [briefing-pipeline.md](briefing-pipeline.md) (how today's events surface in the morning brief), [knowledge-base.md § Wikilink Conventions](knowledge-base.md#wikilink-conventions) (link rules events follow), [delivery.md](delivery.md) (how reminders fan out), [calendar-timeboxes.md](calendar-timeboxes.md) (multi-event practice plans built on top of this spec).
 
 ## Why a Calendar Spec
 
@@ -37,6 +37,9 @@ $UBER_VAULT_DIR/
 │   ├── 2026-05-15--family-trip-tokyo.md   # source: user (multi-day)
 │   ├── recurring/                         # optional — RFC 5545 RRULE files
 │   │   └── weekly-team-standup.md
+│   ├── timeboxes/                         # parent files for multi-event practice plans
+│   │   ├── sub-3-berlin.md                # see calendar-timeboxes.md
+│   │   └── constitutional-ai-reading.md
 │   │
 │   │  ─── Generated (gitignored; R2-synced) ───
 │   └── generated/
@@ -102,7 +105,9 @@ or holds the ingested description. For user-authored events this is your notes
 | `source` | yes | provenance (see § Sources) |
 | `starts_at` | yes | ISO 8601; for `all_day: true` use `YYYY-MM-DD` |
 | `tz` | yes | IANA timezone for display rendering |
-| `status` | yes | `confirmed` is default |
+| `status` | yes | `confirmed` is default; see [calendar-timeboxes.md](calendar-timeboxes.md) for the `superseded` value used by re-planned timebox children |
+| `timebox` | no | slug of a parent timebox (`calendar/timeboxes/<slug>.md`); see [calendar-timeboxes.md § Child Event Frontmatter Additions](calendar-timeboxes.md#child-event-frontmatter-additions) |
+| `step` / `step_total` / `step_units` | no | required if `timebox:` is set; ordering and unit description for one timebox session |
 | everything else | no | | 
 
 ### Event Kinds
@@ -119,6 +124,7 @@ or holds the ingested description. For user-authored events this is your notes
 | `political` | elections, vote dates, key floor votes | `-P1D` |
 | `prediction-market` | Kalshi/Polymarket resolution dates | `-PT1H` |
 | `industry` | conferences, summits, regulator hearings | `-P1D` |
+| `practice` | timebox child events (reading sessions, training blocks, recording slots) — see [calendar-timeboxes.md](calendar-timeboxes.md) | `-PT15M` to `app` |
 | `other` | catch-all | none |
 
 `kind` is intentionally coarse — fine taxonomy goes in `tags`. The curator and the visualizer key off `kind` for default colours, default reminder cadence, and the default visibility toggle.

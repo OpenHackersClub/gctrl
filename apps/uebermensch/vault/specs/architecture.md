@@ -81,6 +81,7 @@ Dependencies MUST flow inward only (see [principles.md § Architectural Invarian
 | Brief delivery | L4 | `DelivererService` | Renders per channel, writes `uber_deliveries`; reused by calendar reminders |
 | Wiki introspection | L4 | `SinkInService` | Weekly: surveys wiki → gaps → questions + connections; also powers `gctrl uber query` |
 | Calendar | L4 + L2 + L1 | `CalendarService` + `uber_calendar` index + `driver-markets`/`driver-sec`/`driver-gcal` producers | Vault-first events filterable by source/kind; today's events surface in brief; reminders fan-out via `DelivererService` — see [calendar.md](calendar.md) |
+| Timeboxes | L4 | `TimeboxService` + `uber_timeboxes` index + new `timebox_slug`/`step`/`step_total`/`step_units` columns on `uber_calendar` | Multi-event practice plans: parent goal under `calendar/timeboxes/<slug>.md` owns N child events. Deterministic and LLM-assisted planner; coaching nudges reuse `uber_calendar_reminders`; stalled-timebox alert via daily check — see [calendar-timeboxes.md](calendar-timeboxes.md) |
 | Eval (automated + human) | L4 + L2 | `EvaluatorService` + kernel `scores` table | Auto-runs after each brief |
 | Cost budget enforcement | L2 | `Guardrails` policies | Daily budget = profile value; violation pauses sessions |
 | Sync | L2 extension | `gctrl-sync` | `uber_*` SQLite → D1 (index); entire `$UBER_VAULT_DIR` → R2 (content, bidirectional) |
