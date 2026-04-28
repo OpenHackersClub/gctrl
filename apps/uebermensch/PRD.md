@@ -250,7 +250,7 @@ Full spec in [vault/specs/eval.md](vault/specs/eval.md).
 
 | Driver | Purpose | Kernel interface | Status |
 |--------|---------|------------------|--------|
-| `driver-llm` | Unified LLM interface — default provider **Cloudflare AI Gateway** (default model `@cf/google/gemma-4-26b-a4b-it`); Anthropic/OpenAI still reachable via the Gateway's upstream routing. Every call = Session + spans | `LlmPort` (new) | Planned (blocks M0) |
+| `driver-llm` | Unified LLM interface — **local-first**: default provider is LM Studio (`http://127.0.0.1:1234/v1/chat/completions`, default model `google/gemma-3-27b-it`). Cloudflare AI Gateway is opt-in via `GCTRL_LLM_PROVIDER=cloudflare`; Anthropic models still reachable via `/api/llm/messages`. Every call = Session + spans | `LlmPort` (new) | Planned (blocks M0) |
 | `driver-telegram` | Bot webhook + send API | `MessagingPort` (new) | Planned (blocks M2) |
 | `driver-discord` | Webhook + slash commands | `MessagingPort` | Planned (blocks M2) |
 | `driver-rss` | Scheduled RSS polling → source ingest | `SourcePort` (new) | Planned (blocks M1) |

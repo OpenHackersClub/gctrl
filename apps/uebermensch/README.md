@@ -19,7 +19,7 @@ drivers) remains for a follow-up PR.
 | `uber vault init` | Shipped (scaffolds from `tests/fixtures/vault/`) |
 | `uber brief` | Shipped (stub LLM → `briefs/<date>.md`) |
 | Kernel `uber_*` tables + `/api/uber/*` routes | Deferred to M0 follow-up |
-| Real LLM driver (Cloudflare AI Gateway, default `@cf/google/gemma-4-26b-a4b-it`) | M1 |
+| Real LLM driver (local-first: LM Studio @ `127.0.0.1:1234`, default `google/gemma-3-27b-it`; Cloudflare AI Gateway opt-in via `GCTRL_LLM_PROVIDER=cloudflare`) | M1 |
 
 ## Quickstart
 

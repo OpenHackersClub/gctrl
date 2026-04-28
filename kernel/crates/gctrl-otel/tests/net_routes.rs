@@ -239,18 +239,21 @@ async fn llm_messages_fails_closed_without_gateway_config() {
 }
 
 #[tokio::test]
-async fn llm_completions_fails_closed_without_gateway_config() {
+async fn llm_completions_fails_closed_when_cloudflare_provider_misconfigured() {
     let _guard = env_mutex().lock().unwrap();
     // Isolate from any ambient CF creds in the test env.
     let prev_acct = std::env::var("CLOUDFLARE_ACCOUNT_ID").ok();
     let prev_gw = std::env::var("CLOUDFLARE_AI_GATEWAY_ID").ok();
     let prev_cf_tok = std::env::var("CF_API_TOKEN").ok();
     let prev_local = std::env::var("GCTRL_LLM_LOCAL_URL").ok();
+    let prev_provider = std::env::var("GCTRL_LLM_PROVIDER").ok();
     unsafe {
         std::env::remove_var("CLOUDFLARE_ACCOUNT_ID");
         std::env::remove_var("CLOUDFLARE_AI_GATEWAY_ID");
         std::env::remove_var("CF_API_TOKEN");
         std::env::remove_var("GCTRL_LLM_LOCAL_URL");
+        // Default provider is local — opt into Cloudflare to exercise fail-closed.
+        std::env::set_var("GCTRL_LLM_PROVIDER", "cloudflare");
     }
     let app = router_with(NetConfig::default());
     let probe_body = serde_json::json!({
@@ -279,6 +282,7 @@ async fn llm_completions_fails_closed_without_gateway_config() {
     unsafe {
         std::env::remove_var("CLOUDFLARE_ACCOUNT_ID");
         std::env::remove_var("CLOUDFLARE_AI_GATEWAY_ID");
+        std::env::remove_var("GCTRL_LLM_PROVIDER");
         if let Some(v) = prev_acct {
             std::env::set_var("CLOUDFLARE_ACCOUNT_ID", v);
         }
@@ -290,6 +294,51 @@ async fn llm_completions_fails_closed_without_gateway_config() {
         }
         if let Some(v) = prev_local {
             std::env::set_var("GCTRL_LLM_LOCAL_URL", v);
+        }
+        if let Some(v) = prev_provider {
+            std::env::set_var("GCTRL_LLM_PROVIDER", v);
+        }
+    }
+}
+
+#[tokio::test]
+async fn llm_completions_defaults_to_local_when_provider_unset() {
+    let _guard = env_mutex().lock().unwrap();
+    // Capture and clear ambient state.
+    let prev_provider = std::env::var("GCTRL_LLM_PROVIDER").ok();
+    let prev_local = std::env::var("GCTRL_LLM_LOCAL_URL").ok();
+    unsafe {
+        std::env::remove_var("GCTRL_LLM_PROVIDER");
+        // Point at a guaranteed-unreachable port so the test doesn't accidentally
+        // hit a real LM Studio instance on the dev machine.
+        std::env::set_var("GCTRL_LLM_LOCAL_URL", "http://127.0.0.1:1/v1/chat/completions");
+    }
+    let app = router_with(NetConfig::default());
+    let (status, body) = post_json(
+        &app,
+        "/api/llm/completions",
+        serde_json::json!({
+            "model": "google/gemma-3-27b-it",
+            "messages": [{ "role": "user", "content": "hi" }],
+        }),
+    )
+    .await;
+    // Local provider was tried (no CF 503). Connection refused → 502 from the
+    // handler's bad-gateway branch.
+    assert_eq!(status, 502, "expected 502 bad-gateway, got {status} body={body}");
+    assert!(
+        body.contains("local llm request failed"),
+        "expected local-llm error message, got: {body}"
+    );
+
+    // Restore ambient env.
+    unsafe {
+        std::env::remove_var("GCTRL_LLM_LOCAL_URL");
+        if let Some(v) = prev_local {
+            std::env::set_var("GCTRL_LLM_LOCAL_URL", v);
+        }
+        if let Some(v) = prev_provider {
+            std::env::set_var("GCTRL_LLM_PROVIDER", v);
         }
     }
 }
