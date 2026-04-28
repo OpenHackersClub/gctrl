@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs"
 import { Command, Options, Args } from "@effect/cli"
 import { Console, Effect, Option, Schema } from "effect"
 import { KernelClient } from "../services/KernelClient"
@@ -91,15 +92,16 @@ const seedCommand = Command.make("seed", { file: seedFile }, ({ file }) =>
     const kernel = yield* KernelClient
     const filePath = Option.getOrElse(file, () => "vault/specs/team/personas.md")
 
-    // Read and parse the markdown file
-    const { readFileSync } = yield* Effect.sync(() => require("node:fs"))
-    let content: string
-    try {
-      content = readFileSync(filePath, "utf-8")
-    } catch {
+    // Read and parse the markdown file. Treat read failure as a recoverable
+    // None so the command exits cleanly with a friendly message.
+    const maybeContent = yield* Effect.try(() => readFileSync(filePath, "utf-8")).pipe(
+      Effect.option,
+    )
+    if (Option.isNone(maybeContent)) {
       yield* Console.error(`Cannot read file: ${filePath}`)
       return
     }
+    const content = maybeContent.value
 
     const { personas, reviewRules } = parsePersonasMarkdown(content)
 

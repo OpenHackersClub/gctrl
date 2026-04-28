@@ -8,6 +8,7 @@
  */
 import { Command, Options, Args } from "@effect/cli"
 import { Console, Effect, Option, Schema } from "effect"
+import { ExecError } from "../errors"
 import { execFilePromise } from "../lib/exec"
 import { KernelClient } from "../services/KernelClient"
 
@@ -26,12 +27,21 @@ const runGctl = (args: string[]) =>
     const result = yield* execFilePromise(GCTRL_BIN, args, process.cwd())
     if (!result.ok) {
       yield* Console.error(result.output || `gctrl ${args[0]} failed`)
-      return yield* Effect.fail(new Error(`gctrl ${args[0]} failed`))
+      return yield* Effect.fail(
+        new ExecError({
+          message: `gctrl ${args[0]} failed`,
+          bin: GCTRL_BIN,
+          args,
+          output: result.output,
+        })
+      )
     }
     if (result.output) yield* Console.log(result.output)
   }).pipe(
-    Effect.catchAll((e) =>
-      Console.error(`Error: ${e}. Is the gctrl Rust binary installed? (cargo install gctrl)`)
+    Effect.catchTag("ExecError", (e) =>
+      Console.error(
+        `Error: ${e.message}. Is the gctrl Rust binary installed? (cargo install gctrl)`
+      )
     )
   )
 
