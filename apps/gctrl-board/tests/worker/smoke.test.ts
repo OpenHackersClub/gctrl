@@ -22,15 +22,19 @@ describe("Worker API smoke tests", () => {
       }),
     ))
 
-  it("GET /api/inbox/stats returns stub data", () =>
+  it("GET /api/inbox/stats falls back to zero stats when kernel unreachable", () =>
     runTest(
       Effect.gen(function* () {
         const client = yield* HttpClient.HttpClient
         const res = yield* client.get(`${HOST}/api/inbox/stats`)
+        // Kernel is the source of truth, but the Worker returns a zero-stats
+        // payload when KERNEL_URL is unset (preview/dev) so the UI's polling
+        // stats fetch never shows up as a failed request.
         expect(res.status).toBe(200)
         const data = (yield* res.json) as Record<string, unknown>
         expect(data.total).toBe(0)
-        expect(data.unread).toBe(0)
+        expect(data.pending).toBe(0)
+        expect(data.acted).toBe(0)
         expect(data.requires_action).toBe(0)
       }),
     ))
