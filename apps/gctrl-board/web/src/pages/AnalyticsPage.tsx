@@ -242,6 +242,10 @@ function OverviewTab({ kind }: { kind: SessionKind }) {
     )
   }
 
+  if (!overview) {
+    return <div className="p-8 text-zinc-500 font-mono text-sm">Loading…</div>
+  }
+
   // Empty state — analytics tables exist but never synced. The Worker returns
   // zeros rather than 404, so we detect "never synced" via sync-status.
   const neverSynced =
@@ -279,10 +283,6 @@ function OverviewTab({ kind }: { kind: SessionKind }) {
         )}
       </div>
     )
-  }
-
-  if (!overview) {
-    return <div className="p-8 text-zinc-500 font-mono text-sm">Loading…</div>
   }
 
   // Every KPI now reflects the active kind filter — no more split label.

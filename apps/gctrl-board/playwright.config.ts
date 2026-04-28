@@ -23,6 +23,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 const KERNEL_PORT = Number(process.env.GCTRL_KERNEL_PORT ?? 14318)
 const VITE_PORT = Number(process.env.GCTRL_VITE_PORT ?? 14200)
+// LLM relay path: kernel forwards /v1/chat/completions to a mock OpenAI-compat
+// server we boot alongside the kernel. Tests POST through the relay port and
+// assert the captured prompt/span lands in /api/sessions + /api/analytics.
+const RELAY_PORT = Number(process.env.GCTRL_RELAY_PORT ?? 14319)
+const MOCK_LLM_PORT = Number(process.env.MOCK_LLM_PORT ?? 14299)
 
 // Remote mode: drive a (deployed) Worker at PREVIEW_URL. Browser is either
 // local Chromium (fallback) or Cloudflare Browser Rendering CDP (set
@@ -33,9 +38,10 @@ const isRemoteCDP = isRemote && !!process.env.CDP_ENDPOINT
 
 // In CI, use the pre-built kernel binary to avoid needing cargo/Rust toolchain.
 // Set GCTRL_KERNEL_BIN to the absolute path of the gctrl binary.
+const kernelBaseArgs = `--db :memory: serve --host 127.0.0.1 --port ${KERNEL_PORT} --relay-port ${RELAY_PORT} --relay-upstream http://127.0.0.1:${MOCK_LLM_PORT}/v1/chat/completions`
 const kernelCommand = process.env.GCTRL_KERNEL_BIN
-  ? `${process.env.GCTRL_KERNEL_BIN} --db :memory: serve --host 127.0.0.1 --port ${KERNEL_PORT}`
-  : `cargo run -p gctrl-cli -- --db :memory: serve --host 127.0.0.1 --port ${KERNEL_PORT}`
+  ? `${process.env.GCTRL_KERNEL_BIN} ${kernelBaseArgs}`
+  : `cargo run -p gctrl-cli -- ${kernelBaseArgs}`
 
 export default defineConfig({
   testDir: "./tests/acceptance",
@@ -46,6 +52,13 @@ export default defineConfig({
         testIgnore: [
           "**/agent-integration.spec.ts",
           "**/markdown-sync.spec.ts",
+          // Remote Workers don't expose /v1/traces or the LLM relay port,
+          // and the mock-llm-server is only booted by the local webServer.
+          "**/analytics-llm-relay.spec.ts",
+          // Analytics dashboard tests seed via /v1/traces, which is
+          // kernel-only. Skip in remote mode for the same reason as
+          // agent-integration above.
+          "**/analytics-dashboard.spec.ts",
         ],
       }
     : {}),
@@ -95,6 +108,19 @@ export default defineConfig({
     ? {}
     : {
         webServer: [
+          {
+            // Mock OpenAI-compat upstream for the kernel LLM relay. Must
+            // start before the kernel so the relay's first request to
+            // it succeeds; playwright launches webServers in parallel,
+            // but we use `port` health checks so the kernel only waits
+            // on its own port and bringup ordering doesn't matter as
+            // long as both ports come up before the first test.
+            command: `node tests/acceptance/fixtures/mock-llm-server.cjs`,
+            port: MOCK_LLM_PORT,
+            reuseExistingServer: !process.env.CI,
+            env: { MOCK_LLM_PORT: String(MOCK_LLM_PORT) },
+            timeout: 30_000,
+          },
           {
             // Kernel: in-memory DuckDB for full test isolation
             command: kernelCommand,

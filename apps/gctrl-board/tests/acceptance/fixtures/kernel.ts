@@ -261,6 +261,12 @@ export class KernelTestClient {
   /**
    * Ingest an OTLP trace into the kernel telemetry pipeline.
    * Simulates an agent session for end-to-end testing.
+   *
+   * Attribute keys match what gctrl-otel/span_processor.rs reads:
+   *   - `ai.model.id`         → model (also flips span_type to Generation)
+   *   - `ai.tokens.input`     → input tokens
+   *   - `ai.tokens.output`    → output tokens
+   *   - `ai.cost.usd`         → per-span cost (rolls up to session totals)
    */
   async ingestTrace(params: {
     traceId: string
@@ -270,20 +276,40 @@ export class KernelTestClient {
     spanName?: string
     costUsd?: number
     durationMs?: number
+    /** Setting model flips span_type → Generation, which feeds cost-by-model. */
+    model?: string
+    inputTokens?: number
+    outputTokens?: number
   }): Promise<void> {
     const now = Date.now() * 1_000_000
     const duration = (params.durationMs ?? 1000) * 1_000_000
 
-    const attributes = [
-      {
-        key: "session.id",
-        value: { stringValue: params.sessionId },
-      },
-    ]
+    // Span-level attributes — model + tokens + cost. The kernel reads
+    // `session.id` from the *resource* attributes (see span_processor.rs),
+    // so we set it on the resource block below, not here.
+    const attributes: Array<{ key: string; value: any }> = []
     if (params.costUsd != null) {
       attributes.push({
-        key: "gctrl.cost.usd",
-        value: { doubleValue: params.costUsd } as any,
+        key: "ai.cost.usd",
+        value: { doubleValue: params.costUsd },
+      })
+    }
+    if (params.model) {
+      attributes.push({
+        key: "ai.model.id",
+        value: { stringValue: params.model },
+      })
+    }
+    if (params.inputTokens != null) {
+      attributes.push({
+        key: "ai.tokens.input",
+        value: { intValue: params.inputTokens },
+      })
+    }
+    if (params.outputTokens != null) {
+      attributes.push({
+        key: "ai.tokens.output",
+        value: { intValue: params.outputTokens },
       })
     }
 
@@ -295,6 +321,10 @@ export class KernelTestClient {
               {
                 key: "service.name",
                 value: { stringValue: params.agentName },
+              },
+              {
+                key: "session.id",
+                value: { stringValue: params.sessionId },
               },
             ],
           },
@@ -336,8 +366,45 @@ export class KernelTestClient {
     return this.request(`/api/sessions${q ? `?${q}` : ""}`)
   }
 
-  async getAnalytics(): Promise<any> {
-    return this.request("/api/analytics")
+  async getAnalytics(kind?: "internal" | "external"): Promise<{
+    total_sessions: number
+    total_spans: number
+    total_cost_usd: number
+    total_input_tokens: number
+    total_output_tokens: number
+  }> {
+    const q = kind ? `?kind=${kind}` : ""
+    return this.request(`/api/analytics${q}`)
+  }
+
+  async getCostAnalytics(): Promise<{
+    by_model: Array<{ model: string; cost: number; calls: number }>
+    by_agent: Array<{ agent: string; cost: number; sessions: number }>
+  }> {
+    return this.request("/api/analytics/cost")
+  }
+
+  async getSpanAnalytics(): Promise<{
+    distribution: Array<{ type: string; count: number; percentage: number }>
+  }> {
+    return this.request("/api/analytics/spans")
+  }
+
+  async listSessionPrompts(sessionId: string): Promise<{
+    prompts: Array<Record<string, unknown>>
+  }> {
+    return this.request(`/api/sessions/${sessionId}/prompts`)
+  }
+
+  /**
+   * Mark a session as ended so it transitions out of the live state.
+   * The kernel auto-scores on session end, which feeds the Evals tab.
+   */
+  async endSession(sessionId: string, status = "completed"): Promise<void> {
+    return this.request(`/api/sessions/${sessionId}/end`, {
+      method: "POST",
+      body: JSON.stringify({ status }),
+    })
   }
 
   // ── Sync ──
