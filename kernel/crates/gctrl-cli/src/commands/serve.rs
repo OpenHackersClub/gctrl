@@ -3,10 +3,18 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use gctrl_core::{NetConfig, ProxyConfig, SchedulerConfig, SyncConfig};
+use gctrl_proxy::{Capture, CaptureConfig, LlmRelay, RelayConfig};
 use gctrl_scheduler::ScheduleRunner;
 use gctrl_storage::{DuckDbStore, SqliteStore};
 
 use super::watch;
+
+/// Options for the gctrl-proxy LLM relay. `None` disables the relay.
+#[derive(Debug, Clone)]
+pub struct RelayOpts {
+    pub port: u16,
+    pub upstream: String,
+}
 
 pub async fn run(
     host: String,
@@ -14,6 +22,7 @@ pub async fn run(
     db_path: &str,
     board_dir: Option<PathBuf>,
     proxy_enabled: bool,
+    relay: Option<RelayOpts>,
 ) -> Result<()> {
     let store = Arc::new(DuckDbStore::open(db_path)?);
 
@@ -61,6 +70,45 @@ pub async fn run(
             ScheduleRunner::new(runner_store, runner_cfg).run_forever().await;
         });
         tracing::info!("scheduler runner spawned (poll={}s)", scheduler_config.poll_interval_secs);
+    }
+
+    // Spawn the LLM relay (gctrl-proxy LlmRelay) on its own port. It points
+    // its OTLP emitter at this same daemon's receiver, so opencode (or any
+    // OpenAI-compat client) → relay → upstream LLM, with spans + prompt
+    // bodies landing in the same DuckDB.
+    if let Some(opts) = relay {
+        let relay_addr = format!("{host}:{}", opts.port);
+        let kernel_otlp_url = format!("http://{host}:{port}/v1/traces");
+        let capture = Arc::new(Capture::new(
+            Arc::clone(&store),
+            CaptureConfig {
+                kernel_otlp_url,
+                default_service_name: "opencode".to_string(),
+            },
+        ));
+        let relay_cfg = RelayConfig {
+            upstream_url: opts.upstream.clone(),
+            session_header: "x-session-id".to_string(),
+        };
+        let relay_router = LlmRelay::new(relay_cfg, capture).router();
+        tracing::info!(
+            "gctrl LLM relay listening on {relay_addr} → {}",
+            opts.upstream
+        );
+        tokio::spawn(async move {
+            match tokio::net::TcpListener::bind(&relay_addr).await {
+                Ok(listener) => {
+                    if let Err(e) = axum::serve(listener, relay_router).await {
+                        tracing::error!(error = %e, "LLM relay serve loop ended");
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, addr = %relay_addr, "LLM relay bind failed");
+                }
+            }
+        });
+    } else {
+        tracing::info!("LLM relay disabled (--no-relay)");
     }
 
     let router = gctrl_otel::create_router_full(

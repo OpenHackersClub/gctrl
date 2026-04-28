@@ -5,8 +5,9 @@ use duckdb::{params, Connection};
 use gctrl_core::{
     AgentAnalytics, AlertEvent, AlertRule, Analytics, CreatedBy, DailyAggregate, GctlError,
     InboxAction, InboxActionFilter, InboxMessage, InboxMessageFilter, InboxThread, ModelAnalytics,
-    PersonaDefinition, PersonaReviewRule, PromptVersion, Result, Score, Session, SessionId,
-    SessionStatus, Span, SpanStatus, SpanType, Tag, TrafficFilter, TrafficRecord, TrafficStats,
+    PersonaDefinition, PersonaReviewRule, PromptBody, PromptVersion, Result, Score, Session,
+    SessionId, SessionStatus, Span, SpanStatus, SpanType, Tag, TrafficFilter, TrafficRecord,
+    TrafficStats,
 };
 
 use crate::schema;
@@ -90,6 +91,18 @@ fn spans_provenance_join(created_by: Option<&[CreatedBy]>) -> SpansFilter {
             bound: Vec::new(),
         },
     }
+}
+
+/// Aggregate row returned by [`DuckDbStore::group_prompt_bodies_by_fingerprint`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PromptFingerprintGroup {
+    pub fingerprint: String,
+    pub count: u64,
+    pub role: String,
+    pub sample_content: String,
+    pub total_tokens: u64,
+    pub last_seen: String,
+    pub session_count: u64,
 }
 
 impl DuckDbStore {
@@ -884,6 +897,93 @@ impl DuckDbStore {
             pvs.push(row_to_prompt_version(row)?);
         }
         Ok(pvs)
+    }
+
+    // --- Prompt Bodies (per-turn capture from LLM relay) ---
+
+    pub fn insert_prompt_body(&self, body: &PromptBody) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO prompt_bodies (id, session_id, span_id, trace_id, turn_ordinal, role, content, fingerprint, tokens, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                body.id,
+                body.session_id,
+                body.span_id,
+                body.trace_id,
+                body.turn_ordinal,
+                body.role,
+                body.content,
+                body.fingerprint,
+                body.tokens,
+                body.created_at.to_rfc3339(),
+            ],
+        )
+        .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn list_prompt_bodies_for_session(&self, session_id: &str) -> Result<Vec<PromptBody>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, span_id, trace_id, turn_ordinal, role, content, fingerprint, tokens, created_at \
+             FROM prompt_bodies WHERE session_id = ? ORDER BY turn_ordinal ASC, created_at ASC",
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query(params![session_id])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut bodies = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            bodies.push(row_to_prompt_body(row)?);
+        }
+        Ok(bodies)
+    }
+
+    /// Group prompt bodies by fingerprint with counts + a sample row.
+    /// `since_rfc3339` is an inclusive lower bound on `created_at`;
+    /// pass `None` for all-time. Returns rows ordered by count desc.
+    pub fn group_prompt_bodies_by_fingerprint(
+        &self,
+        since_rfc3339: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<PromptFingerprintGroup>> {
+        let conn = self.conn.lock().unwrap();
+        // Single SQL string; the `since` filter degenerates to "no
+        // bound" via a sentinel that always passes when the caller
+        // didn't supply one. This avoids the lifetime gymnastics of
+        // building a `params!` tuple in two arms.
+        let sql = "SELECT fingerprint, COUNT(*) AS n, MAX(role) AS role, MAX(content) AS content, \
+                   COALESCE(SUM(tokens), 0) AS tokens, MAX(created_at) AS last_seen, \
+                   COUNT(DISTINCT session_id) AS sessions \
+                   FROM prompt_bodies WHERE created_at >= ? \
+                   GROUP BY fingerprint ORDER BY n DESC LIMIT ?";
+        let since = since_rfc3339.unwrap_or("0000-01-01T00:00:00Z").to_string();
+        let limit_i = limit as i64;
+
+        let mut stmt = conn.prepare(sql).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query(params![since, limit_i])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            let fingerprint: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let count: i64 = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let role: String = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let content: String = row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let tokens: i64 = row.get(4).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let last_seen: String = row.get(5).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let sessions: i64 = row.get(6).map_err(|e| GctlError::Storage(e.to_string()))?;
+            out.push(PromptFingerprintGroup {
+                fingerprint,
+                count: count as u64,
+                role,
+                sample_content: content,
+                total_tokens: tokens as u64,
+                last_seen,
+                session_count: sessions as u64,
+            });
+        }
+        Ok(out)
     }
 
     // --- Daily Aggregates ---
@@ -2432,6 +2532,33 @@ fn row_to_prompt_version(row: &duckdb::Row<'_>) -> Result<PromptVersion> {
             .map_err(|e| GctlError::Storage(format!("parse timestamp: {e}")))?
             .with_timezone(&chrono::Utc),
         token_count,
+    })
+}
+
+fn row_to_prompt_body(row: &duckdb::Row<'_>) -> Result<PromptBody> {
+    let id: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let session_id: String = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let span_id: Option<String> = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let trace_id: Option<String> = row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let turn_ordinal: i32 = row.get(4).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let role: String = row.get(5).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let content: String = row.get(6).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let fingerprint: String = row.get(7).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let tokens: Option<i32> = row.get(8).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let created_at: String = row.get(9).map_err(|e| GctlError::Storage(e.to_string()))?;
+    Ok(PromptBody {
+        id,
+        session_id,
+        span_id,
+        trace_id,
+        turn_ordinal,
+        role,
+        content,
+        fingerprint,
+        tokens,
+        created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+            .map_err(|e| GctlError::Storage(format!("parse timestamp: {e}")))?
+            .with_timezone(&chrono::Utc),
     })
 }
 

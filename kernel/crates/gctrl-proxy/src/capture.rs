@@ -1,0 +1,487 @@
+//! Capture — turn raw OpenAI-compat request/response bodies into
+//! `PromptBody` rows + emit an OTLP span to the kernel's receiver.
+//!
+//! Pure-ish: the body parsing has no I/O and is tested in isolation.
+//! `persist` and `emit_otlp` do I/O and never block the request loop —
+//! errors are logged and swallowed. Telemetry must not break the agent.
+
+use std::sync::Arc;
+
+use chrono::Utc;
+use gctrl_core::{GctlError, PromptBody, Result};
+use gctrl_storage::DuckDbStore;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+#[derive(Debug, Clone)]
+pub struct CaptureConfig {
+    pub kernel_otlp_url: String,
+    pub default_service_name: String,
+}
+
+impl Default for CaptureConfig {
+    fn default() -> Self {
+        Self {
+            kernel_otlp_url: "http://localhost:4318/v1/traces".to_string(),
+            default_service_name: "opencode".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CapturedTurn {
+    pub session_id: String,
+    pub trace_id: String,
+    pub span_id: String,
+    pub turn_ordinal: i32,
+    pub role: String,
+    pub content: String,
+    pub tokens: Option<i32>,
+}
+
+impl CapturedTurn {
+    pub fn fingerprint(&self) -> String {
+        let mut hasher = Sha256::new();
+        // Normalize: trim + lowercase whitespace runs are a future
+        // concern; for now hash the raw content so equal text matches.
+        hasher.update(self.content.as_bytes());
+        format!("{:x}", hasher.finalize())
+    }
+
+    pub fn to_prompt_body(&self) -> PromptBody {
+        PromptBody {
+            id: Uuid::new_v4().to_string(),
+            session_id: self.session_id.clone(),
+            span_id: Some(self.span_id.clone()),
+            trace_id: Some(self.trace_id.clone()),
+            turn_ordinal: self.turn_ordinal,
+            role: self.role.clone(),
+            content: self.content.clone(),
+            fingerprint: self.fingerprint(),
+            tokens: self.tokens,
+            created_at: Utc::now(),
+        }
+    }
+}
+
+// --- OpenAI-compat request/response shapes (minimal, parse-only what we need) ---
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ChatCompletionsRequest {
+    pub model: String,
+    pub messages: Vec<ChatMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ChatMessage {
+    pub role: String,
+    /// Either a plain string or a structured content array — we keep
+    /// the raw JSON value and stringify for storage.
+    pub content: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChatCompletionsResponse {
+    #[serde(default)]
+    pub choices: Vec<ChatChoice>,
+    #[serde(default)]
+    pub usage: Option<ChatUsage>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChatChoice {
+    #[serde(default)]
+    pub message: Option<ChatMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChatUsage {
+    #[serde(default)]
+    pub prompt_tokens: Option<i32>,
+    #[serde(default)]
+    pub completion_tokens: Option<i32>,
+}
+
+/// Extract turns from a request + response pair. Pure function — no I/O.
+/// Caller supplies the session/trace/span ids to stamp on each turn.
+pub fn extract_turns(
+    req: &ChatCompletionsRequest,
+    resp: &ChatCompletionsResponse,
+    session_id: &str,
+    trace_id: &str,
+    span_id: &str,
+) -> Vec<CapturedTurn> {
+    let mut turns = Vec::with_capacity(req.messages.len() + 1);
+    let total_prompt_tokens = resp.usage.as_ref().and_then(|u| u.prompt_tokens);
+
+    for (i, msg) in req.messages.iter().enumerate() {
+        turns.push(CapturedTurn {
+            session_id: session_id.to_string(),
+            trace_id: trace_id.to_string(),
+            span_id: span_id.to_string(),
+            turn_ordinal: i as i32,
+            role: msg.role.clone(),
+            content: stringify_content(&msg.content),
+            // Per-turn tokens aren't reported by the OpenAI shape;
+            // attach the aggregate prompt_tokens to the last input
+            // turn so it's recoverable, leave others NULL.
+            tokens: if i + 1 == req.messages.len() {
+                total_prompt_tokens
+            } else {
+                None
+            },
+        });
+    }
+
+    if let Some(choice) = resp.choices.first() {
+        if let Some(msg) = &choice.message {
+            turns.push(CapturedTurn {
+                session_id: session_id.to_string(),
+                trace_id: trace_id.to_string(),
+                span_id: span_id.to_string(),
+                turn_ordinal: req.messages.len() as i32,
+                role: msg.role.clone(),
+                content: stringify_content(&msg.content),
+                tokens: resp.usage.as_ref().and_then(|u| u.completion_tokens),
+            });
+        }
+    }
+
+    turns
+}
+
+fn stringify_content(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+// --- Capture sink: storage + OTLP ---
+
+pub struct Capture {
+    store: Arc<DuckDbStore>,
+    cfg: CaptureConfig,
+    http: reqwest::Client,
+}
+
+impl Capture {
+    pub fn new(store: Arc<DuckDbStore>, cfg: CaptureConfig) -> Self {
+        Self {
+            store,
+            cfg,
+            http: reqwest::Client::new(),
+        }
+    }
+
+    pub fn persist(&self, turns: &[CapturedTurn]) -> Result<()> {
+        for turn in turns {
+            let body = turn.to_prompt_body();
+            self.store.insert_prompt_body(&body)?;
+        }
+        Ok(())
+    }
+
+    /// Best-effort OTLP emit. On failure, log and return Ok — the
+    /// agent loop must not break because telemetry is down.
+    pub async fn emit_otlp(&self, span: &OtlpSpanInputs) -> Result<()> {
+        let payload = build_otlp_payload(span, &self.cfg.default_service_name);
+        match self
+            .http
+            .post(&self.cfg.kernel_otlp_url)
+            .json(&payload)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => Ok(()),
+            Ok(resp) => {
+                tracing::warn!(status = %resp.status(), "OTLP emit non-2xx");
+                Ok(())
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "OTLP emit failed");
+                Ok(())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct OtlpSpanInputs {
+    pub session_id: String,
+    pub trace_id: String,
+    pub span_id: String,
+    pub model: String,
+    pub prompt_tokens: Option<i32>,
+    pub completion_tokens: Option<i32>,
+    pub start_unix_nano: u64,
+    pub end_unix_nano: u64,
+    pub status_ok: bool,
+}
+
+/// Build a minimal OTLP/JSON `ExportTraceServiceRequest` for one
+/// generation span. Mirrors the keys the kernel's span_processor
+/// reads (`gen_ai.request.model`, `gen_ai.usage.*`, `service.name`,
+/// `session.id`).
+pub fn build_otlp_payload(s: &OtlpSpanInputs, service_name: &str) -> serde_json::Value {
+    let mut attrs = vec![
+        kv_string("gen_ai.request.model", &s.model),
+        kv_string("gen_ai.system", "lmstudio"),
+    ];
+    if let Some(pt) = s.prompt_tokens {
+        attrs.push(kv_int("gen_ai.usage.prompt_tokens", pt as i64));
+    }
+    if let Some(ct) = s.completion_tokens {
+        attrs.push(kv_int("gen_ai.usage.completion_tokens", ct as i64));
+    }
+
+    serde_json::json!({
+        "resourceSpans": [{
+            "resource": {
+                "attributes": [
+                    kv_string("service.name", service_name),
+                    kv_string("session.id", &s.session_id),
+                ]
+            },
+            "scopeSpans": [{
+                "scope": { "name": "gctrl-proxy" },
+                "spans": [{
+                    "traceId": s.trace_id,
+                    "spanId": s.span_id,
+                    "name": "llm.chat.completions",
+                    // Numbers, not strings — the kernel's OtlpSpan
+                    // deserializes these into u64 directly. Sending
+                    // them as JSON strings yields a 422 from the
+                    // receiver.
+                    "startTimeUnixNano": s.start_unix_nano,
+                    "endTimeUnixNano": s.end_unix_nano,
+                    "attributes": attrs,
+                    "status": {
+                        "code": if s.status_ok { 1 } else { 2 }
+                    }
+                }]
+            }]
+        }]
+    })
+}
+
+fn kv_string(k: &str, v: &str) -> serde_json::Value {
+    serde_json::json!({ "key": k, "value": { "stringValue": v } })
+}
+
+fn kv_int(k: &str, v: i64) -> serde_json::Value {
+    // Same as above: the receiver's `OtlpAnyValue.int_value` is `i64`,
+    // expecting a JSON number, not a string.
+    serde_json::json!({ "key": k, "value": { "intValue": v } })
+}
+
+// --- Errors ---
+
+#[derive(Debug, thiserror::Error)]
+pub enum CaptureError {
+    #[error("storage: {0}")]
+    Storage(#[from] GctlError),
+    #[error("invalid request body: {0}")]
+    InvalidBody(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req_two_turns() -> ChatCompletionsRequest {
+        ChatCompletionsRequest {
+            model: "google/gemma-3-26b".to_string(),
+            messages: vec![
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: serde_json::Value::String("be terse".to_string()),
+                },
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: serde_json::Value::String("hello".to_string()),
+                },
+            ],
+            stream: None,
+        }
+    }
+
+    fn resp_with_usage(prompt: i32, completion: i32) -> ChatCompletionsResponse {
+        ChatCompletionsResponse {
+            choices: vec![ChatChoice {
+                message: Some(ChatMessage {
+                    role: "assistant".to_string(),
+                    content: serde_json::Value::String("hi".to_string()),
+                }),
+            }],
+            usage: Some(ChatUsage {
+                prompt_tokens: Some(prompt),
+                completion_tokens: Some(completion),
+            }),
+            model: Some("google/gemma-3-26b".to_string()),
+        }
+    }
+
+    #[test]
+    fn extract_turns_includes_input_and_assistant_reply() {
+        let req = req_two_turns();
+        let resp = resp_with_usage(20, 5);
+        let turns = extract_turns(&req, &resp, "sess-1", "trace-1", "span-1");
+
+        assert_eq!(turns.len(), 3);
+        assert_eq!(turns[0].role, "system");
+        assert_eq!(turns[1].role, "user");
+        assert_eq!(turns[2].role, "assistant");
+        assert_eq!(turns[2].content, "hi");
+    }
+
+    #[test]
+    fn extract_turns_attaches_prompt_tokens_to_last_input_turn() {
+        let req = req_two_turns();
+        let resp = resp_with_usage(20, 5);
+        let turns = extract_turns(&req, &resp, "sess-1", "trace-1", "span-1");
+
+        assert_eq!(turns[0].tokens, None, "system turn has no per-turn count");
+        assert_eq!(turns[1].tokens, Some(20), "last input turn carries prompt total");
+        assert_eq!(turns[2].tokens, Some(5), "assistant turn carries completion total");
+    }
+
+    #[test]
+    fn extract_turns_works_with_no_usage() {
+        let req = req_two_turns();
+        let resp = ChatCompletionsResponse {
+            choices: vec![ChatChoice {
+                message: Some(ChatMessage {
+                    role: "assistant".to_string(),
+                    content: serde_json::Value::String("hi".to_string()),
+                }),
+            }],
+            usage: None,
+            model: None,
+        };
+        let turns = extract_turns(&req, &resp, "sess-1", "trace-1", "span-1");
+
+        assert_eq!(turns.len(), 3);
+        assert!(turns.iter().all(|t| t.tokens.is_none()));
+    }
+
+    #[test]
+    fn fingerprint_is_stable_for_same_content() {
+        let t1 = CapturedTurn {
+            session_id: "s".into(),
+            trace_id: "t".into(),
+            span_id: "sp".into(),
+            turn_ordinal: 0,
+            role: "user".into(),
+            content: "hello world".into(),
+            tokens: None,
+        };
+        let t2 = CapturedTurn {
+            session_id: "different".into(),
+            trace_id: "different".into(),
+            span_id: "different".into(),
+            turn_ordinal: 99,
+            role: "user".into(),
+            content: "hello world".into(),
+            tokens: None,
+        };
+        assert_eq!(t1.fingerprint(), t2.fingerprint());
+    }
+
+    #[test]
+    fn build_otlp_payload_includes_required_attrs() {
+        let inputs = OtlpSpanInputs {
+            session_id: "sess-1".into(),
+            trace_id: "0123456789abcdef0123456789abcdef".into(),
+            span_id: "0123456789abcdef".into(),
+            model: "gemma".into(),
+            prompt_tokens: Some(10),
+            completion_tokens: Some(20),
+            start_unix_nano: 1_000_000,
+            end_unix_nano: 2_000_000,
+            status_ok: true,
+        };
+        let payload = build_otlp_payload(&inputs, "opencode");
+
+        let s = serde_json::to_string(&payload).unwrap();
+        assert!(s.contains("\"service.name\""));
+        assert!(s.contains("\"session.id\""));
+        assert!(s.contains("\"gen_ai.request.model\""));
+        assert!(s.contains("\"gen_ai.usage.prompt_tokens\""));
+        assert!(s.contains("\"gen_ai.usage.completion_tokens\""));
+    }
+
+    #[test]
+    fn otlp_payload_uses_numeric_times_and_int_values() {
+        // Regression: when these fields were stringified, the kernel
+        // OTLP receiver returned 422 (its `OtlpSpan` expects u64 / i64
+        // JSON numbers). Lock the wire format down so we don't drift.
+        let inputs = OtlpSpanInputs {
+            session_id: "sess-1".into(),
+            trace_id: "t".into(),
+            span_id: "s".into(),
+            model: "x".into(),
+            prompt_tokens: Some(7),
+            completion_tokens: Some(3),
+            start_unix_nano: 1700000000000000000,
+            end_unix_nano: 1700000003000000000,
+            status_ok: true,
+        };
+        let payload = build_otlp_payload(&inputs, "opencode");
+        let span = &payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+
+        assert!(span["startTimeUnixNano"].is_number(), "startTimeUnixNano must be JSON number");
+        assert!(span["endTimeUnixNano"].is_number(), "endTimeUnixNano must be JSON number");
+
+        let attrs = span["attributes"].as_array().unwrap();
+        let prompt_tokens = attrs.iter().find(|a| a["key"] == "gen_ai.usage.prompt_tokens").unwrap();
+        assert!(
+            prompt_tokens["value"]["intValue"].is_number(),
+            "gen_ai.usage.prompt_tokens intValue must be JSON number"
+        );
+    }
+
+    #[test]
+    fn persist_writes_one_row_per_turn() {
+        let store = Arc::new(DuckDbStore::open(":memory:").unwrap());
+        let capture = Capture::new(Arc::clone(&store), CaptureConfig::default());
+
+        let req = req_two_turns();
+        let resp = resp_with_usage(20, 5);
+        let turns = extract_turns(&req, &resp, "sess-x", "trace-x", "span-x");
+
+        capture.persist(&turns).unwrap();
+        let rows = store.list_prompt_bodies_for_session("sess-x").unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].turn_ordinal, 0);
+        assert_eq!(rows[2].role, "assistant");
+    }
+
+    #[test]
+    fn structured_content_arrays_are_stringified_not_lost() {
+        let req = ChatCompletionsRequest {
+            model: "x".into(),
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: serde_json::json!([
+                    { "type": "text", "text": "describe" },
+                    { "type": "image_url", "image_url": { "url": "data:..." } }
+                ]),
+            }],
+            stream: None,
+        };
+        let resp = ChatCompletionsResponse {
+            choices: vec![],
+            usage: None,
+            model: None,
+        };
+        let turns = extract_turns(&req, &resp, "s", "t", "sp");
+        assert_eq!(turns.len(), 1);
+        assert!(turns[0].content.contains("image_url"));
+    }
+}

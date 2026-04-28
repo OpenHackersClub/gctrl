@@ -433,6 +433,23 @@ pub struct PromptVersion {
     pub token_count: Option<i32>,
 }
 
+/// Per-turn prompt or completion body captured by the LLM relay.
+/// Distinct from `PromptVersion` (which is hash-only template storage).
+/// See `vault/specs/implementation/opencode-integration.md`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptBody {
+    pub id: String,
+    pub session_id: String,
+    pub span_id: Option<String>,
+    pub trace_id: Option<String>,
+    pub turn_ordinal: i32,
+    pub role: String,
+    pub content: String,
+    pub fingerprint: String,
+    pub tokens: Option<i32>,
+    pub created_at: DateTime<Utc>,
+}
+
 // --- Alert Rule ---
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlertRule {

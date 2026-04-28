@@ -14,7 +14,13 @@ uuid = { workspace = true }
 anyhow = { workspace = true }
 hudsucker = { workspace = true }
 url = "2"
+axum = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
 
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["macros"] }
+tower = { workspace = true }

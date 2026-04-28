@@ -150,6 +150,12 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/api/sessions/{session_id}/cost-breakdown",
             get(session_cost_breakdown),
         )
+        // Prompt bodies (per-turn capture from gctrl-proxy LLM relay)
+        .route(
+            "/api/sessions/{session_id}/prompts",
+            get(list_session_prompts),
+        )
+        .route("/api/prompts", get(list_prompts))
         // Context management
         .route("/api/context", get(context_list).post(context_upsert))
         .route("/api/context/compact", get(context_compact))
@@ -657,6 +663,70 @@ async fn session_cost_breakdown(
         }))
         .into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+// --- Prompt bodies (per-turn capture from the LLM relay) ---
+
+#[derive(Deserialize)]
+struct PromptsQueryParams {
+    /// Inclusive RFC3339 lower bound on `created_at`.
+    #[serde(default)]
+    since: Option<String>,
+    /// `fingerprint` is the only supported grouping today; passing any
+    /// other value is treated as no grouping (returns 400).
+    #[serde(default)]
+    group_by: Option<String>,
+    #[serde(default = "default_prompts_limit")]
+    limit: usize,
+}
+
+fn default_prompts_limit() -> usize {
+    100
+}
+
+/// `GET /api/sessions/{session_id}/prompts` — ordered turn list for one session.
+async fn list_session_prompts(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    match state.store.list_prompt_bodies_for_session(&session_id) {
+        Ok(rows) => Json(serde_json::json!({
+            "session_id": session_id,
+            "count": rows.len(),
+            "prompts": rows,
+        }))
+        .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// `GET /api/prompts?group_by=fingerprint&since=...&limit=...` — instance grouping.
+/// Without `group_by` returns 400; only `fingerprint` is supported today.
+async fn list_prompts(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PromptsQueryParams>,
+) -> impl IntoResponse {
+    match params.group_by.as_deref() {
+        Some("fingerprint") => {
+            match state
+                .store
+                .group_prompt_bodies_by_fingerprint(params.since.as_deref(), params.limit)
+            {
+                Ok(groups) => Json(serde_json::json!({ "groups": groups })).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            }
+        }
+        Some(other) => (
+            StatusCode::BAD_REQUEST,
+            format!("unsupported group_by={other}; only `fingerprint` is supported"),
+        )
+            .into_response(),
+        None => (
+            StatusCode::BAD_REQUEST,
+            "group_by is required; pass ?group_by=fingerprint".to_string(),
+        )
+            .into_response(),
     }
 }
 
