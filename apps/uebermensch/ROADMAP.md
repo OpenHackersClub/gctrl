@@ -34,11 +34,11 @@
 | `gctrl uber vault pull --from r2` | Bootstrap a fresh device from R2 for a given `identity.slug` — LISTs the prefix, downloads every key, seeds `.gctrl-uber/index.jsonl`, then hands off to the bidirectional sync | P0 | R2 vault sync | TBD |
 | `gctrl uber vault conflicts` | List outstanding `*.conflict-*.md` files under the vault so the user can resolve in Obsidian | P1 | R2 vault sync | TBD |
 | driver-rss | Kernel LKM polling RSS feeds listed in profile, producing sources under `$UBER_VAULT_DIR/wiki/sources/` | P0 | M0 Kernel vault mount | TBD |
-| driver-llm: Cloudflare AI Gateway adapter | Real Cloudflare AI Gateway client behind `LlmPort`; default model `@cf/google/gemma-4-26b-a4b-it`; kernel holds `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_AI_GATEWAY_ID` | P0 | M0 driver-llm stub | TBD |
-| Curator pipeline | Effect-TS `CuratorService` — query wiki for recent+topic-matching pages, call LLM, emit ranked brief items with bare `[[slug]]` citations | P0 | driver-llm Cloudflare AI Gateway, KB schema | TBD |
+| driver-llm: local-first adapter | Real client behind `LlmPort`. **Default**: LM Studio at `http://127.0.0.1:1234/v1/chat/completions`, default model `google/gemma-4-31b`. **Opt-in**: Cloudflare AI Gateway via `GCTRL_LLM_PROVIDER=cloudflare` (kernel holds `CF_API_TOKEN` + `CLOUDFLARE_AI_GATEWAY_ID`). Anthropic-shape models reachable via `/api/llm/messages` | P0 | M0 driver-llm stub | TBD |
+| Curator pipeline | Effect-TS `CuratorService` — query wiki for recent+topic-matching pages, call LLM, emit ranked brief items with bare `[[slug]]` citations | P0 | driver-llm local-first adapter, KB schema | TBD |
 | Renderer | Write `briefs/<date>.md` with frontmatter + H2 items + citation verification; fail on unresolved bare `[[slug]]` or any typed prefix | P0 | Curator | TBD |
 | Scheduler wiring | `uber.brief.daily` registered via Scheduler port on daemon start | P0 | M0, Curator | TBD |
-| `gctrl uber ingest --url` | End-to-end URL → vault source page + entity updates | P0 | driver-llm Cloudflare AI Gateway | TBD |
+| `gctrl uber ingest --url` | End-to-end URL → vault source page + entity updates | P0 | driver-llm local-first adapter | TBD |
 | Daily budget guardrail | Guardrail policy enforcing `profile.budgets.daily_usd`; pauses Uebermensch sessions when breached | P0 | M0 | TBD |
 
 **Done when:** An investor with a populated vault can run Uebermensch against real RSS feeds + manual URL ingests; `gctrl uber brief` produces a brief grounded in today's wiki updates with ≥90% citation coverage; the vault pushes to R2 within 60s of a change; a fresh device pulls the vault and opens it in Obsidian without edits.

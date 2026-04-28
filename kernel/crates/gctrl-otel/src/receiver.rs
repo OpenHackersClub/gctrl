@@ -4124,26 +4124,37 @@ async fn llm_messages(
     }
 }
 
-// --- LLM Driver: Workers AI (OpenAI-compat Chat Completions) ---
+// --- LLM Driver: OpenAI-compat Chat Completions ---
 //
-// Forwards OpenAI-shape Chat Completions payloads to either:
+// Local-first by default. Forwards OpenAI-shape Chat Completions payloads to:
 //   1. A locally-served OpenAI-compat backend (LM Studio, Ollama, vLLM, …)
-//      when GCTRL_LLM_LOCAL_URL is set. The full URL is forwarded as-is, so
-//      typical values are e.g. `http://localhost:1234/v1/chat/completions`.
-//      No CF gateway / token required in this mode — keeps inference local.
-//   2. Cloudflare AI Gateway → Workers AI (`@cf/...` models) otherwise.
+//      when GCTRL_LLM_PROVIDER is unset or anything other than `cloudflare`.
+//      Upstream URL defaults to `http://127.0.0.1:1234/v1/chat/completions`
+//      (LM Studio's default). Override with GCTRL_LLM_LOCAL_URL for Ollama,
+//      vLLM, or any other OpenAI-compat backend.
+//   2. Cloudflare AI Gateway → Workers AI (`@cf/...` models) when
+//      GCTRL_LLM_PROVIDER=cloudflare. Requires CF env vars (see below).
 //
-// Required env when GCTRL_LLM_LOCAL_URL is unset:
+// Required env when GCTRL_LLM_PROVIDER=cloudflare:
 //   CLOUDFLARE_ACCOUNT_ID        — CF account owning the gateway
 //   CLOUDFLARE_AI_GATEWAY_ID     — slug of the AI Gateway
 //   CF_API_TOKEN                 — Cloudflare API token with Workers AI read
 //                                  scope, forwarded as `Authorization: Bearer …`
 
+const LMSTUDIO_DEFAULT_URL: &str = "http://127.0.0.1:1234/v1/chat/completions";
+
 async fn llm_completions(
     State(state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    if let Ok(local_url) = std::env::var("GCTRL_LLM_LOCAL_URL") {
+    // Local-first: anything other than `GCTRL_LLM_PROVIDER=cloudflare` routes
+    // to a local OpenAI-compat backend.
+    let provider =
+        std::env::var("GCTRL_LLM_PROVIDER").unwrap_or_else(|_| "lmstudio".to_string());
+
+    if provider != "cloudflare" {
+        let local_url = std::env::var("GCTRL_LLM_LOCAL_URL")
+            .unwrap_or_else(|_| LMSTUDIO_DEFAULT_URL.to_string());
         let mut req = state
             .http_client
             .post(&local_url)

@@ -11,15 +11,21 @@ import {
 } from "../services/LlmService.js";
 import type { CuratedItem } from "../services/RendererService.js";
 
-const DEFAULT_MODEL = "claude-opus-4-7";
+// Local-first default: kernel /api/llm/completions routes to LM Studio at
+// 127.0.0.1:1234 unless GCTRL_LLM_PROVIDER=cloudflare is set on the kernel.
+// Override with UBER_LLM_MODEL to match the model id loaded in your LM Studio
+// instance (LM Studio typically echoes whatever model name it has loaded).
+const DEFAULT_MODEL = "google/gemma-4-31b";
 const ANTHROPIC_INPUT_COST_PER_MTOK = 5.0;
 const ANTHROPIC_OUTPUT_COST_PER_MTOK = 25.0;
 const MAX_CANDIDATE_EXCERPT = 2000;
 const DEFAULT_MAX_TOKENS = 16000;
 
-// Per-article summarization uses a cheaper model. Kernel /api/llm/messages
-// routes through the AI Gateway so any model in the provider registry works.
-const DEFAULT_SUMMARY_MODEL = "claude-haiku-4-5-20251001";
+// Per-article summarization shares the curator default by design — LM Studio
+// typically has a single model loaded and echoes that name regardless of the
+// `model` field. Override with UBER_LLM_SUMMARY_MODEL when running a separate
+// smaller model on a second backend.
+const DEFAULT_SUMMARY_MODEL = "google/gemma-4-31b";
 const SUMMARY_INPUT_COST_PER_MTOK = 1.0;
 const SUMMARY_OUTPUT_COST_PER_MTOK = 5.0;
 const SUMMARY_MAX_TOKENS = 800;

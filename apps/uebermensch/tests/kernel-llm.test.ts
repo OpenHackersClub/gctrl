@@ -5,8 +5,13 @@ import type { CandidateRef } from "../src/lib/candidates.js"
 import { LlmService } from "../src/services/LlmService.js"
 import type { WikiPage } from "../src/services/VaultService.js"
 
-const { extractJson, buildUserPrompt, kernelBase, MODEL, SUMMARY_MODEL, normalizeInsights } =
-  _internal
+const { extractJson, buildUserPrompt, kernelBase, normalizeInsights } = _internal
+
+// The Anthropic-routed tests in this file pin UBER_LLM_MODEL /
+// UBER_LLM_SUMMARY_MODEL to claude-* via beforeEach so they keep exercising
+// the /api/llm/messages path even though the live default is now LM Studio.
+const TEST_ANTHROPIC_MODEL = "claude-opus-4-7"
+const TEST_ANTHROPIC_SUMMARY_MODEL = "claude-haiku-4-5-20251001"
 
 const page = (stem: string, body: string, topics: ReadonlyArray<string> = []): WikiPage => ({
   relPath: `wiki/sources/${stem}.md`,
@@ -23,7 +28,7 @@ const candidate = (id: string, stem: string, body: string, topics: ReadonlyArray
 })
 
 const anthropicJson = (jsonBlock: unknown, usage = { input_tokens: 100, output_tokens: 200 }) => ({
-  model: MODEL,
+  model: TEST_ANTHROPIC_MODEL,
   usage,
   content: [
     {
@@ -71,14 +76,24 @@ describe("KernelLlm pure helpers", () => {
 describe("KernelLlm generateBrief (kernel-routed)", () => {
   const originalFetch = globalThis.fetch
   const prevKernel = process.env.GCTRL_KERNEL_URL
+  const prevModel = process.env.UBER_LLM_MODEL
+  const prevSummaryModel = process.env.UBER_LLM_SUMMARY_MODEL
 
   beforeEach(() => {
     process.env.GCTRL_KERNEL_URL = "http://kernel.test"
+    // Pin to claude-* models so these tests exercise the Anthropic /messages
+    // path. The live defaults are now LM Studio (OpenAI-compat /completions).
+    process.env.UBER_LLM_MODEL = TEST_ANTHROPIC_MODEL
+    process.env.UBER_LLM_SUMMARY_MODEL = TEST_ANTHROPIC_SUMMARY_MODEL
   })
 
   afterEach(() => {
     globalThis.fetch = originalFetch
     process.env.GCTRL_KERNEL_URL = prevKernel
+    if (prevModel === undefined) delete process.env.UBER_LLM_MODEL
+    else process.env.UBER_LLM_MODEL = prevModel
+    if (prevSummaryModel === undefined) delete process.env.UBER_LLM_SUMMARY_MODEL
+    else process.env.UBER_LLM_SUMMARY_MODEL = prevSummaryModel
   })
 
   it("POSTs to kernel /api/llm/messages and decodes items", async () => {
@@ -122,7 +137,7 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
     expect(res.items[0].title).toBe("Foo happened")
     expect(res.items[0].source_candidate_ids).toEqual(["cand-0000"])
     expect(res.topicsCovered).toEqual(["alpha"])
-    expect(res.model).toBe(MODEL)
+    expect(res.model).toBe(TEST_ANTHROPIC_MODEL)
     // 100 * $5/M input + 200 * $25/M output = $0.0005 + $0.005 = $0.0055
     expect(res.costUsd).toBeCloseTo(0.0055, 6)
     expect(res.promptHash).toMatch(/^sha256:[0-9a-f]{64}$/)
@@ -131,7 +146,7 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
     const [url, init] = fetchMock.mock.calls[0]!
     expect(url).toBe(`${kernelBase()}/api/llm/messages`)
     const body = JSON.parse((init as { body: string }).body)
-    expect(body.model).toBe(MODEL)
+    expect(body.model).toBe(TEST_ANTHROPIC_MODEL)
     expect(body.thinking).toEqual({ type: "adaptive" })
     expect(body.system).toContain("uebermensch-curator")
     expect(body.messages[0].role).toBe("user")
@@ -199,7 +214,7 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
       status: 200,
       text: async () =>
         JSON.stringify({
-          model: SUMMARY_MODEL,
+          model: TEST_ANTHROPIC_SUMMARY_MODEL,
           usage: { input_tokens: 500, output_tokens: 200 },
           content: [
             {
@@ -223,7 +238,7 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
       }).pipe(Effect.provide(KernelLlmLive)),
     )
 
-    expect(res.model).toBe(SUMMARY_MODEL)
+    expect(res.model).toBe(TEST_ANTHROPIC_SUMMARY_MODEL)
     expect(res.insightsMd.startsWith("## Key Insights")).toBe(true)
     expect(res.insightsMd).toContain("17 allies")
     // 500 * $1/M + 200 * $5/M = $0.0005 + $0.001 = $0.0015
@@ -232,7 +247,7 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
     const [url, init] = fetchMock.mock.calls[0]!
     expect(url).toBe(`${kernelBase()}/api/llm/messages`)
     const body = JSON.parse((init as { body: string }).body)
-    expect(body.model).toBe(SUMMARY_MODEL)
+    expect(body.model).toBe(TEST_ANTHROPIC_SUMMARY_MODEL)
     expect(body.system).toContain("uebermensch-ingest")
     expect(body.messages[0].content).toContain("Arms Exports")
   })
@@ -319,13 +334,64 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
     }
   })
 
+  it("default model (no UBER_LLM_MODEL) routes to /api/llm/completions for LM Studio", async () => {
+    // Clear the pinned anthropic model so the live default kicks in.
+    delete process.env.UBER_LLM_MODEL
+    const openaiJson = {
+      model: "google/gemma-4-31b",
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content:
+              '```json\n' +
+              JSON.stringify({
+                items: [],
+                topicsCovered: [],
+                thesesCovered: [],
+              }) +
+              "\n```",
+          },
+        },
+      ],
+      usage: { prompt_tokens: 50, completion_tokens: 60 },
+    }
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(openaiJson),
+    })
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+
+    const res = await Effect.runPromise(
+      Effect.gen(function* () {
+        const llm = yield* LlmService
+        return yield* llm.generateBrief({
+          date: "2026-04-22",
+          profileName: "Test",
+          topics: [],
+          thesesSlugs: [],
+          candidates: [],
+          maxItems: 3,
+        })
+      }).pipe(Effect.provide(KernelLlmLive)),
+    )
+    expect(res.items).toHaveLength(0)
+    expect(res.costUsd).toBe(0)
+    const [url, init] = fetchMock.mock.calls[0]!
+    expect(url).toBe(`${kernelBase()}/api/llm/completions`)
+    const body = JSON.parse((init as { body: string }).body)
+    expect(body.model).toBe("google/gemma-4-31b")
+    expect(body.thinking).toBeUndefined()
+  })
+
   it("fails with invalid when response text has no JSON", async () => {
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
       text: async () =>
         JSON.stringify({
-          model: MODEL,
+          model: TEST_ANTHROPIC_MODEL,
           content: [{ type: "text", text: "just prose, no object here" }],
         }),
     }) as unknown as typeof fetch
