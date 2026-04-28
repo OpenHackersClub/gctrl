@@ -15,7 +15,7 @@ import type { CuratedItem } from "../services/RendererService.js";
 // 127.0.0.1:1234 unless GCTRL_LLM_PROVIDER=cloudflare is set on the kernel.
 // Override with UBER_LLM_MODEL to match the model id loaded in your LM Studio
 // instance (LM Studio typically echoes whatever model name it has loaded).
-const DEFAULT_MODEL = "google/gemma-3-27b-it";
+const DEFAULT_MODEL = "google/gemma-4-31b";
 const ANTHROPIC_INPUT_COST_PER_MTOK = 5.0;
 const ANTHROPIC_OUTPUT_COST_PER_MTOK = 25.0;
 const MAX_CANDIDATE_EXCERPT = 2000;

@@ -338,7 +338,7 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
     // Clear the pinned anthropic model so the live default kicks in.
     delete process.env.UBER_LLM_MODEL
     const openaiJson = {
-      model: "google/gemma-3-27b-it",
+      model: "google/gemma-4-31b",
       choices: [
         {
           message: {
@@ -381,7 +381,7 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
     const [url, init] = fetchMock.mock.calls[0]!
     expect(url).toBe(`${kernelBase()}/api/llm/completions`)
     const body = JSON.parse((init as { body: string }).body)
-    expect(body.model).toBe("google/gemma-3-27b-it")
+    expect(body.model).toBe("google/gemma-4-31b")
     expect(body.thinking).toBeUndefined()
   })
 
