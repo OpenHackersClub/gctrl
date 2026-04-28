@@ -3527,10 +3527,14 @@ async fn llm_messages(
 
 // --- LLM Driver: Workers AI (OpenAI-compat Chat Completions) ---
 //
-// Forwards OpenAI-shape Chat Completions payloads through Cloudflare AI Gateway
-// to Cloudflare Workers AI models (e.g. `@cf/google/gemma-4-26b-a4b-it`).
+// Forwards OpenAI-shape Chat Completions payloads to either:
+//   1. A locally-served OpenAI-compat backend (LM Studio, Ollama, vLLM, …)
+//      when GCTRL_LLM_LOCAL_URL is set. The full URL is forwarded as-is, so
+//      typical values are e.g. `http://localhost:1234/v1/chat/completions`.
+//      No CF gateway / token required in this mode — keeps inference local.
+//   2. Cloudflare AI Gateway → Workers AI (`@cf/...` models) otherwise.
 //
-// Required env:
+// Required env when GCTRL_LLM_LOCAL_URL is unset:
 //   CLOUDFLARE_ACCOUNT_ID        — CF account owning the gateway
 //   CLOUDFLARE_AI_GATEWAY_ID     — slug of the AI Gateway
 //   CF_API_TOKEN                 — Cloudflare API token with Workers AI read
@@ -3540,6 +3544,34 @@ async fn llm_completions(
     State(state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    if let Ok(local_url) = std::env::var("GCTRL_LLM_LOCAL_URL") {
+        let mut req = state
+            .http_client
+            .post(&local_url)
+            .header("content-type", "application/json");
+        if let Ok(token) = std::env::var("GCTRL_LLM_LOCAL_TOKEN") {
+            req = req.header("authorization", format!("Bearer {token}"));
+        }
+        return match req.json(&body).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                if status.is_success() {
+                    match serde_json::from_str::<serde_json::Value>(&text) {
+                        Ok(v) => Json(v).into_response(),
+                        Err(_) => (StatusCode::BAD_GATEWAY, text).into_response(),
+                    }
+                } else {
+                    (messaging_upstream_status(status), text).into_response()
+                }
+            }
+            Err(e) => (
+                StatusCode::BAD_GATEWAY,
+                format!("local llm request failed: {e}"),
+            )
+                .into_response(),
+        };
+    }
     let Ok(account_id) = std::env::var("CLOUDFLARE_ACCOUNT_ID") else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,

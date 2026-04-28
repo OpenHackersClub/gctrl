@@ -248,6 +248,7 @@ describe("HttpIngest with summarization", () => {
     Layer.succeed(LlmService, {
       name: () => "fake-llm",
       generateBrief: () => Effect.die("not used"),
+      proposeSubtopic: () => Effect.die("not used"),
       generateInterestReport: () => Effect.die("not used"),
       researchQuery: () => Effect.die("not used"),
       summarizeSource: () =>
@@ -319,6 +320,7 @@ describe("HttpIngest with summarization", () => {
     const failingLlm = Layer.succeed(LlmService, {
       name: () => "broken-llm",
       generateBrief: () => Effect.die("not used"),
+      proposeSubtopic: () => Effect.die("not used"),
       generateInterestReport: () => Effect.die("not used"),
       researchQuery: () => Effect.die("not used"),
       summarizeSource: () =>

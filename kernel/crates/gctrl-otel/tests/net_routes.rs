@@ -245,10 +245,12 @@ async fn llm_completions_fails_closed_without_gateway_config() {
     let prev_acct = std::env::var("CLOUDFLARE_ACCOUNT_ID").ok();
     let prev_gw = std::env::var("CLOUDFLARE_AI_GATEWAY_ID").ok();
     let prev_cf_tok = std::env::var("CF_API_TOKEN").ok();
+    let prev_local = std::env::var("GCTRL_LLM_LOCAL_URL").ok();
     unsafe {
         std::env::remove_var("CLOUDFLARE_ACCOUNT_ID");
         std::env::remove_var("CLOUDFLARE_AI_GATEWAY_ID");
         std::env::remove_var("CF_API_TOKEN");
+        std::env::remove_var("GCTRL_LLM_LOCAL_URL");
     }
     let app = router_with(NetConfig::default());
     let probe_body = serde_json::json!({
@@ -285,6 +287,9 @@ async fn llm_completions_fails_closed_without_gateway_config() {
         }
         if let Some(v) = prev_cf_tok {
             std::env::set_var("CF_API_TOKEN", v);
+        }
+        if let Some(v) = prev_local {
+            std::env::set_var("GCTRL_LLM_LOCAL_URL", v);
         }
     }
 }

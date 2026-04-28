@@ -95,6 +95,41 @@ export const StubLlmLive = Layer.succeed(LlmService, {
       ].join("\n");
       return { answerMd, promptHash, costUsd: 0, model: STUB_MODEL };
     }),
+  proposeSubtopic: (req) =>
+    Effect.sync(() => {
+      const it = req.interest;
+      const prompt = [
+        "persona: uber-curator/stub-subtopic",
+        `period: ${req.periodLabel}`,
+        `interest: ${it.slug}`,
+        `candidates: ${it.candidates.map((c) => c.id).join(",")}`,
+      ].join("\n");
+      const promptHash = sha256(prompt);
+      const top = [...it.candidates].sort((a, b) => b.score - a.score).slice(0, 5);
+      // Deterministic stub: anchor sub-topic on the highest-scored candidate's
+      // first page topic; fall back to the interest topic if candidates empty.
+      const seed =
+        (top[0]?.page.frontmatter.topics as ReadonlyArray<string> | undefined)?.[0] ??
+        it.topics[0] ??
+        it.slug;
+      const proposalSlug = `${it.slug}--${seed}`.replace(/[^a-z0-9-]/g, "-").slice(0, 60);
+      const proposalTitle = `${it.title} — ${seed}`;
+      const proposal = {
+        slug: proposalSlug,
+        title: proposalTitle,
+        rationale: `Stub subtopic anchored on '${seed}' (top candidate signal).`,
+        relevantCandidateIds: top.map((c) => c.id),
+      };
+      return {
+        selectedSlug: proposalSlug,
+        proposals: [proposal],
+        promptHash,
+        costUsd: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        model: STUB_MODEL,
+      };
+    }),
   generateInterestReport: (req) =>
     Effect.sync(() => {
       const it = req.interest;
@@ -103,6 +138,8 @@ export const StubLlmLive = Layer.succeed(LlmService, {
         `period: ${req.periodLabel}`,
         `profile: ${req.profileName}`,
         `interest: ${it.slug}`,
+        `field_familiarity: ${it.fieldFamiliarity}`,
+        `subtopic: ${req.subtopic?.slug ?? "(none)"}`,
         `candidates: ${it.candidates.map((c) => c.id).join(",")}`,
       ].join("\n");
       const promptHash = sha256(prompt);

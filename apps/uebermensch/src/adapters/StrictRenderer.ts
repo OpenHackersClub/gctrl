@@ -119,33 +119,57 @@ const verifyAnalysisCitations = (
 const interestReportSlug = (periodLabel: string, interestSlug: string): string =>
   `${periodLabel}--${interestSlug}`
 
+const yamlString = (s: string): string => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
+
 const renderInterestReportFrontmatter = (
   input: InterestReportRenderInput,
   slug: string,
   itemCount: number,
   citedClaims: number,
   totalClaims: number,
-): string =>
-  [
+): string => {
+  const lines: Array<string> = [
     "---",
     "page_type: report",
     `slug: report-${slug}`,
     'kind: "weekly"',
-    `period_label: "${input.periodLabel}"`,
-    `period_start: "${input.periodStart}"`,
-    `period_end: "${input.periodEnd}"`,
-    `interest_slug: "${input.interestSlug}"`,
-    `interest_title: "${input.interestTitle.replace(/"/g, '\\"')}"`,
-    `generator: "${input.generator}"`,
-    `model: "${input.model}"`,
-    `prompt_hash: "${input.promptHash}"`,
+    `period_label: ${yamlString(input.periodLabel)}`,
+    `period_start: ${yamlString(input.periodStart)}`,
+    `period_end: ${yamlString(input.periodEnd)}`,
+    `interest_slug: ${yamlString(input.interestSlug)}`,
+    `interest_title: ${yamlString(input.interestTitle)}`,
+    `field_familiarity: ${yamlString(input.fieldFamiliarity)}`,
+  ]
+  if (input.subtopic) {
+    lines.push(`subtopic_slug: ${yamlString(input.subtopic.slug)}`)
+    lines.push(`subtopic_title: ${yamlString(input.subtopic.title)}`)
+    lines.push(`subtopic_rationale: ${yamlString(input.subtopic.rationale)}`)
+  } else {
+    lines.push("subtopic_slug: null")
+  }
+  if (input.subtopicAlternatives.length > 0) {
+    lines.push("subtopic_alternatives:")
+    for (const alt of input.subtopicAlternatives) {
+      lines.push(`  - slug: ${yamlString(alt.slug)}`)
+      lines.push(`    title: ${yamlString(alt.title)}`)
+      lines.push(`    rationale: ${yamlString(alt.rationale)}`)
+    }
+  } else {
+    lines.push("subtopic_alternatives: []")
+  }
+  lines.push(
+    `generator: ${yamlString(input.generator)}`,
+    `model: ${yamlString(input.model)}`,
+    `prompt_hash: ${yamlString(input.promptHash)}`,
     `cost_usd: ${input.costUsd}`,
     `item_count: ${itemCount}`,
     `cited_claims: ${citedClaims}`,
     `total_claims: ${totalClaims}`,
     `topics: ${yamlList(input.interestTopics)}`,
     "---",
-  ].join("\n")
+  )
+  return lines.join("\n")
+}
 
 const renderReportIndexFrontmatter = (
   input: ReportIndexRenderInput,
@@ -234,12 +258,17 @@ export const StrictRendererLive = Layer.succeed(RendererService, {
         citedClaims,
         totalClaims,
       )
-      const header = `# ${input.interestTitle} — ${input.periodLabel}`
+      const header = input.subtopic
+        ? `# ${input.interestTitle}: ${input.subtopic.title} — ${input.periodLabel}`
+        : `# ${input.interestTitle} — ${input.periodLabel}`
       const periodLine = `_Period ${input.periodStart} → ${input.periodEnd}_`
+      const subtopicLine = input.subtopic
+        ? `_Subtopic: ${input.subtopic.title} — ${input.subtopic.rationale.trim()}_\n\n`
+        : ""
       const questionLine = input.interestQuestion
         ? `> ${input.interestQuestion}\n\n`
         : ""
-      const markdown = `${frontmatter}\n\n${header}\n\n${periodLine}\n\n${questionLine}${body}\n`
+      const markdown = `${frontmatter}\n\n${header}\n\n${periodLine}\n\n${subtopicLine}${questionLine}${body}\n`
       const result: InterestReportRenderResult = {
         markdown,
         slug,
@@ -261,9 +290,12 @@ export const StrictRendererLive = Layer.succeed(RendererService, {
         lines.push("_No interests had substantive signal this week._")
       } else {
         for (const entry of input.entries) {
+          const linkText = entry.subtopicTitle
+            ? `${entry.interestTitle}: ${entry.subtopicTitle}`
+            : entry.interestTitle
           const link = entry.publicUrl
-            ? `[${entry.interestTitle}](${entry.publicUrl})`
-            : `[[${entry.reportSlug}|${entry.interestTitle}]]`
+            ? `[${linkText}](${entry.publicUrl})`
+            : `[[${entry.reportSlug}|${linkText}]]`
           lines.push(`## ${link}`)
           lines.push("")
           if (entry.interestQuestion) {

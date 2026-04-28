@@ -161,6 +161,38 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
     expect(Exit.isFailure(exit)).toBe(true)
   })
 
+  it("emits 'kernel daemon not reachable' when fetch fails with ECONNREFUSED", async () => {
+    // Simulate node fetch's exact failure shape when nothing is listening on
+    // GCTRL_KERNEL_URL: TypeError("fetch failed") with a nested cause
+    // carrying code: "ECONNREFUSED".
+    const cause = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:4318"), {
+      code: "ECONNREFUSED",
+    })
+    const wrapped = Object.assign(new TypeError("fetch failed"), { cause })
+    globalThis.fetch = vi.fn().mockRejectedValue(wrapped) as unknown as typeof fetch
+
+    const exit = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        const llm = yield* LlmService
+        return yield* llm.generateBrief({
+          date: "2026-04-22",
+          profileName: "Test",
+          topics: [],
+          thesesSlugs: [],
+          candidates: [],
+          maxItems: 3,
+        })
+      }).pipe(Effect.provide(KernelLlmLive)),
+    )
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      const msg = String(exit.cause)
+      expect(msg).toContain("kernel daemon not reachable")
+      expect(msg).toContain("/api/llm/messages")
+      expect(msg).toContain("gctrld serve")
+    }
+  })
+
   it("summarizeSource posts to kernel with SUMMARY_MODEL and returns insights", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -312,5 +344,103 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
       }).pipe(Effect.provide(KernelLlmLive)),
     )
     expect(Exit.isFailure(exit)).toBe(true)
+  })
+
+  it("proposeSubtopic decodes proposals and drops fabricated candidate ids", async () => {
+    const payload = anthropicJson({
+      proposals: [
+        {
+          slug: "japan-macro--boj-private-credit",
+          title: "BoJ flags private-credit linkages",
+          rationale: "BoJ research review highlights JP banks' BDC exposure.",
+          // First id is real; second is fabricated (not in the input set).
+          relevant_candidate_ids: ["cand-0000", "cand-fake"],
+        },
+        {
+          slug: "japan-macro--takaichi-arms-exports",
+          title: "Takaichi loosens lethal-arms export rules",
+          rationale: "Policy shift opens defense-industrial revenue.",
+          relevant_candidate_ids: ["cand-0001"],
+        },
+      ],
+      selected_slug: "japan-macro--boj-private-credit",
+    })
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(payload),
+    }) as unknown as typeof fetch
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const llm = yield* LlmService
+        return yield* llm.proposeSubtopic({
+          periodLabel: "2026-W18",
+          periodStart: "2026-04-21",
+          periodEnd: "2026-04-28",
+          profileName: "Test",
+          interest: {
+            slug: "japan-macro",
+            title: "Japan macroeconomics",
+            question: "What's moving BoJ policy this week?",
+            topics: ["japan-macro"],
+            notes: "",
+            fieldFamiliarity: "expert",
+            candidates: [
+              candidate("cand-0000", "2026-04-22--boj-rev26e01", "BoJ private credit body.", ["japan-macro"]),
+              candidate("cand-0001", "2026-04-22--bbc-takaichi-arms", "Takaichi arms body.", ["japan-politics"]),
+            ],
+          },
+        })
+      }).pipe(Effect.provide(KernelLlmLive)),
+    )
+
+    expect(result.selectedSlug).toBe("japan-macro--boj-private-credit")
+    expect(result.proposals).toHaveLength(2)
+    // Fabricated id was dropped, real one retained.
+    expect(result.proposals[0].relevantCandidateIds).toEqual(["cand-0000"])
+    expect(result.proposals[1].relevantCandidateIds).toEqual(["cand-0001"])
+  })
+
+  it("proposeSubtopic falls back to first proposal when selected_slug is unknown", async () => {
+    const payload = anthropicJson({
+      proposals: [
+        {
+          slug: "real-slug",
+          title: "Real",
+          rationale: "ok",
+          relevant_candidate_ids: ["cand-0000"],
+        },
+      ],
+      selected_slug: "hallucinated-slug-not-in-proposals",
+    })
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(payload),
+    }) as unknown as typeof fetch
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const llm = yield* LlmService
+        return yield* llm.proposeSubtopic({
+          periodLabel: "2026-W18",
+          periodStart: "2026-04-21",
+          periodEnd: "2026-04-28",
+          profileName: "Test",
+          interest: {
+            slug: "japan-macro",
+            title: "Japan macroeconomics",
+            question: null,
+            topics: ["japan-macro"],
+            notes: "",
+            fieldFamiliarity: "expert",
+            candidates: [candidate("cand-0000", "stem", "body", ["japan-macro"])],
+          },
+        })
+      }).pipe(Effect.provide(KernelLlmLive)),
+    )
+
+    expect(result.selectedSlug).toBe("real-slug")
   })
 })

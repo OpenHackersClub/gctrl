@@ -33,6 +33,12 @@ export type RenderResult = {
   readonly totalClaims: number
 }
 
+export type RenderedSubtopic = {
+  readonly slug: string
+  readonly title: string
+  readonly rationale: string
+}
+
 export type InterestReportRenderInput = {
   readonly periodLabel: string
   readonly periodStart: string
@@ -46,6 +52,9 @@ export type InterestReportRenderInput = {
   readonly interestTitle: string
   readonly interestQuestion: string | null
   readonly interestTopics: ReadonlyArray<string>
+  readonly fieldFamiliarity: "expert" | "novice"
+  readonly subtopic: RenderedSubtopic | null
+  readonly subtopicAlternatives: ReadonlyArray<RenderedSubtopic>
   readonly analysis_md: string
   readonly items: ReadonlyArray<CuratedItem>
   readonly candidates: ReadonlyArray<CandidateRef>
@@ -64,6 +73,7 @@ export type ReportIndexEntry = {
   readonly interestSlug: string
   readonly interestTitle: string
   readonly interestQuestion: string | null
+  readonly subtopicTitle: string | null
   readonly reportSlug: string
   readonly publicUrl: string | null
   readonly itemCount: number

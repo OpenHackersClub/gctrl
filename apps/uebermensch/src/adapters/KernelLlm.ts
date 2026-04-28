@@ -7,6 +7,7 @@ import {
   type InterestReportRequest,
   LlmService,
   type ResearchQueryRequest,
+  type SubtopicProposeRequest,
 } from "../services/LlmService.js";
 import type { CuratedItem } from "../services/RendererService.js";
 
@@ -18,7 +19,7 @@ const DEFAULT_MAX_TOKENS = 16000;
 
 // Per-article summarization uses a cheaper model. Kernel /api/llm/messages
 // routes through the AI Gateway so any model in the provider registry works.
-const SUMMARY_MODEL = "claude-haiku-4-5-20251001";
+const DEFAULT_SUMMARY_MODEL = "claude-haiku-4-5-20251001";
 const SUMMARY_INPUT_COST_PER_MTOK = 1.0;
 const SUMMARY_OUTPUT_COST_PER_MTOK = 5.0;
 const SUMMARY_MAX_TOKENS = 800;
@@ -26,7 +27,15 @@ const SUMMARY_INPUT_CHARS_CAP = 12000;
 
 const modelFor = (): string => process.env.UBER_LLM_MODEL ?? DEFAULT_MODEL;
 
-const isWorkersAiModel = (model: string): boolean => model.startsWith("@cf/");
+const summaryModelFor = (): string =>
+  process.env.UBER_LLM_SUMMARY_MODEL ?? process.env.UBER_LLM_MODEL ?? DEFAULT_SUMMARY_MODEL;
+
+// Anthropic-shaped models go through /api/llm/messages. Everything else
+// (`@cf/...` Workers AI, locally-served OpenAI-compat backends like
+// LM Studio / Ollama) goes through /api/llm/completions.
+const isAnthropicModel = (model: string): boolean => model.startsWith("claude-");
+// Back-compat alias — older callers/tests still import this name.
+const isWorkersAiModel = (model: string): boolean => !isAnthropicModel(model);
 
 const kernelBase = (): string =>
   (process.env.GCTRL_KERNEL_URL ?? "http://127.0.0.1:4318").replace(/\/+$/, "");
@@ -42,12 +51,17 @@ const candidateBlock = (c: CandidateRef): string => {
   const title = (fm.title as string | undefined) ?? c.page.stem;
   const topics = ((fm.topics as ReadonlyArray<string> | undefined) ?? []).join(", ");
   const url = (fm.url as string | undefined) ?? "";
+  // source_kind is set by the ingest pipeline (news / paper / research-blog /
+  // primary). Surface it so the deep-dive prompt can promote primary research
+  // citations into a "Latest research" frame for novice-mode interests.
+  const sourceKind = (fm.source_kind as string | undefined) ?? "";
   const lines: Array<string> = [
     `- id: ${c.id}`,
     `  stem: ${c.page.stem}`,
     `  title: ${title}`,
     `  topics: [${topics}]`,
   ];
+  if (sourceKind) lines.push(`  source_kind: ${sourceKind}`);
   if (url) lines.push(`  url: ${url}`);
   lines.push(`  score: ${c.score.toFixed(3)}`);
   lines.push(`  excerpt: |`);
@@ -154,6 +168,35 @@ const classifyKernelStatus = (status: number): LlmError["kind"] => {
   return "invalid";
 };
 
+// Node's fetch surfaces a connection refusal as `TypeError: fetch failed`
+// with a nested `cause` carrying `code: ECONNREFUSED`. Walk the chain so we
+// can tell the user the kernel daemon is simply down vs. some other failure.
+const isConnRefused = (e: unknown): boolean => {
+  let cur: unknown = e;
+  for (let depth = 0; depth < 5 && cur != null; depth += 1) {
+    const code = (cur as { code?: string }).code;
+    if (
+      code === "ECONNREFUSED" ||
+      code === "ENOTFOUND" ||
+      code === "EHOSTUNREACH" ||
+      code === "ECONNRESET"
+    ) {
+      return true;
+    }
+    const errors = (cur as { errors?: ReadonlyArray<unknown> }).errors;
+    if (Array.isArray(errors) && errors.some(isConnRefused)) return true;
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return false;
+};
+
+const kernelDownErr = (path: string): LlmError =>
+  llmErr(
+    "unavailable",
+    `kernel daemon not reachable at ${kernelBase()}${path} — start it with: ` +
+      `gctrld serve --port 4318 (or set GCTRL_KERNEL_URL to point at a running kernel)`,
+  );
+
 const tokensCost = (
   inputTokens: number,
   outputTokens: number,
@@ -204,10 +247,11 @@ const postAnthropic = (
         model: parsed.model ?? model,
       };
     },
-    catch: (e) =>
-      e instanceof LlmError
-        ? e
-        : llmErr("unavailable", `kernel /api/llm/messages fetch failed: ${String(e)}`),
+    catch: (e) => {
+      if (e instanceof LlmError) return e;
+      if (isConnRefused(e)) return kernelDownErr("/api/llm/messages");
+      return llmErr("unavailable", `kernel /api/llm/messages fetch failed: ${String(e)}`);
+    },
   });
 
 const postWorkersAi = (
@@ -250,10 +294,11 @@ const postWorkersAi = (
         model: parsed.model ?? model,
       };
     },
-    catch: (e) =>
-      e instanceof LlmError
-        ? e
-        : llmErr("unavailable", `kernel /api/llm/completions fetch failed: ${String(e)}`),
+    catch: (e) => {
+      if (e instanceof LlmError) return e;
+      if (isConnRefused(e)) return kernelDownErr("/api/llm/completions");
+      return llmErr("unavailable", `kernel /api/llm/completions fetch failed: ${String(e)}`);
+    },
   });
 
 const postLlm = (
@@ -267,7 +312,73 @@ const postLlm = (
     ? postWorkersAi(model, system, userPrompt, maxTokens)
     : postAnthropic(model, system, userPrompt, maxTokens, thinking);
 
-const REPORT_SYSTEM_PROMPT = `You are uebermensch-researcher, a chief-of-staff analyst. Your task is to produce a DEEP weekly research report for ONE research interest.
+const SUBTOPIC_SYSTEM_PROMPT = `You are uebermensch-curator. Given a long-running research interest and the strongest candidates surfaced this week, identify 1–3 sharply focused SUB-TOPICS the deep-dive could explore this week, then pick the best one.
+
+OUTPUT CONTRACT:
+- Output MUST be a single JSON object wrapped in a triple-backtick json fenced block. No prose outside the fence.
+- Shape:
+  {
+    "proposals": [
+      {
+        "slug": "kebab-case",                    // <= 60 chars, lower kebab
+        "title": "Sub-topic title",              // <= 80 chars
+        "rationale": "1–2 sentences",            // why this thread is the strongest signal
+        "relevant_candidate_ids": ["..."]        // candidate ids that support this sub-topic
+      }
+    ],
+    "selected_slug": "..."                       // MUST equal one proposals[].slug
+  }
+
+RULES:
+- A sub-topic MUST be sharper than the interest's umbrella title — name a specific thread, actor, mechanism, ruling, paper, or development. NOT a paraphrase of the interest.
+- 1–3 proposals. If signal is weak/diffuse, return ONE proposal capturing the dominant fragment rather than no proposals.
+- relevant_candidate_ids MUST be a subset of the provided candidate ids — never fabricate.
+- Rationale is concrete: name actors, numbers, dates, mechanisms. No meta phrases like "this week's pool covers...".
+- selected_slug picks the proposal with the densest cited evidence and the highest decision-relevance for the interest's question.`;
+
+const buildSubtopicUserPrompt = (req: SubtopicProposeRequest): string => {
+  const it = req.interest;
+  const lines: Array<string> = [];
+  lines.push(`period: ${req.periodLabel}`);
+  lines.push(`periodStart: ${req.periodStart}`);
+  lines.push(`periodEnd: ${req.periodEnd}`);
+  lines.push(`profile: ${req.profileName}`);
+  lines.push("");
+  lines.push("interest:");
+  lines.push(`  slug: ${it.slug}`);
+  lines.push(`  title: ${it.title}`);
+  if (it.question) lines.push(`  question: ${it.question}`);
+  lines.push(`  topics: [${it.topics.join(", ")}]`);
+  lines.push(`  field_familiarity: ${it.fieldFamiliarity}`);
+  if (it.notes) {
+    lines.push(`  notes: |`);
+    for (const line of it.notes.split("\n")) lines.push(`    ${line}`);
+  }
+  lines.push("");
+  lines.push("candidates:");
+  if (it.candidates.length === 0) {
+    lines.push("  (none)");
+  } else {
+    for (const c of it.candidates) lines.push(candidateBlock(c));
+  }
+  lines.push("");
+  lines.push("Return ONLY a fenced ```json block with the schema above.");
+  return lines.join("\n");
+};
+
+const SubtopicProposalSchema = Schema.Struct({
+  slug: Schema.String,
+  title: Schema.String,
+  rationale: Schema.String,
+  relevant_candidate_ids: Schema.Array(Schema.String),
+});
+
+const SubtopicProposeOutputSchema = Schema.Struct({
+  proposals: Schema.Array(SubtopicProposalSchema).pipe(Schema.minItems(1)),
+  selected_slug: Schema.String,
+});
+
+const REPORT_SYSTEM_PROMPT = `You are uebermensch-researcher, a chief-of-staff analyst. Your task is to produce a DEEP weekly research report for ONE research interest, focused on a chosen SUB-TOPIC for this week.
 
 OUTPUT CONTRACT:
 - Output MUST be a single JSON object wrapped in a triple-backtick json fenced block. No prose outside the fence.
@@ -278,7 +389,7 @@ OUTPUT CONTRACT:
     ### Cross-currents
     ### Implications
     ### Open questions
-  - Thesis (1 short paragraph): the single most important claim of the week for this interest, stated sharply.
+  - Thesis (1 short paragraph): the single most important claim of the week, framed around the FOCUS_SUBTOPIC if one is provided.
   - Key developments (2–5 paragraphs): concrete, specific developments grounded in the candidate excerpts. Tight bullets are acceptable here, but prefer prose that synthesizes across candidates.
   - Cross-currents (1–3 paragraphs): tensions, disagreements, or contradictions between sources; second-order effects; what is being priced in vs. not.
   - Implications (1–3 paragraphs): what this means for the interest's question. Concrete, falsifiable, decision-relevant.
@@ -306,6 +417,22 @@ DEPTH RULES:
 - Name actors, numbers, dates, and mechanisms. Avoid generic macro prose.
 - Do NOT meta-describe the candidate pool ("the sources cover X", "based on these articles"). Write as a first-party analyst.
 
+SUBTOPIC FOCUS RULES:
+- If a FOCUS_SUBTOPIC block is provided, the entire report MUST be framed around that specific sub-thread. The interest's umbrella question is context only — DO NOT default to surveying the whole interest.
+- Thesis MUST directly address the FOCUS_SUBTOPIC. Key developments / Cross-currents / Implications MUST stay on that thread; mention adjacent threads only when they bear on it.
+- Open questions MUST be specific to the sub-topic, not the umbrella interest.
+
+FIELD FAMILIARITY (controls tone, never citation rigor):
+- "expert": assume technical fluency. Use domain jargon directly. Focus on second-order effects, mechanism nuance, and decision-relevant deltas. NO definitions of standard terms.
+- "novice": ELI5 framing. Define every domain term on first use in one short clause (e.g. "BDCs (Business Development Companies — public-listed funds that lend to mid-market firms)"). Prefer concrete analogies and one short "Plain English:" callout per Key Development paragraph that restates the development for a non-specialist. Citation rigor and "no meta commentary" rules still apply.
+- The FIELD_FAMILIARITY value will appear in the user prompt; honor it strictly.
+
+STATE-OF-THE-ART RESEARCH:
+- Each candidate may carry a \`source_kind\` field. Values: "news", "paper", "research-blog", "primary" (e.g. central-bank releases, SEC filings).
+- If at least one cited candidate has source_kind in {"paper", "research-blog"}, INSERT a level-3 section "### Latest research" immediately after Thesis (so the order becomes: Thesis → Latest research → Key developments → Cross-currents → Implications → Open questions). The Latest research section is 1–2 paragraphs naming the paper/research piece(s), the authors/institution if shown, and the substantive finding — citations strict as elsewhere.
+- For novice-mode interests, the Latest research section MUST translate the finding into one Plain English sentence at the end.
+- If no candidate has a research source_kind, OMIT the section entirely — do not write "no research this week".
+
 INSIGHT-ONLY RULES (strict — enforced by reviewer):
 - Write substantive insight only. NEVER describe what is absent, thin, missing, or quiet in the candidate pool.
 - BANNED phrases and patterns: "No direct X...", "No fresh X...", "appeared in the candidate set", "This week was quiet for...", "Candidate pool was thin...", "Most items were only indirectly relevant...", "Reference pages were also indexed but carry no new information", "Treat this week as a quiet one for...".
@@ -323,6 +450,7 @@ const buildInterestReportUserPrompt = (req: InterestReportRequest): string => {
   lines.push(`periodEnd: ${req.periodEnd}`);
   lines.push(`profile: ${req.profileName}`);
   lines.push(`maxItems: ${req.maxItems}`);
+  lines.push(`field_familiarity: ${it.fieldFamiliarity}`);
   lines.push("");
   lines.push("interest:");
   lines.push(`  slug: ${it.slug}`);
@@ -334,6 +462,13 @@ const buildInterestReportUserPrompt = (req: InterestReportRequest): string => {
     for (const line of it.notes.split("\n")) lines.push(`    ${line}`);
   }
   lines.push("");
+  if (req.subtopic) {
+    lines.push("FOCUS_SUBTOPIC:");
+    lines.push(`  slug: ${req.subtopic.slug}`);
+    lines.push(`  title: ${req.subtopic.title}`);
+    lines.push(`  rationale: ${req.subtopic.rationale}`);
+    lines.push("");
+  }
   lines.push("candidates:");
   if (it.candidates.length === 0) {
     lines.push("  (none)");
@@ -489,6 +624,69 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
         model: res.model,
       };
     }),
+  proposeSubtopic: (req) =>
+    Effect.gen(function* () {
+      const model = modelFor();
+      const userPrompt = buildSubtopicUserPrompt(req);
+      const promptHash = sha256(`${SUBTOPIC_SYSTEM_PROMPT}\n---\n${userPrompt}`);
+      const res = yield* postLlm(
+        model,
+        SUBTOPIC_SYSTEM_PROMPT,
+        userPrompt,
+        DEFAULT_MAX_TOKENS,
+        true,
+      );
+      const raw = extractJson(res.text);
+      if (raw === null) {
+        return yield* Effect.fail(
+          llmErr("invalid", "kernel response text did not contain a JSON object"),
+        );
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (e) {
+        return yield* Effect.fail(
+          llmErr("invalid", `kernel response JSON parse failed: ${String(e)}`),
+        );
+      }
+      const decoded = yield* Schema.decodeUnknown(SubtopicProposeOutputSchema)(parsed).pipe(
+        Effect.mapError((e) =>
+          llmErr("invalid", `kernel subtopic response schema mismatch: ${String(e)}`),
+        ),
+      );
+      // Validate selected_slug refers to a real proposal; if not, fall back to
+      // the first proposal so the report still proceeds.
+      const proposalSlugs = new Set(decoded.proposals.map((p) => p.slug));
+      const selectedSlug = proposalSlugs.has(decoded.selected_slug)
+        ? decoded.selected_slug
+        : decoded.proposals[0].slug;
+      const candidateIds = new Set(req.interest.candidates.map((c) => c.id));
+      const proposals = decoded.proposals.map((p) => ({
+        slug: p.slug,
+        title: p.title,
+        rationale: p.rationale,
+        // Drop hallucinated candidate ids — never propagate fabricated refs.
+        relevantCandidateIds: p.relevant_candidate_ids.filter((id) => candidateIds.has(id)),
+      }));
+      const costUsd = isWorkersAiModel(res.model)
+        ? 0
+        : tokensCost(
+            res.inputTokens,
+            res.outputTokens,
+            ANTHROPIC_INPUT_COST_PER_MTOK,
+            ANTHROPIC_OUTPUT_COST_PER_MTOK,
+          );
+      return {
+        selectedSlug,
+        proposals,
+        promptHash,
+        costUsd,
+        inputTokens: res.inputTokens,
+        outputTokens: res.outputTokens,
+        model: res.model,
+      };
+    }),
   generateInterestReport: (req) =>
     Effect.gen(function* () {
       const model = modelFor();
@@ -581,7 +779,7 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
       const userPrompt = buildSummaryUserPrompt(req.title, req.url, req.topics, capped);
       const promptHash = sha256(`${SUMMARY_SYSTEM_PROMPT}\n---\n${userPrompt}`);
       const res = yield* postLlm(
-        SUMMARY_MODEL,
+        summaryModelFor(),
         SUMMARY_SYSTEM_PROMPT,
         userPrompt,
         SUMMARY_MAX_TOKENS,
@@ -611,20 +809,26 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
 export const _internal = {
   buildUserPrompt,
   buildInterestReportUserPrompt,
+  buildSubtopicUserPrompt,
   buildSummaryUserPrompt,
   buildResearchQueryUserPrompt,
   extractJson,
   kernelBase,
   LlmOutputSchema,
   InterestReportOutputSchema,
+  SubtopicProposeOutputSchema,
   normalizeInsights,
   SYSTEM_PROMPT,
   REPORT_SYSTEM_PROMPT,
+  SUBTOPIC_SYSTEM_PROMPT,
   SUMMARY_SYSTEM_PROMPT,
   RESEARCH_SYSTEM_PROMPT,
   MODEL: DEFAULT_MODEL,
   DEFAULT_MODEL,
-  SUMMARY_MODEL,
+  SUMMARY_MODEL: DEFAULT_SUMMARY_MODEL,
+  DEFAULT_SUMMARY_MODEL,
   modelFor,
+  summaryModelFor,
+  isAnthropicModel,
   isWorkersAiModel,
 };

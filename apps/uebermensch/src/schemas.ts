@@ -91,18 +91,25 @@ export const TopicsConfig = Schema.Struct({
   topics: Schema.Array(TopicEntry).pipe(Schema.minItems(1)),
 })
 
+export const SourceKind = Schema.Literal("news", "paper", "research-blog", "primary")
+
 export const SourceEntry = Schema.Struct({
   slug: Slug,
   driver: Schema.String,
   cadence: Schema.String,
   topics: Schema.Array(Slug),
   url: Schema.optional(Schema.NullOr(Schema.String)),
+  // kind drives candidate ranking and renderer "Latest research" callout.
+  // Defaults to "news" when omitted (see SourceEntryDefaults).
+  kind: Schema.optional(SourceKind),
   config: Schema.optional(Schema.Unknown),
 })
 
 export const SourcesConfig = Schema.Struct({
   sources: Schema.Array(SourceEntry).pipe(Schema.minItems(1)),
 })
+
+export const FieldFamiliarity = Schema.Literal("expert", "novice")
 
 export const ResearchInterestFrontmatter = Schema.Struct({
   slug: Slug,
@@ -112,6 +119,9 @@ export const ResearchInterestFrontmatter = Schema.Struct({
   sources: Schema.optional(Schema.Array(Slug)),
   horizon: Schema.optional(Schema.Literal("short", "long", "both")),
   weight: Schema.optional(Schema.Number),
+  // expert = assume technical fluency; novice = ELI5 framing in deep-dives.
+  // Defaults to "expert" when omitted.
+  field_familiarity: Schema.optional(FieldFamiliarity),
 })
 
 export const PromptStatus = Schema.Literal("pending", "processed", "failed", "rerun")

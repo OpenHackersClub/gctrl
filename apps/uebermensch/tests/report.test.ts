@@ -86,6 +86,7 @@ describe("weekly report (per-interest deep analysis + stub LLM + strict renderer
           topics: it.topics,
           notes: it.notes,
           candidates: cands,
+          fieldFamiliarity: it.fieldFamiliarity,
         }
       })
       // Each interest sees only its own candidate.
@@ -102,6 +103,19 @@ describe("weekly report (per-interest deep analysis + stub LLM + strict renderer
       const entries: Array<ReportIndexEntry> = []
 
       for (const ii of inputs) {
+        const propose = yield* llm.proposeSubtopic({
+          periodLabel: "2026-W17",
+          periodStart: "2026-04-15",
+          periodEnd: "2026-04-22",
+          profileName: "Test",
+          interest: ii,
+        })
+        const selected = propose.proposals.find((p) => p.slug === propose.selectedSlug)
+        const subtopic = selected
+          ? { slug: selected.slug, title: selected.title, rationale: selected.rationale }
+          : null
+        expect(subtopic).not.toBeNull()
+
         const response = yield* llm.generateInterestReport({
           periodLabel: "2026-W17",
           periodStart: "2026-04-15",
@@ -109,6 +123,7 @@ describe("weekly report (per-interest deep analysis + stub LLM + strict renderer
           profileName: "Test",
           interest: ii,
           maxItems: 3,
+          subtopic,
         })
         expect(response.interestSlug).toBe(ii.slug)
         expect(response.analysis_md).toContain("### Thesis")
@@ -127,6 +142,11 @@ describe("weekly report (per-interest deep analysis + stub LLM + strict renderer
           interestTitle: ii.title,
           interestQuestion: ii.question,
           interestTopics: ii.topics,
+          fieldFamiliarity: ii.fieldFamiliarity,
+          subtopic,
+          subtopicAlternatives: propose.proposals
+            .filter((p) => p.slug !== propose.selectedSlug)
+            .map((p) => ({ slug: p.slug, title: p.title, rationale: p.rationale })),
           analysis_md: response.analysis_md,
           items: response.items,
           candidates: ii.candidates,
@@ -145,6 +165,7 @@ describe("weekly report (per-interest deep analysis + stub LLM + strict renderer
           interestSlug: ii.slug,
           interestTitle: ii.title,
           interestQuestion: ii.question,
+          subtopicTitle: subtopic?.title ?? null,
           reportSlug: rendered.slug,
           publicUrl: null,
           itemCount: rendered.itemCount,
