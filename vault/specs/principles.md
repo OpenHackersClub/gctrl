@@ -70,6 +70,25 @@ When modifying code, respect crate boundaries:
    - `Schema.TaggedError` / `Schema.TaggedClass` for defining tagged types
    - `Exit.match`, `Either.match`, `Option.match` for branching
 2. **MUST follow idiomatic Effect-TS:** use `pipe`/generators (`Effect.gen`), Layer composition, and built-in combinators instead of imperative escape hatches.
+3. **MUST NOT throw or fail with bare `new Error(...)`.** Inside Effect contexts (including `Effect.tryPromise.catch` and `Effect.fail`), failures MUST construct a `Schema.TaggedError` carrying structured fields. Reviewer search: `rg -n 'new Error\(|Effect\.fail\(new Error' shell apps`.
+4. **MUST NOT use `as any` to read external JSON.** Kernel/HTTP responses MUST be validated via `Schema.decodeUnknown(WireSchema)`. Decode failures convert to a tagged error so a malformed payload surfaces as a structured failure, not `cannot read property of undefined`. Reviewer search: `rg -n 'as any|: any\b' shell apps --type ts`.
+5. **MUST NOT use `export *` barrel re-exports** in `index.ts` files. List each export by name. Wildcard re-exports defeat tree-shaking and silently leak new internal symbols into a package's public API. Reviewer search: `rg -n '^export \*' shell apps`.
+6. **MUST NOT use dynamic `require(...)` inside an Effect context.** Use a static `import` at the top of the module; wrap the call site in `Effect.try` (or `Effect.sync` for known-pure code). Reviewer search: `rg -n 'require\(' shell apps --type ts`.
+7. **MUST NOT recover with `Effect.catchAll(e => ...)` over an untyped error.** Use `Effect.catchTag(<TagName>, ...)` so the recovered error type is preserved. Untyped `catchAll` is reserved for top-level entrypoints where the program is exiting.
+8. **MUST NOT keep mutable module-level state** (`let` at top level, mutable singletons). Use `Effect.Ref` or `Context` for shared state.
+
+### Quick enforcement
+
+The above rules can be checked in CI / pre-review with a single ripgrep
+sweep over `shell/` and `apps/`:
+
+```sh
+rg -n 'new Error\(|Effect\.fail\(new Error|as any|: any\b|^export \*|require\(|\._tag\b' shell apps --type ts
+```
+
+A clean run is required before merge. Existing legitimate exceptions
+MUST be documented inline with a `// effect-ts-allow: <reason>` comment
+so the sweep can be filtered without weakening the rule.
 
 ## Testing Invariants
 
