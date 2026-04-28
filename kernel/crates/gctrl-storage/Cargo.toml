@@ -14,9 +14,9 @@ async-trait = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
-sha2 = "0.10"
+sha2 = { workspace = true }
 rusqlite = { version = "0.31", features = ["bundled"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
-tempfile = "3"
+tempfile = { workspace = true }
