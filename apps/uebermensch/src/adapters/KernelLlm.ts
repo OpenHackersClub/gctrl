@@ -204,6 +204,42 @@ const tokensCost = (
   outputRate: number,
 ): number => (inputTokens * inputRate + outputTokens * outputRate) / 1_000_000;
 
+// POST a JSON body to `${kernelBase()}${path}` and return the raw response
+// text. Connection-level failures (ECONNREFUSED etc.) become a "kernel daemon
+// not reachable" hint; non-2xx responses become a classified LlmError.
+const fetchKernel = (
+  path: string,
+  body: unknown,
+): Effect.Effect<string, LlmError> =>
+  Effect.gen(function* () {
+    const res = yield* Effect.tryPromise({
+      try: () =>
+        fetch(`${kernelBase()}${path}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      catch: (e) =>
+        isConnRefused(e)
+          ? kernelDownErr(path)
+          : llmErr("unavailable", `kernel ${path} fetch failed: ${String(e)}`),
+    });
+    const raw = yield* Effect.tryPromise({
+      try: () => res.text(),
+      catch: (e) =>
+        llmErr("unavailable", `kernel ${path} body read failed: ${String(e)}`),
+    });
+    if (!res.ok) {
+      return yield* Effect.fail(
+        llmErr(
+          classifyKernelStatus(res.status),
+          `kernel ${path} HTTP ${res.status}: ${raw.slice(0, 500)}`,
+        ),
+      );
+    }
+    return raw;
+  });
+
 const postAnthropic = (
   model: string,
   system: string,
@@ -211,47 +247,36 @@ const postAnthropic = (
   maxTokens: number,
   thinking: boolean,
 ): Effect.Effect<NormalizedResponse, LlmError> =>
-  Effect.tryPromise({
-    try: async () => {
-      const body: Record<string, unknown> = {
-        model,
-        max_tokens: maxTokens,
-        system,
-        messages: [{ role: "user", content: userPrompt }],
-      };
-      if (thinking) body.thinking = { type: "adaptive" };
-      const res = await fetch(`${kernelBase()}/api/llm/messages`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const raw = await res.text();
-      if (!res.ok) {
-        throw llmErr(
-          classifyKernelStatus(res.status),
-          `kernel /api/llm/messages HTTP ${res.status}: ${raw.slice(0, 500)}`,
-        );
-      }
-      const parsed = (raw.length > 0 ? JSON.parse(raw) : {}) as AnthropicResponse;
-      const textBlock = (parsed.content ?? []).find(
-        (b): b is { type: string; text: string } =>
-          b.type === "text" && typeof b.text === "string",
+  Effect.gen(function* () {
+    const body: Record<string, unknown> = {
+      model,
+      max_tokens: maxTokens,
+      system,
+      messages: [{ role: "user", content: userPrompt }],
+      ...(thinking ? { thinking: { type: "adaptive" } } : {}),
+    };
+    const raw = yield* fetchKernel("/api/llm/messages", body);
+    const parsed = yield* Effect.try({
+      try: () =>
+        (raw.length > 0 ? (JSON.parse(raw) as AnthropicResponse) : ({} as AnthropicResponse)),
+      catch: (e) =>
+        llmErr("invalid", `kernel /api/llm/messages JSON.parse failed: ${String(e)}`),
+    });
+    const textBlock = (parsed.content ?? []).find(
+      (b): b is { type: string; text: string } =>
+        b.type === "text" && typeof b.text === "string",
+    );
+    if (!textBlock) {
+      return yield* Effect.fail(
+        llmErr("invalid", "kernel response missing text content block"),
       );
-      if (!textBlock) {
-        throw llmErr("invalid", "kernel response missing text content block");
-      }
-      return {
-        text: textBlock.text,
-        inputTokens: parsed.usage?.input_tokens ?? 0,
-        outputTokens: parsed.usage?.output_tokens ?? 0,
-        model: parsed.model ?? model,
-      };
-    },
-    catch: (e) => {
-      if (e instanceof LlmError) return e;
-      if (isConnRefused(e)) return kernelDownErr("/api/llm/messages");
-      return llmErr("unavailable", `kernel /api/llm/messages fetch failed: ${String(e)}`);
-    },
+    }
+    return {
+      text: textBlock.text,
+      inputTokens: parsed.usage?.input_tokens ?? 0,
+      outputTokens: parsed.usage?.output_tokens ?? 0,
+      model: parsed.model ?? model,
+    };
   });
 
 const postWorkersAi = (
@@ -260,45 +285,34 @@ const postWorkersAi = (
   userPrompt: string,
   maxTokens: number,
 ): Effect.Effect<NormalizedResponse, LlmError> =>
-  Effect.tryPromise({
-    try: async () => {
-      const body = {
-        model,
-        max_tokens: maxTokens,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: userPrompt },
-        ],
-      };
-      const res = await fetch(`${kernelBase()}/api/llm/completions`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const raw = await res.text();
-      if (!res.ok) {
-        throw llmErr(
-          classifyKernelStatus(res.status),
-          `kernel /api/llm/completions HTTP ${res.status}: ${raw.slice(0, 500)}`,
-        );
-      }
-      const parsed = (raw.length > 0 ? JSON.parse(raw) : {}) as OpenAiChatResponse;
-      const content = parsed.choices?.[0]?.message?.content;
-      if (typeof content !== "string") {
-        throw llmErr("invalid", "kernel response missing choices[0].message.content string");
-      }
-      return {
-        text: content,
-        inputTokens: parsed.usage?.prompt_tokens ?? 0,
-        outputTokens: parsed.usage?.completion_tokens ?? 0,
-        model: parsed.model ?? model,
-      };
-    },
-    catch: (e) => {
-      if (e instanceof LlmError) return e;
-      if (isConnRefused(e)) return kernelDownErr("/api/llm/completions");
-      return llmErr("unavailable", `kernel /api/llm/completions fetch failed: ${String(e)}`);
-    },
+  Effect.gen(function* () {
+    const body = {
+      model,
+      max_tokens: maxTokens,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: userPrompt },
+      ],
+    };
+    const raw = yield* fetchKernel("/api/llm/completions", body);
+    const parsed = yield* Effect.try({
+      try: () =>
+        (raw.length > 0 ? (JSON.parse(raw) as OpenAiChatResponse) : ({} as OpenAiChatResponse)),
+      catch: (e) =>
+        llmErr("invalid", `kernel /api/llm/completions JSON.parse failed: ${String(e)}`),
+    });
+    const content = parsed.choices?.[0]?.message?.content;
+    if (typeof content !== "string") {
+      return yield* Effect.fail(
+        llmErr("invalid", "kernel response missing choices[0].message.content string"),
+      );
+    }
+    return {
+      text: content,
+      inputTokens: parsed.usage?.prompt_tokens ?? 0,
+      outputTokens: parsed.usage?.completion_tokens ?? 0,
+      model: parsed.model ?? model,
+    };
   });
 
 const postLlm = (
@@ -311,6 +325,44 @@ const postLlm = (
   isWorkersAiModel(model)
     ? postWorkersAi(model, system, userPrompt, maxTokens)
     : postAnthropic(model, system, userPrompt, maxTokens, thinking);
+
+// Pull the first JSON object out of an LLM response and decode it against
+// `schema`. All three failure modes (no JSON, JSON.parse error, schema
+// mismatch) collapse to a single LlmError("invalid") with a contextual hint
+// so callers don't reimplement the extract → parse → decode trio.
+const decodeLlmJson = <A, I>(
+  text: string,
+  schema: Schema.Schema<A, I>,
+  contextLabel: string,
+): Effect.Effect<A, LlmError> =>
+  Effect.gen(function* () {
+    const raw = extractJson(text);
+    if (raw === null) {
+      return yield* Effect.fail(
+        llmErr("invalid", `${contextLabel}: response did not contain a JSON object`),
+      );
+    }
+    const parsed = yield* Effect.try({
+      try: () => JSON.parse(raw) as unknown,
+      catch: (e) => llmErr("invalid", `${contextLabel}: JSON.parse failed: ${String(e)}`),
+    });
+    return yield* Schema.decodeUnknown(schema)(parsed).pipe(
+      Effect.mapError((e) =>
+        llmErr("invalid", `${contextLabel}: schema mismatch: ${String(e)}`),
+      ),
+    );
+  });
+
+// USD cost for a normalized LLM response. Workers AI / local models
+// always cost $0; Anthropic & summary lanes pay for input + output tokens.
+const costForResponse = (
+  res: NormalizedResponse,
+  inputRate: number,
+  outputRate: number,
+): number =>
+  isWorkersAiModel(res.model)
+    ? 0
+    : tokensCost(res.inputTokens, res.outputTokens, inputRate, outputRate);
 
 const SUBTOPIC_SYSTEM_PROMPT = `You are uebermensch-curator. Given a long-running research interest and the strongest candidates surfaced this week, identify 1–3 sharply focused SUB-TOPICS the deep-dive could explore this week, then pick the best one.
 
@@ -581,31 +633,12 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
       const userPrompt = buildUserPrompt(req);
       const promptHash = sha256(`${SYSTEM_PROMPT}\n---\n${userPrompt}`);
       const res = yield* postLlm(model, SYSTEM_PROMPT, userPrompt, DEFAULT_MAX_TOKENS, true);
-      const raw = extractJson(res.text);
-      if (raw === null) {
-        return yield* Effect.fail(
-          llmErr("invalid", "kernel response text did not contain a JSON object"),
-        );
-      }
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(raw);
-      } catch (e) {
-        return yield* Effect.fail(
-          llmErr("invalid", `kernel response JSON parse failed: ${String(e)}`),
-        );
-      }
-      const decoded = yield* Schema.decodeUnknown(LlmOutputSchema)(parsed).pipe(
-        Effect.mapError((e) => llmErr("invalid", `kernel response schema mismatch: ${String(e)}`)),
+      const decoded = yield* decodeLlmJson(res.text, LlmOutputSchema, "kernel /api/llm/messages");
+      const costUsd = costForResponse(
+        res,
+        ANTHROPIC_INPUT_COST_PER_MTOK,
+        ANTHROPIC_OUTPUT_COST_PER_MTOK,
       );
-      const costUsd = isWorkersAiModel(res.model)
-        ? 0
-        : tokensCost(
-            res.inputTokens,
-            res.outputTokens,
-            ANTHROPIC_INPUT_COST_PER_MTOK,
-            ANTHROPIC_OUTPUT_COST_PER_MTOK,
-          );
       const items: ReadonlyArray<CuratedItem> = decoded.items.map((i) => ({
         kind: i.kind,
         title: i.title,
@@ -636,24 +669,10 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
         DEFAULT_MAX_TOKENS,
         true,
       );
-      const raw = extractJson(res.text);
-      if (raw === null) {
-        return yield* Effect.fail(
-          llmErr("invalid", "kernel response text did not contain a JSON object"),
-        );
-      }
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(raw);
-      } catch (e) {
-        return yield* Effect.fail(
-          llmErr("invalid", `kernel response JSON parse failed: ${String(e)}`),
-        );
-      }
-      const decoded = yield* Schema.decodeUnknown(SubtopicProposeOutputSchema)(parsed).pipe(
-        Effect.mapError((e) =>
-          llmErr("invalid", `kernel subtopic response schema mismatch: ${String(e)}`),
-        ),
+      const decoded = yield* decodeLlmJson(
+        res.text,
+        SubtopicProposeOutputSchema,
+        "kernel subtopic",
       );
       // Validate selected_slug refers to a real proposal; if not, fall back to
       // the first proposal so the report still proceeds.
@@ -669,14 +688,11 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
         // Drop hallucinated candidate ids — never propagate fabricated refs.
         relevantCandidateIds: p.relevant_candidate_ids.filter((id) => candidateIds.has(id)),
       }));
-      const costUsd = isWorkersAiModel(res.model)
-        ? 0
-        : tokensCost(
-            res.inputTokens,
-            res.outputTokens,
-            ANTHROPIC_INPUT_COST_PER_MTOK,
-            ANTHROPIC_OUTPUT_COST_PER_MTOK,
-          );
+      const costUsd = costForResponse(
+        res,
+        ANTHROPIC_INPUT_COST_PER_MTOK,
+        ANTHROPIC_OUTPUT_COST_PER_MTOK,
+      );
       return {
         selectedSlug,
         proposals,
@@ -699,31 +715,16 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
         DEFAULT_MAX_TOKENS,
         true,
       );
-      const raw = extractJson(res.text);
-      if (raw === null) {
-        return yield* Effect.fail(
-          llmErr("invalid", "kernel response text did not contain a JSON object"),
-        );
-      }
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(raw);
-      } catch (e) {
-        return yield* Effect.fail(
-          llmErr("invalid", `kernel response JSON parse failed: ${String(e)}`),
-        );
-      }
-      const decoded = yield* Schema.decodeUnknown(InterestReportOutputSchema)(parsed).pipe(
-        Effect.mapError((e) => llmErr("invalid", `kernel response schema mismatch: ${String(e)}`)),
+      const decoded = yield* decodeLlmJson(
+        res.text,
+        InterestReportOutputSchema,
+        "kernel interest report",
       );
-      const costUsd = isWorkersAiModel(res.model)
-        ? 0
-        : tokensCost(
-            res.inputTokens,
-            res.outputTokens,
-            ANTHROPIC_INPUT_COST_PER_MTOK,
-            ANTHROPIC_OUTPUT_COST_PER_MTOK,
-          );
+      const costUsd = costForResponse(
+        res,
+        ANTHROPIC_INPUT_COST_PER_MTOK,
+        ANTHROPIC_OUTPUT_COST_PER_MTOK,
+      );
       const items: ReadonlyArray<CuratedItem> = decoded.items.map((i) => ({
         kind: i.kind,
         title: i.title,
@@ -760,14 +761,11 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
       if (answerMd.length === 0) {
         return yield* Effect.fail(llmErr("invalid", "kernel researchQuery returned empty body"));
       }
-      const costUsd = isWorkersAiModel(res.model)
-        ? 0
-        : tokensCost(
-            res.inputTokens,
-            res.outputTokens,
-            ANTHROPIC_INPUT_COST_PER_MTOK,
-            ANTHROPIC_OUTPUT_COST_PER_MTOK,
-          );
+      const costUsd = costForResponse(
+        res,
+        ANTHROPIC_INPUT_COST_PER_MTOK,
+        ANTHROPIC_OUTPUT_COST_PER_MTOK,
+      );
       return { answerMd, promptHash, costUsd, model: res.model };
     }),
   summarizeSource: (req) =>
@@ -789,14 +787,11 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
       if (insightsMd.length === 0) {
         return yield* Effect.fail(llmErr("invalid", "kernel summarize returned empty insights"));
       }
-      const costUsd = isWorkersAiModel(res.model)
-        ? 0
-        : tokensCost(
-            res.inputTokens,
-            res.outputTokens,
-            SUMMARY_INPUT_COST_PER_MTOK,
-            SUMMARY_OUTPUT_COST_PER_MTOK,
-          );
+      const costUsd = costForResponse(
+        res,
+        SUMMARY_INPUT_COST_PER_MTOK,
+        SUMMARY_OUTPUT_COST_PER_MTOK,
+      );
       return {
         insightsMd,
         promptHash,
