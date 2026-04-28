@@ -18,6 +18,7 @@ import type {
   CostAnalytics,
   DailyEntry,
   TraceTreeResponse,
+  PromptList,
   LatencyAnalytics,
   SpanAnalytics,
   ScoreSummary,
@@ -270,6 +271,13 @@ export const api = {
 
     tree: (id: string) =>
       request<TraceTreeResponse>(`/api/sessions/${id}/tree`),
+
+    /** Per-turn prompt + completion bodies for one session.
+     *  Returns `{ count, prompts: PromptTurn[] }`, ordered by turn_ordinal.
+     *  Source: `prompt_bodies` table written by the LLM relay (or any
+     *  capture path that targets it). See llm-relay spec §M1. */
+    prompts: (id: string) =>
+      request<PromptList>(`/api/sessions/${id}/prompts`),
   },
 
   analytics: {

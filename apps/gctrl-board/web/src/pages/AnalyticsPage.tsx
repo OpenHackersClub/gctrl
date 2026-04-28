@@ -8,6 +8,7 @@ import type {
   SessionKind,
   TraceTreeNode,
   TraceTreeResponse,
+  PromptTurn,
   LatencyAnalytics,
   SpanAnalytics,
   ScoreSummary,
@@ -744,6 +745,8 @@ function formatDuration(ms: number): string {
   return `${h}h ${m % 60}m`
 }
 
+type DetailPaneTab = "trace" | "prompts"
+
 function SessionDetailPane({
   session,
   onClose,
@@ -752,7 +755,10 @@ function SessionDetailPane({
   onClose: () => void
 }) {
   const [tree, setTree] = useState<TraceTreeResponse | null>(null)
+  const [prompts, setPrompts] = useState<PromptTurn[] | null>(null)
+  const [promptError, setPromptError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [tab, setTab] = useState<DetailPaneTab>("trace")
 
   const isLive = session.ended_at === null && session.status === "active"
 
@@ -766,23 +772,51 @@ function SessionDetailPane({
     }
   }, [session.id])
 
+  const refreshPrompts = useCallback(async () => {
+    try {
+      const list = await api.sessions.prompts(session.id)
+      setPrompts(list.prompts)
+      setPromptError(null)
+    } catch (e) {
+      setPromptError(e instanceof Error ? e.message : String(e))
+    }
+  }, [session.id])
+
   useEffect(() => {
     refresh()
   }, [refresh])
 
+  // Lazy-load prompts when the user opens the tab; refresh on each
+  // open so a still-streaming session shows its latest assembled turns.
+  useEffect(() => {
+    if (tab === "prompts") {
+      refreshPrompts()
+    }
+  }, [tab, refreshPrompts])
+
   // Per-session stream: refetch the trace tree on every span event for
   // this session. The kernel returns the full tree (root + direct
   // children) cheaply, and this guarantees the UI never reorders or
-  // drops a child relative to a server-side rebuild.
+  // drops a child relative to a server-side rebuild. Also refresh
+  // prompts when visible — relay-driven captures land between span
+  // events, but the OTLP span the relay also emits triggers this hook.
   useSessionStream({
     sessionId: session.id,
     disabled: !isLive,
     onEvent: (ev) => {
       if (ev.type === "session_span") {
         refresh()
+        if (tab === "prompts") {
+          refreshPrompts()
+        }
       }
     },
-    onReplayGap: refresh,
+    onReplayGap: () => {
+      refresh()
+      if (tab === "prompts") {
+        refreshPrompts()
+      }
+    },
   })
 
   return (
@@ -838,24 +872,193 @@ function SessionDetailPane({
         </div>
       </div>
 
-      <div className="px-4 py-2 border-b border-zinc-800 text-[10px] font-mono tracking-wider text-zinc-500 uppercase">
-        Trace
+      <div
+        className="border-b border-zinc-800 flex text-[10px] font-mono tracking-wider uppercase"
+        role="tablist"
+      >
+        <DetailTabBtn
+          label="Trace"
+          active={tab === "trace"}
+          onClick={() => setTab("trace")}
+          testId="session-tab-trace"
+        />
+        <DetailTabBtn
+          label={
+            <>
+              Prompts
+              {prompts && prompts.length > 0 && (
+                <span className="ml-1.5 text-zinc-600 normal-case tracking-normal">
+                  {prompts.length}
+                </span>
+              )}
+            </>
+          }
+          active={tab === "prompts"}
+          onClick={() => setTab("prompts")}
+          testId="session-tab-prompts"
+        />
       </div>
+
       <div className="flex-1 overflow-auto p-3 text-[12px] font-mono">
-        {error && <div className="text-rose-400">Error: {error}</div>}
-        {!error && !tree && <div className="text-zinc-600">Loading…</div>}
-        {tree && (!tree.spans || tree.spans.length === 0) && (
-          <div className="text-zinc-600">No spans yet.</div>
+        {tab === "trace" && (
+          <>
+            {error && <div className="text-rose-400">Error: {error}</div>}
+            {!error && !tree && <div className="text-zinc-600">Loading…</div>}
+            {tree && (!tree.spans || tree.spans.length === 0) && (
+              <div className="text-zinc-600">No spans yet.</div>
+            )}
+            {tree && tree.spans && tree.spans.length > 0 && (
+              <ul className="space-y-1">
+                {tree.spans.map((node) => (
+                  <SpanNode key={node.span_id} node={node} depth={0} />
+                ))}
+              </ul>
+            )}
+          </>
         )}
-        {tree && tree.spans && tree.spans.length > 0 && (
-          <ul className="space-y-1">
-            {tree.spans.map((node) => (
-              <SpanNode key={node.span_id} node={node} depth={0} />
-            ))}
-          </ul>
+        {tab === "prompts" && (
+          <PromptsList
+            prompts={prompts}
+            error={promptError}
+          />
         )}
       </div>
     </aside>
+  )
+}
+
+function DetailTabBtn({
+  label,
+  active,
+  onClick,
+  testId,
+}: {
+  label: ReactNode
+  active: boolean
+  onClick: () => void
+  testId?: string
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      data-testid={testId}
+      onClick={onClick}
+      className={cn(
+        "px-4 py-2 cursor-pointer transition-colors",
+        active
+          ? "text-zinc-200 border-b border-zinc-200 -mb-px"
+          : "text-zinc-500 hover:text-zinc-300",
+      )}
+    >
+      {label}
+    </button>
+  )
+}
+
+/**
+ * Per-turn list rendered from `prompt_bodies`. Bodies can be hundreds of
+ * KB (full agent system prompts), so each row collapses by default and
+ * the user clicks to expand. We deliberately keep this read-only — copy
+ * is for grepping prompts visually, not editing.
+ */
+function PromptsList({
+  prompts,
+  error,
+}: {
+  prompts: PromptTurn[] | null
+  error: string | null
+}) {
+  if (error) {
+    return <div className="text-rose-400">Error: {error}</div>
+  }
+  if (!prompts) {
+    return <div className="text-zinc-600">Loading…</div>
+  }
+  if (prompts.length === 0) {
+    return (
+      <div className="text-zinc-600 leading-relaxed" data-testid="prompts-empty">
+        No prompt bodies captured for this session.
+        <div className="mt-2 text-zinc-700 text-[11px]">
+          External agents land here once they call through the LLM relay
+          on <span className="text-zinc-500">:4319</span> with an{" "}
+          <span className="text-zinc-500">x-session-id</span> header.
+        </div>
+      </div>
+    )
+  }
+  return (
+    <ul className="space-y-2" data-testid="prompts-list">
+      {prompts.map((turn) => (
+        <PromptRow key={turn.id} turn={turn} />
+      ))}
+    </ul>
+  )
+}
+
+function PromptRow({ turn }: { turn: PromptTurn }) {
+  const [expanded, setExpanded] = useState(false)
+  const isLong = turn.content.length > 300
+  const preview = isLong && !expanded
+    ? turn.content.slice(0, 300) + "…"
+    : turn.content
+  return (
+    <li
+      className="border border-zinc-800 rounded-sm bg-zinc-950/40"
+      data-testid="prompt-row"
+      data-role={turn.role}
+    >
+      <div className="flex items-center gap-2 px-2 py-1 text-[10px] uppercase tracking-wider border-b border-zinc-800">
+        <span className="text-zinc-600 w-6 text-right">
+          {turn.turn_ordinal}
+        </span>
+        <RoleBadge role={turn.role} />
+        {turn.tokens !== null && (
+          <span className="text-zinc-600 normal-case tracking-normal">
+            {turn.tokens.toLocaleString()} tok
+          </span>
+        )}
+        {isLong && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="ml-auto text-zinc-500 hover:text-zinc-200 text-[11px] normal-case tracking-normal cursor-pointer"
+            data-testid="prompt-toggle"
+          >
+            {expanded ? "collapse" : "expand"}
+          </button>
+        )}
+      </div>
+      <pre className="px-2 py-2 whitespace-pre-wrap break-words text-zinc-200 text-[12px] leading-relaxed font-mono">
+        {preview}
+      </pre>
+    </li>
+  )
+}
+
+function RoleBadge({ role }: { role: string }) {
+  // Hard-coded palette; we already use Tailwind utility classes elsewhere
+  // and don't need to lean on the design system's Badge variants here.
+  const tone =
+    role === "user"
+      ? "text-sky-400 border-sky-900"
+      : role === "assistant"
+      ? "text-emerald-400 border-emerald-900"
+      : role === "system"
+      ? "text-amber-400 border-amber-900"
+      : role === "tool"
+      ? "text-violet-400 border-violet-900"
+      : "text-zinc-400 border-zinc-700"
+  return (
+    <span
+      className={cn(
+        "px-1.5 py-px border rounded-sm normal-case tracking-normal text-[10px]",
+        tone,
+      )}
+    >
+      {role}
+    </span>
   )
 }
 

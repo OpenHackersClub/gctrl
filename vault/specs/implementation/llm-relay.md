@@ -272,12 +272,18 @@ gctrl analytics latency
    - `gctrl sessions prompts <id>` shell command.
    - *Accept*: routes return rows the M0 capture wrote, with stable
      ordering and fingerprint counts that match a manual SQL `GROUP BY`.
-3. **M2 — Web UI**
-   - Wire the Prompts tab in `gctrl-analytics` against the M1 routes.
-     Pure UI work; closes
-     [gctrl-analytics M2b](../architecture/apps/gctrl-analytics.md#milestones).
+3. **M2 — Web UI** *(shipped)*
+   - Prompts tab in the analytics dashboard's session detail pane —
+     `apps/gctrl-board/web/src/pages/AnalyticsPage.tsx`'s
+     `SessionDetailPane` switches between `Trace` and `Prompts`.
+     Prompts come from `api.sessions.prompts(id)` →
+     `GET /api/sessions/{id}/prompts`. Long bodies collapse to ~300
+     chars with an expand toggle.
    - *Accept*: opening a Sessions detail pane on any external session
-     shows the full prompt + completion turn list with drill-through.
+     shows the full prompt + completion turn list with role badges
+     and per-turn token counts. Verified by
+     `analytics-llm-relay.spec.ts` "dashboard Prompts tab renders
+     captured turns for the relay session".
 4. **M3 — Generalize beyond OpenAI-compat** *(separate spec)*
    - Add `POST /v1/messages` (Anthropic shape) and any other shapes the
      operator's tools actually use. The capture core (turns →

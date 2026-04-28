@@ -126,6 +126,30 @@ export interface TraceTreeResponse {
   tags?: Array<{ key: string; value: string }>
 }
 
+// ── Prompt bodies (llm-relay M2 — per-session turn list) ──
+//
+// Shape returned by `GET /api/sessions/{id}/prompts`. Both relay capture
+// and direct OTLP-attribute capture write into the same `prompt_bodies`
+// table, so the UI doesn't care which path produced the row.
+
+export interface PromptTurn {
+  id: string
+  session_id: string
+  span_id: string | null
+  trace_id: string | null
+  turn_ordinal: number
+  role: string
+  content: string
+  fingerprint: string
+  tokens: number | null
+  created_at: string
+}
+
+export interface PromptList {
+  count: number
+  prompts: PromptTurn[]
+}
+
 // ── Contributions (analytics §M5) ──
 
 /** A single PR (commits will follow when the route adds them) joined
