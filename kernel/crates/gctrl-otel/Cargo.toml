@@ -10,6 +10,10 @@ gctrl-context = { path = "../gctrl-context" }
 gctrl-sync = { path = "../gctrl-sync" }
 gctrl-net = { path = "../gctrl-net" }
 gctrl-scheduler = { path = "../gctrl-scheduler" }
+# Reuses the LLM-relay capture path so /api/llm/completions calls
+# (e.g. driver-llm clients like uebermensch) write the same prompt_bodies
+# rows + OTLP spans the relay does.
+gctrl-proxy = { path = "../gctrl-proxy" }
 reqwest = { workspace = true }
 duckdb = { workspace = true }
 axum = { workspace = true }

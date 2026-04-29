@@ -334,6 +334,47 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
     }
   })
 
+  it("attaches x-session-id + x-service-name=uebermensch on every kernel call", async () => {
+    // Capture headers fed into the kernel. The kernel reads these to
+    // tag prompt_bodies + sessions for the analytics dashboard
+    // (vault/specs/implementation/llm-relay.md § Convergence with
+    // driver-llm). Pin UBER_SESSION_ID so the assertion is exact —
+    // without it we'd just check that *some* uuid was set.
+    const prevSession = process.env.UBER_SESSION_ID
+    process.env.UBER_SESSION_ID = "uber-test-session-fixed"
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify(
+          anthropicJson({ items: [], topicsCovered: [], thesesCovered: [] }),
+        ),
+    })
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const llm = yield* LlmService
+          return yield* llm.generateBrief({
+            date: "2026-04-22",
+            profileName: "Test",
+            topics: ["alpha"],
+            thesesSlugs: [],
+            candidates: [],
+            maxItems: 3,
+          })
+        }).pipe(Effect.provide(KernelLlmLive)),
+      )
+      const [, init] = fetchMock.mock.calls[0]!
+      const headers = (init as { headers: Record<string, string> }).headers
+      expect(headers["x-session-id"]).toBe("uber-test-session-fixed")
+      expect(headers["x-service-name"]).toBe("uebermensch")
+    } finally {
+      if (prevSession === undefined) delete process.env.UBER_SESSION_ID
+      else process.env.UBER_SESSION_ID = prevSession
+    }
+  })
+
   it("default model (no UBER_LLM_MODEL) routes to /api/llm/completions for LM Studio", async () => {
     // Clear the pinned anthropic model so the live default kicks in.
     delete process.env.UBER_LLM_MODEL
