@@ -40,7 +40,7 @@ const runGctl = (args: string[]) =>
   }).pipe(
     Effect.catchTag("ExecError", (e) =>
       Console.error(
-        `Error: ${e.message}. Is the gctrl Rust binary installed? (cargo install gctrl)`
+        `Error: ${e.bin} ${e.args.join(" ")} failed. Is the gctrl Rust binary installed? (cargo install gctrl)`
       )
     )
   )
