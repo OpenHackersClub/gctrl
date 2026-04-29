@@ -724,7 +724,25 @@ export class ProfilePort extends Context.Tag("uber/ProfilePort")<ProfilePort, {
   readonly current: Effect.Effect<Profile, ProfileInvalid>
   readonly changes: Stream.Stream<ProfileChange, ProfileInvalid>
 }>() {}
+
+// src/ports/timebox-port.ts  (see calendar-timeboxes.md)
+export class TimeboxPort extends Context.Tag("uber/TimeboxPort")<TimeboxPort, {
+  readonly list:       (filter?: { status?: TimeboxStatus; discipline?: string })
+    => Effect.Effect<ReadonlyArray<TimeboxRef>, TimeboxPortError>
+  readonly get:        (slug: string) => Effect.Effect<Timebox, TimeboxPortError>
+  readonly plan:       (req: TimeboxPlanRequest)
+    => Effect.Effect<TimeboxPlanProposal, TimeboxPortError>          // dry-run; --apply is a separate call
+  readonly apply:      (slug: string, proposal: TimeboxPlanProposal)
+    => Effect.Effect<ReadonlyArray<EventSlug>, TimeboxPortError>
+  readonly replan:     (slug: string, opts: { llm: boolean; apply: boolean })
+    => Effect.Effect<TimeboxPlanProposal | ReadonlyArray<EventSlug>, TimeboxPortError>
+  readonly complete:   (slug: string, step: number) => Effect.Effect<Timebox, TimeboxPortError>
+  readonly skip:       (slug: string, step: number) => Effect.Effect<Timebox, TimeboxPortError>
+  readonly setStatus:  (slug: string, status: TimeboxStatus) => Effect.Effect<Timebox, TimeboxPortError>
+}>() {}
 ```
+
+`Timebox` and `TimeboxPlanProposal` Schema definitions follow the field shape in [calendar-timeboxes.md § Timebox Frontmatter](calendar-timeboxes.md#timebox-frontmatter); `TimeboxStatus = "active" | "paused" | "done" | "cancelled"`.
 
 Adapters (Layers) — one per port, wired at the entrypoint:
 
@@ -735,6 +753,7 @@ Adapters (Layers) — one per port, wired at the entrypoint:
 | `KbPort` | `KbHttpLive` | `GET /api/kb/*`, `POST /api/kb/ingest` |
 | `SchedPort` | `SchedHttpLive` | `POST /api/scheduler/*` |
 | `ProfilePort` | `ProfileFsLive` | reads authored tier of `$UBER_VAULT_DIR` + `fs.watch` (VaultWatcher fiber) |
+| `TimeboxPort` | `TimeboxHttpLive` | `GET/POST/PATCH /api/uber/calendar/timeboxes/*` (see [calendar-timeboxes.md § HTTP API](calendar-timeboxes.md#http-api)) |
 
 ---
 

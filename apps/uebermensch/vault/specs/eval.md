@@ -197,6 +197,18 @@ gctrl uber scrape-health                     # table of domain -> success_rate, 
 gctrl uber scrape-health --domain foo.com    # focus; show last 20 requests
 ```
 
+## Timebox Health
+
+Daily check (registered alongside `uber.eval.daily`) detects practice plans that have stalled close to their deadline. For each active row in `uber_timeboxes`:
+
+1. Compute `last_completed_at` from the most recent child event with `status = done`.
+2. Compute `expected_session_interval_days = 7 / sessions_per_week`.
+3. Stall condition: `(today - last_completed_at) > 2 × expected_session_interval_days` AND `(deadline - today) < profile.timeboxes.stalled_threshold` (default `P14D`).
+4. On match, insert `uber_alerts(kind = 'timebox_stalled', subject = timebox.slug, urgency = 'high' if deadline within 7d else 'medium', payload = TimeboxStalledPayload)`.
+5. The alert clears automatically on the next `complete` call for that timebox.
+
+Stall metrics surface in the morning brief's "Off-track timeboxes" block (see [calendar-timeboxes.md § Off-track timeboxes block](calendar-timeboxes.md#off-track-timeboxes-block)). Plan and replan calls are full kernel `Session`s with cost-tracked `llm` spans when `--llm` is used, so plan regressions tie to a specific prompt hash and model.
+
 ## Budget Enforcement
 
 Tied to Guardrails. `DailyBudgetPolicy` (Uebermensch-contributed):

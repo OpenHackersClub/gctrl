@@ -137,6 +137,23 @@
 
 **Done when:** A user can `gctrl uber calendar add` a personal event and see it in tomorrow's brief; `driver-markets` populates earnings dates for the user's ticker watchlist; `gctrl uber calendar list --view personal-week` returns the right shape on stdout and `/api/uber/calendar/feed.ics` is subscribable from Google Calendar; reminders fire idempotently to the configured channel within 60s of the scheduled offset.
 
+## M7: Calendar Timeboxes — Planned
+
+**Goal:** Multi-event practice plans (reading a paper, training for a race, shipping a content series) live as parent vault files that own N child calendar events, with deterministic and LLM-assisted slicing of work into sessions, progress rollup, coaching nudges, and stalled-plan detection. Spec: [vault/specs/calendar-timeboxes.md](vault/specs/calendar-timeboxes.md).
+
+| Task | Description | Priority | Depends On | Issue |
+|------|-------------|----------|------------|-------|
+| Timebox M0: parent files + storage | `calendar/timeboxes/<slug>.md` shape; `uber_timeboxes` table; `timebox_slug`/`step`/`step_total`/`step_units` columns added to `uber_calendar`; `status: superseded` value added to event status enum | P0 | M6 calendar schema | TBD |
+| Timebox M0: deterministic planner + manual lifecycle | `gctrl uber timebox plan` (no `--llm`) with even arithmetic slice; `add-event`, `complete`, `skip`, `pause`/`resume`/`cancel`, `reindex`; dry-run by default; `--apply` commits | P0 | uber_timeboxes table | TBD |
+| Timebox M0: briefing integration | Today's practice events render in "On the calendar today" with `step/step_total`; off-track block fires when stalled and deadline within `stalled_threshold` | P0 | M6 briefing-pipeline calendar block | TBD |
+| Timebox M1: LLM-assisted planner + working-windows | `--llm` flag on `plan` and `replan`; planner reads `profile.timeboxes.working_windows`; pinned-event logic for re-plan (`replan_policy: pin-edited`) | P0 | Timebox M0; M1 driver-llm | TBD |
+| Timebox M1: coaching nudges | `coaching.nudges[]` in timebox frontmatter; on `complete`, crossed thresholds insert reminder rows; idempotency key `(timebox_slug, nudge_index)`; reuses `uber_calendar_reminders` + `DelivererService` | P1 | Timebox M0; M2 Deliverer | TBD |
+| Timebox M1: stalled-timebox alert | Daily check inserts `uber_alerts(kind='timebox_stalled')` with high/medium urgency; auto-clears on next `complete` | P1 | Timebox M0; M4 alert pipeline | TBD |
+| Timebox M2: web UI gantt-lite view | Timeline of child events as bars per timebox; coloured by `status: done / confirmed / superseded`; click-through to the markdown file | P2 | Timebox M0; M2 App web UI | TBD |
+| Timebox M2: `driver-gcal` mirror | Timebox children mirror to Google Calendar with title-prefix convention `[<title> <step>/<step_total>]`; opt-in via the same write-back flag as M6 calendar | P2 | M6 driver-gcal read-only; Timebox M0 | TBD |
+
+**Done when:** A user can `gctrl uber timebox plan --discipline reading --total 64 --unit pages --session-minutes 60 --sessions-per-week 4 --deadline 2026-05-20 --apply` and find the parent file plus all child events in the vault; today's session shows up in the morning brief with progress; `complete` rolls progress up and fires the next coaching nudge; missing two consecutive sessions within the stall window produces a `timebox_stalled` alert and an "Off-track" line in the next brief.
+
 ## Backlog (unprioritized)
 
 1. LLM-as-judge with rubric per dimension (accuracy, depth, freshness)

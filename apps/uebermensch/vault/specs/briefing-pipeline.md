@@ -94,6 +94,8 @@ Prompt templates under `apps/uebermensch/personas/<persona>.md`, overridable by 
 | `{{candidate_pages}}` | XML-tagged | see below |
 | `{{max_items}}` | number | derived from `brief_format` (long=12, short=6, digest=3) |
 | `{{today_local}}` | date | today in `profile.identity.tz` |
+| `{{calendar_today}}` | XML-tagged | today's events from [calendar.md § Briefing Integration](calendar.md#briefing-integration); includes timebox child events with `step/step_total` from [calendar-timeboxes.md § Briefing Integration](calendar-timeboxes.md#briefing-integration) |
+| `{{offtrack_timeboxes}}` | XML-tagged | active timeboxes that are stalled within `profile.timeboxes.stalled_threshold` of their deadline; omitted when empty (see [calendar-timeboxes.md § Off-track timeboxes block](calendar-timeboxes.md#off-track-timeboxes-block)) |
 
 **Candidate page wrapping** (prompt-injection defense):
 

@@ -153,6 +153,7 @@ export const EventKind = Schema.Literal(
   "political",
   "prediction-market",
   "industry",
+  "practice",
   "other",
 )
 export type EventKind = typeof EventKind.Type
@@ -166,7 +167,12 @@ export const EventSource = Schema.Literal(
 )
 export type EventSource = typeof EventSource.Type
 
-export const EventStatus = Schema.Literal("confirmed", "tentative", "cancelled")
+export const EventStatus = Schema.Literal(
+  "confirmed",
+  "tentative",
+  "cancelled",
+  "superseded",
+)
 export type EventStatus = typeof EventStatus.Type
 
 // Uppercase ticker per spec § Validation Rules #5
@@ -214,5 +220,86 @@ export const EventFrontmatter = Schema.Struct({
   updated_at: Schema.optional(IsoLike),
   generator: Schema.optional(Schema.String),
   content_hash: Schema.optional(Schema.String),
+  // Timebox child fields — present when this event belongs to a parent timebox.
+  // Validation rule: if `timebox` is set, `step`/`step_total`/`step_units` MUST be set.
+  // See vault/specs/calendar-timeboxes.md § Child Event Frontmatter Additions.
+  timebox: Schema.optional(Slug),
+  step: Schema.optional(Schema.Int.pipe(Schema.greaterThanOrEqualTo(1))),
+  step_total: Schema.optional(Schema.Int.pipe(Schema.greaterThanOrEqualTo(1))),
+  step_units: Schema.optional(Schema.String),
 })
 export type EventFrontmatter = typeof EventFrontmatter.Type
+
+// === Timebox (calendar-timeboxes.md) ===
+
+// Open enum — the planner only needs `unit` + `session_minutes`; discipline drives
+// display and downstream filtering. New values valid immediately, no migration.
+export const Discipline = Schema.String.pipe(Schema.pattern(/^[a-z][a-z0-9-]*$/))
+export type Discipline = typeof Discipline.Type
+
+export const TimeboxStatus = Schema.Literal("active", "paused", "done", "cancelled")
+export type TimeboxStatus = typeof TimeboxStatus.Type
+
+// `at` is a fraction in (0, 1] for progress-triggered nudges, or an ISO 8601
+// date for absolute-time nudges. Validated as union of number-in-range or IsoLike.
+export const TimeboxNudge = Schema.Struct({
+  at: Schema.Union(
+    Schema.Number.pipe(Schema.greaterThan(0), Schema.lessThanOrEqualTo(1)),
+    IsoLike,
+  ),
+  template: Schema.String,
+})
+export type TimeboxNudge = typeof TimeboxNudge.Type
+
+export const TimeboxCoaching = Schema.Struct({
+  nudges: Schema.optional(Schema.Array(TimeboxNudge)),
+})
+
+// Spec § Timebox Frontmatter — required: slug, kind, discipline, title, goal,
+// deadline, unit, total, session_minutes, sessions_per_week, status,
+// created_at, updated_at, content_hash. `done` is rolled up by `complete` and
+// MUST NOT be set by hand (validation enforces 0 default at create time).
+export const TimeboxFrontmatter = Schema.Struct({
+  slug: Slug,
+  kind: Schema.Literal("practice"),
+  discipline: Discipline,
+  title: Schema.String,
+  goal: Schema.String,
+  deadline: IsoLike,                              // ISO date or datetime
+  unit: Schema.String.pipe(Schema.minLength(1)),  // pages | km | episodes | posts | ...
+  total: Schema.Number.pipe(Schema.greaterThan(0)),
+  done: Schema.optional(Schema.Number.pipe(Schema.greaterThanOrEqualTo(0))),
+  session_minutes: Schema.Int.pipe(Schema.greaterThan(0)),
+  sessions_per_week: Schema.Number.pipe(Schema.greaterThan(0)),
+  status: TimeboxStatus,
+  taper_days_before_deadline: Schema.optional(Schema.Int.pipe(Schema.greaterThanOrEqualTo(0))),
+  related_pages: Schema.optional(Schema.Array(Slug)),
+  topics: Schema.optional(Schema.Array(Slug)),
+  tags: Schema.optional(Schema.Array(Schema.String)),
+  coaching: Schema.optional(TimeboxCoaching),
+  created_at: Schema.optional(IsoLike),
+  updated_at: Schema.optional(IsoLike),
+  content_hash: Schema.optional(Schema.String),
+})
+export type TimeboxFrontmatter = typeof TimeboxFrontmatter.Type
+
+// Profile timebox config — see calendar-timeboxes.md § Profile Schema Additions.
+// All fields optional in profile.md; defaults (60 min, 3/wk, P14D) are app-side.
+export const TimeboxWorkingWindow = Schema.Struct({
+  days: Schema.Array(Schema.Literal("mon", "tue", "wed", "thu", "fri", "sat", "sun")),
+  start: Schema.String.pipe(Schema.pattern(/^\d{2}:\d{2}$/)),
+  end: Schema.String.pipe(Schema.pattern(/^\d{2}:\d{2}$/)),
+})
+export type TimeboxWorkingWindow = typeof TimeboxWorkingWindow.Type
+
+export const TimeboxProfileConfig = Schema.Struct({
+  working_windows: Schema.optional(Schema.Array(TimeboxWorkingWindow)),
+  default_session_minutes: Schema.optional(Schema.Int.pipe(Schema.greaterThan(0))),
+  default_sessions_per_week: Schema.optional(Schema.Number.pipe(Schema.greaterThan(0))),
+  stalled_threshold: Schema.optional(Schema.String),  // ISO 8601 duration
+  replan_policy: Schema.optional(Schema.Literal("pin-edited", "redistribute-all")),
+  coaching: Schema.optional(Schema.Struct({
+    default_channel: Schema.optional(Schema.String),
+  })),
+})
+export type TimeboxProfileConfig = typeof TimeboxProfileConfig.Type

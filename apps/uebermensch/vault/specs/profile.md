@@ -294,9 +294,20 @@ delivery:
   retention:
     briefs_days: 180
     alerts_days: 90
+
+timeboxes:
+  working_windows:                            # planner schedules sessions only inside these windows
+    - { days: [mon, tue, wed, thu, fri], start: "07:00", end: "08:00" }
+    - { days: [sat, sun], start: "08:00", end: "10:00" }
+  default_session_minutes: 60
+  default_sessions_per_week: 3
+  stalled_threshold: P14D                     # ISO 8601 duration; stall alert window before deadline
+  replan_policy: pin-edited                   # pin-edited | redistribute-all
+  coaching:
+    default_channel: telegram_primary
 ```
 
-Maps to: `Profile.identity`, `Profile.budgets`, `Profile.delivery`.
+Maps to: `Profile.identity`, `Profile.budgets`, `Profile.delivery`, `Profile.timeboxes`. The `timeboxes:` block is optional; missing means no working-window constraint, defaults `60` minutes / `3` sessions per week, `P14D` stall window. Full semantics in [calendar-timeboxes.md § Profile Schema Additions](calendar-timeboxes.md#profile-schema-additions).
 
 ### topics.md
 
