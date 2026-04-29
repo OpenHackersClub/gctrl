@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises"
 import { extname, join, relative } from "node:path"
-import { Effect, Layer, Schema } from "effect"
+import { Effect, Either, Layer, Schema } from "effect"
 import matter from "gray-matter"
 import { VaultError, vaultIo } from "../errors.js"
 import { matchesFilter, sortByStart } from "../lib/calendar-filter.js"
@@ -28,17 +28,17 @@ const slugify = (s: string): string =>
     .replace(/^-+|-+$/g, "")
     .slice(0, 60)
 
-const datePart = (startsAt: string): string => {
+const datePart = (startsAt: string): Either.Either<string, string> => {
   const bare = startsAt.match(/^(\d{4}-\d{2}-\d{2})/)
-  if (bare) return bare[1]
+  if (bare) return Either.right(bare[1])
   const d = new Date(startsAt)
   if (Number.isNaN(d.getTime())) {
-    throw new Error(`invalid starts_at: ${startsAt}`)
+    return Either.left(`invalid starts_at: ${startsAt}`)
   }
   const y = d.getUTCFullYear()
   const m = String(d.getUTCMonth() + 1).padStart(2, "0")
   const day = String(d.getUTCDate()).padStart(2, "0")
-  return `${y}-${m}-${day}`
+  return Either.right(`${y}-${m}-${day}`)
 }
 
 const failVault = (
@@ -223,16 +223,10 @@ export const FileSystemCalendarLive = (vaultDir: string) =>
           )
         }
 
-        let datePrefix: string
-        try {
-          datePrefix = datePart(input.startsAt)
-        } catch {
-          return yield* failVault(
-            `invalid starts_at: ${input.startsAt}`,
-            calRoot,
-            "parse_failure",
-          )
-        }
+        const datePrefix = yield* Either.match(datePart(input.startsAt), {
+          onLeft: (msg) => failVault(msg, calRoot, "parse_failure"),
+          onRight: (v) => Effect.succeed(v),
+        })
         const relPath = `${CALENDAR_DIR}/${datePrefix}--${slug}.md`
         const absPath = join(vaultDir, relPath)
         const body = (input.body ?? "").trimEnd()
