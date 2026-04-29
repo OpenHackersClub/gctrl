@@ -250,9 +250,28 @@ describe("calendar — FileSystemCalendar adapter", () => {
         starts_at: "2026-04-27T10:00:00Z",
       }),
     )
+    // Timebox parent file — different schema (no source/starts_at/tz). The
+    // calendar loader MUST skip action/events/timeboxes/ or decodeEvent will
+    // throw parse_failure on every list call.
+    await seedFile(
+      vaultDir,
+      "action/events/timeboxes/sub-3-berlin.md",
+      [
+        "slug: sub-3-berlin",
+        "kind: practice",
+        "discipline: running",
+        'title: "Sub-3 Berlin"',
+        'goal: "Run a sub-3 marathon"',
+        "deadline: 2026-09-27",
+        "unit: km",
+        "total: 800",
+        "session_minutes: 60",
+        'status: "in-progress"',
+      ].join("\n") + "\n",
+    )
   })
 
-  it("lists all events excluding recurring/", async () => {
+  it("lists all events excluding recurring/ + timeboxes/", async () => {
     const events = await Effect.runPromise(
       Effect.gen(function* () {
         const cal = yield* CalendarService

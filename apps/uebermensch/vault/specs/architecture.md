@@ -100,7 +100,7 @@ flowchart LR
     obs["Obsidian\n(optional)"]
   end
   subgraph fs["Filesystem"]
-    vault["$UBER_VAULT_DIR\n(params + input + output + wiki)"]
+    vault["$UBER_VAULT_DIR\n(directives + input + output + action)"]
     duck[".local/share/gctrl/gctrl.duckdb"]
   end
   subgraph cloud["Cloud"]

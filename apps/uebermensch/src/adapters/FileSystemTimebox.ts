@@ -319,19 +319,6 @@ export const FileSystemTimeboxLive = (config: FileSystemTimeboxConfig) => {
   const workingWindows =
     config.workingWindows.length > 0 ? config.workingWindows : fallbackWindows
 
-  const childrenOf = (events: ReadonlyArray<CalendarEvent>, slug: string) =>
-    events
-      .filter((e) => (e as unknown as { /* schema decoded */ } & { _step?: number }))
-      // The frontmatter `timebox` field rides through EventFrontmatter; since
-      // CalendarEvent doesn't model it as a typed field, we reach into the
-      // raw vault file's frontmatter via a parallel lookup. Easier: the
-      // adapter loads events using the same EventFrontmatter schema, and we
-      // re-decode child fields here from the matter parse. For simplicity in
-      // M0 we keep two helpers:
-      //   - listChildEventSlugsForTimebox: lightweight re-walk + frontmatter scan
-      //   - re-read individual files when mutating
-      .filter(() => false)  // placeholder; never used directly — see scanChildren below
-
   // Scan all calendar events and return raw frontmatter records keyed by slug
   // for any event whose `timebox` field matches. We do this by reading the
   // YAML directly so we get `step`/`step_total` without widening CalendarEvent.
