@@ -172,6 +172,48 @@ test.describe("LLM relay → kernel → analytics dashboard", () => {
     ).toBeVisible({ timeout: 10_000 })
   })
 
+  test("dashboard Prompts tab renders captured turns for the relay session", async ({
+    page,
+    kernel,
+  }) => {
+    // Use a recognizable user prompt so we can assert it actually
+    // surfaces in the UI rather than relying on token counts alone.
+    const userPrompt = `dashboard-prompts-probe-${Date.now().toString(36).slice(-5)}`
+    const result = await callRelay({ prompt: userPrompt })
+    expect(result.responseStatus).toBe(200)
+
+    await expect
+      .poll(
+        async () => {
+          const list = await kernel.listSessionPrompts(result.sessionId)
+          return list.prompts.length
+        },
+        {
+          timeout: 10_000,
+          message: "prompt bodies never landed in /api/sessions/{id}/prompts",
+        },
+      )
+      .toBeGreaterThan(0)
+
+    await page.goto(`/analytics/sessions/${result.sessionId}`)
+
+    // Detail pane opens deep-linked. Switch to the Prompts tab.
+    const promptsTab = page.getByTestId("session-tab-prompts")
+    await expect(promptsTab).toBeVisible({ timeout: 10_000 })
+    await promptsTab.click()
+
+    // Prompt rows render with role badges and the user's prompt content.
+    const list = page.getByTestId("prompts-list")
+    await expect(list).toBeVisible({ timeout: 10_000 })
+    // The relay captures the system + user turns from the request plus the
+    // assistant reply from the response — at least three rows.
+    await expect(list.getByTestId("prompt-row")).toHaveCount(3)
+    await expect(list.locator('[data-role="user"]')).toContainText(userPrompt)
+    await expect(list.locator('[data-role="assistant"]')).toContainText(
+      "mock reply",
+    )
+  })
+
   test("relay path config — mock LLM server is reachable", async () => {
     // Sanity check that the mock is up. Doing this last so that if the
     // earlier tests fail we know whether it's a relay bug or an upstream
