@@ -2,7 +2,22 @@ import { Command, Options } from "@effect/cli"
 import { Console, Effect } from "effect"
 import { R2SyncConfigFromEnv, R2SyncLive } from "../adapters/R2Sync.js"
 import { resolveVaultDir } from "../lib/env.js"
+import {
+  INPUT_BRIEFS_DIR,
+  INPUT_RAW_DIR,
+  INPUT_REPORTS_DIR,
+  INPUT_WIKI_DIR,
+} from "../lib/vault-paths.js"
 import { SyncService } from "../services/SyncService.js"
+
+const DEFAULT_SYNC_PREFIXES = [
+  INPUT_REPORTS_DIR,
+  INPUT_BRIEFS_DIR,
+  INPUT_RAW_DIR,
+  INPUT_WIKI_DIR,
+] as const
+
+const DEFAULT_SYNC_PREFIXES_STR = DEFAULT_SYNC_PREFIXES.join(",")
 
 const dryRunOpt = Options.boolean("dry-run").pipe(
   Options.withDescription("Show what would be uploaded without pushing"),
@@ -15,8 +30,10 @@ const forceOpt = Options.boolean("force").pipe(
 )
 
 const prefixesOpt = Options.text("prefixes").pipe(
-  Options.withDescription("Comma-separated vault subdirs to sync (default: reports,briefs,wiki/sources)"),
-  Options.withDefault("reports,briefs,wiki/sources"),
+  Options.withDescription(
+    `Comma-separated vault subdirs to sync (default: ${DEFAULT_SYNC_PREFIXES_STR})`,
+  ),
+  Options.withDefault(DEFAULT_SYNC_PREFIXES_STR),
 )
 
 const r2 = Command.make(
@@ -44,7 +61,7 @@ const r2 = Command.make(
     }),
 ).pipe(
   Command.withDescription(
-    "Push reports/, briefs/, and wiki/sources/ to the R2 bucket (S3-compat; dedup via sha256 metadata)",
+    "Push input/reports/, input/briefs/, input/raw/, and input/wiki/ to the R2 bucket (S3-compat; dedup via sha256 metadata)",
   ),
 )
 

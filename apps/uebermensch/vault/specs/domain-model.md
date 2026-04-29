@@ -18,7 +18,7 @@ Branded TypeScript strings via `Schema.brand(...)`; Rust newtypes over `String` 
 | `AlertId` | uber | `"alert_" <ulid>` |
 | `ChannelName` | uber | free-form string keyed by `delivery.channels.<name>` in profile |
 | `TopicSlug` | uber | kebab-case slug; MUST match a topic declared in profile |
-| `ThesisSlug` | uber | kebab-case slug; MUST match `theses/<slug>.md` in profile |
+| `ThesisSlug` | uber | kebab-case slug; MUST match `directives/theses/<slug>.md` in profile |
 | `SourceId` | kernel (reuse) | see `context_entries.id` |
 | `WikiPageId` | kernel (reuse) | see `context_entries.id` — wiki page entries |
 | `PromptHash` | kernel (reuse) | SHA-256 of rendered prompt — see `prompt_versions` |
@@ -58,7 +58,7 @@ export const Brief = Schema.Struct({
   generatedFor: Schema.String,      // ISO date (YYYY-MM-DD) — the brief's subject day
   topicScope: Schema.Array(TopicSlug),
   thesisScope: Schema.Array(ThesisSlug),
-  vaultPath: Schema.String,         // canonical: vault-relative path, e.g. "briefs/2026-04-18.md"
+  vaultPath: Schema.String,         // canonical: vault-relative path, e.g. "input/briefs/2026-04-18.md"
   contentHash: Schema.optional(Schema.String),  // sha256 of vault file bytes at render time
   bodyHtmlCachePath: Schema.optional(Schema.String), // optional rendered HTML cache
   sessionId: Schema.optional(Schema.String),   // curator session
@@ -75,7 +75,7 @@ export const Brief = Schema.Struct({
 export type Brief = typeof Brief.Type
 ```
 
-**Body storage policy.** Brief markdown is authored in the vault at `$UBER_VAULT_DIR/<vaultPath>` (typically `briefs/<YYYY-MM-DD>.md` for daily briefs, `briefs/deepdive/thesis-<slug>-<date>.md` for deepdives). The `uber_briefs` row is an index over that file — it never stores the body text. Renderers and evaluators read the vault file; deliveries transcode it per channel. `contentHash` pins the version used at render time so eval results are reproducible even if the user edits the file later in Obsidian.
+**Body storage policy.** Brief markdown is authored in the vault at `$UBER_VAULT_DIR/<vaultPath>` (typically `input/briefs/<YYYY-MM-DD>.md` for daily briefs, `input/briefs/deepdive/thesis-<slug>-<date>.md` for deepdives, `input/reports/<slug>.md` for prompt-driven reports). The `uber_briefs` row is an index over that file — it never stores the body text. Renderers and evaluators read the vault file; deliveries transcode it per channel. `contentHash` pins the version used at render time so eval results are reproducible even if the user edits the file later in Obsidian.
 
 **State transitions** (enforced by the storage layer):
 
@@ -172,7 +172,7 @@ export const Alert = Schema.Struct({
 
 ### 2.5 Profile (read-only projection)
 
-Defined fully in [profile.md](profile.md). A `Profile` Schema is the in-memory projection after parsing the authored tier of `$UBER_VAULT_DIR` (profile.md, topics.md, sources.md, theses/, personas/). User research queries under `prompts/` are loaded separately by `QueryService` (not part of `Profile`).
+Defined fully in [profile.md](profile.md). A `Profile` Schema is the in-memory projection after parsing the authored tier of `$UBER_VAULT_DIR` (`directives/profile.md`, `directives/topics.md`, `directives/sources.md`, `directives/theses/`, `directives/personas/`). User research queries under `directives/prompts/` are loaded separately by `QueryService` (not part of `Profile`).
 
 ```ts
 export const Topic = Schema.Struct({
@@ -306,7 +306,7 @@ CREATE TABLE IF NOT EXISTS uber_briefs (
     generated_for     VARCHAR NOT NULL,                  -- ISO date
     topic_scope       JSON DEFAULT '[]',
     thesis_scope      JSON DEFAULT '[]',
-    vault_path            VARCHAR NOT NULL,              -- vault-relative markdown path, e.g. "briefs/2026-04-18.md"
+    vault_path            VARCHAR NOT NULL,              -- vault-relative markdown path, e.g. "input/briefs/2026-04-18.md" or "input/reports/<slug>.md"
     content_hash          VARCHAR,                       -- sha256 of vault file at render time
     body_html_cache_path  VARCHAR,                       -- optional cached HTML path (absolute filesystem path)
     session_id            VARCHAR,                       -- FK → sessions.id
@@ -408,7 +408,7 @@ Per [kernel/sync.md](../../../../vault/specs/architecture/kernel/sync.md):
 - All five tables carry `device_id` and `updated_at` — eligible for row-level SQLite → D1 sync.
 - Brief bodies are NOT in SQLite — they live in the vault at `uber_briefs.vault_path`. Vault files sync to R2 via the `sync.vault.uber` mount (see [profile.md § Sync (R2)](profile.md#sync-r2)), so the body replication is orthogonal to the index row replication.
 - `uber_briefs` rows are tiny (metadata + hashes); row-level D1 sync carries negligible payload.
-- Wiki pages themselves live under `context_entries` and ALSO appear in the vault at `wiki/**`; they follow the same vault R2 sync path, with `context_entries` as the kernel-facing index.
+- Wiki pages themselves live under `context_entries` and ALSO appear in the vault at `wiki/**` (and raw source pages at `input/raw/**`); they follow the same vault R2 sync path, with `context_entries` as the kernel-facing index.
 
 ---
 
@@ -470,7 +470,7 @@ pub enum WikiPageType {
 }
 ```
 
-Thesis pages live at `wiki/theses/<thesis-slug>.md` with required frontmatter:
+Thesis pages live at `directives/theses/<thesis-slug>.md` (authored tier — user owns them) with required frontmatter:
 
 ```yaml
 ---
@@ -777,10 +777,11 @@ erDiagram
 
 ## 10. Invariants
 
-1. **Citation resolvability.** A brief with status ≥ `rendered` MUST have every `[[slug]]` in its vault markdown file (`$UBER_VAULT_DIR/<vault_path>`) resolve to an existing file under `$UBER_VAULT_DIR/{wiki,theses,briefs}/**/<slug>.md` (and therefore to an existing `context_entries.id` where `kb_pages.page_type != 'question'`). Enforced at render time — unresolved links fail the transition. Typed prefixes (`[[type:slug]]`) are never valid output.
+1. **Citation resolvability.** A brief with status ≥ `rendered` MUST have every `[[slug]]` in its vault markdown file (`$UBER_VAULT_DIR/<vault_path>`) resolve to an existing file under `$UBER_VAULT_DIR/{input/wiki,directives/theses,input/raw,input/briefs,input/reports}/**/<slug>.md` (and therefore to an existing `context_entries.id` where `kb_pages.page_type != 'question'`). Enforced at render time — unresolved links fail the transition. Typed prefixes (`[[type:slug]]`) are never valid output.
 2. **Vault-authoritative bodies.** The `uber_briefs` row MUST NOT store brief body text. The vault file at `vault_path` is canonical; `content_hash` pins the bytes used for render/eval. Reconstructing SQLite from scratch using vault files + kernel sessions MUST produce an equivalent index.
 3. **Idempotent delivery.** `(brief_id, channel)` is UNIQUE. A re-run of `deliver` MUST NOT produce a second `uber_deliveries` row; it MAY update `status`, `attempt`, and `error`.
 4. **Transition monotonicity.** Brief status is monotonic along the lattice in § 2.1. Any write that violates it MUST be rejected at the storage layer with `InvalidStateTransition`.
 5. **Prompt audit.** Every LLM call has a `prompt_hash` stored on both `sessions`/`spans` (via `session_prompts`) and the originating `uber_briefs` row.
-6. **Profile authored-tier read-only.** No Uebermensch service MAY write inside the authored tier of `$UBER_VAULT_DIR` (see [profile.md § Read vs. Write Capabilities](profile.md#read-vs-write-capabilities)) in response to LLM output. Generated-tier writes (`wiki/**`, `briefs/**`) go through `KbPort` / `BriefingService`. Only `gctrl uber profile migrate` may write authored-tier files — and only with `--preview-diff` accepted by the user.
+6. **Profile authored-tier read-only.** No Uebermensch service MAY write inside the authored tier of `$UBER_VAULT_DIR` — `directives/**`, `output/**`, and `action/**` excl. `action/events/generated/**` (see [profile.md § Read vs. Write Capabilities](profile.md#read-vs-write-capabilities)) — in response to LLM output. Generated-tier writes (`input/**`, `action/events/generated/**`) go through `KbPort` / `BriefingService` / `IngestService`. Only `gctrl uber profile migrate` may write authored-tier files — and only with `--preview-diff` accepted by the user.
+8. **Four-root invariant.** The vault contains exactly four canonical top-level folders (`directives/`, `input/`, `output/`, `action/`) plus permitted top-level files (`README.md`, `.gitignore`, `.obsidian/`, `.gctrl-uber/`, `.git/`). `gctrl uber profile validate` rejects any other top-level entry.
 7. **Namespace discipline.** Uebermensch MUST NOT write to any non-`uber_*` table except: `sessions`, `spans`, `context_entries`, `kb_links`, `kb_pages`, `prompt_versions`, `session_prompts`, `scores`, `inbox_messages`, `board_issues` (the latter via `/api/board/issues` — never direct).

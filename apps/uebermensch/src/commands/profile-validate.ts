@@ -3,6 +3,11 @@ import { Console, Effect } from "effect"
 import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js"
 import { ProfileError } from "../errors.js"
 import { resolveVaultDir } from "../lib/env.js"
+import {
+  DIRECTIVES_PROFILE_FILE,
+  DIRECTIVES_SOURCES_FILE,
+  DIRECTIVES_TOPICS_FILE,
+} from "../lib/vault-paths.js"
 import { ProfileService } from "../services/ProfileService.js"
 
 const validate = Command.make("validate", {}, () =>
@@ -14,7 +19,9 @@ const validate = Command.make("validate", {}, () =>
       return yield* service.validate()
     }).pipe(Effect.provide(FileSystemProfileLive(vaultDir)))
     if (issues.length === 0) {
-      yield* Console.log("✓ profile.md, topics.md, sources.md all valid")
+      yield* Console.log(
+        `✓ ${DIRECTIVES_PROFILE_FILE}, ${DIRECTIVES_TOPICS_FILE}, ${DIRECTIVES_SOURCES_FILE} all valid`,
+      )
       return
     }
     yield* Console.error("✗ validation issues:")
@@ -26,7 +33,11 @@ const validate = Command.make("validate", {}, () =>
       }),
     )
   }),
-).pipe(Command.withDescription("Validate profile.md + topics.md + sources.md frontmatter"))
+).pipe(
+  Command.withDescription(
+    `Validate ${DIRECTIVES_PROFILE_FILE} + ${DIRECTIVES_TOPICS_FILE} + ${DIRECTIVES_SOURCES_FILE} frontmatter`,
+  ),
+)
 
 export const profile = Command.make("profile").pipe(
   Command.withSubcommands([validate]),

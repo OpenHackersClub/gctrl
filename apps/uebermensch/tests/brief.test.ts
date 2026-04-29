@@ -24,13 +24,13 @@ describe("brief generation (candidates + stub LLM + strict renderer)", () => {
     vaultDir = await mkdtemp(join(tmpdir(), "uber-vault-"))
     await seedPage(
       vaultDir,
-      "wiki/sources/2026-04-18--foo.md",
+      "input/raw/2026-04-18--foo.md",
       "page_type: source\nslug: 2026-04-18--foo\ntitle: Foo Source\ntopics: [foo-topic]\n",
       "# Foo\n\nSome content.",
     )
     await seedPage(
       vaultDir,
-      "wiki/sources/2026-04-18--bar.md",
+      "input/raw/2026-04-18--bar.md",
       "page_type: source\nslug: 2026-04-18--bar\ntitle: Bar Source\ntopics: [bar-topic]\n",
       "# Bar\n\nOther content.",
     )
@@ -83,7 +83,7 @@ describe("brief generation (candidates + stub LLM + strict renderer)", () => {
     )
 
     const written = await Effect.runPromise(program)
-    expect(written.relPath).toBe("briefs/2026-04-19.md")
+    expect(written.relPath).toBe("input/briefs/2026-04-19.md")
     expect(written.contentHash).toMatch(/^sha256:[0-9a-f]{64}$/)
     const onDisk = await readFile(join(vaultDir, written.relPath), "utf8")
     expect(onDisk).toContain("brief-2026-04-19")

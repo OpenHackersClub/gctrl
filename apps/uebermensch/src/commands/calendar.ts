@@ -3,6 +3,7 @@ import { Console, Effect, Option, pipe } from "effect"
 import { FileSystemCalendarLive } from "../adapters/FileSystemCalendar.js"
 import { resolveVaultDir } from "../lib/env.js"
 import { parseDateShortcut } from "../lib/calendar-filter.js"
+import { ACTION_EVENTS_DIR } from "../lib/vault-paths.js"
 import {
   CalendarService,
   type CalendarEvent,
@@ -183,7 +184,9 @@ const list = Command.make(
         const cal = yield* CalendarService
         const events = yield* cal.list(filter)
         if (events.length === 0) {
-          yield* Console.log(`(no matching events in ${vaultDir}/calendar/)`)
+          yield* Console.log(
+            `(no matching events in ${vaultDir}/${ACTION_EVENTS_DIR}/)`,
+          )
           return
         }
         for (const e of events) yield* Console.log(formatLine(e))
@@ -302,5 +305,7 @@ const add = Command.make(
 
 export const calendar = Command.make("calendar").pipe(
   Command.withSubcommands([list, show, add]),
-  Command.withDescription("Manage calendar events in $UBER_VAULT_DIR/calendar/"),
+  Command.withDescription(
+    `Manage calendar events in $UBER_VAULT_DIR/${ACTION_EVENTS_DIR}/ (authored at top level; driver-pulled under generated/)`,
+  ),
 )

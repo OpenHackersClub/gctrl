@@ -17,8 +17,8 @@ flowchart TB
   end
   subgraph Vault["$UBER_VAULT_DIR (Obsidian-mountable)"]
     direction LR
-    Authored["Authored tier\nprofile.md · theses/ · personas/ · prompts/ (queries) · calendar/"]
-    Generated["Generated tier\nwiki/ · briefs/ · sources/ · calendar/generated/"]
+    Authored["directives/ + output/ + action/\nprofile.md · topics.md · sources.md · theses/ · personas/ · prompts/ · action/events/"]
+    Generated["input/\ninput/briefs/ · input/reports/ · input/raw/ · input/wiki/"]
   end
   subgraph Shell["Shell (HTTP :4318)"]
     direction LR
@@ -79,7 +79,7 @@ The non-obvious bets:
 
 ## Principles
 
-1. **Vault is portable and Obsidian-mountable.** `$UBER_VAULT_DIR` is a git-versioned Obsidian vault outside the gctrl repo, readable without Uebermensch running. Every file is CommonMark markdown with YAML frontmatter; wikilinks use plain `[[slug]]` form (typed prefixes like `[[thesis:slug]]` are forbidden — they break Obsidian's resolver). The app MUST NOT write to the authored tier (profile.md, theses/, personas/, prompts/) without explicit user confirmation. The single exception: `prompts/<slug>.md` frontmatter is updated in-place by the prompts processor (`gctrl uber prompts process`) to record `status`/`output`/`processed_at`; the body is never touched.
+1. **Vault is portable and Obsidian-mountable.** `$UBER_VAULT_DIR` is a git-versioned Obsidian vault outside the gctrl repo, readable without Uebermensch running. Every file is CommonMark markdown with YAML frontmatter; wikilinks use plain `[[slug]]` form (typed prefixes like `[[thesis:slug]]` are forbidden — they break Obsidian's resolver). The app MUST NOT write to the authored tier (`directives/`) without explicit user confirmation. The single exception: `directives/prompts/<slug>.md` frontmatter is updated in-place by the prompts processor (`gctrl uber prompts process`) to record `status`/`output`/`processed_at`; the body is never touched.
 2. **Markdown is the source of truth.** Briefs, wiki pages, sources, and theses live on disk as markdown files. SQLite tables (`uber_briefs`, `uber_brief_items`, …) hold `vault_path` + `content_hash` only — pure index. Opening the vault in Obsidian MUST show everything; deleting SQLite MUST be recoverable by re-indexing.
 3. **Wiki compounds.** Every ingest MUST file at least one wiki page (source summary) and update relevant entity/topic pages. Drop-and-forget ingestion is a bug, not a feature.
 4. **Primary sources over commentary.** The curator MUST weight SEC filings, earnings transcripts, primary research, and official announcements above secondary commentary. Hype-tagged sources are tracked but never lead a brief.
@@ -98,7 +98,7 @@ The non-obvious bets:
 | Need | Surface | Solution |
 |------|---------|----------|
 | "What changed in my topics overnight?" | App + Telegram | Morning brief (default 08:00 local) with 5–10 items, each ≤120 words with citation chips |
-| "Is my AI-infra thesis still intact after Q1 earnings?" | App | On-demand deep-dive — reads all wiki pages tagged with the thesis, synthesises an update, files as `wiki/synthesis/thesis-ai-infra-2026-q1.md` |
+| "Is my AI-infra thesis still intact after Q1 earnings?" | App | On-demand deep-dive — reads all wiki pages tagged with the thesis, synthesises an update, files as `input/wiki/synthesis/thesis-ai-infra-2026-q1.md` |
 | "Add this post to my knowledge base without reading it now" | CLI / Telegram bot | `gctrl uber ingest --url <x>` or `/ingest <url>` in Telegram; shows in inbox when filed |
 | "What do I believe about prediction markets?" | App | Query surface returns synthesis page plus last-updated date; stale → flag |
 | "Don't surface any more hype posts about GPT-5" | CLI / App | Add `avoid: hype-about: gpt-5` to profile; curator demotes matching sources |
@@ -131,7 +131,7 @@ Uebermensch is profile-parameterised. An ML researcher, policy wonk, or clinicia
 1. Kernel Scheduler fires `uber.brief.daily` at 07:30 local (configured in profile).
 2. Briefing pipeline reads active topics from profile, queries wiki for items tagged with topics, ingested in last 24 h.
 3. Curator LLM call (with prompt versioned in `prompt_versions`) selects and summarises 5–10 items; each cites its wiki source page via bare `[[slug]]`.
-4. Brief rendered atomically to `$UBER_VAULT_DIR/briefs/<YYYY-MM-DD>.md` with YAML frontmatter; `uber_briefs` index row inserted with `vault_path` + `content_hash`.
+4. Brief rendered atomically to `$UBER_VAULT_DIR/input/briefs/<YYYY-MM-DD>.md` with YAML frontmatter; `uber_briefs` index row inserted with `vault_path` + `content_hash`.
 5. Deliverer reads the vault markdown and sends to all active channels: App (web feed), Telegram (message), Discord (webhook post).
 6. Each channel delivery logged in `uber_deliveries` — idempotency key `(brief_id, channel)`.
 7. Brief visible in App inbox, in Obsidian (open the file / follow backlinks); Telegram/Discord receive formatted message with "View full brief" link.
@@ -144,10 +144,10 @@ Uebermensch is profile-parameterised. An ML researcher, policy wonk, or clinicia
 
 **Solution:**
 1. User runs `gctrl uber deepdive "ai-infra-capex"` or clicks thesis card in app.
-2. Pipeline reads the thesis page from the authored tier (`theses/ai-infra-capex.md`), extracts its claims and prior citations.
+2. Pipeline reads the thesis page from the authored tier (`directives/theses/ai-infra-capex.md`), extracts its claims and prior citations.
 3. Queries wiki for evidence pages ingested since thesis `updated_at` that link to the same entities/topics.
 4. LLM call (separate prompt template `deepdive.md`) produces a "thesis update" — what new evidence supports, contradicts, or extends each claim.
-5. Output filed as `wiki/synthesis/thesis-ai-infra-capex-update-2026-04-18.md` with backlinks.
+5. Output filed as `input/reports/thesis-ai-infra-capex-update-2026-04-18.md` with backlinks.
 6. Rendered into brief, delivered to App (primary channel for long-form).
 
 **Success metric:** Deep-dive reads ≥80% of evidence pages linked to the thesis, cites every claim, surfaces at least one "new since last update" item.
@@ -171,8 +171,8 @@ Uebermensch is profile-parameterised. An ML researcher, policy wonk, or clinicia
 **Solution:**
 1. User forwards link / message to `@uebermensch_bot` in Telegram or uses `/ingest <url>` in a Discord DM.
 2. `driver-telegram` / `driver-discord` receives webhook, creates traffic record, emits kernel IPC event.
-3. Uebermensch subscribes, invokes `gctrl kb ingest --url <x>` via shell HTTP API — writes `$UBER_VAULT_DIR/wiki/sources/<slug>.md`.
-4. On success, responds in same chat: "Filed as `sources/<slug>.md`, linked to `[[<entity>]]`, `[[<topic>]]`."
+3. Uebermensch subscribes, invokes `gctrl kb ingest --url <x>` via shell HTTP API — writes `$UBER_VAULT_DIR/input/raw/<slug>.md`.
+4. On success, responds in same chat: "Filed as `input/raw/<slug>.md`, linked to `[[<entity>]]`, `[[<topic>]]`."
 5. Next day's brief considers this source among ingest-since-yesterday items; the new file appears in Obsidian's graph on the next vault pull.
 
 **Success metric:** <30 s from user forward to "filed" confirmation; source appears in next morning's brief if it matches active topics.
@@ -208,8 +208,10 @@ Uebermensch is profile-parameterised. An ML researcher, policy wonk, or clinicia
 
 A single directory at `$UBER_VAULT_DIR` (default `~/uebermensch-vault`) holding:
 
-- **Authored tier** (git-tracked): `profile.md`, `topics.md`, `sources.md`, `theses/<slug>.md`, `personas/<persona>.md` (per-persona prompt overrides), `prompts/<slug>.md` (free-form research queries), `calendar/<YYYY-MM-DD>--<slug>.md`, `.obsidian/` — edited by the user in Obsidian or any editor.
-- **Generated tier** (gitignored, R2-synced): `wiki/**` (`wiki/sources/<slug>.md`, `wiki/synthesis/<slug>.md`, entities, topics, questions) + `briefs/<YYYY-MM-DD>.md` + `calendar/generated/**` (driver-pulled events) — written by the kernel + Uebermensch services.
+- **`directives/`** (git-tracked, authored tier): `profile.md`, `topics.md`, `sources.md`, `me.md`, `avoid.md`, `projects.md`, `theses/<slug>.md`, `personas/<persona>.md` (per-persona prompt overrides), `prompts/<slug>.md` (user-authored research queries) — edited by the user in Obsidian or any editor.
+- **`input/`** (gitignored, R2-synced): `input/raw/<slug>.md` (driver-fetched + manually-pulled URL summaries); `input/wiki/` (entities, topics, synthesis, questions, index, log — LLM-maintained knowledge graph); `input/briefs/<YYYY-MM-DD>.md` (daily briefs, CoS-written); `input/reports/<slug>.md` (deep-dives, prompt-driven research answers).
+- **`output/`** (git-tracked): the user's own writing — memos, notes, drafts — that CoS reviews and suggests.
+- **`action/`** (git-tracked + `action/events/generated/` gitignored): `action/events/<YYYY-MM-DD>--<slug>.md` (authored personal events); `action/events/generated/` (driver-pulled events); `action/strategies/`, `action/plans/`, `action/tasks/` — items awaiting the user's greenlight.
 
 Every file is CommonMark + YAML frontmatter. Wikilinks use plain `[[slug]]` — Obsidian and `gctrl-kb` share one resolver. A `VaultWatcher` fiber watches `fs.watch` events so user edits are reindexed without a restart. Full format in [vault/specs/profile.md](vault/specs/profile.md).
 
@@ -284,13 +286,13 @@ See [ROADMAP.md](ROADMAP.md) for the milestone → task breakdown.
 6. **Vault portability.** Switching `UBER_VAULT_DIR` to a second vault produces different topics/brief without touching app code or data. Opening either vault directly in Obsidian MUST show the same content the app sees.
 7. **Multi-device via R2.** A fresh device running `gctrl uber vault pull --from r2` for the same `identity.name` mounts an identical vault and can render today's brief from the same inputs.
 8. **Three channels live.** App, Telegram, Discord each deliver the same brief idempotently. A user acts on an action item in any channel; other channels reflect the updated state within one brief cycle.
-9. **Deep-dive utility.** At least one thesis deep-dive per month produces a `wiki/synthesis/thesis-*-update-<date>.md` vault file with ≥3 new evidence citations.
+9. **Deep-dive utility.** At least one thesis deep-dive per month produces a `input/wiki/synthesis/thesis-*-update-<date>.md` vault file with ≥3 new evidence citations.
 10. **Scrape health visible.** The app shows per-domain scrape success over 7/30-day windows; any domain below 60% surfaces in the inbox.
 
 ## Open Questions
 
 1. **LLM driver shape.** Should `driver-llm` proxy all LLM traffic through the kernel (for central cost accounting and prompt caching) or should Uebermensch hold the key itself? **Leaning:** kernel proxy, to match the "external APIs go through drivers" invariant. Needed by M0.
-2. **Authored-tier write-back.** When the curator suggests refining a thesis, does it write to the authored tier (`theses/<slug>.md`, with user confirmation via a PR-style diff) or only to the generated tier (`wiki/` incl. `wiki/synthesis/`, `briefs/`)? **Leaning:** generated tier only; authored edits are user-driven in Obsidian or via git. Needed by M1.
+2. **Authored-tier write-back.** When the curator suggests refining a thesis, does it write to the authored tier (`directives/theses/<slug>.md`, with user confirmation via a PR-style diff) or only to the generated tier (`input/`)? **Leaning:** generated tier only; authored edits are user-driven in Obsidian or via git. Needed by M1.
 3. **Channel authentication.** How does the Telegram/Discord bot verify "this inbound ingest request is from the profile owner"? **Leaning:** per-user token stored in profile, bot checks sender ID. Needed by M2.
 4. **Alerting granularity.** Should alerts (prediction market moves, earnings surprises) push immediately or batch into the next brief? **Leaning:** configurable per-topic in profile; default batch, opt-in to immediate push. Needed by M3.
 5. **Multi-user / multi-device model.** Single-vault-per-daemon is clear, but is a shared team vault in R2 allowed (multiple daemons pulling the same `identity.name`)? **Leaning:** single-profile per daemon; two devices for the same user is fine (local-wins conflict policy); team mode is N daemons with N vaults and cross-links by agreement. Needed by M4.

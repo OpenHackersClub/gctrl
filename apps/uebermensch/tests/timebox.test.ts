@@ -274,7 +274,7 @@ describe("FileSystemTimebox — plan/apply/list/get", () => {
 
   beforeEach(async () => {
     vaultDir = await mkdtemp(join(tmpdir(), "uber-timebox-"))
-    await mkdir(join(vaultDir, "calendar"), { recursive: true })
+    await mkdir(join(vaultDir, "action", "events"), { recursive: true })
   })
 
   it("plan returns a dry-run proposal without writing", async () => {
@@ -297,7 +297,7 @@ describe("FileSystemTimebox — plan/apply/list/get", () => {
     )
     expect(proposal.sessions.length).toBeGreaterThan(0)
     // Nothing on disk yet — confirm timeboxes/ wasn't created
-    const entries = await readdir(join(vaultDir, "calendar"), { withFileTypes: true })
+    const entries = await readdir(join(vaultDir, "action", "events"), { withFileTypes: true })
     expect(entries.find((e) => e.name === "timeboxes")).toBeUndefined()
   })
 
@@ -325,7 +325,7 @@ describe("FileSystemTimebox — plan/apply/list/get", () => {
 
     // Parent file exists with valid frontmatter
     const parentRaw = await readFile(
-      join(vaultDir, "calendar/timeboxes/constitutional-ai-paper.md"),
+      join(vaultDir, "action/events/timeboxes/constitutional-ai-paper.md"),
       "utf8",
     )
     const parsed = matter(parentRaw)
@@ -335,7 +335,7 @@ describe("FileSystemTimebox — plan/apply/list/get", () => {
 
     // Each child file has timebox + step + step_units
     for (const childSlug of result.childSlugs) {
-      const raw = await readFile(join(vaultDir, "calendar", `${childSlug}.md`), "utf8")
+      const raw = await readFile(join(vaultDir, "action", "events", `${childSlug}.md`), "utf8")
       const cm = matter(raw)
       const data = cm.data as { timebox: string; step: number; step_total: number; step_units: string; kind: string }
       expect(data.timebox).toBe("constitutional-ai-paper")
@@ -426,7 +426,7 @@ describe("FileSystemTimebox — complete / skip / setStatus", () => {
 
   beforeEach(async () => {
     vaultDir = await mkdtemp(join(tmpdir(), "uber-timebox-"))
-    await mkdir(join(vaultDir, "calendar"), { recursive: true })
+    await mkdir(join(vaultDir, "action", "events"), { recursive: true })
   })
 
   const setupLayer = () =>
@@ -452,7 +452,7 @@ describe("FileSystemTimebox — complete / skip / setStatus", () => {
 
     // Find step 1's step_units to know what we expect to credit
     const firstChildRaw = await readFile(
-      join(vaultDir, "calendar", `${applied.childSlugs[0]}.md`),
+      join(vaultDir, "action", "events", `${applied.childSlugs[0]}.md`),
       "utf8",
     )
     const firstChildData = matter(firstChildRaw).data as { step_units: string }
@@ -511,7 +511,7 @@ describe("FileSystemTimebox — complete / skip / setStatus", () => {
 
     // First child file must be marked cancelled
     const childRaw = await readFile(
-      join(vaultDir, "calendar", `${applied.childSlugs[0]}.md`),
+      join(vaultDir, "action", "events", `${applied.childSlugs[0]}.md`),
       "utf8",
     )
     expect((matter(childRaw).data as { status: string }).status).toBe("cancelled")
@@ -561,7 +561,7 @@ describe("FileSystemTimebox — replan", () => {
 
   beforeEach(async () => {
     vaultDir = await mkdtemp(join(tmpdir(), "uber-timebox-"))
-    await mkdir(join(vaultDir, "calendar"), { recursive: true })
+    await mkdir(join(vaultDir, "action", "events"), { recursive: true })
   })
 
   it("replan supersedes pending children and writes a new schedule", async () => {
@@ -598,7 +598,7 @@ describe("FileSystemTimebox — replan", () => {
 
     // Spot-check: first original child file's status is now superseded
     const supersededRaw = await readFile(
-      join(vaultDir, "calendar", `${applied.childSlugs[0]}.md`),
+      join(vaultDir, "action", "events", `${applied.childSlugs[0]}.md`),
       "utf8",
     )
     expect((matter(supersededRaw).data as { status: string }).status).toBe("superseded")
@@ -608,7 +608,7 @@ describe("FileSystemTimebox — replan", () => {
 describe("FileSystemTimebox — addEvent", () => {
   it("appends a child event and increments step_total of new entries", async () => {
     const vaultDir = await mkdtemp(join(tmpdir(), "uber-timebox-"))
-    await mkdir(join(vaultDir, "calendar"), { recursive: true })
+    await mkdir(join(vaultDir, "action", "events"), { recursive: true })
     const layer = FileSystemTimeboxLive({
       vaultDir,
       tz: "UTC",

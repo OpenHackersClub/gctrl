@@ -182,7 +182,7 @@ describe("HttpIngest adapter", () => {
     if (!Exit.isSuccess(exit)) return
     const res = exit.value
     expect(res.slug).toBe("2026-04-20--example-com--big-story")
-    expect(res.relPath).toBe("wiki/sources/2026-04-20--example-com--big-story.md")
+    expect(res.relPath).toBe("input/raw/2026-04-20--example-com--big-story.md")
     expect(res.title).toBe("Big Story About AI")
     expect(res.contentHash).toMatch(/^sha256:[0-9a-f]{64}$/)
     expect([...res.topicsMatched].sort()).toEqual(["ai", "markets"])

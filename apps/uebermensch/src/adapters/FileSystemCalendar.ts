@@ -5,6 +5,7 @@ import { Effect, Either, Layer, Schema } from "effect"
 import matter from "gray-matter"
 import { VaultError, vaultIo } from "../errors.js"
 import { matchesFilter, sortByStart } from "../lib/calendar-filter.js"
+import { ACTION_EVENTS_DIR } from "../lib/vault-paths.js"
 import { EventFrontmatter } from "../schemas.js"
 import {
   CalendarService,
@@ -13,7 +14,13 @@ import {
   type EventStamp,
 } from "../services/CalendarService.js"
 
-const CALENDAR_DIR = "calendar"
+// All calendar events live under a single root: action/events/. Authored
+// events sit at the top level; driver-pulled events live under
+// action/events/generated/. Both feed the same uber_calendar index. Recurring
+// rules live under action/events/recurring/ and are skipped by the loader.
+const CALENDAR_ROOT = ACTION_EVENTS_DIR
+// `add` only writes user-authored events (top-level, not generated/).
+const AUTHORED_CALENDAR_DIR = ACTION_EVENTS_DIR
 const RECURRING_SUBDIR = "recurring" // deferred — see calendar.md open question #2
 const GENERATOR = "gctrl-uber-cli"
 
@@ -51,7 +58,7 @@ const failVault = (
 type WalkEntry = { abs: string; rel: string }
 
 const walkCalendar = async (root: string): Promise<ReadonlyArray<WalkEntry>> => {
-  const start = join(root, CALENDAR_DIR)
+  const start = join(root, CALENDAR_ROOT)
   const out: Array<WalkEntry> = []
   let entries: Array<import("node:fs").Dirent>
   try {
@@ -198,7 +205,7 @@ export const FileSystemCalendarLive = (vaultDir: string) =>
         if (found) return found
         return yield* failVault(
           `event not found: ${slug}`,
-          join(vaultDir, CALENDAR_DIR),
+          join(vaultDir, AUTHORED_CALENDAR_DIR),
           "not_found",
         )
       }),
@@ -206,7 +213,7 @@ export const FileSystemCalendarLive = (vaultDir: string) =>
     add: (input: EventAddInput) =>
       Effect.gen(function* () {
         const all = yield* loadAll(vaultDir)
-        const calRoot = join(vaultDir, CALENDAR_DIR)
+        const calRoot = join(vaultDir, AUTHORED_CALENDAR_DIR)
         const slug = input.slug ?? slugify(input.title)
         if (slug.length === 0) {
           return yield* failVault(
@@ -227,7 +234,7 @@ export const FileSystemCalendarLive = (vaultDir: string) =>
           onLeft: (msg) => failVault(msg, calRoot, "parse_failure"),
           onRight: (v) => Effect.succeed(v),
         })
-        const relPath = `${CALENDAR_DIR}/${datePrefix}--${slug}.md`
+        const relPath = `${AUTHORED_CALENDAR_DIR}/${datePrefix}--${slug}.md`
         const absPath = join(vaultDir, relPath)
         const body = (input.body ?? "").trimEnd()
         const now = new Date().toISOString()
@@ -276,7 +283,7 @@ export const FileSystemCalendarLive = (vaultDir: string) =>
         if (!target) {
           return yield* failVault(
             `event not found: ${slug}`,
-            join(vaultDir, CALENDAR_DIR),
+            join(vaultDir, AUTHORED_CALENDAR_DIR),
             "not_found",
           )
         }

@@ -14,7 +14,7 @@ const TEST_ANTHROPIC_MODEL = "claude-opus-4-7"
 const TEST_ANTHROPIC_SUMMARY_MODEL = "claude-haiku-4-5-20251001"
 
 const page = (stem: string, body: string, topics: ReadonlyArray<string> = []): WikiPage => ({
-  relPath: `wiki/sources/${stem}.md`,
+  relPath: `input/raw/${stem}.md`,
   stem,
   frontmatter: { page_type: "source", slug: stem, topics },
   body,

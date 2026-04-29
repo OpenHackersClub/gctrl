@@ -130,7 +130,7 @@ Every Monday 06:00, `uber-evaluator` produces a weekly review:
 - Lowest-scored briefs + dominant failure modes from `note`s
 - Recommendations (prompt tweaks, topic weight changes, source additions)
 
-Delivered via normal channels; persisted as a synthesis page `wiki/synthesis/eval-review-<week>.md`.
+Delivered via normal channels; persisted as a synthesis page `input/wiki/synthesis/eval-review-<week>.md`.
 
 ## Regression Detection
 
@@ -289,9 +289,9 @@ Pipeline:
 2. Run curator twice with the two prompt hashes.
 3. Run judge over each result.
 4. Write scores with `target_type=prompt_version, target_id=<hash>, name=<dimension>`.
-5. Produce a comparison report (`wiki/synthesis/prompt-ab-<date>.md`) — stores the setup, scores, and winner.
+5. Produce a comparison report (`input/wiki/synthesis/prompt-ab-<date>.md`) — stores the setup, scores, and winner.
 
-A winning prompt gets promoted via `gctrl uber prompt promote <hash>` → writes the prompt to `personas/<persona>.md` in the profile. This is the one place persona prompts move from hashes to files automatically — and it's user-initiated.
+A winning prompt gets promoted via `gctrl uber prompt promote <hash>` → writes the prompt to `directives/personas/<persona>.md` in the profile. This is the one place persona prompts move from hashes to files automatically — and it's user-initiated.
 
 ## Delivery Health
 

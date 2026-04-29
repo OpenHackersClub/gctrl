@@ -9,6 +9,7 @@ import { Effect, Layer, Schema } from "effect"
 import matter from "gray-matter"
 import { VaultError, vaultIo } from "../errors.js"
 import { plan as runPlanner, composeIsoInTz } from "../lib/timebox-planner.js"
+import { ACTION_EVENTS_DIR } from "../lib/vault-paths.js"
 import {
   EventFrontmatter,
   TimeboxFrontmatter,
@@ -25,7 +26,7 @@ import {
 } from "../services/TimeboxService.js"
 import type { CalendarEvent } from "../services/CalendarService.js"
 
-const CALENDAR_DIR = "calendar"
+const CALENDAR_DIR = ACTION_EVENTS_DIR
 const TIMEBOXES_SUBDIR = "timeboxes"
 const RECURRING_SUBDIR = "recurring"
 const GENERATOR = "gctrl-uber-cli"

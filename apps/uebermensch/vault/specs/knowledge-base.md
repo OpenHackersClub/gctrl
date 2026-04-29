@@ -7,7 +7,7 @@
 ## Design Principles
 
 1. **Investment as a wiki problem.** A thesis is not a row in a database — it's a *living page* linked to companies, sectors, sources, and future synthesis updates. Everything else flows from this.
-2. **One thesis, one page.** Each open thesis is one canonical page under `wiki/theses/`. Updates append synthesis pages linked back; the thesis page itself stays terse.
+2. **One thesis, one page.** Each open thesis is one canonical page under `directives/theses/` (authored tier). Updates append synthesis pages under `input/wiki/synthesis/` linked back; the thesis page itself stays terse.
 3. **Every claim cites.** A brief item MAY make no claim that's not backed by a `[[wikilink]]` to a source, entity, or synthesis page. The renderer enforces this.
 4. **Sources are first-class.** Every external URL that informs a brief becomes a `Source` page. No "drive-by citations" — if it's worth citing, it's worth summarising.
 5. **Kernel owns the graph.** Uebermensch adds schema (page types + lint), not storage.
@@ -18,72 +18,76 @@ Extends `WikiPageType` from [kernel domain-model § 2](../../../../vault/specs/a
 
 | Type | Kernel variant | Folder | Role | Written by |
 |------|---------------|--------|------|-----------|
-| **Index** | `Index` | `wiki/index.md` | Catalog of all pages | `uber-ingest` LKM pass |
-| **Log** | `Log` | `wiki/log.md` | Chronological audit | `uber-ingest` LKM pass |
-| **Thesis** | `Thesis` *(new)* | `wiki/theses/<slug>.md` | One open thesis | User (canonical); LLM (updates to body-below-frontmatter disallowed by default) |
-| **Company** | `Entity` (role=company) | `wiki/entities/companies/<slug>.md` | One company — private or public | `uber-ingest` |
-| **Person** | `Entity` (role=person) | `wiki/entities/people/<slug>.md` | One person — founder, analyst, operator | `uber-ingest` |
-| **Org** | `Entity` (role=org) | `wiki/entities/orgs/<slug>.md` | One non-company org (regulator, lab, fund) | `uber-ingest` |
-| **Sector** | `Topic` (role=sector) | `wiki/topics/sectors/<slug>.md` | One sector (AI infra, fintech, ...) | `uber-ingest` |
-| **Macro-theme** | `Topic` (role=macro) | `wiki/topics/macro/<slug>.md` | One macro theme (rates, election cycle, ...) | `uber-ingest` |
-| **Market** | `Topic` (role=market) | `wiki/topics/markets/<slug>.md` | One tradable instrument or prediction market | `driver-markets` ingest |
-| **Source** | `Source` | `wiki/sources/<yyyy-mm-dd>--<slug>.md` | One external URL summary | `uber-ingest` |
-| **Synthesis** | `Synthesis` | `wiki/synthesis/<slug>.md` | Cross-cutting analysis | `uber-deepdive` |
-| **Question** | `Question` | `wiki/questions/<slug>.md` | Filed query result worth keeping | `uber-curator` / user |
+| **Index** | `Index` | `input/wiki/index.md` | Catalog of all pages | `uber-ingest` LKM pass |
+| **Log** | `Log` | `input/wiki/log.md` | Chronological audit | `uber-ingest` LKM pass |
+| **Thesis** | `Thesis` *(new)* | `directives/theses/<slug>.md` | One open thesis | User (canonical); LLM (updates to body-below-frontmatter disallowed by default) |
+| **Company** | `Entity` (role=company) | `input/wiki/entities/companies/<slug>.md` | One company — private or public | `uber-ingest` |
+| **Person** | `Entity` (role=person) | `input/wiki/entities/people/<slug>.md` | One person — founder, analyst, operator | `uber-ingest` |
+| **Org** | `Entity` (role=org) | `input/wiki/entities/orgs/<slug>.md` | One non-company org (regulator, lab, fund) | `uber-ingest` |
+| **Sector** | `Topic` (role=sector) | `input/wiki/topics/sectors/<slug>.md` | One sector (AI infra, fintech, ...) | `uber-ingest` |
+| **Macro-theme** | `Topic` (role=macro) | `input/wiki/topics/macro/<slug>.md` | One macro theme (rates, election cycle, ...) | `uber-ingest` |
+| **Market** | `Topic` (role=market) | `input/wiki/topics/markets/<slug>.md` | One tradable instrument or prediction market | `driver-markets` ingest |
+| **Source** | `Source` | `input/raw/<yyyy-mm-dd>--<slug>.md` | One external URL summary (raw input — unfiltered content of interest) | `uber-ingest` |
+| **Synthesis** | `Synthesis` | `input/wiki/synthesis/<slug>.md` | Cross-cutting analysis | `uber-deepdive` |
+| **Question** | `Question` | `input/wiki/questions/<slug>.md` | Filed query result worth keeping | `uber-curator` / user |
 
 The `role` refinement lives in frontmatter (`entity_role: company|person|org`, `topic_role: sector|macro|market`) — the kernel `WikiPageType` stays as-is.
 
 ## Filesystem Layout
 
-The wiki is the **generated tier** of the vault (see [profile.md § Vault Layout](profile.md#vault-layout)). It lives directly under `$UBER_VAULT_DIR/wiki/` — the same directory the user opens in Obsidian.
+The wiki is one of the **generated subtrees** of the vault (see [profile.md § Vault Layout](profile.md#vault-layout)). It lives at `$UBER_VAULT_DIR/input/wiki/` — nested under `input/` (the CoS-curated reading root). Source pages — raw URL summaries before they roll up into wiki pages — live at `$UBER_VAULT_DIR/input/raw/`. Theses (the user's research stance) live in `$UBER_VAULT_DIR/directives/theses/`.
 
 ```
 $UBER_VAULT_DIR/
-  theses/                             # authored tier — NOT under wiki/ (user owns theses)
-    llm-tooling-consolidation.md
-    prediction-market-liquidity.md
-  wiki/                               # generated tier — LLM-maintained
-    index.md
-    log.md
-    entities/
-      companies/
-        anthropic.md
-        cursor.md
-        kalshi.md
-      people/
-        dario-amodei.md
-        andrej-karpathy.md
-      orgs/
-        fasb.md
-        sec.md
-    topics/
-      sectors/
-        ai-infra.md
-        prediction-markets.md
-      macro/
-        us-rates-path.md
-      markets/
-        kalshi-inxw-26.md
-        poly-us-2024.md
-    sources/
+  directives/
+    theses/                           # authored tier — user owns theses (NOT under input/wiki/)
+      llm-tooling-consolidation.md
+      prediction-market-liquidity.md
+  input/
+    raw/                              # generated — driver-fetched / manually-pulled URL summaries
       2026-04-18--anthropic-news-claude-opus-4-7.md
       2026-04-17--sec-10k-msft-q3.md
-    synthesis/
-      thesis-llm-tooling-update-2026-04-15.md
-    questions/
-      how-do-prediction-market-makers-profit.md
+    wiki/                             # generated — LLM-maintained knowledge graph
+      index.md
+      log.md
+      entities/
+        companies/
+          anthropic.md
+          cursor.md
+          kalshi.md
+        people/
+          dario-amodei.md
+          andrej-karpathy.md
+        orgs/
+          fasb.md
+          sec.md
+      topics/
+        sectors/
+          ai-infra.md
+          prediction-markets.md
+        macro/
+          us-rates-path.md
+        markets/
+          kalshi-inxw-26.md
+          poly-us-2024.md
+      synthesis/
+        thesis-llm-tooling-update-2026-04-15.md
+      questions/
+        how-do-prediction-market-makers-profit.md
 ```
 
-**Thesis location note:** theses live at vault root under `theses/` (authored tier — the user writes them). The wiki has a `synthesis/` subtree for LLM-authored updates that *link to* thesis pages. A thesis's canonical page is NOT inside `wiki/`.
+**Thesis location note:** theses live under `directives/theses/` (authored tier — the user writes them). The wiki has a `synthesis/` subtree under `input/wiki/synthesis/` for LLM-authored updates that *link to* thesis pages. A thesis's canonical page is NOT inside `input/wiki/`.
+
+**Source location note:** raw source pages live under `input/raw/` (one file per ingested URL). They feed the curator's candidate set; entity/topic/synthesis pages in `input/wiki/` aggregate signal across many sources. A source page is NOT inside `input/wiki/`.
 
 **Naming conventions:**
 
-- Sources: `YYYY-MM-DD--<domain-kebab>.md` — sortable by ingest date.
-- Synthesis updates to a thesis: `thesis-<slug>-update-<YYYY-MM-DD>.md` — parent link back to the thesis page.
+- Sources: `input/raw/YYYY-MM-DD--<domain-kebab>.md` — sortable by ingest date.
+- Synthesis updates to a thesis: `input/wiki/synthesis/thesis-<slug>-update-<YYYY-MM-DD>.md` — parent link back to the thesis page.
 - All other pages: `<kebab-case-slug>.md` (stem = slug).
 - Filenames are Obsidian-safe — no `:`, `?`, `*`, `<`, `>`, `|`, `"`, `\`, `/` characters.
 
-**Kernel integration:** `gctrl-kb` is configured with `context_root = $UBER_VAULT_DIR` and `wiki_subpath = "wiki"` when running under the Uebermensch workspace. The kernel writes/reads wiki pages at this path; no symlinks or duplicate copies.
+**Kernel integration:** `gctrl-kb` is configured with `context_root = $UBER_VAULT_DIR`, `wiki_subpath = "input/wiki"`, and `raw_subpath = "input/raw"` when running under the Uebermensch workspace. The kernel writes/reads wiki pages and raw source pages at these paths; no symlinks or duplicate copies.
 
 ## Frontmatter Schemas
 
@@ -229,10 +233,10 @@ Inherits [kernel knowledgebase § Wikilink Format](../../../../vault/specs/archi
 Rules:
 
 1. **Every link is `[[slug]]` or `[[slug|display text]]`** — the pipe form supplies a rendered label without changing the target.
-2. **Slugs are globally unique within the vault** — `anthropic` is one page, `anthropic.md`, wherever it lives under the vault. The ingest pipeline rejects a new page whose slug collides.
+2. **Slugs are globally unique across all four roots** — `anthropic` is one page, `anthropic.md`, regardless of whether the file lives under `directives/`, `input/`, `output/`, or `action/`. The ingest pipeline rejects a new page whose slug collides.
 3. **Page type is derived from the target's frontmatter `page_type`**, not from the link syntax. The renderer knows a link points at a thesis because the target file's frontmatter says so.
 4. **Brief items MUST cite via `[[slug]]`** — not via raw URL. The renderer converts to app deep links / bare URLs at channel-send time.
-5. **Cross-folder links resolve by stem** — `[[anthropic]]` resolves to `wiki/entities/companies/anthropic.md` regardless of where the linking file lives; Obsidian's resolver does the same.
+5. **Cross-folder links resolve by stem** — `[[anthropic]]` resolves to `input/wiki/entities/companies/anthropic.md` regardless of where the linking file lives; Obsidian's resolver does the same.
 6. **No relative paths in links** — `[[../wiki/entities/companies/anthropic]]` breaks as soon as a file moves. Use bare stems.
 
 The curator prompt is instructed to cite with bare slugs only; the renderer's citation verifier rejects any link containing `:`, `/`, or `\`.
@@ -344,7 +348,7 @@ Runs monthly per thesis (or on-demand via `gctrl uber deepdive <slug>`).
    - `parent: <thesis-slug>`
    - `supports:` / `weakens:` links to the thesis based on the analysis.
    - Cites ≥ 3 sources newly collected since the last update.
-3. Updates `theses/<slug>.md` frontmatter: `last_reviewed_at: <now>`.
+3. Updates `directives/theses/<slug>.md` frontmatter: `last_reviewed_at: <now>`.
 4. Writes `uber_alerts` if `weakens:` count > `supports:` count AND conviction was `high` — prompts the user to re-review.
 
 The deepdive MUST NOT edit the thesis body (body-below-frontmatter). Only the user may edit thesis content directly; the LLM contributes only via linked synthesis pages.

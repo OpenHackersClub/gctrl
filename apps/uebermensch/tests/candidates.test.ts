@@ -5,7 +5,7 @@ import type { WikiPage } from "../src/services/VaultService.js"
 const page = (
   overrides: Partial<WikiPage> & { frontmatter?: Record<string, unknown> },
 ): WikiPage => ({
-  relPath: "wiki/sources/stub.md",
+  relPath: "input/raw/stub.md",
   stem: overrides.stem ?? "stub",
   frontmatter: {
     page_type: "source",

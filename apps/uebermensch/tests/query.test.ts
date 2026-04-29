@@ -34,25 +34,25 @@ describe("prompts (user research queries)", () => {
     vaultDir = await mkdtemp(join(tmpdir(), "uber-vault-prompts-"))
     await seedFile(
       vaultDir,
-      "prompts/what-is-claudes-real-moat.md",
+      "directives/prompts/what-is-claudes-real-moat.md",
       'slug: what-is-claudes-real-moat\ntitle: "What is Claude\'s real moat?"\ntopics: [ai-dev-workflows]\n',
       "Some half-formed thoughts:\n\n- Tooling ergonomics?\n- Distribution via Claude Code?",
     )
     await seedFile(
       vaultDir,
-      "prompts/no-frontmatter-question.md",
+      "directives/prompts/no-frontmatter-question.md",
       "",
       "What does the wiki say about prediction markets?",
     )
     await seedFile(
       vaultDir,
-      "wiki/sources/2026-04-22--anthropic-claude-code.md",
+      "input/raw/2026-04-22--anthropic-claude-code.md",
       "page_type: source\nslug: 2026-04-22--anthropic-claude-code\ntitle: Anthropic Claude Code launch\ntopics: [ai-dev-workflows]\n",
       "Anthropic launched Claude Code, a CLI agent.",
     )
     await seedFile(
       vaultDir,
-      "wiki/sources/2026-04-20--kalshi-volume.md",
+      "input/raw/2026-04-20--kalshi-volume.md",
       "page_type: source\nslug: 2026-04-20--kalshi-volume\ntitle: Kalshi weekly volume\ntopics: [prediction-market]\n",
       "Kalshi reported $42M weekly volume.",
     )
@@ -75,7 +75,7 @@ describe("prompts (user research queries)", () => {
     expect(noFm?.topics).toEqual([])
   })
 
-  it("processes a pending prompt: writes wiki/research/<slug>.md and stamps frontmatter", async () => {
+  it("processes a pending prompt: writes input/reports/<slug>.md and stamps frontmatter", async () => {
     const layer = Layer.mergeAll(
       FileSystemQueryLive(vaultDir),
       FileSystemVaultLive(vaultDir),
@@ -111,7 +111,7 @@ describe("prompts (user research queries)", () => {
         })
         expect(res.answerMd).toContain("[[2026-04-22--anthropic-claude-code]]")
         const written = yield* v.writeResearch(prompt.slug, res.answerMd)
-        expect(written.relPath).toBe("wiki/research/what-is-claudes-real-moat.md")
+        expect(written.relPath).toBe("input/reports/what-is-claudes-real-moat.md")
         yield* q.stamp(prompt.slug, {
           status: "processed",
           output: written.relPath,
@@ -124,15 +124,15 @@ describe("prompts (user research queries)", () => {
       }).pipe(Effect.provide(layer)),
     )
 
-    const writtenAbs = join(vaultDir, "wiki", "research", "what-is-claudes-real-moat.md")
+    const writtenAbs = join(vaultDir, "input", "reports", "what-is-claudes-real-moat.md")
     expect(await fileExists(writtenAbs)).toBe(true)
     const written = await readFile(writtenAbs, "utf8")
     expect(written).toContain("Stub research consolidation")
 
-    const promptAbs = join(vaultDir, "prompts", "what-is-claudes-real-moat.md")
+    const promptAbs = join(vaultDir, "directives", "prompts", "what-is-claudes-real-moat.md")
     const updated = matter(await readFile(promptAbs, "utf8"))
     expect(updated.data.status).toBe("processed")
-    expect(updated.data.output).toBe("wiki/research/what-is-claudes-real-moat.md")
+    expect(updated.data.output).toBe("input/reports/what-is-claudes-real-moat.md")
     expect(updated.data.processed_at).toBe("2026-04-25T08:14:11Z")
     expect(updated.data.content_hash).toMatch(/^sha256:/)
     expect(updated.data.prompt_hash).toMatch(/^sha256:/)
@@ -166,7 +166,7 @@ describe("prompts (user research queries)", () => {
     expect(result.body.trim()).toBe("What does the wiki say about prediction markets?")
   })
 
-  it("returns empty list when prompts/ directory does not exist", async () => {
+  it("returns empty list when directives/prompts/ directory does not exist", async () => {
     const empty = await mkdtemp(join(tmpdir(), "uber-vault-empty-"))
     const result = await Effect.runPromise(
       Effect.gen(function* () {

@@ -28,11 +28,11 @@ process.stdin.on('end', () => {
 }
 
 const seedVault = async (dir: string) => {
-  await mkdir(join(dir, "reports"), { recursive: true })
-  await mkdir(join(dir, "wiki", "sources"), { recursive: true })
-  await writeFile(join(dir, "reports", "2026-W17.md"), "# Weekly\n", "utf8")
-  await writeFile(join(dir, "wiki", "sources", "a.md"), "# A\n", "utf8")
-  await writeFile(join(dir, "wiki", "sources", "b.md"), "# B\n", "utf8")
+  await mkdir(join(dir, "input", "reports"), { recursive: true })
+  await mkdir(join(dir, "input", "raw"), { recursive: true })
+  await writeFile(join(dir, "input", "reports", "2026-W17.md"), "# Weekly\n", "utf8")
+  await writeFile(join(dir, "input", "raw", "a.md"), "# A\n", "utf8")
+  await writeFile(join(dir, "input", "raw", "b.md"), "# B\n", "utf8")
 }
 
 const runSync = (vaultDir: string, wranglerCmd: ReadonlyArray<string>, opts: { force?: boolean; dryRun?: boolean } = {}) =>
@@ -41,7 +41,7 @@ const runSync = (vaultDir: string, wranglerCmd: ReadonlyArray<string>, opts: { f
       const sync = yield* SyncService
       return yield* sync.run({
         vaultDir,
-        prefixes: ["reports", "wiki/sources"],
+        prefixes: ["input/reports", "input/raw"],
         dryRun: opts.dryRun ?? false,
         force: opts.force ?? false,
       })
@@ -97,7 +97,7 @@ describe("R2 sync dedup via local manifest", () => {
 
     await runSync(dir, cmd) // seed manifest
 
-    await writeFile(join(dir, "reports", "2026-W17.md"), "# Weekly — edited\n", "utf8")
+    await writeFile(join(dir, "input", "reports", "2026-W17.md"), "# Weekly — edited\n", "utf8")
 
     const second = await runSync(dir, cmd)
     expect(second.uploaded).toBe(1)

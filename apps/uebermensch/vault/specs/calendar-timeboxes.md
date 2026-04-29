@@ -1,6 +1,6 @@
 # Uebermensch — Calendar Timeboxes
 
-> A Timebox is a parent vault file representing a practice plan: a goal that needs scheduled, repeated time-blocks toward a measurable outcome by a deadline. Children are ordinary calendar events carrying a `timebox:` frontmatter field; they live in the existing `calendar/` paths and reuse all calendar filtering, reminders, and ICS export for free.
+> A Timebox is a parent vault file representing a practice plan: a goal that needs scheduled, repeated time-blocks toward a measurable outcome by a deadline. Children are ordinary calendar events carrying a `timebox:` frontmatter field; they live in the existing `action/events/` paths and reuse all calendar filtering, reminders, and ICS export for free.
 >
 > Related: [calendar.md](calendar.md) (sibling spec; event shape and storage this extends), [profile.md § working_windows](profile.md#profile-schema-additions) (working-window config the planner reads), [briefing-pipeline.md](briefing-pipeline.md) (how today's timebox events surface in the brief), [domain-model.md](domain-model.md) (Effect-TS port/service pattern), [architecture.md](architecture.md) (L4 layering rules — never open DuckDB, never call external APIs directly).
 
@@ -19,7 +19,7 @@ A Timebox is the vault-first answer: one parent file captures the goal; the plan
 
 ## Principles
 
-1. **Markdown is the source of truth.** The parent file (`calendar/timeboxes/<slug>.md`) and all child events (`calendar/<date>--<slug>.md`) are the authoritative records. SQLite (`uber_timeboxes`, new columns on `uber_calendar`) is a rebuildable index. Deleting SQLite MUST be recoverable by re-running `gctrl uber timebox reindex`.
+1. **Markdown is the source of truth.** The parent file (`action/events/timeboxes/<slug>.md`) and all child events (`action/events/<date>--<slug>.md`) are the authoritative records. SQLite (`uber_timeboxes`, new columns on `uber_calendar`) is a rebuildable index. Deleting SQLite MUST be recoverable by re-running `gctrl uber timebox reindex`.
 2. **One shape across disciplines.** There is no `kind: study` vs. `kind: training` split. Every timebox is `kind: practice`, parameterised by `discipline:`. The planner only needs `unit` + `session_minutes`; `discipline` is for display and downstream filtering.
 3. **Children are first-class calendar events.** Timebox child events are ordinary entries in `uber_calendar`. They appear in calendar views, fire reminders, export to ICS, and mirror to Google Calendar exactly like any other event. No separate table; no special folder.
 4. **Planner is deterministic by default, LLM-assisted on demand.** `gctrl uber timebox plan` slices work with even arithmetic and produces a dry-run. `--llm` hands goal + profile working-windows to `driver-llm`; proposals are validated and presented before any write. Nothing is committed without `--apply`.
@@ -31,21 +31,20 @@ A Timebox is the vault-first answer: one parent file captures the goal; the plan
 
 ```
 $UBER_VAULT_DIR/
-├── calendar/
-│   │  ─── Authored (git-tracked) ───
-│   ├── timeboxes/                                   # NEW — parent files
-│   │   ├── sub-3-berlin.md                          # kind: practice, discipline: running
-│   │   └── constitutional-ai-reading.md             # kind: practice, discipline: reading
-│   │
-│   ├── 2026-06-02--sub-3-berlin.md                  # child event; timebox: sub-3-berlin
-│   ├── 2026-06-04--sub-3-berlin.md                  # child event; step 2/52
-│   ├── 2026-04-30--constitutional-ai-reading.md     # child event; timebox: constitutional-ai-reading
-│   └── ...
-│
-└── calendar/generated/                              # driver-pulled events (unchanged)
+└── action/
+    └── events/                                          # time-bound events (git-tracked at top level)
+        ├── timeboxes/                                   # NEW — parent files
+        │   ├── sub-3-berlin.md                          # kind: practice, discipline: running
+        │   └── constitutional-ai-reading.md             # kind: practice, discipline: reading
+        │
+        ├── 2026-06-02--sub-3-berlin.md                  # child event; timebox: sub-3-berlin
+        ├── 2026-06-04--sub-3-berlin.md                  # child event; step 2/52
+        ├── 2026-04-30--constitutional-ai-reading.md     # child event; timebox: constitutional-ai-reading
+        ├── ...
+        └── generated/                                   # driver-pulled events (unchanged; gitignored)
 ```
 
-`calendar/timeboxes/` is a new authored-tier subdirectory — git-tracked, Obsidian-mountable. Child events live directly under `calendar/` with the existing `<date>--<slug>.md` naming, distinguished from one-off events only by the presence of `timebox:` in frontmatter. The `<slug>` portion of child filenames repeats the timebox slug for browsability; a numeric suffix disambiguates same-day sessions (`2026-06-02--sub-3-berlin-a.md`, `-b.md`).
+`action/events/timeboxes/` is a new authored-tier subdirectory — git-tracked, Obsidian-mountable. Child events live directly under `action/events/` with the existing `<date>--<slug>.md` naming, distinguished from one-off events only by the presence of `timebox:` in frontmatter. The `<slug>` portion of child filenames repeats the timebox slug for browsability; a numeric suffix disambiguates same-day sessions (`2026-06-02--sub-3-berlin-a.md`, `-b.md`).
 
 ## Timebox Frontmatter
 
@@ -122,7 +121,7 @@ content_hash: sha256:…
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `slug` | yes | kebab-case; unique within `calendar/timeboxes/`; used as filename stem |
+| `slug` | yes | kebab-case; unique within `action/events/timeboxes/`; used as filename stem |
 | `kind` | yes | always `practice` |
 | `discipline` | yes | open string; see § Discipline Taxonomy |
 | `title` | yes | display string |
@@ -168,7 +167,7 @@ New fields:
 
 | Field | Required on child | Notes |
 |-------|-------------------|-------|
-| `timebox` | yes (if child) | slug matching a `calendar/timeboxes/<slug>.md` file |
+| `timebox` | yes (if child) | slug matching a `action/events/timeboxes/<slug>.md` file |
 | `step` | yes (if child) | integer ≥ 1; `step <= step_total` enforced by validation |
 | `step_total` | yes (if child) | total sessions in the current plan at write time |
 | `step_units` | yes (if child) | free-form string describing what this session covers (e.g., `"pages 30–40"`, `"12km easy"`, `"episode 3 outline"`) |
@@ -185,7 +184,7 @@ New table; kernel daemon is the single writer.
 CREATE TABLE uber_timeboxes (
   id                  TEXT PRIMARY KEY,           -- "tb_" || ulid
   slug                TEXT NOT NULL UNIQUE,
-  vault_path          TEXT NOT NULL UNIQUE,        -- e.g. "calendar/timeboxes/sub-3-berlin.md"
+  vault_path          TEXT NOT NULL UNIQUE,        -- e.g. "action/events/timeboxes/sub-3-berlin.md"
   kind                TEXT NOT NULL DEFAULT 'practice',
   discipline          TEXT NOT NULL,
   title               TEXT NOT NULL,
@@ -229,7 +228,7 @@ The planner is invoked by `gctrl uber timebox plan` and `gctrl uber timebox repl
 
 - Timebox frontmatter (`total`, `done`, `deadline`, `session_minutes`, `sessions_per_week`, `taper_days_before_deadline`)
 - `profile.timeboxes.working_windows` — per-weekday time windows within which sessions may be scheduled
-- Existing `calendar/` events for the target user (read via `KbPort`) — used to avoid double-booking
+- Existing `action/events/` for the target user (read via `KbPort`) — used to avoid double-booking
 - For re-plan: which child events the user has manually edited (these are "pinned" — excluded from redistribution)
 
 ### Default (deterministic) algorithm
@@ -429,15 +428,15 @@ All links use bare `[[slug]]` wikilinks — no typed prefixes (`[[paper:constitu
 
 `gctrl uber profile validate` extends with timebox checks — all must pass for the daemon to start:
 
-1. Every file under `calendar/timeboxes/` parses as `Timebox` schema (all required fields present; no unknown fields that would fail the decoder).
+1. Every file under `action/events/timeboxes/` parses as `Timebox` schema (all required fields present; no unknown fields that would fail the decoder).
 2. Every child event with `timebox:` set has `step` and `step_total` set, and `step <= step_total`.
 3. Sum of completed children's numeric units for a given timebox does not exceed `total`. (Derived from `step_units` numeric prefix where parseable; skipped for free-form strings.)
 4. `discipline` is a non-empty string matching `[a-z][a-z0-9-]*`.
 5. `unit` is a non-empty string.
 6. `deadline` parses as ISO 8601 date; at create time, must be in the future (validator is lenient post-create — a past deadline is a warning, not an error, so completed timeboxes do not fail validation).
 7. For each nudge, `at` is either a fraction in `(0, 1]` or a valid ISO 8601 date.
-8. `slug` is unique across all files under `calendar/timeboxes/`.
-9. Every `timebox:` field on a child event resolves to an existing file under `calendar/timeboxes/<slug>.md`.
+8. `slug` is unique across all files under `action/events/timeboxes/`.
+9. Every `timebox:` field on a child event resolves to an existing file under `action/events/timeboxes/<slug>.md`.
 10. `related_pages` slugs match `[a-z0-9-]+` (bare slug rule; no typed prefixes).
 
 ## Eval & Observability
@@ -448,7 +447,7 @@ All links use bare `[[slug]]` wikilinks — no typed prefixes (`[[paper:constitu
 
 ## R2 Sync
 
-Both `calendar/timeboxes/**.md` (parent files) and child event files (`calendar/<date>--<slug>.md` with `timebox:` set) fall under the existing `**/*.md` include glob in the vault sync config (see [profile.md § Sync (R2)](profile.md#sync-r2)). No new sync mount or special handling is needed. The conflict policy (`local-wins-with-warning`) applies to timebox parent files the same as any authored-tier markdown.
+Both `action/events/timeboxes/**.md` (parent files) and child event files (`action/events/<date>--<slug>.md` with `timebox:` set) fall under the existing `**/*.md` include glob in the vault sync config (see [profile.md § Sync (R2)](profile.md#sync-r2)). No new sync mount or special handling is needed. The conflict policy (`local-wins-with-warning`) applies to timebox parent files the same as any authored-tier markdown.
 
 ## Profile Schema Additions
 
@@ -500,7 +499,7 @@ Three implementation phases. See [ROADMAP.md](../ROADMAP.md) for the milestone b
 
 1. **External tracker integration.** Auto-updating `done` from Strava km, Readwise pages-read, or GitHub commits would reduce manual `complete` calls. This is a natural extension but requires new kernel driver hooks and is deferred past M1.
 2. **Auto-extraction of reading structure.** For a given paper or book, `gctrl-net` + LLM could extract a page count or chapter list and pre-populate `total`. Useful; out of scope for M0.
-3. **Completed child event archival.** Should completed children remain in `calendar/` indefinitely, or be moved to an archive subfolder after the timebox closes? Current leaning: keep in place (audit trail in Obsidian); `gctrl uber calendar prune` handles bulk cleanup.
+3. **Completed child event archival.** Should completed children remain in `action/events/` indefinitely, or be moved to an archive subfolder after the timebox closes? Current leaning: keep in place (audit trail in Obsidian); `gctrl uber calendar prune` handles bulk cleanup.
 4. **gcal write-back title-prefix format.** `[<title> <step>/<step_total>]` is readable but may pollute Google Calendar search results. An alternative is a structured description field. Needs user testing before M2.
 5. **Taper logic scope.** `taper_days_before_deadline` is currently a generic field. Should it be restricted to `discipline: running | strength` (hard-coded) or remain a generic declarative shape any discipline may use? Current leaning: generic — the planner does not need to know discipline to honour it.
 6. **Recurring timeboxes.** A user who sets a quarterly reading goal would want to create a new timebox each quarter. Recurrence support (e.g., `recurs: quarterly`) is out of scope; the user creates a new file per cycle and the vault graph links them via `related_pages`.
