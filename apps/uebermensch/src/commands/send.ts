@@ -7,6 +7,7 @@ import { HttpDelivererLive } from "../adapters/HttpDeliverer.js"
 import { VaultError } from "../errors.js"
 import { resolveChannels } from "../lib/channels.js"
 import { publicBriefUrl, resolveVaultDir } from "../lib/env.js"
+import { INPUT_BRIEFS_DIR } from "../lib/vault-paths.js"
 import { DelivererService } from "../services/DelivererService.js"
 import { ProfileService } from "../services/ProfileService.js"
 
@@ -35,7 +36,7 @@ export const send = Command.make(
       const vaultDir = yield* resolveVaultDir()
       const date = Option.getOrElse(dateOptVal, today)
       const only = Option.getOrNull(channelOptVal)
-      const briefRel = `briefs/${date}.md`
+      const briefRel = `${INPUT_BRIEFS_DIR}/${date}.md`
       const briefAbs = join(vaultDir, briefRel)
       const content = yield* Effect.tryPromise({
         try: () => readFile(briefAbs, "utf8"),

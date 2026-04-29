@@ -7,7 +7,7 @@ See [PRD.md](PRD.md) for vision, [ROADMAP.md](ROADMAP.md) for milestones, [WORKF
 ## Status
 
 **M0 slice landed — runnable CLI against an external vault.** Reads md+frontmatter
-config, walks `wiki/` + `theses/`, and writes a stub brief to `briefs/<date>.md`.
+config from `directives/`, walks `input/wiki/` + `directives/theses/`, and writes a stub brief to `input/briefs/<date>.md`.
 The kernel HTTP integration (`uber_*` tables, `/api/uber/*` routes, real LLM
 drivers) remains for a follow-up PR.
 
@@ -44,17 +44,22 @@ Env vars are loaded from the repo-root `.env` (plaintext, gitignored) or
 ## Vault layout
 
 The vault is markdown-first — every authored config file is CommonMark with YAML
-frontmatter so Obsidian reads it natively. Minimum recognised files:
+frontmatter so Obsidian reads it natively. Four canonical root folders:
 
 | Path | Contents |
 |------|----------|
-| `profile.md` | identity, budgets, delivery cadence, channels (frontmatter) |
-| `topics.md` | topics of interest (frontmatter) |
-| `sources.md` | feeds / drivers / cadences (frontmatter) |
-| `ME.md`, `projects.md`, `avoid.md` | free-form author notes |
-| `theses/*.md` | one file per thesis |
-| `wiki/**/*.md` | generated entity / topic / source pages (gitignored, R2-synced) |
-| `briefs/<date>.md` | written by `uber brief` |
+| `directives/profile.md` | identity, budgets, delivery cadence, channels (frontmatter) |
+| `directives/topics.md` | topics of interest (frontmatter) |
+| `directives/sources.md` | feeds / drivers / cadences (frontmatter) |
+| `directives/me.md`, `directives/projects.md`, `directives/avoid.md` | free-form author notes |
+| `directives/theses/*.md` | one file per thesis |
+| `directives/prompts/*.md` | user-authored research queries |
+| `input/raw/*.md` | driver-fetched + manually-pulled URL summaries |
+| `input/briefs/<date>.md` | daily briefs written by `uber brief` |
+| `input/reports/<slug>.md` | deep-dives and prompt-driven research answers |
+| `input/wiki/**/*.md` | generated entity / topic / synthesis pages (gitignored, R2-synced) |
+| `action/events/*.md` | authored personal events |
+| `action/events/generated/*.md` | driver-pulled calendar events (gitignored, R2-synced) |
 
 See [vault/specs/profile.md](vault/specs/profile.md) for the full schema and sync model.
 

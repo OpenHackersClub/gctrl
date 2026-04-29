@@ -99,9 +99,10 @@ const htmlFor = (title: string, body: string) => `
 const mkVault = async () => {
   const dir = await mkdtemp(join(tmpdir(), "uber-rss-"))
   await mkdir(join(dir, "wiki"), { recursive: true })
-  await mkdir(join(dir, "theses"), { recursive: true })
+  await mkdir(join(dir, "directives", "theses"), { recursive: true })
+  await mkdir(join(dir, "input", "raw"), { recursive: true })
   await writeFile(
-    join(dir, "profile.md"),
+    join(dir, "directives", "profile.md"),
     `---
 schema_version: 1
 identity: { name: "T", slug: "t", tz: "UTC", lang: "en" }
@@ -114,7 +115,7 @@ delivery:
     "utf8",
   )
   await writeFile(
-    join(dir, "topics.md"),
+    join(dir, "directives", "topics.md"),
     `---
 topics:
   - slug: japan-macro
@@ -130,7 +131,7 @@ topics:
     "utf8",
   )
   await writeFile(
-    join(dir, "sources.md"),
+    join(dir, "directives", "sources.md"),
     `---
 sources:
   - slug: test-rss
@@ -149,10 +150,10 @@ sources:
   return dir
 }
 
-// Thin helper to count ingested files under wiki/sources/
+// Thin helper to count ingested files under input/raw/
 const countSources = async (dir: string): Promise<number> => {
   try {
-    const entries = await readdir(join(dir, "wiki", "sources"))
+    const entries = await readdir(join(dir, "input", "raw"))
     return entries.filter((e) => e.endsWith(".md")).length
   } catch {
     return 0

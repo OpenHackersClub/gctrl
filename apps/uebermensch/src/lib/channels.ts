@@ -1,6 +1,7 @@
 import { Effect, Schema } from "effect"
 import { DeliveryError } from "../errors.js"
 import { Channel } from "../schemas.js"
+import { DIRECTIVES_PROFILE_FILE } from "./vault-paths.js"
 
 export type ResolvedChannel = {
   readonly name: string
@@ -38,7 +39,7 @@ export const resolveChannels = (
     if (only !== null && resolved.length === 0) {
       return yield* Effect.fail(
         new DeliveryError({
-          message: `no channel named "${only}" in profile.md`,
+          message: `no channel named "${only}" in ${DIRECTIVES_PROFILE_FILE}`,
           channel: only,
           kind: "config",
         }),

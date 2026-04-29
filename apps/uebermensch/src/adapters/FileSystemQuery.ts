@@ -3,6 +3,7 @@ import { basename, extname, join, relative } from "node:path"
 import { Effect, Layer, Schema } from "effect"
 import matter from "gray-matter"
 import { VaultError } from "../errors.js"
+import { DIRECTIVES_PROMPTS_DIR } from "../lib/vault-paths.js"
 import { PromptFrontmatter } from "../schemas.js"
 import {
   type Prompt,
@@ -11,7 +12,7 @@ import {
   QueryService,
 } from "../services/QueryService.js"
 
-const PROMPTS_DIR = "prompts"
+const PROMPTS_DIR = DIRECTIVES_PROMPTS_DIR
 
 const slugify = (stem: string): string =>
   stem

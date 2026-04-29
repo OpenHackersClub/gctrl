@@ -4,6 +4,14 @@ import { basename, extname, join, relative } from "node:path"
 import { Effect, Layer, Schema } from "effect"
 import matter from "gray-matter"
 import { VaultError } from "../errors.js"
+import {
+  DIRECTIVES_RESEARCH_DIR,
+  DIRECTIVES_THESES_DIR,
+  INPUT_BRIEFS_DIR,
+  INPUT_RAW_DIR,
+  INPUT_REPORTS_DIR,
+  INPUT_WIKI_DIR,
+} from "../lib/vault-paths.js"
 import { ResearchInterestFrontmatter } from "../schemas.js"
 import {
   VaultService,
@@ -52,13 +60,30 @@ const loadPage = async (entry: WalkEntry): Promise<WikiPage> => {
   }
 }
 
+// Wiki + raw source pages + theses are the candidate set the curator + sinkin
+// passes see. Briefs and reports are CoS-curated output for the user, not
+// candidate knowledge — they are NOT included in listWikiPages or
+// recentlyChanged.
+const KB_DIRS = [INPUT_WIKI_DIR, INPUT_RAW_DIR, DIRECTIVES_THESES_DIR] as const
+
+// listSlugs is used for citation resolution — every file whose stem can appear
+// inside a [[wikilink]]. That covers the knowledge graph plus briefs/reports
+// (a brief or report can [[link]] to another brief).
+const SLUG_DIRS = [
+  INPUT_WIKI_DIR,
+  INPUT_RAW_DIR,
+  DIRECTIVES_THESES_DIR,
+  INPUT_BRIEFS_DIR,
+  INPUT_REPORTS_DIR,
+] as const
+
 export const FileSystemVaultLive = (vaultDir: string) =>
   Layer.succeed(VaultService, {
     root: () => vaultDir,
     listWikiPages: () =>
       Effect.tryPromise({
         try: async () => {
-          const files = await walkMarkdown(vaultDir, ["wiki", "theses"])
+          const files = await walkMarkdown(vaultDir, KB_DIRS)
           return Promise.all(files.map(loadPage))
         },
         catch: (e) =>
@@ -68,7 +93,7 @@ export const FileSystemVaultLive = (vaultDir: string) =>
       Effect.tryPromise({
         try: async () => {
           const cutoff = Date.now() - sinceHours * 3_600_000
-          const files = await walkMarkdown(vaultDir, ["wiki", "theses"])
+          const files = await walkMarkdown(vaultDir, KB_DIRS)
           const recent = files.filter((f) => f.stat.mtime.getTime() >= cutoff)
           return Promise.all(recent.map(loadPage))
         },
@@ -78,12 +103,7 @@ export const FileSystemVaultLive = (vaultDir: string) =>
     listSlugs: () =>
       Effect.tryPromise({
         try: async () => {
-          const files = await walkMarkdown(vaultDir, [
-            "wiki",
-            "theses",
-            "briefs",
-            "reports",
-          ])
+          const files = await walkMarkdown(vaultDir, SLUG_DIRS)
           const slugs = new Set<string>()
           for (const f of files) slugs.add(basename(f.abs, ".md"))
           return slugs as ReadonlySet<string>
@@ -94,10 +114,10 @@ export const FileSystemVaultLive = (vaultDir: string) =>
     writeBrief: (date, content) =>
       Effect.tryPromise({
         try: async () => {
-          const relPath = `briefs/${date}.md`
+          const relPath = `${INPUT_BRIEFS_DIR}/${date}.md`
           const absPath = join(vaultDir, relPath)
           const tmpPath = `${absPath}.tmp-${process.pid}-${Date.now()}`
-          await mkdir(join(vaultDir, "briefs"), { recursive: true })
+          await mkdir(join(vaultDir, INPUT_BRIEFS_DIR), { recursive: true })
           await writeFile(tmpPath, content, "utf8")
           await rename(tmpPath, absPath)
           return { absPath, relPath, contentHash: hashContent(content) }
@@ -108,7 +128,7 @@ export const FileSystemVaultLive = (vaultDir: string) =>
     listResearchInterests: () =>
       Effect.gen(function* () {
         const files = yield* Effect.tryPromise({
-          try: () => walkMarkdown(vaultDir, ["research"]),
+          try: () => walkMarkdown(vaultDir, [DIRECTIVES_RESEARCH_DIR]),
           catch: (e) =>
             new VaultError({
               message: `list research failed: ${String(e)}`,
@@ -157,10 +177,10 @@ export const FileSystemVaultLive = (vaultDir: string) =>
     writeReport: (slug, content) =>
       Effect.tryPromise({
         try: async () => {
-          const relPath = `reports/${slug}.md`
+          const relPath = `${INPUT_REPORTS_DIR}/${slug}.md`
           const absPath = join(vaultDir, relPath)
           const tmpPath = `${absPath}.tmp-${process.pid}-${Date.now()}`
-          await mkdir(join(vaultDir, "reports"), { recursive: true })
+          await mkdir(join(vaultDir, INPUT_REPORTS_DIR), { recursive: true })
           await writeFile(tmpPath, content, "utf8")
           await rename(tmpPath, absPath)
           return { absPath, relPath, contentHash: hashContent(content) }
@@ -172,13 +192,16 @@ export const FileSystemVaultLive = (vaultDir: string) =>
             kind: "io_failure",
           }),
       }),
+    // Prompt-driven research answers also land in input/reports/ — they are
+    // CoS output the user reads. Kept as a distinct method so prompts.ts can
+    // stay readable; it just delegates.
     writeResearch: (slug, content) =>
       Effect.tryPromise({
         try: async () => {
-          const relPath = `wiki/research/${slug}.md`
+          const relPath = `${INPUT_REPORTS_DIR}/${slug}.md`
           const absPath = join(vaultDir, relPath)
           const tmpPath = `${absPath}.tmp-${process.pid}-${Date.now()}`
-          await mkdir(join(vaultDir, "wiki", "research"), { recursive: true })
+          await mkdir(join(vaultDir, INPUT_REPORTS_DIR), { recursive: true })
           await writeFile(tmpPath, content, "utf8")
           await rename(tmpPath, absPath)
           return { absPath, relPath, contentHash: hashContent(content) }
@@ -192,7 +215,7 @@ export const FileSystemVaultLive = (vaultDir: string) =>
       }),
     writeSource: (slug, content, options) =>
       Effect.gen(function* () {
-        const relPath = `wiki/sources/${slug}.md`
+        const relPath = `${INPUT_RAW_DIR}/${slug}.md`
         const absPath = join(vaultDir, relPath)
 
         const existed = yield* Effect.tryPromise({
@@ -225,7 +248,7 @@ export const FileSystemVaultLive = (vaultDir: string) =>
         return yield* Effect.tryPromise({
           try: async () => {
             const tmpPath = `${absPath}.tmp-${process.pid}-${Date.now()}`
-            await mkdir(join(vaultDir, "wiki", "sources"), { recursive: true })
+            await mkdir(join(vaultDir, INPUT_RAW_DIR), { recursive: true })
             await writeFile(tmpPath, content, "utf8")
             await rename(tmpPath, absPath)
             return { absPath, relPath, contentHash: hashContent(content), existed }

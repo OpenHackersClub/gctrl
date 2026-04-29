@@ -108,7 +108,7 @@ describe("calendar — pure helpers (parseDateShortcut, matchesFilter, sortBySta
       createdAt: null,
       updatedAt: null,
       body: "Quarterly call",
-      relPath: "calendar/2026-05-21--nvda.md",
+      relPath: "action/events/2026-05-21--nvda.md",
       absPath: "/x",
     }
 
@@ -182,7 +182,7 @@ describe("calendar — pure helpers (parseDateShortcut, matchesFilter, sortBySta
         createdAt: null,
         updatedAt: null,
         body: "",
-        relPath: `calendar/${slug}.md`,
+        relPath: `action/events/${slug}.md`,
         absPath: `/${slug}`,
       })
       const a = mk("c", "2026-05-03T00:00:00Z")
@@ -200,7 +200,7 @@ describe("calendar — FileSystemCalendar adapter", () => {
     vaultDir = await mkdtemp(join(tmpdir(), "uber-vault-cal-"))
     await seedFile(
       vaultDir,
-      "calendar/2026-05-08--board-meeting.md",
+      "action/events/2026-05-08--board-meeting.md",
       baseFrontmatter({
         slug: "board-meeting",
         title: '"Board meeting"',
@@ -212,7 +212,7 @@ describe("calendar — FileSystemCalendar adapter", () => {
     )
     await seedFile(
       vaultDir,
-      "calendar/generated/2026-05-21--nvda-q1-2026-earnings.md",
+      "action/events/generated/2026-05-21--nvda-q1-2026-earnings.md",
       baseFrontmatter({
         slug: "nvda-q1-2026-earnings",
         title: '"NVDA Q1 2026 earnings call"',
@@ -228,7 +228,7 @@ describe("calendar — FileSystemCalendar adapter", () => {
     )
     await seedFile(
       vaultDir,
-      "calendar/generated/2026-05-15--us-cpi.md",
+      "action/events/generated/2026-05-15--us-cpi.md",
       baseFrontmatter({
         slug: "us-cpi-2026-04",
         title: '"US CPI release (Apr 2026)"',
@@ -242,7 +242,7 @@ describe("calendar — FileSystemCalendar adapter", () => {
     // Recurring file — must be skipped by the loader for this slice.
     await seedFile(
       vaultDir,
-      "calendar/recurring/weekly-team-standup.md",
+      "action/events/recurring/weekly-team-standup.md",
       baseFrontmatter({
         slug: "weekly-team-standup",
         title: '"Weekly team standup"',
@@ -250,9 +250,28 @@ describe("calendar — FileSystemCalendar adapter", () => {
         starts_at: "2026-04-27T10:00:00Z",
       }),
     )
+    // Timebox parent file — different schema (no source/starts_at/tz). The
+    // calendar loader MUST skip action/events/timeboxes/ or decodeEvent will
+    // throw parse_failure on every list call.
+    await seedFile(
+      vaultDir,
+      "action/events/timeboxes/sub-3-berlin.md",
+      [
+        "slug: sub-3-berlin",
+        "kind: practice",
+        "discipline: running",
+        'title: "Sub-3 Berlin"',
+        'goal: "Run a sub-3 marathon"',
+        "deadline: 2026-09-27",
+        "unit: km",
+        "total: 800",
+        "session_minutes: 60",
+        'status: "in-progress"',
+      ].join("\n") + "\n",
+    )
   })
 
-  it("lists all events excluding recurring/", async () => {
+  it("lists all events excluding recurring/ + timeboxes/", async () => {
     const events = await Effect.runPromise(
       Effect.gen(function* () {
         const cal = yield* CalendarService
@@ -336,7 +355,7 @@ describe("calendar — FileSystemCalendar adapter", () => {
       }).pipe(Effect.provide(FileSystemCalendarLive(vaultDir))),
     )
     expect(written.slug).toBe("family-dinner")
-    expect(written.relPath).toBe("calendar/2026-05-30--family-dinner.md")
+    expect(written.relPath).toBe("action/events/2026-05-30--family-dinner.md")
     expect(written.contentHash).toMatch(/^sha256:[0-9a-f]{64}$/)
     const onDisk = matter(await readFile(written.absPath, "utf8"))
     expect(onDisk.data.source).toBe("user")
@@ -395,7 +414,7 @@ describe("calendar — FileSystemCalendar adapter", () => {
     )
     const onDisk = matter(
       await readFile(
-        join(vaultDir, "calendar/generated/2026-05-21--nvda-q1-2026-earnings.md"),
+        join(vaultDir, "action/events/generated/2026-05-21--nvda-q1-2026-earnings.md"),
         "utf8",
       ),
     )
@@ -406,7 +425,7 @@ describe("calendar — FileSystemCalendar adapter", () => {
     expect(onDisk.data.title).toBe("NVDA Q1 2026 earnings call")
   })
 
-  it("returns empty list when calendar/ does not exist", async () => {
+  it("returns empty list when action/events/ does not exist", async () => {
     const empty = await mkdtemp(join(tmpdir(), "uber-vault-cal-empty-"))
     const events = await Effect.runPromise(
       Effect.gen(function* () {

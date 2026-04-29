@@ -60,7 +60,7 @@ const list = Command.make(
           ...(discipline ? { discipline } : {}),
         })
         if (items.length === 0) {
-          yield* Console.log(`(no timeboxes in ${vaultDir}/calendar/timeboxes/)`)
+          yield* Console.log(`(no timeboxes in ${vaultDir}/action/events/timeboxes/)`)
           return
         }
         for (const t of items) yield* Console.log(formatTimeboxLine(t))
@@ -434,5 +434,5 @@ const cancel = lifecycleCommand("cancelled", "Cancel a timebox")
 
 export const timebox = Command.make("timebox").pipe(
   Command.withSubcommands([list, show, plan, replan, addEvent, complete, skip, pause, resume, cancel]),
-  Command.withDescription("Manage timeboxes — multi-event practice plans under $UBER_VAULT_DIR/calendar/timeboxes/"),
+  Command.withDescription("Manage timeboxes — multi-event practice plans under $UBER_VAULT_DIR/action/events/timeboxes/"),
 )

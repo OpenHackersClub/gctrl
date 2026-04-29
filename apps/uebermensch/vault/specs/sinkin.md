@@ -29,7 +29,7 @@ Both modes share the same `uber-sinkin` persona and the same Question/Synthesis 
 
 ### Stage 1 — Survey
 
-Reads `wiki/index.md` and a configurable slice of wiki pages (default: all pages updated in the last 90d, or all pages if the wiki is <200 pages). Builds a compact representation: page titles, slugs, frontmatter (not full body), link graph.
+Reads `input/wiki/index.md` and a configurable slice of wiki pages (default: all pages updated in the last 90d, or all pages if the wiki is <200 pages). Builds a compact representation: page titles, slugs, frontmatter (not full body), link graph.
 
 Scope flags (from CLI or profile):
 - `--topic <slug>` — restrict to pages in `ce.frontmatter->>'topics' ? :slug`
@@ -37,7 +37,7 @@ Scope flags (from CLI or profile):
 
 ### Stage 2 — Gap Pass (LLM)
 
-Persona: `uber-sinkin`, prompt template `personas/sinkin-gap.md`.
+Persona: `uber-sinkin`, prompt template `directives/personas/sinkin-gap.md`.
 
 Input: compact wiki survey, profile (topics, theses, identity), existing Question pages (so we don't re-ask answered questions).
 
@@ -97,7 +97,7 @@ No external API calls. If the answer requires new source material, `answerable_f
 
 ### Stage 4 — File Pages
 
-For each gap → write `wiki/questions/<slug>.md`:
+For each gap → write `input/wiki/questions/<slug>.md`:
 
 ```yaml
 ---
@@ -133,7 +133,7 @@ research_directions:
 <research_directions as bullet list, only if unanswered>
 ```
 
-For each connection → write `wiki/synthesis/<slug>.md`:
+For each connection → write `input/wiki/synthesis/<slug>.md`:
 
 ```yaml
 ---
@@ -153,7 +153,7 @@ covers_period: null
 
 **Note on `parent: null`:** The existing lint rule `synthesis-unparented` treats a null parent as an error for `uber-deepdive`-generated pages. SinkIn-generated synthesis pages are exempt — they are cross-cutting by definition. The lint rule MUST check `generator` before firing: pages where `generator == "uber-sinkin"` are excluded from `synthesis-unparented`.
 
-Update `wiki/index.md` and `wiki/log.md` at the end of the session (same pattern as ingest: one entry per SinkIn session in the log, batch update to the index).
+Update `input/wiki/index.md` and `input/wiki/log.md` at the end of the session (same pattern as ingest: one entry per SinkIn session in the log, batch update to the index).
 
 ---
 
@@ -169,7 +169,7 @@ gctrl uber query "<question>"
   └──────────────┘   └──────────────┘   └───────────────┘
                                                 │ --file
                                                 ▼
-                                        wiki/questions/<slug>.md
+                                        input/wiki/questions/<slug>.md
 ```
 
 ### Retrieve
@@ -178,13 +178,13 @@ Keyword + frontmatter search over the wiki for pages relevant to the question. A
 
 ### Answer
 
-Persona: `uber-sinkin`, prompt template `personas/sinkin-answer.md`. Same wrapper as Gap Pass — all page content inside `<page>` sentinels.
+Persona: `uber-sinkin`, prompt template `directives/personas/sinkin-answer.md`. Same wrapper as Gap Pass — all page content inside `<page>` sentinels.
 
 Output: markdown answer (1-5 paragraphs) with bare `[[slug]]` citations. Printed to stdout.
 
 ### File
 
-If `--file` flag is set (or user confirms the interactive prompt when running in a terminal), write `wiki/questions/<slug>.md` with `filed_from: cli`, `answered: true`, `sources_cited` extracted from the rendered wikilinks.
+If `--file` flag is set (or user confirms the interactive prompt when running in a terminal), write `input/wiki/questions/<slug>.md` with `filed_from: cli`, `answered: true`, `sources_cited` extracted from the rendered wikilinks.
 
 Slug derived from a normalised kebab-case of the question text, deduplicated if a page already exists (append `-2`, `-3`, etc.).
 
@@ -260,7 +260,7 @@ sinkin:
 
 ### `uber-sinkin` (Gap Pass + Answer Pass + Interactive Query)
 
-Lives at `personas/sinkin-gap.md` and `personas/sinkin-answer.md` (separate templates for gap and answer tasks; share the same persona name for cost attribution).
+Lives at `directives/personas/sinkin-gap.md` and `directives/personas/sinkin-answer.md` (separate templates for gap and answer tasks; share the same persona name for cost attribution).
 
 Default model: inherits `driver-llm` default (`@cf/google/gemma-4-26b-a4b-it` via Cloudflare AI Gateway). Can be overridden in `personas.md` under the vault's authored tier.
 

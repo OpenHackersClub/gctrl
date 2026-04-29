@@ -19,37 +19,37 @@ The calendar is **not** a replacement for Google Calendar / Outlook. It is the v
 
 ## Principles
 
-1. **Markdown is the source of truth.** Every event is a file under `$UBER_VAULT_DIR/calendar/<YYYY-MM-DD>--<slug>.md` (or for ranges, the start date). SQLite (`uber_calendar` index) holds `vault_path` + `content_hash` + denormalised `(starts_at, ends_at, kind, source)` for fast filtering. Deleting SQLite MUST be recoverable by re-indexing the markdown.
+1. **Markdown is the source of truth.** Every event is a file under `$UBER_VAULT_DIR/action/events/<YYYY-MM-DD>--<slug>.md` (authored) or `$UBER_VAULT_DIR/action/events/generated/<YYYY-MM-DD>--<slug>.md` (driver-pulled), or for ranges, the start date. SQLite (`uber_calendar` index) holds `vault_path` + `content_hash` + denormalised `(starts_at, ends_at, kind, source)` for fast filtering. Deleting SQLite MUST be recoverable by re-indexing the markdown.
 2. **One event shape, many sources.** Whether an event was authored by the user in Obsidian, ingested by `driver-markets` from an earnings calendar, or pulled from Google Calendar, it lands in the same frontmatter shape. The `source` field discriminates origin; `kind` discriminates display.
 3. **Filterable by intent, not by folder.** Users ask "show me my personal week" or "show me earnings for my watchlist" — both queries go through the same predicate engine over frontmatter (`source`, `kind`, `tickers`, `topics`, `tags`). No folder hierarchy by source.
-4. **Authored vs. generated split is preserved.** Personal events (`source: user`) live in the **authored tier** and are git-tracked. Driver-pulled events (`source: driver-markets`, `source: driver-sec`, `source: driver-gcal`) live in the **generated tier** under `calendar/generated/` — gitignored, R2-synced, regeneratable.
+4. **Action root — both authored and generated events live under `action/events/`.** Personal events (`source: user`) live at `action/events/<YYYY-MM-DD>--<slug>.md` and are git-tracked. Driver-pulled events (`source: driver-markets`, `source: driver-sec`, `source: driver-gcal`) live under `action/events/generated/` — gitignored, R2-synced, regeneratable. Events are time-bound items the user tracks and acts on; the `action/` root reflects this — they await the user's attention and greenlight, whether authored or driver-pulled.
 5. **Wikilinks compound.** An earnings event for `[[nvidia]]` links to the company entity wiki page; a thesis-relevant CPI print can list `theses: [ai-infra-capex]` so the briefing pipeline can promote it. Bare `[[slug]]` only — the existing rule applies.
 6. **Reminders are deliveries.** Today's events surface in the morning brief; cross-threshold events (e.g. earnings ±2h) MAY fire a separate channel-aware reminder via `DelivererService`. Reminders are idempotent per `(event_id, channel, fire_at)`.
 7. **External sync is opt-in and one-way by default.** `driver-gcal` reads Google Calendar by default; **write-back** (mirroring user-authored vault events into Google Calendar) is a separate opt-in flag per channel. We never silently mutate the user's external calendar.
 
 ## Vault Layout
 
+All calendar events live under the `action/` root — reflecting that events are time-bound items the user tracks and acts on. They do NOT introduce a fifth top-level folder; authored and driver-pulled events are distinguished by subfolder within `action/events/`.
+
 ```
 $UBER_VAULT_DIR/
-├── calendar/                              # NEW — events live here
-│   │  ─── Authored (git-tracked) ───
-│   ├── 2026-05-08--board-meeting.md       # source: user
-│   ├── 2026-05-15--family-trip-tokyo.md   # source: user (multi-day)
-│   ├── recurring/                         # optional — RFC 5545 RRULE files
-│   │   └── weekly-team-standup.md
-│   ├── timeboxes/                         # parent files for multi-event practice plans
-│   │   ├── sub-3-berlin.md                # see calendar-timeboxes.md
-│   │   └── constitutional-ai-reading.md
-│   │
-│   │  ─── Generated (gitignored; R2-synced) ───
-│   └── generated/
-│       ├── 2026-05-21--nvda-q1-2026-earnings.md   # source: driver-markets
-│       ├── 2026-06-12--fomc-statement.md          # source: driver-markets
-│       ├── 2026-06-30--lockup-expiry-rddt.md      # source: driver-sec
-│       └── 2026-05-09--gcal-eu-ai-summit.md       # source: driver-gcal (mirror)
+└── action/
+    └── events/                                   # time-bound events (git-tracked at top level)
+        ├── 2026-05-08--board-meeting.md           # source: user (authored)
+        ├── 2026-05-15--family-trip-tokyo.md       # source: user (multi-day, authored)
+        ├── recurring/                             # optional — RFC 5545 RRULE files
+        │   └── weekly-team-standup.md
+        ├── timeboxes/                             # parent files for multi-event practice plans
+        │   ├── sub-3-berlin.md                    # see calendar-timeboxes.md
+        │   └── constitutional-ai-reading.md
+        └── generated/                             # driver-pulled events (gitignored; R2-synced)
+            ├── 2026-05-21--nvda-q1-2026-earnings.md   # source: driver-markets
+            ├── 2026-06-12--fomc-statement.md           # source: driver-markets
+            ├── 2026-06-30--lockup-expiry-rddt.md       # source: driver-sec
+            └── 2026-05-09--gcal-eu-ai-summit.md        # source: driver-gcal (mirror)
 ```
 
-`calendar/` is a new top-level directory in the vault. The authored tier holds files the user creates by hand or via `gctrl uber calendar add`; the `generated/` subfolder holds driver-pulled events. The split mirrors the existing `theses/` (authored) vs. `wiki/` (generated) division so users can `git diff` only the events they themselves authored.
+Authored events (top-level under `action/events/`) are git-tracked alongside personal plans. Driver-pulled events under `action/events/generated/` are gitignored and R2-synced. Both are grouped under `action/` because they share the same user-facing intent — they mark what is coming up and may demand the user's attention or a decision.
 
 Events are filename-prefixed with their start date for chronological browsability in Obsidian's file pane. The `<slug>` portion is human-readable kebab-case derived from the title.
 
@@ -59,7 +59,7 @@ Every event file has YAML frontmatter conforming to this shape (validated by `Sc
 
 ```yaml
 ---
-slug: 2026-05-21--nvda-q1-2026-earnings   # globally unique within calendar/
+slug: 2026-05-21--nvda-q1-2026-earnings   # globally unique across action/events/ + action/events/generated/
 title: "NVDA Q1 2026 earnings call"
 kind: earnings                            # see § Event Kinds
 source: driver-markets                    # see § Sources
@@ -99,14 +99,14 @@ or holds the ingested description. For user-authored events this is your notes
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `slug` | yes | filename stem; globally unique within `calendar/` |
+| `slug` | yes | filename stem; globally unique across `action/events/` + `action/events/generated/` |
 | `title` | yes | display string |
 | `kind` | yes | drives display, filtering, and reminder defaults |
 | `source` | yes | provenance (see § Sources) |
 | `starts_at` | yes | ISO 8601; for `all_day: true` use `YYYY-MM-DD` |
 | `tz` | yes | IANA timezone for display rendering |
 | `status` | yes | `confirmed` is default; see [calendar-timeboxes.md](calendar-timeboxes.md) for the `superseded` value used by re-planned timebox children |
-| `timebox` | no | slug of a parent timebox (`calendar/timeboxes/<slug>.md`); see [calendar-timeboxes.md § Child Event Frontmatter Additions](calendar-timeboxes.md#child-event-frontmatter-additions) |
+| `timebox` | no | slug of a parent timebox (`action/events/timeboxes/<slug>.md`); see [calendar-timeboxes.md § Child Event Frontmatter Additions](calendar-timeboxes.md#child-event-frontmatter-additions) |
 | `step` / `step_total` / `step_units` | no | required if `timebox:` is set; ordering and unit description for one timebox session |
 | everything else | no | | 
 
@@ -147,13 +147,13 @@ Drivers MUST set `external_id` + `external_etag` on every event they write so re
 
 ### `uber_calendar` SQLite index
 
-Pure index over `calendar/` files. Rebuildable by walking the directory.
+Pure index over `action/events/` + `action/events/generated/` files. Rebuildable by walking those two directories.
 
 ```sql
 CREATE TABLE uber_calendar (
   id            TEXT PRIMARY KEY,            -- "cal_" || ulid
   slug          TEXT NOT NULL UNIQUE,        -- matches frontmatter slug
-  vault_path    TEXT NOT NULL UNIQUE,        -- relative, e.g. "calendar/2026-05-21--…md"
+  vault_path    TEXT NOT NULL UNIQUE,        -- relative, e.g. "action/events/generated/2026-05-21--…md"
   title         TEXT NOT NULL,
   kind          TEXT NOT NULL,
   source        TEXT NOT NULL,
@@ -349,7 +349,7 @@ Three drivers feed the calendar; each is feature-gated as a kernel LKM (per [os.
 
 Already planned in M3 for prices + prediction markets ([ROADMAP.md](../ROADMAP.md)). This spec extends it with a calendar producer:
 
-- **Earnings calendar:** poll a public earnings-feed source (TBD on commercial vs. scraped — open question) on a daily cadence; for each ticker in the user's `topics[].watchlist` ∪ explicit `calendar.tickers_watchlist`, write/update `calendar/generated/<date>--<ticker>-<period>-earnings.md` with `kind: earnings, source: driver-markets`.
+- **Earnings calendar:** poll a public earnings-feed source (TBD on commercial vs. scraped — open question) on a daily cadence; for each ticker in the user's `topics[].watchlist` ∪ explicit `calendar.tickers_watchlist`, write/update `action/events/generated/<date>--<ticker>-<period>-earnings.md` with `kind: earnings, source: driver-markets`.
 - **Macro events:** known release calendar (FOMC, CPI, NFP, ECB, BoJ) maintained as a small static list inside the driver, refreshed quarterly. `kind: macro`.
 - **Prediction-market resolution:** for any market in `sources[].config.markets`, emit a `kind: prediction-market` event at the resolution date.
 
@@ -377,14 +377,14 @@ New kernel LKM. Read-only by default, write-back opt-in per calendar.
       kind_default: personal
       tag_default: ["from-gcal"]
   ```
-- Polls Google Calendar API on a configurable cadence (default 5min), maps each event into the `EventFrontmatter` shape with `source: driver-gcal`, writes to `calendar/generated/<date>--gcal-<slug>.md`.
+- Polls Google Calendar API on a configurable cadence (default 5min), maps each event into the `EventFrontmatter` shape with `source: driver-gcal`, writes to `action/events/generated/<date>--gcal-<slug>.md`.
 - `external_id = "gcal:<event_id>"`, `external_etag = <etag>` — re-pulls upsert in place.
 - Deletions on the Google side mark the local file with `status: cancelled` rather than deleting (keeps an audit trail; user can `gctrl uber calendar prune --status cancelled --older-than 30d`).
 
 **Write-back path (extension; opt-in):**
 
 - Set `direction: read-write` on the calendar config and add `write_back: { allowed_kinds: [personal, deadline] }`.
-- On any `source: user` event create/update under `calendar/`, push to the configured Google Calendar after a 5s debounce.
+- On any `source: user` event create/update under `action/events/`, push to the configured Google Calendar after a 5s debounce.
 - Conflict policy: **local-wins** for fields the user owns (title, body, times, tz); Google-side updates to those fields fire an inbox alert rather than overwriting.
 - Bidirectional sync inherits the same idempotency fields (`external_id`, `external_etag`).
 - The driver MUST authenticate via OAuth 2.0 with the kernel holding the refresh token — Uebermensch app code never sees the token (per [os.md § Dependency Direction](../../../vault/specs/architecture/os.md#dependency-direction-invariant)).
@@ -413,7 +413,7 @@ The web UI reads `/api/uber/calendar/events` — same endpoint the CLI uses, so 
 
 ## R2 Sync
 
-Both tiers of `calendar/` participate in the existing R2 sync (per [profile.md § Sync (R2)](profile.md#sync-r2)). No new sync mount needed — the `**/*.md` include glob already covers `calendar/**/*.md`. Conflict policy follows the existing local-wins-with-warning rule; conflicting files surface as `<stem>.conflict-<device>-<ts>.md` and `gctrl uber vault conflicts` lists them.
+All calendar files (`action/events/**`) participate in the existing R2 sync (per [profile.md § Sync (R2)](profile.md#sync-r2)). No new sync mount needed — the `**/*.md` include glob already covers them. Conflict policy follows the existing local-wins-with-warning rule; conflicting files surface as `<stem>.conflict-<device>-<ts>.md` and `gctrl uber vault conflicts` lists them.
 
 ## Profile Schema Additions
 
@@ -444,8 +444,8 @@ Extends `Profile` schema; the daemon's `ProfileService` decodes it on load. Miss
 
 `gctrl uber profile validate` extends with:
 
-1. Every file under `calendar/` parses as `EventFrontmatter` and has a non-empty `slug`.
-2. `slug` is unique across `calendar/**/*.md` (folder split is for organisation only).
+1. Every file under `action/events/` and `action/events/generated/` parses as `EventFrontmatter` and has a non-empty `slug`.
+2. `slug` is unique across `action/events/**/*.md` ∪ `action/events/generated/**/*.md` (subfolder split distinguishes authored from driver-pulled only).
 3. `starts_at` parses as ISO 8601 with offset; `ends_at` (if present) is `>= starts_at`; `tz` is a valid IANA timezone.
 4. `kind` is one of the documented enum values; unknown kinds fail.
 5. `tickers` are uppercase `[A-Z][A-Z0-9.\-]{0,9}`.
@@ -471,7 +471,7 @@ This spec is implemented in three phases. See [ROADMAP.md](../ROADMAP.md) for th
 
 | Phase | Scope | Where |
 |-------|-------|-------|
-| **Core** (calendar M0) | `calendar/` folder + `EventFrontmatter` + `uber_calendar` index + CLI (`list`, `add`, `show`, `edit`, `remove`, `reindex`) + briefing-pipeline integration + `ICS` feed | New milestone after M2 |
+| **Core** (calendar M0) | `action/events/` + `action/events/generated/` folders + `EventFrontmatter` + `uber_calendar` index + CLI (`list`, `add`, `show`, `edit`, `remove`, `reindex`) + briefing-pipeline integration + `ICS` feed | New milestone after M2 |
 | **Drivers** (calendar M1) | `driver-markets` earnings + macro producers; `driver-sec` lockup/effective-date producer; `driver-gcal` read-only | Folds into M3 (existing market-data milestone) |
 | **Visualization + write-back** (calendar M2) | Web UI calendar view (agenda + week + month); `driver-gcal` write-back behind opt-in flag | Folds into M2 (web UI milestone) and M3 |
 
@@ -490,5 +490,5 @@ This spec is implemented in three phases. See [ROADMAP.md](../ROADMAP.md) for th
 3. **Driver-pulled event deletion semantics.** When a driver source removes an event (e.g., earnings call cancelled), do we delete the file or mark `status: cancelled`? **Leaning:** mark cancelled; provide `gctrl uber calendar prune` for periodic cleanup. Needed by calendar M1.
 4. **Time-zone display rule.** Render in event's `tz` or in `profile.identity.tz`? **Leaning:** render in `profile.identity.tz` by default with the original `tz` in parens (`20:00 ET (08:00 HKT next day)`); CLI `--tz` flag overrides per-call. Needed by calendar M0.
 5. **`.ics` feed auth model.** Bearer-token query param works for read-only subscriptions but is leakable in URL access logs. **Leaning:** bearer in query param for now (it's the only thing iCal subscriptions support); rotate via `gctrl uber calendar feed-token rotate`; document the trade-off. Needed by calendar M2.
-6. **Google Calendar write-back conflict UX.** When the user edits both sides between syncs, do we surface a conflict file (calendar version of `<stem>.conflict-<device>-<ts>.md`) or a merge UI? **Leaning:** conflict file in `calendar/conflicts/` plus an inbox alert; merge happens in Obsidian. Needed by calendar M2 write-back.
+6. **Google Calendar write-back conflict UX.** When the user edits both sides between syncs, do we surface a conflict file (calendar version of `<stem>.conflict-<device>-<ts>.md`) or a merge UI? **Leaning:** conflict file in `action/events/conflicts/` plus an inbox alert; merge happens in Obsidian. Needed by calendar M2 write-back.
 7. **Multi-calendar support in `driver-gcal`.** Personal + work + a shared team calendar all push events into one vault — do we need per-calendar prefixes in slug to avoid collisions? **Leaning:** include `external_id` in slug as a suffix (`<date>--gcal-<calendar-id>-<event-id>.md`) so collisions are impossible; nice display name is the title. Needed by calendar M1.

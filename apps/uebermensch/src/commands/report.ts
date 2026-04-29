@@ -10,6 +10,15 @@ import { StubLlmLive } from "../adapters/StubLlm.js"
 import { selectCandidates, type CandidateRef } from "../lib/candidates.js"
 import { resolveChannels } from "../lib/channels.js"
 import { publicReportUrl, resolveVaultDir } from "../lib/env.js"
+import {
+  DIRECTIVES_RESEARCH_DIR,
+  DIRECTIVES_SOURCES_FILE,
+  DIRECTIVES_TOPICS_FILE,
+  INPUT_BRIEFS_DIR,
+  INPUT_RAW_DIR,
+  INPUT_REPORTS_DIR,
+  INPUT_WIKI_DIR,
+} from "../lib/vault-paths.js"
 import { DelivererService } from "../services/DelivererService.js"
 import {
   LlmService,
@@ -76,7 +85,7 @@ const sendOpt = Options.boolean("send").pipe(
 
 const syncOpt = Options.boolean("sync").pipe(
   Options.withDescription(
-    "After writing, upload reports + briefs + wiki/sources to R2 (auto-on when --send and UBER_PUBLIC_BASE_URL are set)",
+    "After writing, upload input/reports + input/briefs + input/raw + input/wiki to R2 (auto-on when --send and UBER_PUBLIC_BASE_URL are set)",
   ),
   Options.withDefault(false),
 )
@@ -193,7 +202,9 @@ export const report = Command.make(
 
         const interests = yield* vaultSvc.listResearchInterests()
         if (interests.length === 0) {
-          yield* Console.log("  no research interests in research/ — nothing to report")
+          yield* Console.log(
+            `  no research interests in ${DIRECTIVES_RESEARCH_DIR}/ — nothing to report`,
+          )
           return
         }
         yield* Console.log(`  ${interests.length} research interest(s) loaded`)
@@ -205,14 +216,14 @@ export const report = Command.make(
           for (const t of it.topics) {
             if (!topicSlugs.has(t)) {
               yield* Console.log(
-                `  ! research/${it.slug}: references unknown topic '${t}' (not in topics.md)`,
+                `  ! ${DIRECTIVES_RESEARCH_DIR}/${it.slug}: references unknown topic '${t}' (not in ${DIRECTIVES_TOPICS_FILE})`,
               )
             }
           }
           for (const s of it.sources) {
             if (!sourceSlugs.has(s)) {
               yield* Console.log(
-                `  ! research/${it.slug}: references unknown source '${s}' (not in sources.md)`,
+                `  ! ${DIRECTIVES_RESEARCH_DIR}/${it.slug}: references unknown source '${s}' (not in ${DIRECTIVES_SOURCES_FILE})`,
               )
             }
           }
@@ -474,7 +485,12 @@ export const report = Command.make(
                   sync
                     .run({
                       vaultDir,
-                      prefixes: ["reports", "briefs", "wiki/sources"],
+                      prefixes: [
+                        INPUT_REPORTS_DIR,
+                        INPUT_BRIEFS_DIR,
+                        INPUT_RAW_DIR,
+                        INPUT_WIKI_DIR,
+                      ],
                       dryRun: false,
                       force: false,
                     })
@@ -557,6 +573,6 @@ export const report = Command.make(
     }),
 ).pipe(
   Command.withDescription(
-    "Generate deep weekly research reports (one file per interest) from research/ (optionally --send the index to channels)",
+    "Generate deep weekly research reports (one file per interest) from directives/research/ (optionally --send the index to channels)",
   ),
 )

@@ -27,25 +27,25 @@ describe("weekly report (per-interest deep analysis + stub LLM + strict renderer
     vaultDir = await mkdtemp(join(tmpdir(), "uber-vault-"))
     await seedPage(
       vaultDir,
-      "research/japan-macro.md",
+      "directives/research/japan-macro.md",
       'slug: japan-macro\ntitle: Japan macro\nquestion: "What is moving BoJ?"\ntopics: [japan-macro]\n',
       "# Japan macro interest",
     )
     await seedPage(
       vaultDir,
-      "research/us-midterms-2026.md",
+      "directives/research/us-midterms-2026.md",
       'slug: us-midterms-2026\ntitle: US 2026 midterms\nquestion: "Which races are shifting?"\ntopics: [us-midterms-2026]\n',
       "# US midterms interest",
     )
     await seedPage(
       vaultDir,
-      "wiki/sources/2026-04-22--wikipedia-boj.md",
+      "input/raw/2026-04-22--wikipedia-boj.md",
       "page_type: source\nslug: 2026-04-22--wikipedia-boj\ntitle: Bank of Japan\ntopics: [japan-macro]\n",
       "# BoJ\n\nThe BoJ held its policy rate steady.",
     )
     await seedPage(
       vaultDir,
-      "wiki/sources/2026-04-22--wikipedia-2026-senate.md",
+      "input/raw/2026-04-22--wikipedia-2026-senate.md",
       "page_type: source\nslug: 2026-04-22--wikipedia-2026-senate\ntitle: 2026 Senate\ntopics: [us-midterms-2026]\n",
       "# 2026 Senate\n\n33 Class 2 seats plus 2 specials are on the 2026 ballot.",
     )
@@ -198,7 +198,7 @@ describe("weekly report (per-interest deep analysis + stub LLM + strict renderer
 
     const result = await Effect.runPromise(program)
 
-    expect(result.writtenIndex.relPath).toBe("reports/2026-W17.md")
+    expect(result.writtenIndex.relPath).toBe("input/reports/2026-W17.md")
     const indexOnDisk = await readFile(
       join(vaultDir, result.writtenIndex.relPath),
       "utf8",
@@ -215,7 +215,7 @@ describe("weekly report (per-interest deep analysis + stub LLM + strict renderer
     ])
 
     const jpOnDisk = await readFile(
-      join(vaultDir, "reports/2026-W17--japan-macro.md"),
+      join(vaultDir, "input/reports/2026-W17--japan-macro.md"),
       "utf8",
     )
     expect(jpOnDisk).toContain("page_type: report")
@@ -227,7 +227,7 @@ describe("weekly report (per-interest deep analysis + stub LLM + strict renderer
     expect(jpOnDisk).not.toContain("[[2026-04-22--wikipedia-2026-senate]]")
 
     const usOnDisk = await readFile(
-      join(vaultDir, "reports/2026-W17--us-midterms-2026.md"),
+      join(vaultDir, "input/reports/2026-W17--us-midterms-2026.md"),
       "utf8",
     )
     expect(usOnDisk).toContain('interest_slug: "us-midterms-2026"')

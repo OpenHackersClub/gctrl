@@ -20,7 +20,7 @@ const summarizeDefaultFromEnv = (): boolean => {
 };
 
 const urlOpt = Options.text("url").pipe(
-  Options.withDescription("URL to fetch and store under wiki/sources/"),
+  Options.withDescription("URL to fetch and store under input/raw/"),
 );
 
 const dateOpt = Options.text("date").pipe(
@@ -34,7 +34,7 @@ const minWordsOpt = Options.integer("min-words").pipe(
 );
 
 const overwriteOpt = Options.boolean("overwrite").pipe(
-  Options.withDescription("Overwrite an existing wiki/sources/<slug>.md"),
+  Options.withDescription("Overwrite an existing input/raw/<slug>.md"),
   Options.withDefault(false),
 );
 
@@ -96,7 +96,7 @@ const url = Command.make(
         ),
       );
     }),
-).pipe(Command.withDescription("Fetch a URL and write wiki/sources/<date>--<domain>.md"));
+).pipe(Command.withDescription("Fetch a URL and write input/raw/<date>--<domain>.md"));
 
 const driverOpt = Options.text("driver").pipe(
   Options.withDescription("Only ingest sources with this driver (default: rss)"),
@@ -109,7 +109,7 @@ const sinceHoursOpt = Options.integer("since-hours").pipe(
 );
 
 const sourceSlugOpt = Options.text("source").pipe(
-  Options.withDescription("Restrict to a single source slug from sources.md"),
+  Options.withDescription("Restrict to a single source slug from directives/sources.md"),
   Options.optional,
 );
 
@@ -298,7 +298,7 @@ const sources = Command.make(
     }),
 ).pipe(
   Command.withDescription(
-    "Walk sources.md, fetch each feed, and ingest recent items through the source pipeline",
+    "Walk directives/sources.md, fetch each feed, and ingest recent items through the source pipeline",
   ),
 );
 

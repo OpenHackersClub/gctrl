@@ -58,9 +58,9 @@ sequenceDiagram
 |-------|-------|---------|-------|
 | **Source arrives** | driver-rss / user forward / scheduled crawl | `traffic` (kernel) | Raw HTTP capture; domain, URL, bytes, timestamp |
 | **Page rendered** | `gctrl-net` | filesystem `~/.local/share/gctrl/spider/<domain>/` | Markdown via readability; quality gate (min-words); pre-vault staging |
-| **Source filed** | `gctrl kb ingest` (agent workflow) | `context_entries` (kernel index) + `$UBER_VAULT_DIR/wiki/sources/*.md` (markdown) | Source summary page; provenance preserved; appears in Obsidian graph immediately |
-| **Entities/topics updated** | LLM ingest pass | `$UBER_VAULT_DIR/wiki/entities/*.md`, `$UBER_VAULT_DIR/wiki/topics/*.md` | Cross-links added; contradictions flagged |
-| **Index + log updated** | LLM ingest pass | `$UBER_VAULT_DIR/wiki/index.md`, `$UBER_VAULT_DIR/wiki/log.md` | Catalog + chronological audit |
+| **Source filed** | `gctrl kb ingest` (agent workflow) | `context_entries` (kernel index) + `$UBER_VAULT_DIR/input/raw/*.md` (markdown) | Source summary page; provenance preserved; appears in Obsidian graph immediately |
+| **Entities/topics updated** | LLM ingest pass | `$UBER_VAULT_DIR/input/wiki/entities/*.md`, `$UBER_VAULT_DIR/input/wiki/topics/*.md` | Cross-links added; contradictions flagged |
+| **Index + log updated** | LLM ingest pass | `$UBER_VAULT_DIR/input/wiki/index.md`, `$UBER_VAULT_DIR/input/wiki/log.md` | Catalog + chronological audit |
 | **Brief-eligible** | curator query | read-only | Page enters the next brief candidate set if tagged with an active topic and updated within the brief window |
 
 ## Briefing Lifecycle
@@ -69,7 +69,7 @@ sequenceDiagram
 |-------|-------|---------|-------|
 | `pending` | Scheduler creates row | `uber_briefs` (SQLite) | Triggered by cron or on-demand (`gctrl uber brief`) |
 | `curating` | Curator LLM run | `sessions` + `spans` | prompt_hash recorded; cost accumulates |
-| `rendered` | Renderer writes vault markdown + SQLite index | `$UBER_VAULT_DIR/briefs/<YYYY-MM-DD>.md` + `uber_briefs.vault_path`, `.content_hash` | Citations verified — unresolved bare `[[slug]]` fails the render |
+| `rendered` | Renderer writes vault markdown + SQLite index | `$UBER_VAULT_DIR/input/briefs/<YYYY-MM-DD>.md` + `uber_briefs.vault_path`, `.content_hash` | Citations verified — unresolved bare `[[slug]]` fails the render |
 | `delivered` | Deliverer fans out to channels (reads vault file) | `uber_deliveries` | One row per (brief_id, channel); idempotent |
 | `scored` | Human + automated evaluators (read vault file) | `scores` | Human score optional; automated scores always written |
 | `archived` | After retention window | no-op | Vault file stays (R2-retained); SQLite row gets `archived_at` |
@@ -132,7 +132,7 @@ Uebermensch runs LLM work via kernel personas. Defaults configured in profile un
 | `uber-deepdive` | read, generation | Long-form thesis deep-dive synthesis |
 | `uber-evaluator` | read (briefs, sources), generation | LLM-as-judge eval over briefs |
 
-Each persona maps to a `prompt_versions` row templated under `apps/uebermensch/personas/<persona>.md` with vault overrides from `$UBER_VAULT_DIR/personas/<persona>.md` (authored tier) taking precedence. (Note: the vault's `prompts/` folder is reserved for user-authored research queries — see [profile.md § prompts/](vault/specs/profile.md#promptsslugmd-optional).)
+Each persona maps to a `prompt_versions` row templated under `apps/uebermensch/personas/<persona>.md` with vault overrides from `$UBER_VAULT_DIR/directives/personas/<persona>.md` (authored tier) taking precedence. (Note: the vault's `directives/prompts/` folder is reserved for user-authored research queries — see [profile.md § directives/prompts/](vault/specs/profile.md#directivespromptsslugsmd-optional).)
 
 ## Dispatch Flow (Agent Work on Uebermensch)
 
@@ -155,7 +155,7 @@ Local daemon + vault is always the source of truth during development. Cloud dep
 
 1. Install Obsidian (desktop / mobile).
 2. "Open folder as vault" → select `$UBER_VAULT_DIR`.
-3. First-run banner: "This vault is managed by Uebermensch. Authored files (`profile.md`, `theses/`, `personas/`, `prompts/`) are yours; generated files (`wiki/`, `briefs/`) are updated by the daemon — edit with care. Drop research questions into `prompts/` and run `gctrl uber query process`." — shipped via `README.md` at the vault root.
+3. First-run banner: "This vault is managed by Uebermensch. Authored files (`directives/`, `output/`, `action/`) are yours; generated files (`input/`) are updated by the daemon — edit with care. Drop research questions into `directives/prompts/` and run `gctrl uber query process`." — shipped via `README.md` at the vault root.
 4. Obsidian workspace state is per-machine (gitignored, not R2-synced) — each device has its own pinned notes and pane layout.
 
 ### Multi-device via R2

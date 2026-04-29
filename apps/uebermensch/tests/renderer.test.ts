@@ -11,7 +11,7 @@ import {
 import type { WikiPage } from "../src/services/VaultService.js"
 
 const page = (stem: string): WikiPage => ({
-  relPath: `wiki/sources/${stem}.md`,
+  relPath: `input/raw/${stem}.md`,
   stem,
   frontmatter: { page_type: "source", slug: stem, topics: ["foo"] },
   body: "",

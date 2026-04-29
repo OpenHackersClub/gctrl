@@ -8,7 +8,7 @@
 
 | Task | Description | Priority | Depends On | Issue |
 |------|-------------|----------|------------|-------|
-| Vault scaffolding | Template vault shape — `profile.md`, `topics.md`, `sources.md`, `theses/`, `personas/`, `prompts/`, `.obsidian/` defaults, `.gitignore` — emitted by `gctrl uber vault init` | P0 | — | TBD |
+| Vault scaffolding | Template vault shape — `directives/` (profile.md, topics.md, sources.md, theses/, personas/, prompts/), `input/raw/`, `input/wiki/`, `input/briefs/`, `input/reports/`, `output/`, `action/events/`, `.obsidian/` defaults, `.gitignore` — emitted by `gctrl uber vault init` | P0 | — | TBD |
 | Profile schema lock-in | Finalise profile+vault layout in `vault/specs/profile.md`; commit sample vault | P0 | — | TBD |
 | Profile/Vault reader | Effect-TS `ProfileService` reading markdown + YAML frontmatter from `$UBER_VAULT_DIR` (authored tier) with schema validation; VaultWatcher fiber for `fs.watch` | P0 | Profile schema | TBD |
 | Kernel vault mount | Wire `gctrl-kb` with `context_root = $UBER_VAULT_DIR, wiki_subpath = "wiki"` so the kernel reads/writes wiki pages at the vault root. Retire the legacy `~/.local/share/gctrl/context/wiki` path for Uebermensch workspaces. | P0 | Profile/Vault reader | TBD |
@@ -16,11 +16,11 @@
 | HTTP routes (kernel proxy) | Kernel-side `/api/uber/briefs` CRUD — resolves `vault_path` to markdown on read | P0 | Storage migration | TBD |
 | CLI: `gctrl uber vault init` | Scaffold an empty `$UBER_VAULT_DIR` from the template, derive `identity.slug` from name | P0 | Vault scaffolding | TBD |
 | CLI: `gctrl uber profile validate` | Round-trip parse + report on authored tier | P0 | Profile reader | TBD |
-| CLI: `gctrl uber brief` (vault + stdout) | Reads 24h of wiki pages, calls LLM via `driver-llm` (stub OK), writes `briefs/<date>.md` atomically to the vault, echoes markdown to stdout | P0 | Profile reader, driver-llm stub, Kernel vault mount | TBD |
+| CLI: `gctrl uber brief` (vault + stdout) | Reads 24h of wiki pages, calls LLM via `driver-llm` (stub OK), writes `input/briefs/<date>.md` atomically to the vault, echoes markdown to stdout | P0 | Profile reader, driver-llm stub, Kernel vault mount | TBD |
 | driver-llm stub | `LlmPort` trait + stub adapter returning fixture data; real adapters in M1 | P0 | — | TBD |
 | Prompt versioning plumbing | Every LLM call via `driver-llm` registers a `prompt_versions` row keyed by SHA-256 of rendered prompt | P0 | driver-llm stub | TBD |
 
-**Done when:** `gctrl uber brief` writes a valid brief markdown file under `$UBER_VAULT_DIR/briefs/` and inserts a matching `uber_briefs` row with `vault_path` + `content_hash`, against a sample vault and fixture LLM, with every LLM call recorded as a Session/spans with a `prompt_hash`. Opening the vault in Obsidian shows the brief in the graph.
+**Done when:** `gctrl uber brief` writes a valid brief markdown file under `$UBER_VAULT_DIR/input/briefs/` and inserts a matching `uber_briefs` row with `vault_path` + `content_hash`, against a sample vault and fixture LLM, with every LLM call recorded as a Session/spans with a `prompt_hash`. Opening the vault in Obsidian shows the brief in the graph.
 
 ## M1: Ingest, KB Extensions & Vault Sync — Planned
 
@@ -29,14 +29,14 @@
 | Task | Description | Priority | Depends On | Issue |
 |------|-------------|----------|------------|-------|
 | Investment KB schema | `kb-schema.md` shipped under `vault/specs/knowledge-base.md` — page types, frontmatter, lint rules, bare-slug wikilink convention | P0 | M0 | TBD |
-| Thesis page type | Extend `gctrl-kb` `WikiPageType` with `Thesis`; wiki lint knows about it; thesis pages live at `$UBER_VAULT_DIR/theses/` (authored tier) | P0 | Investment KB schema | TBD |
+| Thesis page type | Extend `gctrl-kb` `WikiPageType` with `Thesis`; wiki lint knows about it; thesis pages live at `$UBER_VAULT_DIR/directives/theses/` (authored tier) | P0 | Investment KB schema | TBD |
 | R2 vault sync (bidirectional) | Extend kernel sync with `sync.vault.uber` mount per [profile.md § Sync (R2)](vault/specs/profile.md#sync-r2) — object keys `vault/<identity.slug>/<vault_path>`, debounced 30s push, 5min pull, conflict files as `<stem>.conflict-<device>-<ts>.md` | P0 | M0 Kernel vault mount | TBD |
 | `gctrl uber vault pull --from r2` | Bootstrap a fresh device from R2 for a given `identity.slug` — LISTs the prefix, downloads every key, seeds `.gctrl-uber/index.jsonl`, then hands off to the bidirectional sync | P0 | R2 vault sync | TBD |
 | `gctrl uber vault conflicts` | List outstanding `*.conflict-*.md` files under the vault so the user can resolve in Obsidian | P1 | R2 vault sync | TBD |
-| driver-rss | Kernel LKM polling RSS feeds listed in profile, producing sources under `$UBER_VAULT_DIR/wiki/sources/` | P0 | M0 Kernel vault mount | TBD |
+| driver-rss | Kernel LKM polling RSS feeds listed in profile, producing sources under `$UBER_VAULT_DIR/input/raw/` | P0 | M0 Kernel vault mount | TBD |
 | driver-llm: local-first adapter | Real client behind `LlmPort`. **Default**: LM Studio at `http://127.0.0.1:1234/v1/chat/completions`, default model `google/gemma-4-31b`. **Opt-in**: Cloudflare AI Gateway via `GCTRL_LLM_PROVIDER=cloudflare` (kernel holds `CF_API_TOKEN` + `CLOUDFLARE_AI_GATEWAY_ID`). Anthropic-shape models reachable via `/api/llm/messages` | P0 | M0 driver-llm stub | TBD |
 | Curator pipeline | Effect-TS `CuratorService` — query wiki for recent+topic-matching pages, call LLM, emit ranked brief items with bare `[[slug]]` citations | P0 | driver-llm local-first adapter, KB schema | TBD |
-| Renderer | Write `briefs/<date>.md` with frontmatter + H2 items + citation verification; fail on unresolved bare `[[slug]]` or any typed prefix | P0 | Curator | TBD |
+| Renderer | Write `input/briefs/<date>.md` with frontmatter + H2 items + citation verification; fail on unresolved bare `[[slug]]` or any typed prefix | P0 | Curator | TBD |
 | Scheduler wiring | `uber.brief.daily` registered via Scheduler port on daemon start | P0 | M0, Curator | TBD |
 | `gctrl uber ingest --url` | End-to-end URL → vault source page + entity updates | P0 | driver-llm local-first adapter | TBD |
 | Daily budget guardrail | Guardrail policy enforcing `profile.budgets.daily_usd`; pauses Uebermensch sessions when breached | P0 | M0 | TBD |
@@ -78,7 +78,7 @@
 | Action items (UBER project) | `gctrl uber brief` items convert to `UBER-N` issues in gctrl-board via `/api/board/issues` | P1 | gctrl-board | TBD |
 | Action reminders | Open UBER actions past due surface in next brief | P2 | Action items | TBD |
 
-**Done when:** A monthly thesis deep-dive produces a `wiki/synthesis/thesis-*-update-<date>.md` with ≥3 new citations since last update, and a Kalshi market move on a watched topic produces an inbox alert within 10 min.
+**Done when:** A monthly thesis deep-dive produces a `input/wiki/synthesis/thesis-*-update-<date>.md` with ≥3 new citations since last update, and a Kalshi market move on a watched topic produces an inbox alert within 10 min.
 
 ## M4: Eval Rigor + Index Sync — Planned
 
@@ -104,7 +104,7 @@
 | Task | Description | Priority | Depends On | Issue |
 |------|-------------|----------|------------|-------|
 | `SinkInService` scaffold | Effect-TS service with gap-pass + answer-pass + file-pages stages; connected to `KbPort` + `LlmPort` | P0 | M1 | TBD |
-| `uber-sinkin` prompt templates | `personas/sinkin-gap.md` + `personas/sinkin-answer.md`; prompt-injection sentinels; gap cap enforcement | P0 | SinkInService scaffold | TBD |
+| `uber-sinkin` prompt templates | `directives/personas/sinkin-gap.md` + `directives/personas/sinkin-answer.md`; prompt-injection sentinels; gap cap enforcement | P0 | SinkInService scaffold | TBD |
 | `uber_sinkin_sessions` table | SQLite table tracking per-session cost, scope, gap/connection counts | P0 | M0 storage migration | TBD |
 | `gctrl uber sinkin` CLI | Run scheduled SinkIn; `--topic`, `--thesis`, `--dry-run` flags; session report to stdout | P0 | SinkInService | TBD |
 | `gctrl uber query` CLI | Answer a user question from the wiki; `--file` flag files as Question page | P0 | SinkInService | TBD |
@@ -122,14 +122,14 @@
 
 | Task | Description | Priority | Depends On | Issue |
 |------|-------------|----------|------------|-------|
-| `calendar/` vault layout + frontmatter schema | New top-level dir; `EventFrontmatter` with `slug, title, kind, source, starts_at, ends_at, tz, tickers, topics, theses, tags, reminders, status` | P0 | M0 vault scaffolding | TBD |
+| Calendar vault layout + frontmatter schema | `action/events/` (authored events) + `action/events/generated/` (driver-pulled events); `EventFrontmatter` with `slug, title, kind, source, starts_at, ends_at, tz, tickers, topics, theses, tags, reminders, status` | P0 | M0 vault scaffolding | TBD |
 | `uber_calendar` + `uber_calendar_reminders` SQLite migrations | Index tables with `(starts_at)`, `(kind, starts_at)`, `(source, starts_at)`, `(source, external_id)` indexes | P0 | M0 storage migration | TBD |
 | `CalendarService` + filter predicate engine | Effect-TS service: list/get/create/update/remove with predicate set (source, kind, from/to, tickers, topics, theses, tag, status, q) | P0 | calendar schema | TBD |
 | CLI: `gctrl uber calendar {list,show,add,edit,remove,reindex}` | Mirrors filter predicates; `add/edit` round-trips through schema | P0 | CalendarService | TBD |
 | Briefing-pipeline integration | Renderer prepends "On the calendar today" section grouped by `kind`; curator prompt receives `<calendar_today>` block | P0 | M1 Curator pipeline | TBD |
 | Reminder scheduler + delivery | Compute `fire_at = starts_at + offset` on event write; Scheduler polls `pending` rows; hand off to existing `DelivererService` | P0 | M2 Deliverer | TBD |
 | `.ics` feed at `/api/uber/calendar/feed.ics` | Read-only iCalendar export of the active default view; bearer token auth in query param | P1 | CalendarService HTTP API | TBD |
-| `driver-markets` calendar producer | Earnings calendar + macro release dates; writes `calendar/generated/<date>--<ticker>-<period>-earnings.md` and macro events | P0 | M3 driver-markets | TBD |
+| `driver-markets` calendar producer | Earnings calendar + macro release dates; writes `action/events/generated/<date>--<ticker>-<period>-earnings.md` and macro events | P0 | M3 driver-markets | TBD |
 | `driver-sec` calendar producer | Lockup expiries, S-1/S-3 effective dates, scheduled comment periods | P1 | M3 driver-sec | TBD |
 | `driver-gcal` (read-only) | OAuth 2.0 via kernel; poll Google Calendar; mirror events with `source: driver-gcal` | P0 | calendar schema | TBD |
 | App web UI: Calendar view (agenda + week + month) | Filter chip strip; saved view presets; agenda/week/month layout modes | P1 | M2 App web UI | TBD |

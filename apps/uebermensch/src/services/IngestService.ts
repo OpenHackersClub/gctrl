@@ -7,12 +7,12 @@ export type IngestUrlRequest = {
   readonly topicSlugs: ReadonlyArray<string>;
   readonly minWordCount: number;
   readonly overwrite: boolean;
-  // Topics this source CAN cover (from sources.md). Used as a ceiling — the final
-  // set is (forceTopics ∩ classified). Pass undefined to skip the intersection and
-  // use classifier results alone (e.g. from manual `uber ingest url`).
+  // Topics this source CAN cover (from directives/sources.md). Used as a ceiling — the
+  // final set is (forceTopics ∩ classified). Pass undefined to skip the intersection
+  // and use classifier results alone (e.g. from manual `uber ingest url`).
   readonly forceTopics?: ReadonlyArray<string>;
-  // Per-topic watchlist terms from topics.md. Expanded during classification so
-  // a page matches `japan-macro` when its text mentions "boj", "yen", "jgb" etc.
+  // Per-topic watchlist terms from directives/topics.md. Expanded during classification
+  // so a page matches `japan-macro` when its text mentions "boj", "yen", "jgb" etc.
   readonly topicWatchlists?: Readonly<Record<string, ReadonlyArray<string>>>;
   // Free description/summary from the feed item (RSS <description> / Atom <summary>).
   // Used as body when the fetched article turns out to be paywalled.

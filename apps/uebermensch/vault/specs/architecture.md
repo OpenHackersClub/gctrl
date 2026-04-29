@@ -67,8 +67,8 @@ Dependencies MUST flow inward only (see [principles.md § Architectural Invarian
 
 | Concern | Layer | Component | Notes |
 |---------|-------|-----------|-------|
-| User topics, theses, delivery prefs (authored tier) | L0 filesystem | `$UBER_VAULT_DIR/{profile.md,topics.md,sources.md,theses/,personas/,prompts/}` | Git-versioned, Obsidian-mountable, portable — see [profile.md](profile.md). `personas/` holds per-persona prompt overrides; `prompts/` holds user-authored research queries processed by `gctrl uber prompts process`. |
-| Generated pages + briefs (generated tier) | L0 filesystem | `$UBER_VAULT_DIR/{wiki/,briefs/}` (`wiki/` contains `sources/`, `synthesis/`, `entities/`, `topics/`, `questions/`) | Gitignored, R2-synced, reproducible from sources |
+| User topics, theses, delivery prefs (authored tier) | L0 filesystem | `$UBER_VAULT_DIR/directives/{profile.md,topics.md,sources.md,theses/,personas/,me.md,projects.md,avoid.md}` + `$UBER_VAULT_DIR/directives/prompts/` + `$UBER_VAULT_DIR/action/events/` | Git-versioned, Obsidian-mountable, portable — see [profile.md](profile.md). `directives/personas/` holds per-persona prompt overrides; `directives/prompts/` holds user-authored research queries processed by `gctrl uber prompts process`. |
+| Generated pages, briefs, reports, raw fetches (generated tier) | L0 filesystem | `$UBER_VAULT_DIR/{input/wiki/,input/briefs/,input/reports/,input/raw/,action/events/generated/}` (`input/wiki/` contains `entities/`, `topics/`, `synthesis/`, `questions/`, `index.md`, `log.md`; `input/briefs/` holds daily briefs; `input/reports/` holds deep-dives; `input/raw/` holds driver-fetched content; `action/events/generated/` holds driver-pulled events) | Gitignored, R2-synced, reproducible from sources |
 | Parse + validate profile | L4 | `ProfileService` | Effect-TS `Schema` over markdown/YAML |
 | Raw source capture | L2 extension | `gctrl-net`, `gctrl-context` | Reuses kernel primitives — no new storage |
 | Knowledge graph | L2 extension | `gctrl-kb` mounted at `$UBER_VAULT_DIR/wiki/` | Investment page types, `kb-schema.md` authored in vault |
@@ -100,7 +100,7 @@ flowchart LR
     obs["Obsidian\n(optional)"]
   end
   subgraph fs["Filesystem"]
-    vault["$UBER_VAULT_DIR\n(profile + wiki + briefs)"]
+    vault["$UBER_VAULT_DIR\n(directives + input + output + action)"]
     duck[".local/share/gctrl/gctrl.duckdb"]
   end
   subgraph cloud["Cloud"]
@@ -110,7 +110,7 @@ flowchart LR
   ud -->|"HTTP :4318"| kd
   ud -->|"read-only"| vault
   ud -->|"write (generated tier)\nvia KbPort"| kd
-  kd -->|"fs read/write\n(wiki, briefs)"| vault
+  kd -->|"fs read/write\n(input/raw, output, wiki)"| vault
   kd -->|"single writer"| duck
   kd -.->|"sync (debounced 30s)"| r2
   kd -.->|"row sync"| d1
@@ -153,10 +153,10 @@ sequenceDiagram
     Llm-->>KRouter: text + token counts
     KRouter-->>Curator: spans persisted; prompt_hash returned
     Curator-->>Briefing: brief items (JSON)
-    Briefing->>Vault: write briefs/<date>.md (atomic rename)
+    Briefing->>Vault: write input/briefs/<date>.md (atomic rename)
     Briefing->>KRouter: POST /api/uber/briefs (vault_path + content_hash)
     Briefing->>Deliverer: deliver(brief)
-    Deliverer->>Vault: read briefs/<date>.md
+    Deliverer->>Vault: read input/briefs/<date>.md
     Deliverer->>KRouter: POST /api/telegram/send (driver-telegram)
     KRouter->>Tg: send message
     Tg-->>KRouter: delivery id
@@ -208,7 +208,7 @@ Service ports follow the [`arch-taste.md` Effect-TS pattern](../../../../debuggi
 
 ## 6. External Vault Integration
 
-The **authored tier** of the vault is **read-only to the app**. The app watches the directory via `ProfileService`/`VaultWatcher`, which exposes a `Stream<ProfileChange>` to consumers. The **generated tier** (wiki, briefs, sources, synthesis) is writable by the kernel + Uebermensch services.
+The **authored tier** of the vault (`directives/**`, `output/**`, `action/**` excl. `action/events/generated/**`) is **read-only to the app**. The app watches the directory via `ProfileService`/`VaultWatcher`, which exposes a `Stream<ProfileChange>` to consumers. The **generated tier** (`input/**`, `action/events/generated/**`) is writable by the kernel + Uebermensch services.
 
 ```ts
 class ProfilePort extends Context.Tag("uber/ProfilePort")<ProfilePort, {
@@ -241,7 +241,7 @@ Re-used as-is:
 - `sessions`, `spans`, `traffic` — every LLM call and scrape
 - `prompt_versions`, `session_prompts` — prompt audit trail
 - `scores` — brief + item scoring (kernel-owned; single evaluation table shared across apps)
-- `context_entries` — source pages (projected from vault `wiki/**` markdown)
+- `context_entries` — source pages (projected from vault `wiki/**` and `input/raw/**` markdown)
 - `kb_links`, `kb_pages` — wiki graph (see [knowledgebase.md](../../../../vault/specs/architecture/kernel/knowledgebase.md))
 
 ### App-owned tables (namespace `uber_*`)
@@ -258,19 +258,29 @@ Rows MUST carry `device_id` + `updated_at` for sync. Transition rules enforced a
 
 ### Vault layout (summary)
 
-Full layout in [profile.md § Vault Layout](profile.md#vault-layout). The brief-relevant paths:
+Full layout in [profile.md § Vault Layout](profile.md#vault-layout). The four canonical roots, brief-relevant paths:
 
 ```
 $UBER_VAULT_DIR/
-├── profile.md, topics.md, sources.md         # authored tier (git-tracked)
-├── theses/<slug>.md                          # authored tier
-├── briefs/
-│   ├── <YYYY-MM-DD>.md                       # daily brief (generated; R2-synced)
-│   └── deepdive/thesis-<slug>-<date>.md      # deepdive (generated)
-└── wiki/                                     # generated tier — sources, entities, topics, synthesis
+├── directives/                               # authored — user config + research stance
+│   ├── profile.md, topics.md, sources.md, avoid.md, me.md, projects.md, personas.md
+│   ├── personas/, theses/<slug>.md
+│   └── prompts/<slug>.md                     # authored — research queries (→ input/reports/)
+├── input/
+│   ├── raw/                                  # generated — driver-fetched URL summaries
+│   ├── wiki/                                 # generated — entities, topics, synthesis, questions, index, log
+│   ├── briefs/<YYYY-MM-DD>.md               # generated — daily brief
+│   ├── briefs/deepdive/thesis-<slug>-<date>.md
+│   └── reports/<slug>.md                     # generated — consolidated answers to prompts
+├── output/                                   # user's writing; CoS reviews + suggests
+└── action/
+    ├── events/                               # authored personal events
+    │   ├── generated/                        # generated — driver-pulled events
+    │   └── recurring/                        # authored recurring events (RFC 5545 RRULE)
+    └── strategies/, plans/, tasks/           # authored — awaiting user greenlight
 ```
 
-The kernel `gctrl-kb` crate is configured with `context_root = $UBER_VAULT_DIR, wiki_subpath = "wiki"` — there is no separate `~/.local/share/gctrl/context/wiki/` path when running under an Uebermensch workspace.
+The kernel `gctrl-kb` crate is configured with `context_root = $UBER_VAULT_DIR, wiki_subpath = "input/wiki"`, plus a secondary `raw_subpath = "input/raw"` mount for ingested source pages — there is no separate `~/.local/share/gctrl/context/wiki/` path when running under an Uebermensch workspace.
 
 ### Filesystem artifacts
 

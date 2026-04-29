@@ -78,15 +78,15 @@ Implementation: `CuratorService` (Effect-TS) → `LlmPort.generate`.
 
 ### Prompt Contracts
 
-Prompt templates under `apps/uebermensch/personas/<persona>.md`, overridable by profile (`$UBER_VAULT_DIR/personas/<persona>.md`).
+Prompt templates under `apps/uebermensch/personas/<persona>.md`, overridable by profile (`$UBER_VAULT_DIR/directives/personas/<persona>.md`).
 
 **Variables injected at render time** (required):
 
 | Variable | Type | Source |
 |----------|------|--------|
 | `{{identity}}` | string | `profile.identity` serialised (name, tz, lang) |
-| `{{me_md}}` | string | raw contents of `$UBER_VAULT_DIR/ME.md` (authored) |
-| `{{projects_md}}` | string | raw contents of `$UBER_VAULT_DIR/projects.md` (authored) |
+| `{{me_md}}` | string | raw contents of `$UBER_VAULT_DIR/directives/me.md` (authored) |
+| `{{projects_md}}` | string | raw contents of `$UBER_VAULT_DIR/directives/projects.md` (authored) |
 | `{{topics}}` | YAML | `profile.topics` |
 | `{{theses}}` | YAML | `profile.theses` (frontmatter only) |
 | `{{avoid}}` | bullet list | `profile.avoid[]` |
@@ -175,17 +175,17 @@ Fallback briefs still render — the user always gets *something*. The fallback 
 
 ## 4. Render + Verify
 
-Almost pure — the one side effect is writing the vault markdown file. Renderer reads wiki page titles (for link resolution) and writes one file under `$UBER_VAULT_DIR/briefs/`.
+Almost pure — the one side effect is writing the vault markdown file. Renderer reads wiki page titles (for link resolution) and writes one file under `$UBER_VAULT_DIR/input/briefs/`.
 
 ### Steps
 
 1. For each `item.source_page_ids[i]`, resolve `candidate_id → wiki_page_id`. Reject (error-out the brief) if any candidate id is fabricated (not in the set we fed in).
 2. Parse each `summary_md` for `[[slug]]` links. For each:
-   - Resolve to a vault file by filename stem under `$UBER_VAULT_DIR/{wiki,theses,briefs}/**` (see "Citation verification is strict" below for the authoritative lookup rule).
+   - Resolve to a vault file by filename stem under `$UBER_VAULT_DIR/{input/wiki,directives/theses,input/raw,input/briefs,input/reports}/**` (see "Citation verification is strict" below for the authoritative lookup rule).
    - If unresolved → `CitationUnresolved` error (reject the brief).
    - Any typed prefix (`[[type:slug]]`) → `CitationUnresolved` immediately — typed prefixes are forbidden, the curator preamble said so, and the renderer does not try to recover.
 3. Compose the vault markdown file:
-   - **Path:** `briefs/<generated_for>.md` for daily, `briefs/deepdive/thesis-<slug>-<generated_for>.md` for deepdive, `briefs/adhoc-<brief_id>.md` for adhoc.
+   - **Path:** `input/briefs/<generated_for>.md` for daily, `input/briefs/deepdive/thesis-<slug>-<generated_for>.md` for deepdive, `input/briefs/adhoc-<brief_id>.md` for adhoc.
    - **Frontmatter:** `page_type: brief`, `slug` (derived from filename stem), `kind`, `generated_for`, `topics`, `theses`, `session_id`, `prompt_hash`, `cost_usd`, `item_count`, `content_hash` (added after file is written; row update).
    - **Body:** the rendered brief — H2 per item with title, `summary_md` with bare `[[slug]]` wikilinks retained, optional `suggested_action` block.
 4. Write the vault file atomically (`<path>.tmp` → fsync → rename). Compute `content_hash = sha256(bytes)`.
@@ -198,7 +198,7 @@ The renderer MUST NOT write anywhere else — no SQLite writes, no wiki mutation
 
 Per [domain-model.md § 10](domain-model.md#10-invariants), a `rendered` brief MUST have every link resolve. No "close enough" — unresolved links are a bug in the LLM output or the candidate mapping, not a user problem.
 
-A bare `[[<slug>]]` resolves to the first file whose stem matches the slug under `$UBER_VAULT_DIR/{wiki,theses,briefs}/**` (with the same globally-unique slug rule enforced by [knowledge-base.md § Wikilink Conventions](knowledge-base.md#wikilink-conventions)). Thesis citations work naturally because `theses/<slug>.md` participates in the same lookup — no exception branch needed.
+A bare `[[<slug>]]` resolves to the first file whose stem matches the slug under `$UBER_VAULT_DIR/{input/wiki,directives/theses,input/raw,input/briefs,input/reports}/**` (with the same globally-unique slug rule enforced by [knowledge-base.md § Wikilink Conventions](knowledge-base.md#wikilink-conventions)). Thesis citations work naturally because `directives/theses/<slug>.md` participates in the same lookup — no exception branch needed. Source citations resolve into `input/raw/`.
 
 ### Determinism
 

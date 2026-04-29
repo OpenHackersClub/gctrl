@@ -8,7 +8,7 @@
 
 `DelivererService` (Effect-TS, `apps/uebermensch/src/services/deliverer.ts`):
 
-1. Given `brief_id`, load the `uber_briefs` row + items, then read the brief markdown from `uber_briefs.vault_path` (e.g. `$UBER_VAULT_DIR/briefs/2026-04-18.md`).
+1. Given `brief_id`, load the `uber_briefs` row + items, then read the brief markdown from `uber_briefs.vault_path` (e.g. `$UBER_VAULT_DIR/input/briefs/2026-04-18.md`).
 2. Consult `profile.delivery.channels` → compute the set of channels to deliver to now.
 3. For each channel:
    - Render channel-specific payload from the vault markdown + items.

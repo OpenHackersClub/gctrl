@@ -7,6 +7,7 @@ import { FileSystemVaultLive } from "../adapters/FileSystemVault.js"
 import { KernelLlmLive } from "../adapters/KernelLlm.js"
 import { StubLlmLive } from "../adapters/StubLlm.js"
 import { resolveVaultDir } from "../lib/env.js"
+import { DIRECTIVES_PROMPTS_DIR, INPUT_REPORTS_DIR } from "../lib/vault-paths.js"
 import {
   LlmService,
   type ResearchQueryContextPage,
@@ -42,7 +43,9 @@ const forceOpt = Options.boolean("force").pipe(
 )
 
 const dryRunOpt = Options.boolean("dry-run").pipe(
-  Options.withDescription("Print the consolidated answer without writing to wiki/research/"),
+  Options.withDescription(
+    `Print the consolidated answer without writing to ${INPUT_REPORTS_DIR}/`,
+  ),
   Options.withDefault(false),
 )
 
@@ -98,7 +101,7 @@ const renderResearchPage = (args: {
     `page_type: research`,
     `slug: ${args.prompt.slug}`,
     `title: ${JSON.stringify(args.prompt.title)}`,
-    `source_prompt: prompts/${args.prompt.slug}.md`,
+    `source_prompt: ${DIRECTIVES_PROMPTS_DIR}/${args.prompt.slug}.md`,
     `topics: [${args.prompt.topics.join(", ")}]`,
     `generated_at: ${args.generatedAt}`,
     `model: ${args.model}`,
@@ -117,7 +120,7 @@ const list = Command.make("list", {}, () =>
       const queries = yield* QueryService
       const all = yield* queries.list()
       if (all.length === 0) {
-        yield* Console.log(`(no prompts in ${vaultDir}/prompts/)`)
+        yield* Console.log(`(no prompts in ${vaultDir}/${DIRECTIVES_PROMPTS_DIR}/)`)
         return
       }
       for (const p of all) {
@@ -158,7 +161,9 @@ const process_ = Command.make(
   ({ slugOpt: slugOptVal, llmOpt: llmKind, forceOpt: force, dryRunOpt: dryRun }) =>
     Effect.gen(function* () {
       const vaultDir = yield* resolveVaultDir()
-      yield* Console.log(`processing prompts in ${vaultDir}/prompts/ (llm=${llmKind})`)
+      yield* Console.log(
+        `processing prompts in ${vaultDir}/${DIRECTIVES_PROMPTS_DIR}/ (llm=${llmKind})`,
+      )
 
       const program = Effect.gen(function* () {
         const queries = yield* QueryService
@@ -271,7 +276,7 @@ const process_ = Command.make(
     }),
 ).pipe(
   Command.withDescription(
-    "Process pending prompts in $UBER_VAULT_DIR/prompts/ — research each via the LLM and write wiki/research/<slug>.md",
+    `Process pending prompts in $UBER_VAULT_DIR/${DIRECTIVES_PROMPTS_DIR}/ — research each via the LLM and write ${INPUT_REPORTS_DIR}/<slug>.md`,
   ),
 )
 
@@ -279,5 +284,7 @@ export const _internal = { selectContext, renderResearchPage, sha256 }
 
 export const prompts = Command.make("prompts").pipe(
   Command.withSubcommands([list, show, process_]),
-  Command.withDescription("Process user-authored research queries from $UBER_VAULT_DIR/prompts/"),
+  Command.withDescription(
+    `Process user-authored research queries from $UBER_VAULT_DIR/${DIRECTIVES_PROMPTS_DIR}/`,
+  ),
 )
