@@ -122,13 +122,18 @@ test.describe("Kanban Board", () => {
 
     await dragIssueToColumn(page, issue.id, "todo")
 
-    // Card should now be in todo column
-    const todoCol = page.locator('[data-testid="column-todo"]')
-    await expect(todoCol.getByText(issue.title)).toBeVisible({ timeout: 5_000 })
+    // Kernel is the source of truth — wait for the move to land there first.
+    // Against the preview Worker on the local-Chromium fallback path the
+    // /move round-trip can occasionally exceed the 5s assertion window.
+    await expect
+      .poll(async () => (await kernel.getIssue(issue.id)).status, {
+        timeout: 10_000,
+      })
+      .toBe("todo")
 
-    // Kernel confirms the move
-    const updated = await kernel.getIssue(issue.id)
-    expect(updated.status).toBe("todo")
+    // Then the UI reflects it.
+    const todoCol = page.locator('[data-testid="column-todo"]')
+    await expect(todoCol.getByText(issue.title)).toBeVisible({ timeout: 15_000 })
   })
 
   test("drag across multiple columns auto-transits intermediate statuses", async ({
