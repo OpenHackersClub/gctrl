@@ -69,8 +69,18 @@ parquet = "54"
 # MITM Proxy
 hudsucker = "0.24"
 
+# Hashing
+sha2 = "0.10"
+
+# URL parsing
+url = "2"
+
+# Filesystem paths
+dirs = "6"
+
 # Testing
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace"] }
 http = "1"
 http-body-util = "0.1"
+tempfile = "3"
