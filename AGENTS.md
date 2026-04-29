@@ -8,7 +8,7 @@ GroundCtrl (gctrl) is a local-first operating system for human+agent teams. Foll
 
 ## Specs Table of Contents
 
-The `vault/specs/` directory is the single source of truth for cross-cutting design (architecture, principles, glossary, gctrl PRD/WORKFLOW). App-specific specs live under `apps/{app}/specs/` (will move to `apps/{app}/vault/specs/` in a follow-up). Each file has a clear scope — put content in the right place.
+The `vault/specs/` directory is the single source of truth for cross-cutting design (architecture, principles, glossary, gctrl PRD/WORKFLOW). App-specific specs live under `apps/{app}/vault/specs/`. Each file has a clear scope — put content in the right place.
 
 ### Glossary
 
@@ -24,7 +24,7 @@ The `vault/specs/` directory is the single source of truth for cross-cutting des
 
 ### Architecture & Boundaries
 
-> **Convention:** Cross-cutting architecture and implementation specs for the kernel and shell live under `vault/specs/`. App-specific specs live under `apps/{app}/specs/` (moving to `apps/{app}/vault/specs/` in a follow-up). The workspace vault is Obsidian-mountable on its own; mounting it gives an agent the full kernel + shell design context. Mounting an app's vault gives that app's product + design context.
+> **Convention:** Cross-cutting architecture and implementation specs for the kernel and shell live under `vault/specs/`. App-specific specs live under `apps/{app}/vault/specs/`. The workspace vault is Obsidian-mountable on its own; mounting it gives an agent the full kernel + shell design context. Mounting an app's vault gives that app's product + design context.
 
 | Document | Scope | Content that belongs here |
 |----------|-------|--------------------------|
@@ -100,7 +100,6 @@ Detailed programming patterns, code examples, and how-to guides live under `vaul
 | `vault/specs/implementation/kernel/` | Kernel implementation | Rust crate map, dependency graph, subsystem details (OTel, guardrails, context, proxy, sync, net, scheduler), kernel style guide, orchestrator, tracker. |
 | `vault/specs/implementation/shell/` | Shell implementation | Effect-TS CLI (`@effect/cli`), KernelClient/GitHubClient adapters, kernel↔shell HTTP communication patterns. Includes `style.md` (shell-specific Effect-TS rules — `ExecError` for subprocesses, `Option.match` for optional args, no dynamic `require`). |
 | `vault/specs/implementation/apps/` | Application implementation | Effect-TS package structure, gctrl-board details, app style guide (`style.md` — Bad/Good examples for tagged errors, Schema decode, no barrel re-exports), integration modes (sidecar, embedded). |
-| `vault/specs/implementation/formal/` | Formal spec conventions | Lean 4 style: Mathlib, generic theorems, state machine file structure, proof style, naming conventions. |
 | `vault/specs/implementation/repo.md` | Monorepo structure | Nx + Cargo workspace setup, directory layout, cross-language orchestration. |
 | `vault/specs/implementation/kernel/orchestrator.md` | Orchestration implementation | gctrl-orch Rust crate, agent adapters, retry constants, conformance testing. |
 

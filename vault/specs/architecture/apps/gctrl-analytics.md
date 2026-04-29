@@ -15,7 +15,7 @@ App (gctrl-analytics) → Kernel HTTP API (:4318) → Kernel (storage, otel, pro
 - **Depends on the kernel** — reads data via HTTP API only. MUST NOT access DuckDB directly or import kernel crates.
 - **Never depended on by the shell or kernel** — removing the app breaks nothing below it.
 - **Has its own web server** — Cloudflare Worker facade serving a React SPA, separate port from kernel `:4318`. Mirrors `gctrl-board`'s deployment shape.
-- **Shell command surface**: `gctrl analytics ...` commands already exist in `shell/gctl-shell/src/commands/analytics.ts` and cover the CLI surface. This app is **UI-only** — it does not add new shell commands.
+- **Shell command surface**: `gctrl analytics ...` commands already exist in `shell/gctrl-shell/src/commands/analytics.ts` and cover the CLI surface. This app is **UI-only** — it does not add new shell commands.
 
 See [os.md — Dependency Direction](../os.md).
 
