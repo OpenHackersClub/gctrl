@@ -6,6 +6,7 @@
  */
 import { Command, Options } from "@effect/cli"
 import { Console, Effect } from "effect"
+import { AuditError } from "../errors"
 import { execPromise, type CheckResult } from "../lib/exec"
 
 const runCheck = (
@@ -119,13 +120,15 @@ export const auditCommand = Command.make(
 
       if (failed > 0) {
         yield* Console.log("Audit FAILED — fix issues before PR.")
-        return yield* Effect.fail(new Error("Audit failed"))
+        return yield* Effect.fail(
+          new AuditError({ message: "Audit failed", failed, passed })
+        )
       }
 
       yield* Console.log("Audit PASSED — ready for PR.")
     }).pipe(
-      Effect.catchAll((e) =>
-        Console.error(String(e)).pipe(Effect.flatMap(() => Effect.fail(e)))
+      Effect.catchTag("AuditError", (e) =>
+        Console.error(e.message).pipe(Effect.flatMap(() => Effect.fail(e)))
       )
     )
 )
