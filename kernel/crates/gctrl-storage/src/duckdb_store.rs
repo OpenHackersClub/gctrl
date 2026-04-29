@@ -226,6 +226,63 @@ impl DuckDbStore {
         Ok(())
     }
 
+    /// Close out `active` sessions whose last activity (latest span
+    /// `started_at`, or session `started_at` if it has no spans yet) is
+    /// older than `cutoff_iso`. Sets `status = 'completed'` and
+    /// `ended_at = <last_activity>` so the row reflects when the session
+    /// actually went quiet, not when the sweeper noticed.
+    ///
+    /// Returns one tuple per session swept: `(id, ended_at)`. Callers use
+    /// these to publish `session.ended` lifecycle events on the live bus.
+    ///
+    /// `cutoff_iso` must be RFC 3339 / ISO 8601 in UTC (`...Z`) so that
+    /// lexicographic comparison against the stored `started_at` strings
+    /// matches chronological order.
+    pub fn sweep_idle_active_sessions(
+        &self,
+        cutoff_iso: &str,
+    ) -> Result<Vec<(SessionId, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let select_sql = "
+            SELECT s.id,
+                   COALESCE(
+                       (SELECT MAX(started_at) FROM spans WHERE session_id = s.id),
+                       s.started_at
+                   ) AS last_activity
+            FROM sessions s
+            WHERE s.status = 'active'
+              AND s.ended_at IS NULL
+              AND COALESCE(
+                       (SELECT MAX(started_at) FROM spans WHERE session_id = s.id),
+                       s.started_at
+                   ) < ?
+        ";
+        let mut stmt = conn
+            .prepare(select_sql)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![cutoff_iso], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+
+        let mut swept: Vec<(SessionId, String)> = Vec::new();
+        for r in rows {
+            let (id, last) = r.map_err(|e| GctlError::Storage(e.to_string()))?;
+            swept.push((SessionId(id), last));
+        }
+        drop(stmt);
+
+        for (id, ended_at) in &swept {
+            conn.execute(
+                "UPDATE sessions SET status = 'completed', ended_at = ? WHERE id = ? AND status = 'active'",
+                params![ended_at, id.0],
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        }
+        Ok(swept)
+    }
+
     /// Detect error loops: sequences of N identical consecutive operations.
     pub fn detect_error_loops(&self, session_id: &str, threshold: usize) -> Result<Vec<String>> {
         let spans = self.query_spans(&SessionId(session_id.into()))?;
@@ -2702,6 +2759,56 @@ mod tests {
         }
         let sessions = store.list_sessions(3).unwrap();
         assert_eq!(sessions.len(), 3);
+    }
+
+    #[test]
+    fn test_sweep_idle_active_sessions() {
+        use chrono::Duration;
+        let store = test_store();
+
+        // Stale session: started 10 minutes ago, last span 7 minutes ago.
+        let mut stale = make_session("stale");
+        stale.started_at = Utc::now() - Duration::minutes(10);
+        store.insert_session(&stale).unwrap();
+        let mut stale_span = make_span("stale_sp", "stale");
+        stale_span.started_at = Utc::now() - Duration::minutes(7);
+        store.insert_span(&stale_span).unwrap();
+
+        // Recent session: span landed 1 minute ago — must NOT be swept.
+        let mut recent = make_session("recent");
+        recent.started_at = Utc::now() - Duration::minutes(8);
+        store.insert_session(&recent).unwrap();
+        let mut recent_span = make_span("recent_sp", "recent");
+        recent_span.started_at = Utc::now() - Duration::minutes(1);
+        store.insert_span(&recent_span).unwrap();
+
+        // Spanless session: started 6 minutes ago, no spans yet — stale.
+        let mut empty_old = make_session("empty_old");
+        empty_old.started_at = Utc::now() - Duration::minutes(6);
+        store.insert_session(&empty_old).unwrap();
+
+        // Already-completed session older than cutoff — must NOT be touched.
+        let mut closed = make_session("closed");
+        closed.started_at = Utc::now() - Duration::minutes(20);
+        closed.status = SessionStatus::Completed;
+        closed.ended_at = Some(Utc::now() - Duration::minutes(15));
+        store.insert_session(&closed).unwrap();
+
+        let cutoff = (Utc::now() - Duration::minutes(5)).to_rfc3339();
+        let swept = store.sweep_idle_active_sessions(&cutoff).unwrap();
+        let swept_ids: Vec<&str> = swept.iter().map(|(id, _)| id.0.as_str()).collect();
+        assert!(swept_ids.contains(&"stale"));
+        assert!(swept_ids.contains(&"empty_old"));
+        assert!(!swept_ids.contains(&"recent"));
+        assert!(!swept_ids.contains(&"closed"));
+
+        let stale_after = store.get_session(&SessionId("stale".into())).unwrap().unwrap();
+        assert_eq!(stale_after.status, SessionStatus::Completed);
+        assert!(stale_after.ended_at.is_some());
+
+        let recent_after = store.get_session(&SessionId("recent".into())).unwrap().unwrap();
+        assert_eq!(recent_after.status, SessionStatus::Active);
+        assert!(recent_after.ended_at.is_none());
     }
 
     #[test]

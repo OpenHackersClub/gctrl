@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use gctrl_core::{NetConfig, ProxyConfig, SchedulerConfig, SyncConfig};
+use gctrl_otel::{EventBus, SessionSweeper};
 use gctrl_proxy::{Capture, CaptureConfig, LlmRelay, RelayConfig};
 use gctrl_scheduler::ScheduleRunner;
 use gctrl_storage::{DuckDbStore, SqliteStore};
@@ -112,11 +113,29 @@ pub async fn run(
         tracing::info!("LLM relay disabled (--no-relay)");
     }
 
-    let router = gctrl_otel::create_router_full(
+    // Shared event bus: receiver state + session sweeper publish onto the
+    // same broadcast so SSE clients see auto-close events alongside live
+    // span/started events.
+    let event_bus = EventBus::default_capacity();
+
+    // Spawn the session sweeper. Closes out `active` sessions whose latest
+    // activity is older than `GCTRL_SESSION_IDLE_SECS` (default 5 min) so
+    // OTLP-ingested rows that never get an explicit `end_session` don't sit
+    // in `Active` forever.
+    let sweeper_store = Arc::clone(&store);
+    let sweeper_bus = Arc::clone(&event_bus);
+    tokio::spawn(async move {
+        SessionSweeper::new(sweeper_store, sweeper_bus)
+            .run_forever()
+            .await;
+    });
+
+    let router = gctrl_otel::create_router_full_with_bus(
         Arc::clone(&store),
         Arc::clone(&sqlite),
         sync_config,
         Arc::new(net_config),
+        Arc::clone(&event_bus),
     );
     let addr = format!("{host}:{port}");
     tracing::info!("gctrl OTel receiver listening on {addr}");

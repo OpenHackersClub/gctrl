@@ -86,6 +86,25 @@ pub fn create_router_full(
     sync_config: Option<Arc<SyncConfig>>,
     net_config: Arc<NetConfig>,
 ) -> Router {
+    create_router_full_with_bus(
+        store,
+        sqlite,
+        sync_config,
+        net_config,
+        EventBus::default_capacity(),
+    )
+}
+
+/// Same as `create_router_full`, but the caller supplies the live event bus
+/// so other fibers (e.g. the session sweeper) can publish lifecycle events
+/// onto the same channel SSE handlers read from.
+pub fn create_router_full_with_bus(
+    store: Arc<DuckDbStore>,
+    sqlite: Arc<SqliteStore>,
+    sync_config: Option<Arc<SyncConfig>>,
+    net_config: Arc<NetConfig>,
+    event_bus: Arc<EventBus>,
+) -> Router {
     let state = Arc::new(AppState {
         store,
         sqlite: Arc::clone(&sqlite),
@@ -94,7 +113,7 @@ pub fn create_router_full(
         sync_config,
         net_config,
         http_client: reqwest::Client::new(),
-        event_bus: EventBus::default_capacity(),
+        event_bus,
     });
     build_router(state).merge(gctrl_scheduler::http::router(sqlite))
 }

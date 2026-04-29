@@ -23,6 +23,7 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 http = { workspace = true }
+anyhow = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true }
