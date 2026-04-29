@@ -17,8 +17,8 @@ import { createMockKernelClient } from "./helpers/mock-kernel"
 
 const mockProject = {
   id: "proj-1",
-  name: "GroundCtrl",
-  key: "GCTL",
+  name: "Board",
+  key: "BOARD",
   counter: 3,
   github_repo: "OpenHackersClub/gctrl",
 }
@@ -26,7 +26,7 @@ const mockProject = {
 // Board issues (some already synced with GitHub, some not)
 const mockBoardIssues = [
   {
-    id: "GCTL-1",
+    id: "BOARD-1",
     project_id: "proj-1",
     title: "Existing synced issue",
     description: "Already on GitHub",
@@ -48,7 +48,7 @@ const mockBoardIssues = [
     blocking: [],
   },
   {
-    id: "GCTL-2",
+    id: "BOARD-2",
     project_id: "proj-1",
     title: "Board-only issue",
     description: "Not yet on GitHub",
@@ -151,7 +151,7 @@ const MockLayer = createMockKernelClient(
     // POST routes
     "/api/board/issues": {
       ...mockBoardIssues[0],
-      id: "GCTL-4",
+      id: "BOARD-4",
       title: "GitHub-only issue",
       github_issue_number: 11,
     },
@@ -186,7 +186,7 @@ describe("Board GitHub Sync", () => {
     })
 
     const result = await Effect.runPromise(program.pipe(Effect.provide(MockLayer)))
-    const synced = result.find((i) => i.id === "GCTL-1")
+    const synced = result.find((i) => i.id === "BOARD-1")
     expect(synced?.github_issue_number).toBe(10)
     expect(synced?.github_url).toContain("github.com")
   })
@@ -211,7 +211,7 @@ describe("Board GitHub Sync", () => {
 
       // 1. Get project config
       const projects = yield* kernel.get("/api/board/projects", BoardProjectList)
-      const project = projects.find((p) => p.key === "GCTL")!
+      const project = projects.find((p) => p.key === "BOARD")!
       const repo = project.github_repo!
 
       // 2. Fetch GitHub issues
@@ -248,7 +248,7 @@ describe("Board GitHub Sync", () => {
       const kernel = yield* KernelClient
 
       const projects = yield* kernel.get("/api/board/projects", BoardProjectList)
-      const project = projects.find((p) => p.key === "GCTL")!
+      const project = projects.find((p) => p.key === "BOARD")!
 
       const boardIssues = yield* kernel.get(
         `/api/board/issues?project_id=${project.id}`,
@@ -266,7 +266,7 @@ describe("Board GitHub Sync", () => {
     const result = await Effect.runPromise(program.pipe(Effect.provide(MockLayer)))
     expect(result).toHaveLength(1)
     expect(result[0].title).toBe("Board-only issue")
-    expect(result[0].id).toBe("GCTL-2")
+    expect(result[0].id).toBe("BOARD-2")
   })
 
   it("sync pull: creates board issue from GitHub issue", async () => {
@@ -304,7 +304,7 @@ describe("Board GitHub Sync", () => {
       const kernel = yield* KernelClient
 
       // Simulate creating a GH issue from a board issue
-      const boardIssue = mockBoardIssues[1] // Board-only issue GCTL-2
+      const boardIssue = mockBoardIssues[1] // Board-only issue BOARD-2
       const created = yield* kernel.post(
         "/api/github/issues?repo=OpenHackersClub/gctrl",
         {
