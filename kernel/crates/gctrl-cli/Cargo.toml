@@ -30,3 +30,6 @@ axum = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 notify = "7"
+
+[dev-dependencies]
+tower = { workspace = true }
