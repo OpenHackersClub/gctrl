@@ -3980,4 +3980,123 @@ mod tests {
             .unwrap();
         assert_eq!(by_other.len(), 0);
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Eval primitives — schema present, migrations idempotent, FKs usable.
+    // Spec: vault/specs/implementation/kernel/eval-storage.md
+    // CRUD methods + HTTP routes land in a follow-up PR.
+    // ─────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn eval_creates_all_tables_and_scores_column() {
+        let store = test_store();
+        let conn = store.conn.lock().unwrap();
+
+        for table in ["eval_metrics", "eval_datasets", "eval_cases", "eval_runs"] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM information_schema.tables WHERE table_name = ?",
+                    [table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "table {table} missing after migrations");
+        }
+
+        let col_count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM information_schema.columns
+                 WHERE table_name = 'scores' AND column_name = 'eval_run_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(col_count, 1, "scores.eval_run_id column missing");
+    }
+
+    #[test]
+    fn eval_run_baseline_self_fk_inserts_cleanly() {
+        let store = test_store();
+        let conn = store.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+
+        conn.execute(
+            "INSERT INTO eval_runs (id, suite_name, status, started_at) VALUES (?, ?, ?, ?)",
+            duckdb::params!["run-baseline", "smoke", "completed", &now],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO eval_runs (id, suite_name, status, baseline_run_id, started_at)
+             VALUES (?, ?, ?, ?, ?)",
+            duckdb::params!["run-current", "smoke", "open", "run-baseline", &now],
+        )
+        .unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM eval_runs WHERE baseline_run_id = 'run-baseline'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn eval_scores_join_runs_via_eval_run_id() {
+        let store = test_store();
+        let conn = store.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+
+        conn.execute(
+            "INSERT INTO eval_runs (id, suite_name, status, started_at) VALUES (?, ?, ?, ?)",
+            duckdb::params!["run-1", "smoke", "open", &now],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO scores (id, target_type, target_id, name, value, source, eval_run_id, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            duckdb::params![
+                "score-1", "eval_case", "case-1", "faithfulness", 0.92_f64,
+                "eval_substrate", "run-1", &now
+            ],
+        )
+        .unwrap();
+
+        let cnt: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM scores s
+                 JOIN eval_runs r ON s.eval_run_id = r.id
+                 WHERE r.id = 'run-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cnt, 1, "scores must join eval_runs via eval_run_id");
+    }
+
+    #[test]
+    fn eval_indexes_cover_hot_paths() {
+        let store = test_store();
+        let conn = store.conn.lock().unwrap();
+        for idx in [
+            "idx_eval_cases_dataset",
+            "idx_eval_runs_suite",
+            "idx_eval_runs_baseline",
+            "idx_eval_runs_status",
+            "idx_scores_eval_run",
+            "idx_eval_metrics_kind",
+        ] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM duckdb_indexes() WHERE index_name = ?",
+                    [idx],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "index {idx} missing");
+        }
+    }
 }
