@@ -18,7 +18,6 @@ use axum::{
 };
 use bytes::Bytes;
 use futures_util::StreamExt;
-use serde_json::Value as JsonValue;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
@@ -115,11 +114,21 @@ async fn handle_chat_completions(
         .headers()
         .get(header::CONTENT_TYPE)
         .cloned();
-    let is_sse = upstream_content_type
+    let upstream_is_sse = upstream_content_type
         .as_ref()
         .and_then(|v| v.to_str().ok())
         .map(|s| s.contains("text/event-stream"))
         .unwrap_or(false);
+    // Treat the response as streaming when EITHER the upstream
+    // labels it as SSE OR the client asked for `stream: true`.
+    // The latter guards against upstreams that mislabel the
+    // content-type — silently buffering a stream into JSON breaks
+    // SSE clients (opencode, AI SDK) with no obvious error.
+    let client_requested_stream = parsed_req
+        .as_ref()
+        .and_then(|r| r.stream)
+        .unwrap_or(false);
+    let is_sse = upstream_is_sse || client_requested_stream;
 
     if is_sse {
         // Streaming response: tee bytes through to the client live, and
@@ -195,7 +204,11 @@ async fn handle_chat_completions(
         return response;
     }
 
-    // Non-streaming path: collect, parse JSON, capture, return JSON verbatim.
+    // Non-streaming path: collect body, capture, then return upstream
+    // bytes + content-type verbatim. We must not re-encode the body
+    // (e.g. wrap-as-JSON-string) — that silently corrupts any
+    // response shape the upstream chose, and tools downstream cannot
+    // tell the difference from a successful passthrough.
     let resp_text = resp.text().await.unwrap_or_default();
     let parsed_resp: Option<ChatCompletionsResponse> = serde_json::from_str(&resp_text).ok();
 
@@ -210,9 +223,17 @@ async fn handle_chat_completions(
     )
     .await;
 
-    let json: JsonValue =
-        serde_json::from_str(&resp_text).unwrap_or(JsonValue::String(resp_text));
-    (status, Json(json)).into_response()
+    let mut response = Response::new(Body::from(resp_text));
+    *response.status_mut() = status;
+    if let Some(ct) = upstream_content_type {
+        response.headers_mut().insert(header::CONTENT_TYPE, ct);
+    } else {
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+    }
+    response
 }
 
 /// Run the capture path (storage + OTLP) when all the inputs needed for
@@ -309,6 +330,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use gctrl_storage::DuckDbStore;
+    use serde_json::Value as JsonValue;
     use tower::ServiceExt;
 
     use crate::capture::CaptureConfig;
@@ -516,6 +538,132 @@ data: [DONE]\n\n";
         );
         assert_eq!(rows[1].tokens, Some(2));
         assert_eq!(rows[0].tokens, Some(7));
+    }
+
+    #[tokio::test]
+    async fn relay_streams_when_client_requests_stream_even_with_mislabeled_content_type() {
+        // Regression: some upstreams (or buggy intermediaries) return
+        // SSE bodies under a non-SSE content-type. Before the fix the
+        // relay would buffer the body and JSON-string-wrap it, breaking
+        // opencode/AI-SDK clients silently. Now the client's
+        // `stream: true` flag is sufficient to take the streaming path.
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let upstream_url = format!("http://{}/v1/chat/completions", upstream_addr);
+
+        tokio::spawn(async move {
+            let upstream_app: Router = Router::new().route(
+                "/v1/chat/completions",
+                post(|| async {
+                    let sse = "\
+data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n\
+data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\n\
+data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n\
+data: [DONE]\n\n";
+                    // Deliberately mislabeled — should still stream.
+                    ([(header::CONTENT_TYPE, "application/json")], sse)
+                }),
+            );
+            axum::serve(upstream, upstream_app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (relay, _store) = test_relay(&upstream_url);
+        let app = relay.router();
+
+        let req_body = serde_json::json!({
+            "model": "google/gemma-4-31b",
+            "stream": true,
+            "messages": [{ "role": "user", "content": "ping" }]
+        });
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8_lossy(&bytes);
+        // Bytes must be forwarded verbatim — NOT JSON-string-wrapped.
+        // The pre-fix bug produced bodies like `"data: {\"choices\":..."`
+        // (note leading quote and escaped quotes). Assert the
+        // unescaped raw form.
+        assert!(
+            body_str.starts_with("data: "),
+            "expected raw SSE, got: {body_str:?}"
+        );
+        assert!(body_str.contains("[DONE]"));
+        assert!(
+            !body_str.starts_with('"'),
+            "body must not be JSON-string-wrapped"
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_passes_through_non_json_non_streaming_body_verbatim() {
+        // Regression: the non-streaming fallback used to wrap the
+        // upstream body as `JsonValue::String(body)` whenever the
+        // body wasn't valid JSON, silently re-encoding the response.
+        // Now we forward bytes + content-type unchanged.
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let upstream_url = format!("http://{}/v1/chat/completions", upstream_addr);
+
+        tokio::spawn(async move {
+            let upstream_app: Router = Router::new().route(
+                "/v1/chat/completions",
+                post(|| async {
+                    (
+                        [(header::CONTENT_TYPE, "text/plain")],
+                        "upstream is sad",
+                    )
+                }),
+            );
+            axum::serve(upstream, upstream_app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (relay, _store) = test_relay(&upstream_url);
+        let app = relay.router();
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "model": "x",
+                            "messages": [{ "role": "user", "content": "hi" }]
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(ct.contains("text/plain"), "expected upstream CT, got {ct:?}");
+        let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        assert_eq!(&bytes[..], b"upstream is sad");
     }
 
     #[tokio::test]
