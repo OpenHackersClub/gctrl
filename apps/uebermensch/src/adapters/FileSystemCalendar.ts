@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises"
+import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises"
 import { extname, join, relative } from "node:path"
 import { Effect, Either, Layer, Schema } from "effect"
 import matter from "gray-matter"
@@ -12,15 +12,20 @@ import {
   type CalendarEvent,
   type EventAddInput,
   type EventStamp,
+  type SuggestionDecision,
+  type SuggestionInput,
 } from "../services/CalendarService.js"
 
 // All calendar events live under a single root: action/events/. Authored
 // events sit at the top level; driver-pulled events live under
-// action/events/generated/. Both feed the same uber_calendar index. Recurring
-// rules live under action/events/recurring/ and are skipped by the loader.
-// Timebox parent files live under action/events/timeboxes/ and are also
-// skipped — they have a different schema (TimeboxFrontmatter, no starts_at)
-// and are owned by FileSystemTimebox, not the calendar service.
+// action/events/generated/. Driver-events suggestions land under
+// action/events/suggested/ until accepted (moved out, status:confirmed) or
+// dismissed (status:cancelled, kept for dedupe). Recurring rules live under
+// action/events/recurring/ and are skipped by the loader. Timebox parent
+// files live under action/events/timeboxes/ and are also skipped — they
+// have a different schema (TimeboxFrontmatter, no starts_at) and are owned
+// by FileSystemTimebox.
+const SUGGESTED_SUBDIR = "suggested"
 const RECURRING_SUBDIR = "recurring" // deferred — see calendar.md open question #2
 const TIMEBOXES_SUBDIR = "timeboxes" // owned by FileSystemTimebox
 const GENERATOR = "gctrl-uber-cli"
@@ -35,6 +40,25 @@ const slugify = (s: string): string =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 60)
+
+const round = (n: number, places: number): number => {
+  const f = 10 ** places
+  return Math.round(n * f) / f
+}
+
+const deriveSuggestionSlug = (
+  title: string,
+  datePrefix: string,
+  taken: ReadonlyArray<{ readonly slug: string }>,
+): string => {
+  const base = slugify(title)
+  const candidate = base.length > 0 ? base : `event-${datePrefix}`
+  const used = new Set(taken.map((e) => e.slug))
+  if (!used.has(candidate)) return candidate
+  let n = 2
+  while (used.has(`${candidate}-${n}`)) n += 1
+  return `${candidate}-${n}`
+}
 
 const datePart = (startsAt: string): Either.Either<string, string> => {
   const bare = startsAt.match(/^(\d{4}-\d{2}-\d{2})/)
@@ -147,6 +171,8 @@ const decodeEvent = (
       contentHash: decoded.content_hash ?? null,
       createdAt: decoded.created_at ?? null,
       updatedAt: decoded.updated_at ?? null,
+      matchScore: decoded.match_score ?? null,
+      matchedTerms: decoded.matched_terms ?? [],
       body: parsed.content,
       relPath: entry.rel,
       absPath: entry.abs,
@@ -310,6 +336,187 @@ export const FileSystemCalendarLive = (vaultDir: string) =>
           message: "stamp event failed",
           path: target.absPath,
         })
+      }),
+
+    addSuggestion: (input: SuggestionInput) =>
+      Effect.gen(function* () {
+        const all = yield* loadAll(vaultDir)
+        const calRoot = join(vaultDir, ACTION_EVENTS_DIR, SUGGESTED_SUBDIR)
+        const datePrefix = yield* Either.match(datePart(input.startsAt), {
+          onLeft: (msg) => failVault(msg, calRoot, "parse_failure"),
+          onRight: (v) => Effect.succeed(v),
+        })
+        // Upsert by (source=driver-events, external_id). On collision we
+        // overwrite the existing suggestion in place, preserving its slug so
+        // backlinks survive re-pulls.
+        const existing = all.find(
+          (e) => e.source === "driver-events" && e.externalId === input.externalId,
+        )
+        // Do not resurrect dismissed events.
+        if (existing && existing.status === "cancelled") {
+          return {
+            slug: existing.slug,
+            absPath: existing.absPath,
+            relPath: existing.relPath,
+            contentHash: existing.contentHash ?? "",
+          }
+        }
+        const slug = existing?.slug ?? deriveSuggestionSlug(input.title, datePrefix, all)
+        const relPath =
+          existing?.relPath ?? `${ACTION_EVENTS_DIR}/${SUGGESTED_SUBDIR}/${datePrefix}--${slug}.md`
+        const absPath = join(vaultDir, relPath)
+        const now = new Date().toISOString()
+        const body = (input.description ?? "").trim()
+        const links = input.url
+          ? [{ title: "Event page", url: input.url }]
+          : undefined
+
+        const fmInput = omitEmpty({
+          slug,
+          title: input.title,
+          kind: "industry",
+          source: "driver-events",
+          starts_at: input.startsAt,
+          ends_at: input.endsAt,
+          tz: input.tz,
+          status: "tentative",
+          location: input.location,
+          topics: input.topics,
+          tags: input.tags,
+          links,
+          external_id: input.externalId,
+          external_etag: input.externalEtag,
+          generator: input.generator,
+          match_score: round(input.matchScore, 3),
+          matched_terms: input.matchedTerms,
+          created_at: existing?.createdAt ?? now,
+          updated_at: now,
+        })
+
+        yield* decodeFrontmatter(fmInput, absPath, "suggestion")
+        const draft = renderFrontmatter(fmInput, body)
+        const contentHash = hashContent(draft)
+        const final = renderFrontmatter({ ...fmInput, content_hash: contentHash }, body)
+        yield* vaultIo(() => atomicWrite(absPath, final), {
+          message: "write suggestion failed",
+          path: absPath,
+        })
+        return { slug, absPath, relPath, contentHash }
+      }),
+
+    accept: (slug) =>
+      Effect.gen(function* () {
+        const all = yield* loadAll(vaultDir)
+        const target = all.find((e) => e.slug === slug)
+        if (!target) {
+          return yield* failVault(
+            `event not found: ${slug}`,
+            join(vaultDir, ACTION_EVENTS_DIR, SUGGESTED_SUBDIR),
+            "not_found",
+          )
+        }
+        if (target.source !== "driver-events") {
+          return yield* failVault(
+            `accept only applies to source=driver-events events (got ${target.source})`,
+            target.absPath,
+            "parse_failure",
+          )
+        }
+        // Already promoted? No-op.
+        const isInSuggested = target.relPath.startsWith(`${ACTION_EVENTS_DIR}/${SUGGESTED_SUBDIR}/`)
+        if (target.status === "confirmed" && !isInSuggested) {
+          return {
+            slug: target.slug,
+            status: target.status,
+            relPath: target.relPath,
+            noop: true,
+          } satisfies SuggestionDecision
+        }
+        const datePrefix = yield* Either.match(datePart(target.startsAt), {
+          onLeft: (msg) => failVault(msg, target.absPath, "parse_failure"),
+          onRight: (v) => Effect.succeed(v),
+        })
+        const newRelPath = `${ACTION_EVENTS_DIR}/${datePrefix}--${target.slug}.md`
+        const newAbsPath = join(vaultDir, newRelPath)
+        // Re-render frontmatter with status:confirmed + bumped updated_at + recomputed hash.
+        const raw = yield* vaultIo(() => readFile(target.absPath, "utf8"), {
+          message: "read suggestion failed",
+          path: target.absPath,
+        })
+        const parsed = matter(raw)
+        const data = { ...((parsed.data ?? {}) as Record<string, unknown>) }
+        data.status = "confirmed"
+        data.updated_at = new Date().toISOString()
+        delete (data as Record<string, unknown>).content_hash
+        const draft = renderFrontmatter(data, parsed.content)
+        data.content_hash = hashContent(draft)
+        const final = renderFrontmatter(data, parsed.content)
+        yield* vaultIo(() => atomicWrite(newAbsPath, final), {
+          message: "write accepted event failed",
+          path: newAbsPath,
+        })
+        if (target.absPath !== newAbsPath) {
+          yield* vaultIo(() => unlink(target.absPath), {
+            message: "remove old suggestion failed",
+            path: target.absPath,
+          })
+        }
+        return {
+          slug: target.slug,
+          status: "confirmed",
+          relPath: newRelPath,
+          noop: false,
+        } satisfies SuggestionDecision
+      }),
+
+    dismiss: (slug) =>
+      Effect.gen(function* () {
+        const all = yield* loadAll(vaultDir)
+        const target = all.find((e) => e.slug === slug)
+        if (!target) {
+          return yield* failVault(
+            `event not found: ${slug}`,
+            join(vaultDir, ACTION_EVENTS_DIR, SUGGESTED_SUBDIR),
+            "not_found",
+          )
+        }
+        if (target.source !== "driver-events") {
+          return yield* failVault(
+            `dismiss only applies to source=driver-events events (got ${target.source})`,
+            target.absPath,
+            "parse_failure",
+          )
+        }
+        if (target.status === "cancelled") {
+          return {
+            slug: target.slug,
+            status: target.status,
+            relPath: target.relPath,
+            noop: true,
+          } satisfies SuggestionDecision
+        }
+        const raw = yield* vaultIo(() => readFile(target.absPath, "utf8"), {
+          message: "read suggestion failed",
+          path: target.absPath,
+        })
+        const parsed = matter(raw)
+        const data = { ...((parsed.data ?? {}) as Record<string, unknown>) }
+        data.status = "cancelled"
+        data.updated_at = new Date().toISOString()
+        delete (data as Record<string, unknown>).content_hash
+        const draft = renderFrontmatter(data, parsed.content)
+        data.content_hash = hashContent(draft)
+        const final = renderFrontmatter(data, parsed.content)
+        yield* vaultIo(() => atomicWrite(target.absPath, final), {
+          message: "write dismissed event failed",
+          path: target.absPath,
+        })
+        return {
+          slug: target.slug,
+          status: "cancelled",
+          relPath: target.relPath,
+          noop: false,
+        } satisfies SuggestionDecision
       }),
   })
 

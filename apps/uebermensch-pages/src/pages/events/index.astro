@@ -1,0 +1,97 @@
+---
+import Shell from "../../layouts/Shell.astro"
+import { listSuggestions } from "../../lib/events.ts"
+import { escapeHtml } from "../../lib/markdown.ts"
+
+const suggestions = await listSuggestions(Astro.locals.runtime.env.VAULT)
+const tentative = suggestions.filter((s) => s.status === "tentative")
+const flash = Astro.url.searchParams.get("msg") ?? null
+Astro.response.headers.set("Cache-Control", "no-store")
+
+const formatTime = (s: { startsAt: string; endsAt: string | null; tz: string }) => {
+  const d = new Date(s.startsAt)
+  if (Number.isNaN(d.getTime())) return s.startsAt
+  try {
+    const fmt = new Intl.DateTimeFormat("en-GB", {
+      weekday: "short",
+      day: "2-digit",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      timeZone: s.tz,
+    })
+    return `${fmt.format(d)} ${s.tz}`
+  } catch {
+    return s.startsAt
+  }
+}
+---
+
+<Shell title="Event suggestions">
+  <h1>Event suggestions</h1>
+  <p class="muted">
+    Topic-matched events from configured discovery sources. Accept to add to your
+    calendar; dismiss to never see this event again.
+  </p>
+  {flash ? <p class="flash">{flash}</p> : null}
+  {tentative.length === 0 ? (
+    <p>No tentative suggestions. Run <code>uber events pull</code> on your local daemon.</p>
+  ) : (
+    <ul class="events">
+      {tentative.map((s) => (
+        <li class="event">
+          <div class="event-head">
+            <span class="when">{formatTime(s)}</span>
+            {s.matchScore !== null ? (
+              <span class="score" title={s.matchedTerms.join(", ")}>
+                {s.matchScore.toFixed(2)}
+              </span>
+            ) : null}
+          </div>
+          <h2 class="title">
+            {s.url ? (
+              <a href={s.url} target="_blank" rel="noopener noreferrer">{s.title}</a>
+            ) : (
+              s.title
+            )}
+          </h2>
+          {s.location ? <div class="loc">{s.location}</div> : null}
+          {s.matchedTerms.length > 0 ? (
+            <div class="terms">
+              {s.matchedTerms.map((t) => <span class="chip">{t}</span>)}
+            </div>
+          ) : null}
+          <div class="actions">
+            <form method="POST" action={`/api/events/${encodeURIComponent(s.slug)}/accept`}>
+              <button type="submit" class="primary">Accept</button>
+            </form>
+            <form method="POST" action={`/api/events/${encodeURIComponent(s.slug)}/dismiss`}>
+              <button type="submit">Dismiss</button>
+            </form>
+          </div>
+        </li>
+      ))}
+    </ul>
+  )}
+  <style>
+    .flash { background: var(--code-bg); padding: .6rem .9rem; border-radius: 4px; margin: 1rem 0; }
+    ul.events { list-style: none; padding: 0; margin: 1.5rem 0 0; display: grid; gap: 1.2rem; }
+    .event { border: 1px solid var(--rule); border-radius: 6px; padding: 1rem 1.2rem; background: var(--bg); }
+    .event-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
+    .when { font-size: .9rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .score { font-size: .85rem; color: var(--accent); font-variant-numeric: tabular-nums; }
+    .title { font-size: 1.1rem; margin: .2rem 0 .4rem; line-height: 1.3; }
+    .title a { color: var(--fg); text-decoration: none; }
+    .title a:hover { color: var(--accent); }
+    .loc { font-size: .85rem; color: var(--muted); margin-bottom: .5rem; }
+    .terms { display: flex; gap: .35rem; flex-wrap: wrap; margin: .4rem 0 .8rem; }
+    .chip { background: var(--code-bg); color: var(--muted); font-size: .78rem; padding: .1rem .55rem; border-radius: 99px; }
+    .actions { display: flex; gap: .5rem; margin-top: .6rem; }
+    .actions form { margin: 0; }
+    .actions button { font: inherit; padding: .35rem .9rem; border: 1px solid var(--rule); border-radius: 4px; background: var(--bg); color: var(--fg); cursor: pointer; }
+    .actions button.primary { background: var(--accent); color: white; border-color: var(--accent); }
+    .actions button:hover { filter: brightness(1.05); }
+  </style>
+</Shell>
+<Fragment set:html={`<!-- ${escapeHtml(`${suggestions.length} suggestions; ${tentative.length} tentative`)} -->`} />

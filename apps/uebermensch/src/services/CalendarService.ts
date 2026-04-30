@@ -33,6 +33,9 @@ export type CalendarEvent = {
   readonly contentHash: string | null
   readonly createdAt: string | null
   readonly updatedAt: string | null
+  // Events-discovery extension (specs/events.md) — set by driver-events.
+  readonly matchScore: number | null
+  readonly matchedTerms: ReadonlyArray<string>
   readonly body: string
   readonly relPath: string
   readonly absPath: string
@@ -75,6 +78,25 @@ export type EventAddInput = {
   readonly slug?: string
 }
 
+// Inputs to addSuggestion() — driver-events-flavoured event written under
+// calendar/suggested/. status starts as "tentative"; promote with accept().
+export type SuggestionInput = {
+  readonly title: string
+  readonly startsAt: string
+  readonly endsAt?: string
+  readonly tz: string
+  readonly location?: string
+  readonly url?: string
+  readonly description?: string
+  readonly externalId: string
+  readonly externalEtag?: string
+  readonly topics?: ReadonlyArray<string>
+  readonly tags?: ReadonlyArray<string>
+  readonly matchScore: number
+  readonly matchedTerms: ReadonlyArray<string>
+  readonly generator: string
+}
+
 export type WrittenEvent = {
   readonly slug: string
   readonly absPath: string
@@ -90,11 +112,27 @@ export type EventStamp = {
   readonly contentHash?: string
 }
 
+// Outcome of accept/dismiss — `noop: true` means the event was already in the
+// requested terminal state. Idempotency by design.
+export type SuggestionDecision = {
+  readonly slug: string
+  readonly status: EventStatus
+  readonly relPath: string
+  readonly noop: boolean
+}
+
 export interface CalendarServiceShape {
   readonly list: (filter?: EventFilter) => Effect.Effect<ReadonlyArray<CalendarEvent>, VaultError>
   readonly get: (slug: string) => Effect.Effect<CalendarEvent, VaultError>
   readonly add: (input: EventAddInput) => Effect.Effect<WrittenEvent, VaultError>
   readonly stamp: (slug: string, stamp: EventStamp) => Effect.Effect<void, VaultError>
+  // Driver-events writes a `status: tentative, source: driver-events` file under
+  // calendar/suggested/. Re-calls with the same externalId are upserts.
+  readonly addSuggestion: (input: SuggestionInput) => Effect.Effect<WrittenEvent, VaultError>
+  // Promote a suggestion to a confirmed event (move out of suggested/).
+  readonly accept: (slug: string) => Effect.Effect<SuggestionDecision, VaultError>
+  // Mark a suggestion cancelled (kept in place for audit + dedupe).
+  readonly dismiss: (slug: string) => Effect.Effect<SuggestionDecision, VaultError>
 }
 
 export class CalendarService extends Context.Tag("uebermensch/CalendarService")<

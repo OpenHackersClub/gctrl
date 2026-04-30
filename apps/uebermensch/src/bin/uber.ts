@@ -3,6 +3,7 @@ import { NodeContext, NodeRuntime } from "@effect/platform-node"
 import { Effect } from "effect"
 import { brief } from "../commands/brief.js"
 import { calendar } from "../commands/calendar.js"
+import { events } from "../commands/events.js"
 import { ingest } from "../commands/ingest.js"
 import { profile } from "../commands/profile-validate.js"
 import { prompts } from "../commands/prompts.js"
@@ -13,7 +14,7 @@ import { timebox } from "../commands/timebox.js"
 import { vault } from "../commands/vault.js"
 
 const root = Command.make("uber").pipe(
-  Command.withSubcommands([vault, profile, brief, ingest, send, report, prompts, calendar, timebox, sync]),
+  Command.withSubcommands([vault, profile, brief, ingest, send, report, prompts, calendar, events, timebox, sync]),
   Command.withDescription("uebermensch Chief-of-Staff CLI"),
 )
 
