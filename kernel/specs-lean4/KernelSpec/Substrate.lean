@@ -3,10 +3,10 @@ import KernelSpec.DomainTypes
 import KernelSpec.Orchestrator
 
 /-!
-# Substrate — AgentRuntime × ComputeSubstrate Decoupling
+# Substrate — AgentHarness × ComputeSubstrate Decoupling
 
 Formalizes the kernel ports defined in
-`vault/specs/architecture/kernel/runtime.md` and `compute.md`, and the
+`vault/specs/architecture/kernel/harness.md` and `compute.md`, and the
 invariants in
 `vault/specs/architecture/apps/adr-runtime-compute-decoupling.md`.
 

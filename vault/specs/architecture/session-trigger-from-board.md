@@ -4,7 +4,7 @@ How dragging an Issue to `in_progress` on the gctrl-board web UI kicks off an ag
 
 > Related specs:
 > - [kernel/orchestrator.md](kernel/orchestrator.md) — claim states, dispatch, retry (kernel primitive)
-> - [kernel/runtime.md](kernel/runtime.md) — `AgentRuntime` port and built-in runtimes (canonical)
+> - [kernel/harness.md](kernel/harness.md) — `AgentHarness` port and built-in runtimes (canonical)
 > - [kernel/compute.md](kernel/compute.md) — `ComputeSubstrate` port and built-in backends (canonical)
 > - [apps/adr-runtime-compute-decoupling.md](apps/adr-runtime-compute-decoupling.md) — invariants and compatibility matrix
 > - [apps/gctl-board.md](apps/gctl-board.md) — what the board tracks (Issues vs. Tasks)
@@ -41,7 +41,7 @@ sequenceDiagram
     participant B as gctrl-board (web/worker)
     participant K as Kernel (HTTP :4318)
     participant O as Orchestrator
-    participant R as AgentRuntime
+    participant R as AgentHarness
     participant C as ComputeSubstrate
 
     U->>B: drag BACK-42 → in_progress
@@ -62,7 +62,7 @@ sequenceDiagram
 - The **board** is a dumb trigger. It sends `move` and renders state. It never decides which agent to run.
 - The **kernel** owns the Issue → Task promotion and feeds the Orchestrator.
 - The **Orchestrator** owns dispatch eligibility, claim, and retry. Unchanged from [kernel/orchestrator.md](kernel/orchestrator.md).
-- The **AgentRuntime** renders + launches the agent. It is a new abstraction that wraps today's `AgentAdapter` (see next section).
+- The **AgentHarness** renders + launches the agent. It is a new abstraction that wraps today's `AgentAdapter` (see next section).
 - The **ComputeSubstrate** is where the runtime runs. It is a new abstraction.
 
 ---
@@ -77,12 +77,12 @@ Today's [implementation/kernel/orchestrator.md](../implementation/kernel/orchest
 The kernel splits these into two ports:
 
 ```text
-AgentRuntime × ComputeSubstrate  →  launched Session
+AgentHarness × ComputeSubstrate  →  launched Session
 ```
 
 The canonical specs for these ports — Rust traits, built-in implementations, telemetry-ingest tables, sandbox composition tables, credential delivery, and per-compute concurrency — live in:
 
-- [kernel/runtime.md](kernel/runtime.md) — `AgentRuntime` trait, built-in runtimes, per-runtime telemetry ingest, inner sandbox table.
+- [kernel/harness.md](kernel/harness.md) — `AgentHarness` trait, built-in runtimes, per-runtime telemetry ingest, inner sandbox table.
 - [kernel/compute.md](kernel/compute.md) — `ComputeSubstrate` trait, built-in backends, failure-as-tool-error semantics, egress and credential delivery.
 - [apps/adr-runtime-compute-decoupling.md](apps/adr-runtime-compute-decoupling.md) — the invariants (Brain ≠ Hand, many brains × many hands, compute failure is a tool error) and the `(runtime, compute)` compatibility matrix.
 
@@ -94,7 +94,7 @@ The existing `AgentAdapter` becomes a composite: `(runtime, compute) -> AgentHan
 
 ```yaml
 agent:
-  runtime: claude-code             # see kernel/runtime.md for built-ins
+  runtime: claude-code             # see kernel/harness.md for built-ins
   compute: local-process           # see kernel/compute.md for built-ins
   args: ["--print", "--dangerously-skip-permissions"]
   # compute-specific:
@@ -115,7 +115,7 @@ The deployed gctrl-board runs on Cloudflare Workers and has no local kernel to t
 ### Slice 1 — Local trigger (this PR)
 
 - Board drag works when run locally against a local kernel.
-- `ComputeSubstrate = local-process`, `AgentRuntime = claude-code`.
+- `ComputeSubstrate = local-process`, `AgentHarness = claude-code`.
 - **No CF Containers yet, no deployed flow yet.** The deployed board still shows sessions read-only.
 - Acceptance: Playwright local — drag card → `GET /api/sessions?issue_id=X` returns a row.
 

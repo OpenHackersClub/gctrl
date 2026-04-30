@@ -1,6 +1,6 @@
 # Compute Backend
 
-The **ComputeSubstrate** is the kernel port that defines *where* an agent runs — local process, Cloudflare Container, e2b sandbox, SSH-attached host, or browser tab. It is decoupled from the **AgentRuntime** (which agent runs); see [runtime.md](runtime.md). A Session is the cross-product of one Runtime and one Compute.
+The **ComputeSubstrate** is the kernel port that defines *where* an agent runs — local process, Cloudflare Container, e2b sandbox, SSH-attached host, or browser tab. It is decoupled from the **AgentHarness** (which agent runs); see [harness.md](harness.md). A Session is the cross-product of one Runtime and one Compute.
 
 > Status: **[deferred]**. The port is currently sketched inline in [`../session-trigger-from-board.md`](../session-trigger-from-board.md). This file is the canonical kernel-architecture spec for the Compute port; the existing `AgentAdapter` in `kernel/crates/gctrl-orch/src/agent/` will be split into Runtime + Compute as part of the [Slice 2 scope](../session-trigger-from-board.md#deployment-phasing).
 

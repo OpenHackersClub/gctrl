@@ -34,7 +34,7 @@ vault/specs/architecture/
 ├── kernel/            ← kernel primitives and extensions (Tasks + Sessions only)
 │   ├── orchestrator.md    claim states, dispatch eligibility, retry/backoff
 │   ├── scheduler.md       Task lifecycle, interface trait, platform implementations
-│   ├── runtime.md         AgentRuntime port, built-in runtimes (the "brain")
+│   ├── harness.md         AgentHarness port, built-in runtimes (the "brain")
 │   ├── compute.md         ComputeSubstrate port, built-in backends (the "hand")
 │   └── browser.md         CDP daemon, ref system, tab management
 │
@@ -52,7 +52,7 @@ vault/specs/architecture/
 | [os.md](os.md) | Unix layers in depth — kernel, shell, applications, utilities, drivers (loadable kernel modules), and how to extend each |
 | [kernel/orchestrator.md](kernel/orchestrator.md) | Orchestrator kernel primitive — Task claim states, dispatch eligibility, retry/backoff, concurrency control |
 | [kernel/scheduler.md](kernel/scheduler.md) | Scheduler kernel primitive — Task lifecycle, interface trait, platform implementations |
-| [kernel/runtime.md](kernel/runtime.md) | `AgentRuntime` port — which agent program runs (`claude-code`, `codex`, `opencode`, …) |
+| [kernel/harness.md](kernel/harness.md) | `AgentHarness` port — which agent program runs (`claude-code`, `codex`, `opencode`, …) |
 | [kernel/compute.md](kernel/compute.md) | `ComputeSubstrate` port — where it runs (`local-process`, `cf-containers`, `e2b`, …) |
 | [apps/adr-runtime-compute-decoupling.md](apps/adr-runtime-compute-decoupling.md) | ADR — Brain ≠ Hand invariants, `(runtime, compute)` compatibility matrix |
 | [kernel/browser.md](kernel/browser.md) | Browser control kernel extension — CDP daemon, ref system, tab management |

@@ -1,8 +1,10 @@
-# Agent Runtime
+# Agent Harness
 
-The **AgentRuntime** is the kernel port that defines *which agent program* runs — Claude Code, Claude Agent SDK, Codex CLI, OpenCode, Aider, or a custom executable. It is decoupled from the **ComputeSubstrate** (where it runs); see [compute.md](compute.md). A Session is the cross-product of one Runtime and one Compute.
+The **AgentHarness** is the kernel port that defines *which agent program* runs — Claude Code, Claude Agent SDK, Codex CLI, OpenCode, Aider, or a custom executable. It is the "brain": a stateless loop that constructs invocations from prompts and consumes tool results. Decoupled from the **ComputeSubstrate** (where it runs); see [compute.md](compute.md). A Session is the cross-product of one Harness and one Substrate.
 
-> Status: **[deferred]**. The port is currently sketched inline in [`../session-trigger-from-board.md`](../session-trigger-from-board.md). This file is the canonical kernel-architecture spec for the Runtime port; the existing `AgentAdapter` in `kernel/crates/gctrl-orch/src/agent/` will be split into Runtime + Compute as part of the [Slice 2 scope](../session-trigger-from-board.md#deployment-phasing).
+The pair `AgentHarness × ComputeSubstrate` mirrors gctrl's existing `EvalHarness × EvalSubstrate` (see [glossary.md](../../glossary.md)) — *Harness* is the active driver; *Substrate* is the passive surface it drives against. The naming is the same shape across both subsystems by design.
+
+> Status: **[deferred]**. The port is currently sketched inline in [`../session-trigger-from-board.md`](../session-trigger-from-board.md). This file is the canonical kernel-architecture spec for the Harness port; the existing `AgentAdapter` in `kernel/crates/gctrl-orch/src/agent/` will be split into Harness + Substrate as part of the [Slice 2 scope](../session-trigger-from-board.md#deployment-phasing).
 
 ---
 
@@ -25,7 +27,7 @@ See [adr-runtime-compute-decoupling.md](../apps/adr-runtime-compute-decoupling.m
 
 ```rust
 #[async_trait]
-pub trait AgentRuntime: Send + Sync {
+pub trait AgentHarness: Send + Sync {
     /// Stable runtime identifier — matches AgentKind enum.
     fn kind(&self) -> AgentKind;
 
@@ -157,7 +159,7 @@ allowed = [
 ## 9. Extending — Adding a New Runtime
 
 1. Define an `AgentKind` variant in `gctrl-core` (see [domain-model.md](../domain-model.md)).
-2. Implement the `AgentRuntime` trait in a new module under `kernel/crates/gctrl-orch/src/agent/<runtime>.rs`.
+2. Implement the `AgentHarness` trait in a new module under `kernel/crates/gctrl-orch/src/agent/<runtime>.rs`.
 3. Implement `render_invocation` — keep it pure, no I/O.
 4. Implement `import_rollout` — deduplicate via `content_hash`.
 5. Add a row to the **Telemetry Ingest** and **Inner Sandbox** tables in this file.
@@ -168,6 +170,6 @@ allowed = [
 
 ## 10. Non-Goals
 
-1. **No model registry.** `AgentRuntime` identifies the *agent program*, not the model it calls. Model selection lives in `Task.context.model` (see [scheduler.md § Context Field](scheduler.md#context-field--agent-system-metadata)).
+1. **No model registry.** `AgentHarness` identifies the *agent program*, not the model it calls. Model selection lives in `Task.context.model` (see [scheduler.md § Context Field](scheduler.md#context-field--agent-system-metadata)).
 2. **No runtime-to-runtime direct calls.** Cross-runtime composition (e.g. Claude Code calling Codex as a tool) MUST go through the kernel — initially via the Scheduler (sub-Task spawn), eventually via the kernel-hosted MCP proxy `[deferred]`.
-3. **No runtime-specific orchestrator state.** The Orchestrator state machine in [orchestrator.md](orchestrator.md) is runtime-agnostic and MUST stay so. Runtime-specific concerns (memory format, hook locations, sandbox flags) belong in this file and the `AgentRuntime` trait — never in the orchestrator.
+3. **No runtime-specific orchestrator state.** The Orchestrator state machine in [orchestrator.md](orchestrator.md) is runtime-agnostic and MUST stay so. Runtime-specific concerns (memory format, hook locations, sandbox flags) belong in this file and the `AgentHarness` trait — never in the orchestrator.

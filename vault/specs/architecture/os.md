@@ -23,7 +23,7 @@ gctrl uses **Unix terminology** as the primary architectural language. Some term
 | **Kernel Interface** | Trait in `gctrl-core` that drivers implement (`TrackerPort`, `ObservabilityExportPort`) | Driver interface / syscall interface | "Port" as a network port |
 | **Kernel IPC** | Cross-app communication (event bus, pipes, sockets) | Unix IPC (pipes, signals, sockets) | — |
 | **Adapter** | Internal kernel implementation of a trait (DuckDB storage, OTel receiver) — used only in [implementation specs](../implementation/kernel/components.md) | — | "Driver" (which connects external apps) |
-| **AgentRuntime** | Kernel port that defines *which agent program runs* — Claude Code, Codex, OpenCode, Aider. The "brain". See [kernel/runtime.md](kernel/runtime.md). | Process binary — `bash`, `zsh` | "Persona" (which is *who* is acting) |
+| **AgentHarness** | Kernel port that defines *which agent program runs* — Claude Code, Codex, OpenCode, Aider. The "brain". See [kernel/harness.md](kernel/harness.md). | Process binary — `bash`, `zsh` | "Persona" (which is *who* is acting) |
 | **ComputeSubstrate** | Kernel port that defines *where the agent runs* — local process, container, e2b, SSH host. The "hand". See [kernel/compute.md](kernel/compute.md). | `chroot` + `cgroup` namespace, or remote shell | "Workspace" (which is one backend's mount detail) |
 | **Inner sandbox** | OS-level isolation the Runtime ships with itself (Seatbelt, bubblewrap, seccomp). | Per-process MAC policy | "Outer compute" |
 | **Outer compute** | OS-level isolation the ComputeSubstrate provides (process, container, VM). | Container / VM | "Inner sandbox" |

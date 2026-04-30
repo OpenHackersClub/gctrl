@@ -13,7 +13,7 @@ Implementation plan for the Slice 1 subset of [architecture/session-trigger-from
 | HTTP side-effects on `POST /api/board/issues/:id/move` when `status == "in_progress"` | CF Containers compute |
 | Promote-or-reuse linked Task row + emit `task.promoted_from_issue` span | Deployed orchestrator on Workers |
 | Orchestrator stub that reads `task.dispatchable` and inserts a `sessions` row | Full claim-state machine from `kernel/orchestrator.md` |
-| AgentRuntime / ComputeSubstrate traits in `gctrl-core` (no adapter impls yet — just the abstractions) | Real Claude Code process launch (stub runtime for tests) |
+| AgentHarness / ComputeSubstrate traits in `gctrl-core` (no adapter impls yet — just the abstractions) | Real Claude Code process launch (stub runtime for tests) |
 | `GET /api/sessions?issue_id=X` filter support | OTLP ingestion hookup for Containers |
 
 ---
@@ -21,8 +21,8 @@ Implementation plan for the Slice 1 subset of [architecture/session-trigger-from
 ## Crate / File Touch List
 
 ### `kernel/crates/gctrl-core/`
-- `src/types.rs` — new structs: `Task`, `TaskDispatchability`, `AgentRuntimeKind`, `ComputeKind`.
-- `src/ports.rs` (new) — trait `AgentRuntime`, trait `ComputeSubstrate`, struct `Invocation`, struct `ComputeHandle`. No impls.
+- `src/types.rs` — new structs: `Task`, `TaskDispatchability`, `AgentHarnessKind`, `ComputeKind`.
+- `src/ports.rs` (new) — trait `AgentHarness`, trait `ComputeSubstrate`, struct `Invocation`, struct `ComputeHandle`. No impls.
 
 ### `kernel/crates/gctrl-storage/`
 - `src/schema.rs` — new table `tasks` (if not already present) + FK from `tasks` to `board_issues`. Migrate existing `sessions` to allow `task_id: VARCHAR NULL` column.

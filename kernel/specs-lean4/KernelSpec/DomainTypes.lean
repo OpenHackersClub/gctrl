@@ -85,7 +85,7 @@ inductive UserKind where
 
 /-- Agent system classification — which runtime executes a task.
     Identifies *which agent program runs* (the brain), not where it runs
-    (that is `ComputeKind`). See `vault/specs/architecture/kernel/runtime.md`. -/
+    (that is `ComputeKind`). See `vault/specs/architecture/kernel/harness.md`. -/
 inductive AgentKind where
   | claudeCode
   | claudeAgentSdk

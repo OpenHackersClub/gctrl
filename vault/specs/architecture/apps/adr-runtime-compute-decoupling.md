@@ -1,8 +1,8 @@
-# ADR: AgentRuntime × ComputeSubstrate Decoupling
+# ADR: AgentHarness × ComputeSubstrate Decoupling
 
 **Status**: accepted
 **Scope**: kernel orchestrator, scheduler, all current and future agent integrations
-**Drives**: [`../kernel/runtime.md`](../kernel/runtime.md), [`../kernel/compute.md`](../kernel/compute.md)
+**Drives**: [`../kernel/harness.md`](../kernel/harness.md), [`../kernel/compute.md`](../kernel/compute.md)
 **Extends**: [`adr-session-is-the-spine.md`](adr-session-is-the-spine.md)
 **Formally verified**: [`kernel/specs-lean4/KernelSpec/Substrate.lean`](../../../../kernel/specs-lean4/KernelSpec/Substrate.lean)
 
@@ -23,13 +23,13 @@ Anthropic's [Managed Agents](https://www.anthropic.com/engineering/managed-agent
 
 The kernel exposes two independent ports:
 
-1. **`AgentRuntime`** (the brain) — defines *which agent program runs* (`claude-code`, `codex`, `opencode`, `aider`, …). Owns the prompt invocation shape, the rollout-import logic, and the runtime-specific telemetry shim. See [`../kernel/runtime.md`](../kernel/runtime.md).
+1. **`AgentHarness`** (the brain) — defines *which agent program runs* (`claude-code`, `codex`, `opencode`, `aider`, …). Owns the prompt invocation shape, the rollout-import logic, and the runtime-specific telemetry shim. See [`../kernel/harness.md`](../kernel/harness.md).
 
 2. **`ComputeSubstrate`** (the hand) — defines *where it runs* (`local-process`, `cf-containers`, `e2b`, `ssh-remote`, `browser-tab`). Owns provisioning, egress policy, credential delivery, and failure-as-tool-error. See [`../kernel/compute.md`](../kernel/compute.md).
 
 **Invariants:**
 
-1. **Brain ≠ Hand.** No `AgentRuntime` implementation MAY assume a specific `ComputeSubstrate`; no `ComputeSubstrate` MAY assume a specific Runtime. Cross-product compatibility is the public contract; the matrix below is its closed form.
+1. **Brain ≠ Hand.** No `AgentHarness` implementation MAY assume a specific `ComputeSubstrate`; no `ComputeSubstrate` MAY assume a specific Runtime. Cross-product compatibility is the public contract; the matrix below is its closed form.
 2. **Many brains × many hands.** A `ComputeSubstrate` instance MAY host more than one attached Runtime (one container, two agent processes). A single Runtime instance MAY drive more than one Compute handle (one harness, multiple sandboxes). Topologies are not constrained at the port level.
 3. **Compute failure is a tool error.** A killed container, a quota'd e2b sandbox, or a dropped SSH connection MUST surface to the Orchestrator as `AgentExitAbnormal`. Sessions MUST NOT die because hands die — the existing retry path handles recovery.
 4. **Sessions are recoverable from the event log alone.** A re-dispatch on a different `(runtime, compute)` pair MUST be possible if the previous attempt's SessionEvents are intact. This extends [`adr-session-is-the-spine.md`](adr-session-is-the-spine.md) — Session is the spine of *both* observability and recovery.
@@ -62,14 +62,14 @@ The supported `(runtime, compute)` pairings. New combinations require an entry h
 
 **Cost**
 
-1. **Two ports instead of one.** Implementations of `AgentRuntime` and `ComputeSubstrate` must be written and tested independently; cross-product conformance tests are required for each new entry in the matrix.
+1. **Two ports instead of one.** Implementations of `AgentHarness` and `ComputeSubstrate` must be written and tested independently; cross-product conformance tests are required for each new entry in the matrix.
 2. **`Task.context` carries both `runtime_kind` and `compute_kind`.** Analytics queries that filter by agent program MUST disambiguate against the `agent_kind` column; queries that filter by execution environment MUST filter `compute_kind`. The pair, not either alone, identifies a dispatch.
 3. **Eligibility check is wider.** The Orchestrator MUST verify the `(runtime, compute)` pair against the matrix at dispatch eligibility. A Task with an unsupported pair MUST fail fast at dispatch time, not at launch.
 
 ## Non-decisions
 
 1. This ADR does NOT decide whether to ship a kernel-hosted MCP proxy for vault-proxied credentials. That is `[deferred]` to a follow-up ADR; this ADR only declares the credential-boundary invariant (no long-lived secrets in the compute env).
-2. Does NOT decide the per-runtime telemetry shim implementation (Claude Code hooks, OpenCode SSE translator). Those are runtime-level details captured in [`../kernel/runtime.md`](../kernel/runtime.md).
+2. Does NOT decide the per-runtime telemetry shim implementation (Claude Code hooks, OpenCode SSE translator). Those are runtime-level details captured in [`../kernel/harness.md`](../kernel/harness.md).
 3. Does NOT mandate any specific compute backend for production. The matrix lists what is *supported*; what is *deployed* is a per-Task WORKFLOW.md decision.
 4. Does NOT change the Orchestrator state machine or claim-state semantics ([`../kernel/orchestrator.md`](../kernel/orchestrator.md)). The dispatch step gains two ports; the state machine is unchanged.
 
@@ -84,7 +84,7 @@ The decoupling invariants are mechanically checked in Lean 4. See [`kernel/specs
 | #4 Sessions recoverable from log | `Substrate.crash_recover_different_pair` — `Reachable step Running Claimed` for any `(prior, next)` pair. Specialized to same-pair retry as `same_pair_retry`. |
 | `mapExit` codomain | `Substrate.mapExit_in_exit_triggers` — every compute exit becomes either `agentExitNormal` or `agentExitAbnormal`; no other Trigger is reachable from a ComputeExit. |
 
-Invariants #2 (many brains × many hands), #5 (Runtime selects, Compute provisions), and #6 (egress centralized) are structural / configuration invariants rather than state-machine properties — they are enforced at the kernel/configuration level (see [`../kernel/runtime.md`](../kernel/runtime.md), [`../kernel/compute.md`](../kernel/compute.md)) and are NOT modeled in the Lean spec.
+Invariants #2 (many brains × many hands), #5 (Runtime selects, Compute provisions), and #6 (egress centralized) are structural / configuration invariants rather than state-machine properties — they are enforced at the kernel/configuration level (see [`../kernel/harness.md`](../kernel/harness.md), [`../kernel/compute.md`](../kernel/compute.md)) and are NOT modeled in the Lean spec.
 
 ## Trigger to Revisit
 

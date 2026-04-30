@@ -24,7 +24,7 @@ Verified state machines, domain types, and invariants for the GroundCtrl OS
 - **RunAttempt**: Per-dispatch execution pipeline (always-forward progress)
 - **TaskDAG**: Dependency graph acyclicity via topological ordering
 - **DispatchEligibility**: 7-condition dispatch predicate, retry backoff bounds
-- **Substrate**: AgentRuntime × ComputeSubstrate decoupling (orthogonality, failure-as-tool-error, cross-pair recovery)
+- **Substrate**: AgentHarness × ComputeSubstrate decoupling (orthogonality, failure-as-tool-error, cross-pair recovery)
 
 Application-level specs (e.g. IssueState for gctrl-board) are separate from the kernel.
 -/

@@ -2,7 +2,7 @@
 
 The Scheduler is a kernel primitive with two responsibilities:
 
-1. **Task tracking** — the kernel-level record of all work items created and executed by agents, normalized across agent systems (Claude Code, Claude Agent SDK, Codex, OpenCode, Aider, OpenAI, custom). The agent program is captured as `agent_kind` (the *runtime* — see [runtime.md](runtime.md)); where it executes is captured as `compute_kind` (see [compute.md](compute.md)).
+1. **Task tracking** — the kernel-level record of all work items created and executed by agents, normalized across agent systems (Claude Code, Claude Agent SDK, Codex, OpenCode, Aider, OpenAI, custom). The agent program is captured as `agent_kind` (the harness kind — see [harness.md](harness.md)); where it executes is captured as `compute_kind` (see [compute.md](compute.md)).
 2. **Deferred and recurring execution** — scheduling Tasks to run at a point in time or on a recurring cadence.
 
 Defined as a **kernel interface trait** with **platform-specific implementations** — the kernel defines *what* to schedule; each platform implementation decides *how*.
@@ -44,7 +44,7 @@ Different agent systems have incompatible internal representations of work. The 
 
 By routing all agent work through the Scheduler, gctrl gets a single queryable record of what every agent did, what prompt drove it, and what session it ran in — regardless of the agent system used.
 
-For the per-runtime architectural details (process model, sandbox, IPC, OTel) consumed by these importers, see [runtime.md](runtime.md) and [`../../references/agent_orchestration.md`](../../references/agent_orchestration.md).
+For the per-harness architectural details (process model, sandbox, IPC, OTel) consumed by these importers, see [harness.md](harness.md) and [`../../references/agent_orchestration.md`](../../references/agent_orchestration.md).
 
 ### Task Domain Type
 
