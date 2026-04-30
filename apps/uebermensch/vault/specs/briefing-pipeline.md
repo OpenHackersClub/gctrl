@@ -123,6 +123,11 @@ Output ONLY substantive insights. Do NOT describe the research process, the cand
 Forbidden patterns include (non-exhaustive): "No direct X appears in this week's candidate set", "The sources reviewed did not cover Y", "No relevant items were found for Z", or any sentence whose subject is the pipeline/inputs rather than the world.
 If a topic or thesis has no insight to report, OMIT it entirely — do not acknowledge the gap, do not write a placeholder item.
 Every rendered item MUST assert something about the world, backed by a [[slug]] citation.
+
+Go deep on each item: explain mechanism, second-order effects, contrasts, and concrete numbers — do not stop at the headline.
+Cite inline for every non-trivial claim using bare [[slug]] wikilinks; one citation per claim minimum.
+For each item, propose 1–3 concrete further-reading items (papers, posts, primary docs) — not generic pointers.
+When the item involves quantitative or comparative data, include a visualization: a markdown table for tabular data, a Mermaid diagram for flows/architecture/state, or a chart reference (chart spec block) for time series and distributions. Prefer Mermaid over ASCII art.
 ```
 
 The curator MUST output JSON matching:
@@ -133,10 +138,16 @@ The curator MUST output JSON matching:
     {
       "kind": "news|update|action|alert",
       "title": "string",
-      "summary_md": "string (1-3 paragraphs, wiki-linked)",
+      "summary_md": "string (depth-first: 2-5 paragraphs covering mechanism, second-order effects, contrasts, numbers; every non-trivial claim cited with a bare [[slug]] wikilink)",
       "topic": "topic-slug | null",
       "thesis": "thesis-slug | null",
       "source_page_ids": ["<candidate id>...", ...],
+      "further_reading": [
+        { "title": "string", "url": "string", "why": "string (one line — why this is worth reading)" }
+      ],
+      "visuals": [
+        { "kind": "table|mermaid|chart", "caption": "string", "body_md": "string (markdown table, ```mermaid block, or chart spec)" }
+      ],
       "suggested_action": "string | null",
       "score_hint": 0.0
     }
@@ -150,6 +161,25 @@ The curator MUST output JSON matching:
 - `budget_hint_usd: profile.budgets.per_brief_usd`.
 - `max_output_tokens: profile.budgets.max_tokens_per_brief * 0.3` (reserves 70% for input + reasoning).
 - Guardrail `SessionBudgetPolicy` halts the session if cost exceeds `per_brief_usd`.
+
+### Dynamic model selection
+
+Model id is selectable per invocation. Resolution order (highest priority first):
+
+1. `--model <id>` CLI flag on `gctrl uber report` / `gctrl uber brief` (sets `UBER_LLM_MODEL` for the process; applied uniformly across all pipeline stages — subtopic propose, deep-dive, item curation).
+2. `UBER_LLM_MODEL` environment variable.
+3. Persona default in `personas/<persona>.md` frontmatter.
+4. Built-in default (`google/gemma-4-31b` for local LM Studio; `@cf/google/gemma-4-26b-a4b-it` for Cloudflare AI Gateway).
+
+Routing follows the model id prefix:
+
+| Id pattern | Kernel route | Notes |
+|---|---|---|
+| `claude-*` (e.g. `claude-opus-4-7`, `claude-sonnet-4-6`) | `POST /api/llm/messages` | Anthropic; `thinking: { type: "adaptive" }` enabled |
+| `@cf/*` | `POST /api/llm/completions` | Cloudflare Workers AI |
+| anything else (e.g. `google/gemma-4-31b`) | `POST /api/llm/completions` | Local LM Studio / Ollama / vLLM |
+
+Switching model does not change the prompt — `prompt_hash` stays stable across model switches, which makes A/B comparison clean. Cost rates are looked up per-model on the kernel side.
 
 ### Prompt Versioning
 
@@ -187,7 +217,7 @@ Almost pure — the one side effect is writing the vault markdown file. Renderer
 3. Compose the vault markdown file:
    - **Path:** `input/briefs/<generated_for>.md` for daily, `input/briefs/deepdive/thesis-<slug>-<generated_for>.md` for deepdive, `input/briefs/adhoc-<brief_id>.md` for adhoc.
    - **Frontmatter:** `page_type: brief`, `slug` (derived from filename stem), `kind`, `generated_for`, `topics`, `theses`, `session_id`, `prompt_hash`, `cost_usd`, `item_count`, `content_hash` (added after file is written; row update).
-   - **Body:** the rendered brief — H2 per item with title, `summary_md` with bare `[[slug]]` wikilinks retained, optional `suggested_action` block.
+   - **Body:** the rendered brief — H2 per item with title, `summary_md` with bare `[[slug]]` wikilinks retained, then (when present) a `Visuals` block rendering each `visuals[]` entry verbatim (table / ```mermaid``` fence / chart spec), a `Further reading` bulleted list rendering each `further_reading[]` entry as `- [<title>](<url>) — <why>`, and an optional `suggested_action` block. Order: summary → visuals → further reading → suggested action.
 4. Write the vault file atomically (`<path>.tmp` → fsync → rename). Compute `content_hash = sha256(bytes)`.
 5. Channel-specific rendering happens later in `DelivererService` — it reads this same file (see [delivery.md](delivery.md)). An optional HTML may be precomputed and stored under `~/.local/share/gctrl/uber/briefs/<id>.html` (path recorded in `uber_briefs.body_html_cache_path`) if the App web UI is the primary channel.
 6. Compute brief-level stats: `cited_claims / total_claims` (rough — count sentences with ≥ 1 `[[slug]]` link vs total).
@@ -267,7 +297,7 @@ Every stage emits an OTel span:
 | `uber.brief.pipeline` | brief_id, kind, topic_count, thesis_count |
 | `uber.brief.candidate_selection` | candidate_count, windowHours, pre_rank_cap |
 | `uber.brief.curate` | prompt_hash, model, cost_usd, input_tokens, output_tokens, fallback |
-| `uber.brief.render` | items_count, citations_resolved, citations_unresolved |
+| `uber.brief.render` | items_count, citations_resolved, citations_unresolved, further_reading_count, visuals_count |
 | `uber.brief.persist` | status_final |
 
 Spans form a single trace rooted at the pipeline span; the same `correlation_id` propagates to `LlmPort.generate` (see [domain-model.md § 7.5](domain-model.md#75-correlation-id-invariant)).
@@ -285,7 +315,11 @@ Implemented in `apps/uebermensch/src/entrypoints/cli/`.
 | `gctrl uber brief --dry-run` | Run pipeline but do NOT persist or deliver; dump rendered markdown |
 | `gctrl uber run-daily` | Idempotent: generate today's brief if missing, then `send` against today. The kernel scheduler invokes this on cron — see [scheduling.md](scheduling.md). |
 | `gctrl uber schedule sync` | Reconcile `directives/schedules.md` → kernel `/api/schedules` (`name_prefix=uber.`). Vault is authoritative. |
+| `gctrl uber brief --model <id>` | Override model for this run (e.g. `claude-opus-4-7`); same flag on `report` and `deepdive` |
+| `gctrl uber report --billing <metered\|subscription>` | Cost accounting mode for the run. `metered` (default) bills per-token at published rates; `subscription` zeros all costs (use when on Claude Pro/Team/Max). Sets `UBER_LLM_BILLING` for the process. |
 | `gctrl uber deepdive <slug>` | Run `BriefingService.generateDeepdive(slug)` |
+| `gctrl uber report` | Run weekly research reports across **all** `directives/research/*` interests (one report file per interest + one index) |
+| `gctrl uber report --model <id>` | Override model for the run; applies to subtopic-propose + deep-dive stages uniformly |
 | `gctrl uber briefs list` | `GET /api/uber/briefs` — list recent |
 | `gctrl uber briefs show <id>` | `GET /api/uber/briefs/<id>` — resolves `vault_path` and prints the vault markdown file |
 | `gctrl uber briefs open <id>` | Open the vault file in `$EDITOR` (or launch Obsidian URI `obsidian://open?vault=...&file=...`) |

@@ -23,7 +23,8 @@
     "@effect/schema": "^0.75.0",
     "effect": "^3.14.0",
     "fast-xml-parser": "^5.7.1",
-    "gray-matter": "^4.0.3"
+    "gray-matter": "^4.0.3",
+    "undici": "~7.24.8"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

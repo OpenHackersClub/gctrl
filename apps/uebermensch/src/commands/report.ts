@@ -1,5 +1,5 @@
 import { Command, Options } from "@effect/cli"
-import { Console, Effect, Layer, Option } from "effect"
+import { Console, Effect, Either, Layer, Option } from "effect"
 import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js"
 import { FileSystemVaultLive } from "../adapters/FileSystemVault.js"
 import { HttpDelivererLive } from "../adapters/HttpDeliverer.js"
@@ -97,6 +97,20 @@ const llmOpt = Options.choice("llm", ["kernel", "stub"]).pipe(
   Options.withDefault("kernel" as const),
 )
 
+const modelOpt = Options.text("model").pipe(
+  Options.withDescription(
+    "LLM model id for this run (e.g. claude-opus-4-7, claude-sonnet-4-6, @cf/google/gemma-4-26b-a4b-it, google/gemma-4-31b). Sets UBER_LLM_MODEL for the process. Anthropic ids route through /api/llm/messages; everything else through /api/llm/completions.",
+  ),
+  Options.optional,
+)
+
+const billingOpt = Options.choice("billing", ["metered", "subscription"]).pipe(
+  Options.withDescription(
+    "Cost accounting mode. 'metered' (default) bills per-token at published rates; 'subscription' zeros all costs (use when on Claude Pro/Team/Max). Sets UBER_LLM_BILLING for the process.",
+  ),
+  Options.optional,
+)
+
 const today = () => new Date().toISOString().slice(0, 10)
 
 const pad2 = (n: number) => (n < 10 ? `0${n}` : `${n}`)
@@ -171,6 +185,8 @@ export const report = Command.make(
     sendOpt,
     syncOpt,
     llmOpt,
+    modelOpt,
+    billingOpt,
   },
   ({
     sinceDaysOpt: sinceDays,
@@ -181,16 +197,41 @@ export const report = Command.make(
     sendOpt: doSend,
     syncOpt: doSyncOpt,
     llmOpt: llmKind,
+    modelOpt: modelOverride,
+    billingOpt: billingOverride,
   }) =>
     Effect.gen(function* () {
       const vaultDir = yield* resolveVaultDir()
+      // Dynamic model selection: --model sets UBER_LLM_MODEL for this process so
+      // KernelLlm.modelFor() picks it up across all three pipeline stages
+      // (subtopic propose, deep-dive, summary).
+      Option.match(modelOverride, {
+        onNone: () => {},
+        onSome: (m) => {
+          process.env.UBER_LLM_MODEL = m
+        },
+      })
+      Option.match(billingOverride, {
+        onNone: () => {},
+        onSome: (b) => {
+          process.env.UBER_LLM_BILLING = b
+        },
+      })
+      const activeModel =
+        Option.getOrUndefined(modelOverride) ??
+        process.env.UBER_LLM_MODEL ??
+        "(default)"
+      const activeBilling =
+        Option.getOrUndefined(billingOverride) ??
+        process.env.UBER_LLM_BILLING ??
+        "metered"
       const anchor = Option.getOrElse(dateOptVal, today)
       const anchorDate = new Date(`${anchor}T00:00:00Z`)
       const { label: periodLabel } = isoWeekLabel(anchorDate)
       const periodEnd = anchor
       const periodStart = toYmd(addDays(anchorDate, -sinceDays))
       yield* Console.log(
-        `generating weekly reports ${periodLabel} (${periodStart} → ${periodEnd}) from ${vaultDir} (llm=${llmKind}, concurrency=${concurrency})`,
+        `generating weekly reports ${periodLabel} (${periodStart} → ${periodEnd}) from ${vaultDir} (llm=${llmKind}, model=${activeModel}, billing=${activeBilling}, concurrency=${concurrency})`,
       )
 
       const program = Effect.gen(function* () {
@@ -384,27 +425,42 @@ export const report = Command.make(
             )
             continue
           }
-          const rendered = yield* renderer.renderInterestReport({
-            periodLabel,
-            periodStart,
-            periodEnd,
-            generator: llm.name(),
-            model: response.model,
-            promptHash: response.promptHash,
-            costUsd: interestCost,
-            profileName: profile.profile.identity.name,
-            interestSlug: ii.slug,
-            interestTitle: ii.title,
-            interestQuestion: ii.question,
-            interestTopics: ii.topics,
-            fieldFamiliarity: ii.fieldFamiliarity,
-            subtopic: r.subtopicSelected,
-            subtopicAlternatives: r.subtopicAlternatives,
-            analysis_md: response.analysis_md,
-            items: response.items,
-            candidates: ii.candidates,
-            vaultSlugs,
-          })
+          // Per-interest renderer failures (CitationError, IO) MUST NOT abort
+          // the whole pipeline. A hallucinated wikilink in one report should
+          // skip that interest, log the error, and let surviving reports +
+          // the index still land. Wrapping in Effect.either turns the failure
+          // into an Either we branch on rather than propagating it up.
+          const renderEither = yield* renderer
+            .renderInterestReport({
+              periodLabel,
+              periodStart,
+              periodEnd,
+              generator: llm.name(),
+              model: response.model,
+              promptHash: response.promptHash,
+              costUsd: interestCost,
+              profileName: profile.profile.identity.name,
+              interestSlug: ii.slug,
+              interestTitle: ii.title,
+              interestQuestion: ii.question,
+              interestTopics: ii.topics,
+              fieldFamiliarity: ii.fieldFamiliarity,
+              subtopic: r.subtopicSelected,
+              subtopicAlternatives: r.subtopicAlternatives,
+              analysis_md: response.analysis_md,
+              items: response.items,
+              candidates: ii.candidates,
+              vaultSlugs,
+            })
+            .pipe(Effect.either)
+          if (Either.isLeft(renderEither)) {
+            const err = renderEither.left
+            yield* Console.log(
+              `  ✗ ${ii.slug}: render failed (${(err as { _tag?: string })._tag ?? "error"}): ${(err as { message?: string }).message ?? String(err)} — skipping`,
+            )
+            continue
+          }
+          const rendered = renderEither.right
           let relPath: string | null = null
           if (!dryRun) {
             const w = yield* vaultSvc.writeReport(rendered.slug, rendered.markdown)

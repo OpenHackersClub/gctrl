@@ -175,6 +175,9 @@ importers:
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
+      undici:
+        specifier: ~7.24.8
+        version: 7.24.8
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
@@ -6964,7 +6967,7 @@ snapshots:
       '@effect/platform-node-shared': 0.22.2(@effect/platform@0.72.2(effect@3.21.0))(effect@3.21.0)
       effect: 3.21.0
       mime: 3.0.0
-      undici: 7.24.4
+      undici: 7.24.8
       ws: 8.18.0
     transitivePeerDependencies:
       - bufferutil

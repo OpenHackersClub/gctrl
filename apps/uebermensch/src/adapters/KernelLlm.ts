@@ -1,5 +1,16 @@
-import { Effect, Layer, Schema } from "effect";
+import { Agent } from "undici";
+import { Effect, JSONSchema, Layer, Schema } from "effect";
 import { LlmError } from "../errors.js";
+
+// Constrained decoding under `response_format: json_schema` can run for many
+// minutes on local backends (LMStudio + gemma) when the target schema has
+// long markdown fields. Node's built-in fetch (undici) caps headers/body at
+// 5 min; long single-shot completions hit that and surface as `TypeError:
+// fetch failed`. Pass an undici Agent with timeouts disabled per request via
+// the `dispatcher` option so the LLM stage isn't artificially capped — global
+// fetch behavior is unchanged, so tests that mock `globalThis.fetch` and
+// other consumers of fetch are unaffected.
+const llmFetchAgent = new Agent({ headersTimeout: 0, bodyTimeout: 0 });
 import type { CandidateRef } from "../lib/candidates.js";
 import { sha256 } from "../lib/hash.js";
 import {
@@ -16,10 +27,47 @@ import type { CuratedItem } from "../services/RendererService.js";
 // Override with UBER_LLM_MODEL to match the model id loaded in your LM Studio
 // instance (LM Studio typically echoes whatever model name it has loaded).
 const DEFAULT_MODEL = "google/gemma-4-31b";
-const ANTHROPIC_INPUT_COST_PER_MTOK = 5.0;
-const ANTHROPIC_OUTPUT_COST_PER_MTOK = 25.0;
 const MAX_CANDIDATE_EXCERPT = 2000;
 const DEFAULT_MAX_TOKENS = 16000;
+
+// Per-model USD/Mtok rates (input, output). Workers AI / local backends bill
+// kernel-side (or are free), so they collapse to 0 here. Anthropic rates
+// matter because uebermensch persists per-report `cost_usd` in vault
+// frontmatter — stale numbers there propagate into eval/dashboards.
+type CostRates = readonly [input: number, output: number];
+
+const ANTHROPIC_RATES: ReadonlyArray<readonly [RegExp, CostRates]> = [
+  // Order matters: more specific patterns first.
+  [/^claude-opus-4-/, [15.0, 75.0]],
+  [/^claude-sonnet-4-/, [3.0, 15.0]],
+  [/^claude-haiku-4-/, [1.0, 5.0]],
+  // Older 3.x families (kept for back-compat — kernel may still relay).
+  [/^claude-3-5-sonnet-/, [3.0, 15.0]],
+  [/^claude-3-5-haiku-/, [1.0, 5.0]],
+  [/^claude-3-opus-/, [15.0, 75.0]],
+];
+
+const ratesForModel = (model: string): CostRates => {
+  if (!isAnthropicModel(model)) return [0, 0];
+  for (const [pattern, rates] of ANTHROPIC_RATES) {
+    if (pattern.test(model)) return rates;
+  }
+  // Unknown claude-* — fall back to Sonnet rates (mid-range guess) rather
+  // than zero, so a new model id surfaces in cost telemetry instead of
+  // silently being free.
+  return [3.0, 15.0];
+};
+
+// Billing mode override. When the operator is on a Claude Pro/Team/Max
+// subscription (or otherwise prepaid), per-token cost is irrelevant and
+// would just clutter the run output. UBER_LLM_BILLING=subscription forces
+// every cost calculation to $0; default is `metered` (per-token rates above).
+type BillingMode = "metered" | "subscription";
+
+const billingMode = (): BillingMode => {
+  const raw = process.env.UBER_LLM_BILLING?.toLowerCase().trim();
+  return raw === "subscription" ? "subscription" : "metered";
+};
 
 // Per-article summarization shares the curator default by design — LM Studio
 // typically has a single model loaded and echoes that name regardless of the
@@ -251,11 +299,17 @@ const fetchKernel = (
             "x-service-name": SERVICE_NAME,
           },
           body: JSON.stringify(body),
-        }),
-      catch: (e) =>
-        isConnRefused(e)
-          ? kernelDownErr(path)
-          : llmErr("unavailable", `kernel ${path} fetch failed: ${String(e)}`),
+          // Non-standard undici option — silently ignored if a test replaces
+          // globalThis.fetch with a non-undici mock.
+          dispatcher: llmFetchAgent,
+          // biome-ignore lint/suspicious/noExplicitAny: undici-specific option
+        } as any),
+      catch: (e) => {
+        if (isConnRefused(e)) return kernelDownErr(path);
+        const cause = (e as { cause?: unknown })?.cause;
+        const causeStr = cause ? ` cause=${String(cause)}` : "";
+        return llmErr("unavailable", `kernel ${path} fetch failed: ${String(e)}${causeStr}`);
+      },
     });
     const raw = yield* Effect.tryPromise({
       try: () => res.text(),
@@ -312,20 +366,41 @@ const postAnthropic = (
     };
   });
 
+// Per-request structured-output hint. LMStudio (and OpenAI-compat backends)
+// only acts on `response_format` when the caller sends it, so other consumers
+// of the same LMStudio (e.g. opencode) keep their default text behavior.
+type JsonResponseFormat = {
+  readonly name: string;
+  readonly schema: unknown;
+};
+
 const postWorkersAi = (
   model: string,
   system: string,
   userPrompt: string,
   maxTokens: number,
+  jsonFormat: JsonResponseFormat | null,
 ): Effect.Effect<NormalizedResponse, LlmError> =>
   Effect.gen(function* () {
-    const body = {
+    const body: Record<string, unknown> = {
       model,
       max_tokens: maxTokens,
       messages: [
         { role: "system", content: system },
         { role: "user", content: userPrompt },
       ],
+      ...(jsonFormat
+        ? {
+            response_format: {
+              type: "json_schema",
+              json_schema: {
+                name: jsonFormat.name,
+                strict: true,
+                schema: jsonFormat.schema,
+              },
+            },
+          }
+        : {}),
     };
     const raw = yield* fetchKernel("/api/llm/completions", body);
     const parsed = yield* Effect.try({
@@ -354,10 +429,27 @@ const postLlm = (
   userPrompt: string,
   maxTokens: number,
   thinking: boolean,
+  jsonFormat: JsonResponseFormat | null,
 ): Effect.Effect<NormalizedResponse, LlmError> =>
   isWorkersAiModel(model)
-    ? postWorkersAi(model, system, userPrompt, maxTokens)
+    ? postWorkersAi(model, system, userPrompt, maxTokens, jsonFormat)
     : postAnthropic(model, system, userPrompt, maxTokens, thinking);
+
+// Effect schemas → JSON Schema, computed once. Used as the `response_format`
+// hint so local backends (LMStudio, llama.cpp grammar, vLLM) constrain the
+// model output to valid JSON in the exact shape we then decode.
+const briefJsonFormat = (): JsonResponseFormat => ({
+  name: "uber_brief",
+  schema: JSONSchema.make(LlmOutputSchema),
+});
+const subtopicJsonFormat = (): JsonResponseFormat => ({
+  name: "uber_subtopic",
+  schema: JSONSchema.make(SubtopicProposeOutputSchema),
+});
+const interestReportJsonFormat = (): JsonResponseFormat => ({
+  name: "uber_interest_report",
+  schema: JSONSchema.make(InterestReportOutputSchema),
+});
 
 // Pull the first JSON object out of an LLM response and decode it against
 // `schema`. All three failure modes (no JSON, JSON.parse error, schema
@@ -387,15 +479,23 @@ const decodeLlmJson = <A, I>(
   });
 
 // USD cost for a normalized LLM response. Workers AI / local models
-// always cost $0; Anthropic & summary lanes pay for input + output tokens.
+// always cost $0. Anthropic models look up rates by model id so Opus 4.7
+// ($15/$75) and Sonnet 4.6 ($3/$15) bill correctly without a redeploy.
+// Optional rate overrides keep the summary lane (which used custom rates)
+// working unchanged.
 const costForResponse = (
   res: NormalizedResponse,
-  inputRate: number,
-  outputRate: number,
-): number =>
-  isWorkersAiModel(res.model)
-    ? 0
-    : tokensCost(res.inputTokens, res.outputTokens, inputRate, outputRate);
+  inputRateOverride?: number,
+  outputRateOverride?: number,
+): number => {
+  if (billingMode() === "subscription") return 0;
+  if (isWorkersAiModel(res.model)) return 0;
+  if (inputRateOverride !== undefined && outputRateOverride !== undefined) {
+    return tokensCost(res.inputTokens, res.outputTokens, inputRateOverride, outputRateOverride);
+  }
+  const [inputRate, outputRate] = ratesForModel(res.model);
+  return tokensCost(res.inputTokens, res.outputTokens, inputRate, outputRate);
+};
 
 const SUBTOPIC_SYSTEM_PROMPT = `You are uebermensch-curator. Given a long-running research interest and the strongest candidates surfaced this week, identify 1–3 sharply focused SUB-TOPICS the deep-dive could explore this week, then pick the best one.
 
@@ -419,7 +519,13 @@ RULES:
 - 1–3 proposals. If signal is weak/diffuse, return ONE proposal capturing the dominant fragment rather than no proposals.
 - relevant_candidate_ids MUST be a subset of the provided candidate ids — never fabricate.
 - Rationale is concrete: name actors, numbers, dates, mechanisms. No meta phrases like "this week's pool covers...".
-- selected_slug picks the proposal with the densest cited evidence and the highest decision-relevance for the interest's question.`;
+- selected_slug picks the proposal with the densest cited evidence and the highest decision-relevance for the interest's question.
+
+INSIGHT-ONLY RULES (strict — apply to BOTH \`title\` and \`rationale\`):
+- Title and rationale MUST assert something about the world. NEVER describe what is absent, thin, missing, sparse, or quiet in the candidate pool.
+- BANNED phrases and patterns in title/rationale (non-exhaustive): "Absent X...", "Sparse week...", "No direct X...", "No fresh X...", "Only adjacent...", "Quiet week for...", "Pool was thin...", "No X catalyst...", "Reference pages were also indexed...", or any sentence whose subject is the candidate set / pipeline / inputs rather than the world.
+- If the candidate pool has no substantive signal, pick the single sharpest concrete claim available (even if narrow) and frame the title around THAT claim — not around the absence of others.
+- Title format: name a specific actor, ruling, paper, mechanism, or development. Examples of GOOD titles: "Tillis's Warsh-vote pivot and the 2026 NC Senate race", "BoJ IMES research workshop signals on policy framework". Examples of FORBIDDEN titles: "Absent MHLW/pharma signal; only BOJ-IMES surfaced", "Sparse week: no defense-specific catalyst".`;
 
 const buildSubtopicUserPrompt = (req: SubtopicProposeRequest): string => {
   const it = req.interest;
@@ -665,13 +771,16 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
       const model = modelFor();
       const userPrompt = buildUserPrompt(req);
       const promptHash = sha256(`${SYSTEM_PROMPT}\n---\n${userPrompt}`);
-      const res = yield* postLlm(model, SYSTEM_PROMPT, userPrompt, DEFAULT_MAX_TOKENS, true);
-      const decoded = yield* decodeLlmJson(res.text, LlmOutputSchema, "kernel /api/llm/messages");
-      const costUsd = costForResponse(
-        res,
-        ANTHROPIC_INPUT_COST_PER_MTOK,
-        ANTHROPIC_OUTPUT_COST_PER_MTOK,
+      const res = yield* postLlm(
+        model,
+        SYSTEM_PROMPT,
+        userPrompt,
+        DEFAULT_MAX_TOKENS,
+        true,
+        briefJsonFormat(),
       );
+      const decoded = yield* decodeLlmJson(res.text, LlmOutputSchema, "kernel /api/llm/messages");
+      const costUsd = costForResponse(res);
       const items: ReadonlyArray<CuratedItem> = decoded.items.map((i) => ({
         kind: i.kind,
         title: i.title,
@@ -701,6 +810,7 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
         userPrompt,
         DEFAULT_MAX_TOKENS,
         true,
+        subtopicJsonFormat(),
       );
       const decoded = yield* decodeLlmJson(
         res.text,
@@ -721,11 +831,7 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
         // Drop hallucinated candidate ids — never propagate fabricated refs.
         relevantCandidateIds: p.relevant_candidate_ids.filter((id) => candidateIds.has(id)),
       }));
-      const costUsd = costForResponse(
-        res,
-        ANTHROPIC_INPUT_COST_PER_MTOK,
-        ANTHROPIC_OUTPUT_COST_PER_MTOK,
-      );
+      const costUsd = costForResponse(res);
       return {
         selectedSlug,
         proposals,
@@ -747,17 +853,14 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
         userPrompt,
         DEFAULT_MAX_TOKENS,
         true,
+        interestReportJsonFormat(),
       );
       const decoded = yield* decodeLlmJson(
         res.text,
         InterestReportOutputSchema,
         "kernel interest report",
       );
-      const costUsd = costForResponse(
-        res,
-        ANTHROPIC_INPUT_COST_PER_MTOK,
-        ANTHROPIC_OUTPUT_COST_PER_MTOK,
-      );
+      const costUsd = costForResponse(res);
       const items: ReadonlyArray<CuratedItem> = decoded.items.map((i) => ({
         kind: i.kind,
         title: i.title,
@@ -789,16 +892,13 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
         userPrompt,
         DEFAULT_MAX_TOKENS,
         true,
+        null,
       );
       const answerMd = res.text.trim();
       if (answerMd.length === 0) {
         return yield* Effect.fail(llmErr("invalid", "kernel researchQuery returned empty body"));
       }
-      const costUsd = costForResponse(
-        res,
-        ANTHROPIC_INPUT_COST_PER_MTOK,
-        ANTHROPIC_OUTPUT_COST_PER_MTOK,
-      );
+      const costUsd = costForResponse(res);
       return { answerMd, promptHash, costUsd, model: res.model };
     }),
   summarizeSource: (req) =>
@@ -815,6 +915,7 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
         userPrompt,
         SUMMARY_MAX_TOKENS,
         false,
+        null,
       );
       const insightsMd = normalizeInsights(res.text);
       if (insightsMd.length === 0) {
