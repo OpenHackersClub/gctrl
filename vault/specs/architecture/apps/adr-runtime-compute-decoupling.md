@@ -1,9 +1,10 @@
-# ADR: AgentRuntime × ComputeBackend Decoupling
+# ADR: AgentRuntime × ComputeSubstrate Decoupling
 
 **Status**: accepted
 **Scope**: kernel orchestrator, scheduler, all current and future agent integrations
 **Drives**: [`../kernel/runtime.md`](../kernel/runtime.md), [`../kernel/compute.md`](../kernel/compute.md)
 **Extends**: [`adr-session-is-the-spine.md`](adr-session-is-the-spine.md)
+**Formally verified**: [`kernel/specs-lean4/KernelSpec/Substrate.lean`](../../../../kernel/specs-lean4/KernelSpec/Substrate.lean)
 
 ## Context
 
@@ -24,16 +25,16 @@ The kernel exposes two independent ports:
 
 1. **`AgentRuntime`** (the brain) — defines *which agent program runs* (`claude-code`, `codex`, `opencode`, `aider`, …). Owns the prompt invocation shape, the rollout-import logic, and the runtime-specific telemetry shim. See [`../kernel/runtime.md`](../kernel/runtime.md).
 
-2. **`ComputeBackend`** (the hand) — defines *where it runs* (`local-process`, `cf-containers`, `e2b`, `ssh-remote`, `browser-tab`). Owns provisioning, egress policy, credential delivery, and failure-as-tool-error. See [`../kernel/compute.md`](../kernel/compute.md).
+2. **`ComputeSubstrate`** (the hand) — defines *where it runs* (`local-process`, `cf-containers`, `e2b`, `ssh-remote`, `browser-tab`). Owns provisioning, egress policy, credential delivery, and failure-as-tool-error. See [`../kernel/compute.md`](../kernel/compute.md).
 
 **Invariants:**
 
-1. **Brain ≠ Hand.** No `AgentRuntime` implementation MAY assume a specific `ComputeBackend`; no `ComputeBackend` MAY assume a specific Runtime. Cross-product compatibility is the public contract; the matrix below is its closed form.
-2. **Many brains × many hands.** A `ComputeBackend` instance MAY host more than one attached Runtime (one container, two agent processes). A single Runtime instance MAY drive more than one Compute handle (one harness, multiple sandboxes). Topologies are not constrained at the port level.
+1. **Brain ≠ Hand.** No `AgentRuntime` implementation MAY assume a specific `ComputeSubstrate`; no `ComputeSubstrate` MAY assume a specific Runtime. Cross-product compatibility is the public contract; the matrix below is its closed form.
+2. **Many brains × many hands.** A `ComputeSubstrate` instance MAY host more than one attached Runtime (one container, two agent processes). A single Runtime instance MAY drive more than one Compute handle (one harness, multiple sandboxes). Topologies are not constrained at the port level.
 3. **Compute failure is a tool error.** A killed container, a quota'd e2b sandbox, or a dropped SSH connection MUST surface to the Orchestrator as `AgentExitAbnormal`. Sessions MUST NOT die because hands die — the existing retry path handles recovery.
 4. **Sessions are recoverable from the event log alone.** A re-dispatch on a different `(runtime, compute)` pair MUST be possible if the previous attempt's SessionEvents are intact. This extends [`adr-session-is-the-spine.md`](adr-session-is-the-spine.md) — Session is the spine of *both* observability and recovery.
 5. **Runtime selects, Compute provisions.** The Runtime declares the invocation (`command`, `env`, `stdin`, `workspace_mount`); the Compute executes it. Neither port performs the other's job.
-6. **Egress is centralized.** All ComputeBackends MUST route external traffic through the kernel MITM proxy. Runtimes that ship their own proxy MUST chain through it.
+6. **Egress is centralized.** All ComputeSubstrates MUST route external traffic through the kernel MITM proxy. Runtimes that ship their own proxy MUST chain through it.
 
 ## Compatibility Matrix
 
@@ -57,11 +58,11 @@ The supported `(runtime, compute)` pairings. New combinations require an entry h
 1. **Orthogonal expansion.** Adding `codex` does not touch `cf-containers`. Adding `e2b` does not touch any runtime. The matrix grows additively.
 2. **Heterogeneous teams.** A `reviewer-bot` Persona MAY run as `(claude-code, local-process)` for fast local review and `(codex, cf-containers)` for long-running CI review on the same Task type. Cost attribution and span shape are identical because the kernel normalizes through `import_rollout`.
 3. **Recovery without re-running.** A crashed container surfaces as `AgentExitAbnormal`; the orchestrator retries — possibly on a different compute or a different runtime — without losing the session log.
-4. **One credential boundary.** The vault-proxy credential pattern (deferred but specified) lives at the ComputeBackend layer once, not per-runtime.
+4. **One credential boundary.** The vault-proxy credential pattern (deferred but specified) lives at the ComputeSubstrate layer once, not per-runtime.
 
 **Cost**
 
-1. **Two ports instead of one.** Implementations of `AgentRuntime` and `ComputeBackend` must be written and tested independently; cross-product conformance tests are required for each new entry in the matrix.
+1. **Two ports instead of one.** Implementations of `AgentRuntime` and `ComputeSubstrate` must be written and tested independently; cross-product conformance tests are required for each new entry in the matrix.
 2. **`Task.context` carries both `runtime_kind` and `compute_kind`.** Analytics queries that filter by agent program MUST disambiguate against the `agent_kind` column; queries that filter by execution environment MUST filter `compute_kind`. The pair, not either alone, identifies a dispatch.
 3. **Eligibility check is wider.** The Orchestrator MUST verify the `(runtime, compute)` pair against the matrix at dispatch eligibility. A Task with an unsupported pair MUST fail fast at dispatch time, not at launch.
 
@@ -72,10 +73,23 @@ The supported `(runtime, compute)` pairings. New combinations require an entry h
 3. Does NOT mandate any specific compute backend for production. The matrix lists what is *supported*; what is *deployed* is a per-Task WORKFLOW.md decision.
 4. Does NOT change the Orchestrator state machine or claim-state semantics ([`../kernel/orchestrator.md`](../kernel/orchestrator.md)). The dispatch step gains two ports; the state machine is unchanged.
 
+## Formal Verification
+
+The decoupling invariants are mechanically checked in Lean 4. See [`kernel/specs-lean4/KernelSpec/Substrate.lean`](../../../../kernel/specs-lean4/KernelSpec/Substrate.lean) — `lake build` MUST pass before this ADR may be amended. Theorems mapped to invariants:
+
+| Invariant (above) | Lean theorem |
+|---|---|
+| #1 Brain ≠ Hand | `Substrate.orthogonality` — `∀ d1 d2 s t, stepWithDispatch d1 s t = stepWithDispatch d2 s t`. With corollaries `runtime_independent` and `compute_independent` for one-axis variants. |
+| #3 Compute failure is a tool error | `Substrate.exit_lands_in_retryQueued` — every `ComputeExit` (clean / error / crashed / killed / networkLost) maps to a defined `Trigger` that lands in `RetryQueued` from `Running`. Weak-form existence: `failure_is_tool_error`. |
+| #4 Sessions recoverable from log | `Substrate.crash_recover_different_pair` — `Reachable step Running Claimed` for any `(prior, next)` pair. Specialized to same-pair retry as `same_pair_retry`. |
+| `mapExit` codomain | `Substrate.mapExit_in_exit_triggers` — every compute exit becomes either `agentExitNormal` or `agentExitAbnormal`; no other Trigger is reachable from a ComputeExit. |
+
+Invariants #2 (many brains × many hands), #5 (Runtime selects, Compute provisions), and #6 (egress centralized) are structural / configuration invariants rather than state-machine properties — they are enforced at the kernel/configuration level (see [`../kernel/runtime.md`](../kernel/runtime.md), [`../kernel/compute.md`](../kernel/compute.md)) and are NOT modeled in the Lean spec.
+
 ## Trigger to Revisit
 
 1. A `(runtime, compute)` pair appears in production deployment that cannot honestly map to one row of the matrix — implies the matrix is too coarse or a new dimension exists.
-2. Three or more runtimes need the same compute-side helper (e.g. all of them want a credential-injection step). That helper SHOULD be lifted into the ComputeBackend port rather than re-implemented per Runtime.
+2. Three or more runtimes need the same compute-side helper (e.g. all of them want a credential-injection step). That helper SHOULD be lifted into the ComputeSubstrate port rather than re-implemented per Runtime.
 3. A multi-machine claim coordinator becomes necessary — the "many hands" assumption changes from process-level to host-level and the failure-as-tool-error rule may need to evolve.
 
 If two of the three trigger, revisit the decoupling shape explicitly rather than letting per-runtime workarounds accrete.

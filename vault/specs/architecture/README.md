@@ -35,7 +35,7 @@ vault/specs/architecture/
 │   ├── orchestrator.md    claim states, dispatch eligibility, retry/backoff
 │   ├── scheduler.md       Task lifecycle, interface trait, platform implementations
 │   ├── runtime.md         AgentRuntime port, built-in runtimes (the "brain")
-│   ├── compute.md         ComputeBackend port, built-in backends (the "hand")
+│   ├── compute.md         ComputeSubstrate port, built-in backends (the "hand")
 │   └── browser.md         CDP daemon, ref system, tab management
 │
 ├── shell/             ← shell layer (CLI dispatcher, HTTP API, query engine)
@@ -53,7 +53,7 @@ vault/specs/architecture/
 | [kernel/orchestrator.md](kernel/orchestrator.md) | Orchestrator kernel primitive — Task claim states, dispatch eligibility, retry/backoff, concurrency control |
 | [kernel/scheduler.md](kernel/scheduler.md) | Scheduler kernel primitive — Task lifecycle, interface trait, platform implementations |
 | [kernel/runtime.md](kernel/runtime.md) | `AgentRuntime` port — which agent program runs (`claude-code`, `codex`, `opencode`, …) |
-| [kernel/compute.md](kernel/compute.md) | `ComputeBackend` port — where it runs (`local-process`, `cf-containers`, `e2b`, …) |
+| [kernel/compute.md](kernel/compute.md) | `ComputeSubstrate` port — where it runs (`local-process`, `cf-containers`, `e2b`, …) |
 | [apps/adr-runtime-compute-decoupling.md](apps/adr-runtime-compute-decoupling.md) | ADR — Brain ≠ Hand invariants, `(runtime, compute)` compatibility matrix |
 | [kernel/browser.md](kernel/browser.md) | Browser control kernel extension — CDP daemon, ref system, tab management |
 | [apps/gctrl-board.md](apps/gctrl-board.md) | Kanban application — Issues, board visualization, agent integration |

@@ -13,7 +13,8 @@ For types with transitions, see TaskState.lean, SessionState.lean, Orchestrator.
 - **SpanStatus**: Telemetry span execution outcome (Ok/Error/Unset)
 - **PolicyDecision**: Guardrail policy engine verdict (Allow/Warn/Deny)
 - **UserKind**: Persona classification (Human/Agent/System)
-- **AgentKind**: Agent runtime system (ClaudeCode/Codex/Aider/OpenAI/Custom)
+- **AgentKind**: Agent runtime system (ClaudeCode/ClaudeAgentSdk/Codex/OpenCode/Aider/OpenAI/Custom)
+- **ComputeKind**: ComputeSubstrate kind (LocalProcess/CfContainers/E2b/SshRemote/Docker/BrowserTab)
 - **ActorKind**: Audit trail attribution (Human/Agent)
 -/
 
@@ -82,13 +83,33 @@ inductive UserKind where
 -- AgentKind
 -- ═══════════════════════════════════════════════════════════════
 
-/-- Agent system classification — which runtime executes a task. -/
+/-- Agent system classification — which runtime executes a task.
+    Identifies *which agent program runs* (the brain), not where it runs
+    (that is `ComputeKind`). See `vault/specs/architecture/kernel/runtime.md`. -/
 inductive AgentKind where
   | claudeCode
+  | claudeAgentSdk
   | codex
+  | openCode
   | aider
   | openAI
   | custom
+  deriving DecidableEq
+
+-- ═══════════════════════════════════════════════════════════════
+-- ComputeKind
+-- ═══════════════════════════════════════════════════════════════
+
+/-- Compute substrate classification — where the runtime executes (the hand).
+    Companion of `AgentKind`; together they fully identify a dispatch.
+    See `vault/specs/architecture/kernel/compute.md`. -/
+inductive ComputeKind where
+  | localProcess
+  | cfContainers
+  | e2b
+  | sshRemote
+  | docker
+  | browserTab
   deriving DecidableEq
 
 -- ═══════════════════════════════════════════════════════════════

@@ -5,7 +5,7 @@ How dragging an Issue to `in_progress` on the gctrl-board web UI kicks off an ag
 > Related specs:
 > - [kernel/orchestrator.md](kernel/orchestrator.md) — claim states, dispatch, retry (kernel primitive)
 > - [kernel/runtime.md](kernel/runtime.md) — `AgentRuntime` port and built-in runtimes (canonical)
-> - [kernel/compute.md](kernel/compute.md) — `ComputeBackend` port and built-in backends (canonical)
+> - [kernel/compute.md](kernel/compute.md) — `ComputeSubstrate` port and built-in backends (canonical)
 > - [apps/adr-runtime-compute-decoupling.md](apps/adr-runtime-compute-decoupling.md) — invariants and compatibility matrix
 > - [apps/gctl-board.md](apps/gctl-board.md) — what the board tracks (Issues vs. Tasks)
 > - [../gctrl/WORKFLOW.md](../gctrl/WORKFLOW.md) — issue lifecycle + agent dispatch CLI
@@ -42,7 +42,7 @@ sequenceDiagram
     participant K as Kernel (HTTP :4318)
     participant O as Orchestrator
     participant R as AgentRuntime
-    participant C as ComputeBackend
+    participant C as ComputeSubstrate
 
     U->>B: drag BACK-42 → in_progress
     B->>K: POST /api/board/issues/BACK-42/move {status: "in_progress"}
@@ -63,7 +63,7 @@ sequenceDiagram
 - The **kernel** owns the Issue → Task promotion and feeds the Orchestrator.
 - The **Orchestrator** owns dispatch eligibility, claim, and retry. Unchanged from [kernel/orchestrator.md](kernel/orchestrator.md).
 - The **AgentRuntime** renders + launches the agent. It is a new abstraction that wraps today's `AgentAdapter` (see next section).
-- The **ComputeBackend** is where the runtime runs. It is a new abstraction.
+- The **ComputeSubstrate** is where the runtime runs. It is a new abstraction.
 
 ---
 
@@ -77,13 +77,13 @@ Today's [implementation/kernel/orchestrator.md](../implementation/kernel/orchest
 The kernel splits these into two ports:
 
 ```text
-AgentRuntime × ComputeBackend  →  launched Session
+AgentRuntime × ComputeSubstrate  →  launched Session
 ```
 
 The canonical specs for these ports — Rust traits, built-in implementations, telemetry-ingest tables, sandbox composition tables, credential delivery, and per-compute concurrency — live in:
 
 - [kernel/runtime.md](kernel/runtime.md) — `AgentRuntime` trait, built-in runtimes, per-runtime telemetry ingest, inner sandbox table.
-- [kernel/compute.md](kernel/compute.md) — `ComputeBackend` trait, built-in backends, failure-as-tool-error semantics, egress and credential delivery.
+- [kernel/compute.md](kernel/compute.md) — `ComputeSubstrate` trait, built-in backends, failure-as-tool-error semantics, egress and credential delivery.
 - [apps/adr-runtime-compute-decoupling.md](apps/adr-runtime-compute-decoupling.md) — the invariants (Brain ≠ Hand, many brains × many hands, compute failure is a tool error) and the `(runtime, compute)` compatibility matrix.
 
 The existing `AgentAdapter` becomes a composite: `(runtime, compute) -> AgentHandle`. No changes to the Orchestrator state machine or claim logic.
@@ -115,13 +115,13 @@ The deployed gctrl-board runs on Cloudflare Workers and has no local kernel to t
 ### Slice 1 — Local trigger (this PR)
 
 - Board drag works when run locally against a local kernel.
-- `ComputeBackend = local-process`, `AgentRuntime = claude-code`.
+- `ComputeSubstrate = local-process`, `AgentRuntime = claude-code`.
 - **No CF Containers yet, no deployed flow yet.** The deployed board still shows sessions read-only.
 - Acceptance: Playwright local — drag card → `GET /api/sessions?issue_id=X` returns a row.
 
 ### Slice 2 — Remote compute, local orchestrator
 
-- Add `cf-containers` ComputeBackend. Same `claude-code` runtime.
+- Add `cf-containers` ComputeSubstrate. Same `claude-code` runtime.
 - Local kernel orchestrates; agent runs in a CF Container and streams OTLP back to the local kernel.
 - Still requires a local kernel daemon. Deployed board unchanged.
 - Acceptance: local kernel + CF Container — session completes, spans land in DuckDB.

@@ -1,6 +1,6 @@
 # Agent Runtime
 
-The **AgentRuntime** is the kernel port that defines *which agent program* runs — Claude Code, Claude Agent SDK, Codex CLI, OpenCode, Aider, or a custom executable. It is decoupled from the **ComputeBackend** (where it runs); see [compute.md](compute.md). A Session is the cross-product of one Runtime and one Compute.
+The **AgentRuntime** is the kernel port that defines *which agent program* runs — Claude Code, Claude Agent SDK, Codex CLI, OpenCode, Aider, or a custom executable. It is decoupled from the **ComputeSubstrate** (where it runs); see [compute.md](compute.md). A Session is the cross-product of one Runtime and one Compute.
 
 > Status: **[deferred]**. The port is currently sketched inline in [`../session-trigger-from-board.md`](../session-trigger-from-board.md). This file is the canonical kernel-architecture spec for the Runtime port; the existing `AgentAdapter` in `kernel/crates/gctrl-orch/src/agent/` will be split into Runtime + Compute as part of the [Slice 2 scope](../session-trigger-from-board.md#deployment-phasing).
 
@@ -16,6 +16,8 @@ Today's `AgentAdapter::launch(prompt, workspace, attempt)` in [`../../implementa
 These vary independently. The same `claude-code` runtime ships against a `local-process` compute on a developer laptop and a `cf-containers` compute in production. The same `cf-containers` compute hosts both `claude-code` and `codex` runtimes for parallel team workflows. Conflating them locks each runtime to the compute it shipped with first.
 
 See [adr-runtime-compute-decoupling.md](../apps/adr-runtime-compute-decoupling.md) for the architectural decision and invariants.
+
+> **Formal verification.** The runtime/compute orthogonality invariant is mechanically checked in [`kernel/specs-lean4/KernelSpec/Substrate.lean`](../../../../kernel/specs-lean4/KernelSpec/Substrate.lean): `Substrate.orthogonality` proves the Orchestrator state machine never branches on `(runtime, compute)` — changing either component preserves every transition.
 
 ---
 
@@ -46,7 +48,7 @@ pub struct Invocation {
 }
 ```
 
-The Runtime MUST NOT spawn the process — that is the ComputeBackend's job. The Runtime only declares *what command to run*, *what env to set*, and *how to read back what happened*.
+The Runtime MUST NOT spawn the process — that is the ComputeSubstrate's job. The Runtime only declares *what command to run*, *what env to set*, and *how to read back what happened*.
 
 `AgentKind` is defined in [domain-model.md § 2 Task](../domain-model.md#task-specs-only) and tracked in the Scheduler. See [scheduler.md § Tasks](scheduler.md#tasks) for how `agent_kind` is normalized at task creation.
 
@@ -80,13 +82,13 @@ Every Runtime MUST surface its execution as OTel spans on the kernel `/v1/traces
 | `aider` | None | wrap stdout; emit synthetic spans on tool-call boundaries |
 | `custom` | unspecified | declared per-runtime in WORKFLOW.md `telemetry` block |
 
-Runtimes that emit native OTLP MUST be configured to point at the kernel's OTLP endpoint at provision time — credentials and endpoint are injected by the ComputeBackend, never compiled in.
+Runtimes that emit native OTLP MUST be configured to point at the kernel's OTLP endpoint at provision time — credentials and endpoint are injected by the ComputeSubstrate, never compiled in.
 
 ---
 
 ## 5. Inner Sandbox per Runtime
 
-Each runtime ships its own OS-level sandbox (or none). gctrl's ComputeBackend provides the *outer* sandbox; the Runtime's own sandbox is *inner*. This distinction matters for security policy: runtimes with no inner sandbox MUST run inside a ComputeBackend that provides isolation.
+Each runtime ships its own OS-level sandbox (or none). gctrl's ComputeSubstrate provides the *outer* sandbox; the Runtime's own sandbox is *inner*. This distinction matters for security policy: runtimes with no inner sandbox MUST run inside a ComputeSubstrate that provides isolation.
 
 | Runtime | Inner OS sandbox | Inner network sandbox |
 |---|---|---|

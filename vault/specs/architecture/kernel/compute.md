@@ -1,6 +1,6 @@
 # Compute Backend
 
-The **ComputeBackend** is the kernel port that defines *where* an agent runs — local process, Cloudflare Container, e2b sandbox, SSH-attached host, or browser tab. It is decoupled from the **AgentRuntime** (which agent runs); see [runtime.md](runtime.md). A Session is the cross-product of one Runtime and one Compute.
+The **ComputeSubstrate** is the kernel port that defines *where* an agent runs — local process, Cloudflare Container, e2b sandbox, SSH-attached host, or browser tab. It is decoupled from the **AgentRuntime** (which agent runs); see [runtime.md](runtime.md). A Session is the cross-product of one Runtime and one Compute.
 
 > Status: **[deferred]**. The port is currently sketched inline in [`../session-trigger-from-board.md`](../session-trigger-from-board.md). This file is the canonical kernel-architecture spec for the Compute port; the existing `AgentAdapter` in `kernel/crates/gctrl-orch/src/agent/` will be split into Runtime + Compute as part of the [Slice 2 scope](../session-trigger-from-board.md#deployment-phasing).
 
@@ -10,7 +10,7 @@ The **ComputeBackend** is the kernel port that defines *where* an agent runs —
 
 ```rust
 #[async_trait]
-pub trait ComputeBackend: Send + Sync {
+pub trait ComputeSubstrate: Send + Sync {
     /// Stable compute identifier — e.g. "local-process", "cf-containers".
     fn kind(&self) -> ComputeKind;
 
@@ -36,7 +36,7 @@ pub struct ComputeSpec {
 }
 ```
 
-The ComputeBackend MUST NOT decide *what* runs inside — that is the Runtime's job via `Invocation`. The ComputeBackend only allocates the execution environment, wires stdin/stdout/stderr, enforces egress policy, and reports exit.
+The ComputeSubstrate MUST NOT decide *what* runs inside — that is the Runtime's job via `Invocation`. The ComputeSubstrate only allocates the execution environment, wires stdin/stdout/stderr, enforces egress policy, and reports exit.
 
 ---
 
@@ -59,18 +59,20 @@ The default and only currently-implemented backend is `local-process`; new backe
 
 A killed container, a closed SSH connection, a quota'd e2b sandbox — any compute failure MUST surface to the Orchestrator as `AgentExitAbnormal`, never as a kernel error. This mirrors the principle that "containers are cattle": the Orchestrator's existing retry path handles the recovery (see [orchestrator.md § Retry and Backoff](orchestrator.md#retry-and-backoff)).
 
+> **Formal verification.** This rule is mechanically checked in [`kernel/specs-lean4/KernelSpec/Substrate.lean`](../../../../kernel/specs-lean4/KernelSpec/Substrate.lean): `Substrate.exit_lands_in_retryQueued` proves every `ComputeExit` (`clean | error _ | crashed | killed | networkLost`) lands in `RetryQueued` from `Running` — the orchestrator never gets stuck because of how a compute died.
+
 **Rules:**
 
-1. ComputeBackend `wait` futures MUST resolve to `ComputeExit` even on crashes — never panic, never propagate kernel-level errors.
+1. ComputeSubstrate `wait` futures MUST resolve to `ComputeExit` even on crashes — never panic, never propagate kernel-level errors.
 2. The `kill` closure MUST be idempotent — calling it on an already-dead compute MUST succeed silently.
 3. Re-dispatch on a different `(runtime, compute)` pair MUST be possible if the previous attempt's SessionEvents are intact in the session log.
-4. The ComputeBackend MUST NOT persist state that the kernel does not also know about. Anything load-bearing for recovery MUST be in the kernel session log.
+4. The ComputeSubstrate MUST NOT persist state that the kernel does not also know about. Anything load-bearing for recovery MUST be in the kernel session log.
 
 ---
 
 ## 4. Sandbox Composition — Outer Compute vs Inner Sandbox
 
-ComputeBackend provides the *outer* sandbox (process / container / VM / namespace boundary). The Runtime provides its own *inner* sandbox if it has one (Seatbelt for Claude Code, bubblewrap+seccomp for Codex, none for OpenCode and Aider). The combined posture is what gctrl actually deploys.
+ComputeSubstrate provides the *outer* sandbox (process / container / VM / namespace boundary). The Runtime provides its own *inner* sandbox if it has one (Seatbelt for Claude Code, bubblewrap+seccomp for Codex, none for OpenCode and Aider). The combined posture is what gctrl actually deploys.
 
 | Runtime | Inner OS sandbox | Inner network sandbox | gctrl outer additions |
 |---|---|---|---|
@@ -87,7 +89,7 @@ ComputeBackend provides the *outer* sandbox (process / container / VM / namespac
 
 ## 5. Network Egress
 
-All egress from a ComputeBackend MUST traverse the kernel MITM proxy ([`../../implementation/kernel/components.md`](../../implementation/kernel/components.md) — `gctrl-proxy`). This is non-negotiable: every external call MUST be observable as a span and MUST be policy-checkable by Guardrails.
+All egress from a ComputeSubstrate MUST traverse the kernel MITM proxy ([`../../implementation/kernel/components.md`](../../implementation/kernel/components.md) — `gctrl-proxy`). This is non-negotiable: every external call MUST be observable as a span and MUST be policy-checkable by Guardrails.
 
 ```rust
 pub enum EgressPolicy {
@@ -122,13 +124,13 @@ pub enum CredentialDelivery {
 }
 ```
 
-The ComputeBackend MUST NOT pass long-lived secrets via environment variables to the Runtime process. Drivers (LKMs) that hold credentials (`driver-github`, `driver-linear`) MUST expose either resource-bundled setup steps or a vault-proxied MCP endpoint — never raw env vars.
+The ComputeSubstrate MUST NOT pass long-lived secrets via environment variables to the Runtime process. Drivers (LKMs) that hold credentials (`driver-github`, `driver-linear`) MUST expose either resource-bundled setup steps or a vault-proxied MCP endpoint — never raw env vars.
 
 ---
 
 ## 7. Concurrency — Per-Compute Slots
 
-Each ComputeBackend has its own concurrency profile. `local-process` is bounded by laptop CPU; `cf-containers` is cheap and parallel; `ssh-remote` is bounded by the remote box's load.
+Each ComputeSubstrate has its own concurrency profile. `local-process` is bounded by laptop CPU; `cf-containers` is cheap and parallel; `ssh-remote` is bounded by the remote box's load.
 
 The Orchestrator MUST enforce per-compute slot limits in addition to global and per-state limits (see [orchestrator.md § Concurrency Control](orchestrator.md#concurrency-control)):
 
@@ -147,7 +149,7 @@ When a per-compute slot is exhausted, eligible Tasks targeting that compute MUST
 
 ## 8. Configuration
 
-ComputeBackends are selected per-Task via `WORKFLOW.md` frontmatter:
+ComputeSubstrates are selected per-Task via `WORKFLOW.md` frontmatter:
 
 ```yaml
 agent:
@@ -164,13 +166,13 @@ agent:
       - "raw.githubusercontent.com"
 ```
 
-`compute_config` is opaque to the kernel and passed verbatim to the ComputeBackend's `launch` method. Validation lives in the backend, not the orchestrator.
+`compute_config` is opaque to the kernel and passed verbatim to the ComputeSubstrate's `launch` method. Validation lives in the backend, not the orchestrator.
 
 ---
 
 ## 9. Observability
 
-Every ComputeBackend operation MUST emit kernel telemetry events:
+Every ComputeSubstrate operation MUST emit kernel telemetry events:
 
 | Event | Fields |
 |---|---|
@@ -186,7 +188,7 @@ These are observed by the Orchestrator and surfaced in the existing `orchestrato
 ## 10. Extending — Adding a New Backend
 
 1. Define a `ComputeKind` variant in `gctrl-core`.
-2. Implement the `ComputeBackend` trait in a new feature-gated crate: `kernel/crates/gctrl-compute-<kind>/`.
+2. Implement the `ComputeSubstrate` trait in a new feature-gated crate: `kernel/crates/gctrl-compute-<kind>/`.
 3. Implement `launch` — provision resources, wire the Invocation, return a `ComputeHandle`.
 4. Implement `kill` and `wait` — both MUST honor the failure-as-tool-error rule.
 5. Add a row to the **Built-in Backends** table in this file and to the [compatibility matrix](../apps/adr-runtime-compute-decoupling.md#compatibility-matrix).
@@ -198,5 +200,5 @@ These are observed by the Orchestrator and surfaced in the existing `orchestrato
 ## 11. Non-Goals
 
 1. **No multi-machine claim coordination.** Slice 3 of [`../session-trigger-from-board.md`](../session-trigger-from-board.md) deploys one orchestrator instance — multi-machine claim coordination is explicitly deferred until proven need.
-2. **No compute-to-compute composition.** A ComputeBackend MUST NOT call into another ComputeBackend. Cross-compute work goes through the Scheduler (sub-Task with a different `compute` configured).
-3. **No host-OS escape hatches.** ComputeBackends MUST NOT expose ways to read host filesystem, signal host processes, or bypass the egress policy. The compute is the boundary; if a Task needs more, it gets a new compute.
+2. **No compute-to-compute composition.** A ComputeSubstrate MUST NOT call into another ComputeSubstrate. Cross-compute work goes through the Scheduler (sub-Task with a different `compute` configured).
+3. **No host-OS escape hatches.** ComputeSubstrates MUST NOT expose ways to read host filesystem, signal host processes, or bypass the egress policy. The compute is the boundary; if a Task needs more, it gets a new compute.

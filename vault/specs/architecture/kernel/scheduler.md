@@ -54,7 +54,7 @@ The companion `ComputeKind` (`LocalProcess` | `CfContainers` | `E2b` | `SshRemot
 
 ### Context Field — Agent-System Metadata
 
-The `context` JSON field stores agent-system-specific metadata, normalized at task creation time. It MAY carry a `compute` block describing the target ComputeBackend (see [compute.md § Configuration](compute.md#configuration)); when omitted, the orchestrator defaults to `local-process`.
+The `context` JSON field stores agent-system-specific metadata, normalized at task creation time. It MAY carry a `compute` block describing the target ComputeSubstrate (see [compute.md § Configuration](compute.md#configuration)); when omitted, the orchestrator defaults to `local-process`.
 
 ```json
 // claude-code on local-process
