@@ -22,6 +22,7 @@ use gctrl_storage::SqliteStore;
 use tracing::{debug, error, info, warn};
 
 use crate::cron::next_after;
+use crate::exec::{run_exec_schedule, ExecOutcome};
 
 /// Hard cap on bytes read from a callback response. A misconfigured or
 /// malicious target could otherwise stream gigabytes into memory before we
@@ -29,6 +30,12 @@ use crate::cron::next_after;
 /// further trims to `RESPONSE_PREVIEW_BYTES` for storage.
 const RESPONSE_BODY_CAP_BYTES: usize = 64 * 1024;
 const RESPONSE_PREVIEW_BYTES: usize = 4_096;
+/// Tighter cap on `last_error` — stderr from exec'd children may contain
+/// secret-shaped output if a process echoes a token. Per the security review,
+/// keep this small enough that a leak is bounded; the full stderr still goes
+/// to `tracing::warn!` and the OTel span (which are read-restricted), not the
+/// DB row that anyone with `:4318` access can fetch.
+pub(crate) const ERROR_PREVIEW_BYTES: usize = 512;
 
 pub struct ScheduleRunner {
     store: Arc<SqliteStore>,
@@ -94,6 +101,50 @@ impl ScheduleRunner {
         } else {
             self.config.default_timeout_secs
         };
+
+        let outcome = if sched.is_exec() {
+            self.fire_exec(&sched, timeout_secs, started).await
+        } else {
+            self.fire_http(&sched, timeout_secs, started).await
+        };
+
+        // Recompute next fire from "now" (not from previous next_run_at) so a
+        // slow tick doesn't compound drift across firings.
+        let now = Utc::now();
+        let next = match next_after(&sched.cron, now) {
+            Ok(Some(dt)) => Some(dt.to_rfc3339()),
+            Ok(None) => None,
+            Err(e) => {
+                error!(
+                    schedule = %sched.name,
+                    cron = %sched.cron,
+                    "scheduler: cron parse failed at next_after; disabling next_run_at: {e}"
+                );
+                None
+            }
+        };
+
+        let update = ScheduleRunUpdate {
+            last_run_at: now.to_rfc3339(),
+            next_run_at: next,
+            last_status: outcome.status,
+            last_response: outcome.response,
+            last_error: outcome.error,
+            success: outcome.success,
+        };
+        if let Err(e) = self.store.record_schedule_run(&sched.id, &update) {
+            error!(schedule = %sched.name, "scheduler: record_schedule_run failed: {e}");
+        }
+    }
+
+    /// HTTP target — original behaviour. Fires a request, captures status +
+    /// body, returns a `FireOutcome` for `fire_one` to record.
+    async fn fire_http(
+        &self,
+        sched: &gctrl_core::Schedule,
+        timeout_secs: u64,
+        started: std::time::Instant,
+    ) -> FireOutcome {
         let method = match sched.target_method.to_uppercase().as_str() {
             "GET" => reqwest::Method::GET,
             "PUT" => reqwest::Method::PUT,
@@ -115,8 +166,7 @@ impl ScheduleRunner {
                 }
             }
         }
-
-        let outcome = match req.send().await {
+        match req.send().await {
             Ok(mut resp) => {
                 let status = resp.status().as_u16() as i64;
                 let body = read_capped_body(&mut resp).await;
@@ -157,34 +207,91 @@ impl ScheduleRunner {
                     error: Some(e.to_string()),
                 }
             }
-        };
+        }
+    }
 
-        // Recompute next fire from "now" (not from previous next_run_at) so a
-        // slow tick doesn't compound drift across firings.
-        let now = Utc::now();
-        let next = match next_after(&sched.cron, now) {
-            Ok(Some(dt)) => Some(dt.to_rfc3339()),
-            Ok(None) => None,
-            Err(e) => {
-                error!(
+    /// `target_kind: exec` — spawn a child process under the operator's
+    /// allowlisted bin path with a filtered env. See `exec::run_exec_schedule`
+    /// for the spawn mechanics; this method just translates the result into
+    /// the same `FireOutcome` shape `fire_http` produces.
+    async fn fire_exec(
+        &self,
+        sched: &gctrl_core::Schedule,
+        timeout_secs: u64,
+        started: std::time::Instant,
+    ) -> FireOutcome {
+        let outcome = run_exec_schedule(sched, timeout_secs, &self.config).await;
+        match outcome {
+            ExecOutcome::Refused { reason } => {
+                warn!(
                     schedule = %sched.name,
-                    cron = %sched.cron,
-                    "scheduler: cron parse failed at next_after; disabling next_run_at: {e}"
+                    reason = %reason,
+                    "scheduler: exec refused"
                 );
-                None
+                FireOutcome {
+                    success: false,
+                    status: None,
+                    response: None,
+                    error: Some(truncate(&format!("refused: {reason}"), ERROR_PREVIEW_BYTES)),
+                }
             }
-        };
-
-        let update = ScheduleRunUpdate {
-            last_run_at: now.to_rfc3339(),
-            next_run_at: next,
-            last_status: outcome.status,
-            last_response: outcome.response,
-            last_error: outcome.error,
-            success: outcome.success,
-        };
-        if let Err(e) = self.store.record_schedule_run(&sched.id, &update) {
-            error!(schedule = %sched.name, "scheduler: record_schedule_run failed: {e}");
+            ExecOutcome::Spawned {
+                exit_code,
+                stdout,
+                stderr,
+                timed_out,
+            } => {
+                let success = !timed_out && exit_code == Some(0);
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                if success {
+                    info!(
+                        schedule = %sched.name,
+                        exit_code = ?exit_code,
+                        stdout_bytes = stdout.len(),
+                        stderr_bytes = stderr.len(),
+                        elapsed_ms,
+                        "scheduler: exec ok"
+                    );
+                } else {
+                    warn!(
+                        schedule = %sched.name,
+                        exit_code = ?exit_code,
+                        stdout_bytes = stdout.len(),
+                        stderr_bytes = stderr.len(),
+                        elapsed_ms,
+                        timed_out,
+                        // Full stderr stays in tracing logs (which require
+                        // operator access to the daemon's log stream), not in
+                        // the DB row that anyone on :4318 can read.
+                        stderr = %stderr,
+                        "scheduler: exec failed"
+                    );
+                }
+                let response_preview = if stdout.is_empty() {
+                    None
+                } else {
+                    Some(truncate(&stdout, RESPONSE_PREVIEW_BYTES))
+                };
+                let error_preview = if success {
+                    None
+                } else if timed_out {
+                    Some(truncate(
+                        &format!("timed out after {timeout_secs}s"),
+                        ERROR_PREVIEW_BYTES,
+                    ))
+                } else {
+                    // Tight cap: stderr is the primary leak vector for child
+                    // processes that echo secrets. Full stderr is in the log
+                    // stream above; only the prefix is in the DB.
+                    Some(truncate(&stderr, ERROR_PREVIEW_BYTES))
+                };
+                FireOutcome {
+                    success,
+                    status: exit_code.map(|c| c as i64),
+                    response: response_preview,
+                    error: error_preview,
+                }
+            }
         }
     }
 

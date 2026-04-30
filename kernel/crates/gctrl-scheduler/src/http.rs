@@ -1,7 +1,9 @@
 //! Axum router for `/api/schedules` — CRUD + manual run-now endpoint.
 //!
-//! Mounted into the main kernel router via `.merge(http::router(sqlite))`.
-//! State is just `Arc<SqliteStore>`; the runner fiber owns its own state.
+//! Mounted into the main kernel router via `.merge(http::router(sqlite, cfg))`.
+//! State carries the `SqliteStore` plus the `SchedulerConfig` (so the create
+//! handler can enforce `exec_enabled` + `exec_allowed_programs` and `run_now`
+//! can dispatch to the same exec path as the runner fiber).
 
 use std::sync::Arc;
 
@@ -13,21 +15,36 @@ use axum::{
     Json, Router,
 };
 use chrono::Utc;
-use gctrl_core::{Schedule, ScheduleFilter, ScheduleRunUpdate};
+use gctrl_core::{
+    Schedule, ScheduleFilter, ScheduleRunUpdate, SchedulerConfig, TARGET_KIND_EXEC,
+    TARGET_KIND_HTTP,
+};
 use gctrl_storage::SqliteStore;
 use serde::{Deserialize, Serialize};
 
 use crate::cron::next_after;
+use crate::exec::{run_exec_schedule, ExecOutcome};
 use crate::runner::read_capped_body;
+use crate::runner::ERROR_PREVIEW_BYTES;
 
-pub fn router(sqlite: Arc<SqliteStore>) -> Router {
+#[derive(Clone)]
+pub struct RouterState {
+    pub store: Arc<SqliteStore>,
+    pub cfg: Arc<SchedulerConfig>,
+}
+
+pub fn router(sqlite: Arc<SqliteStore>, cfg: Arc<SchedulerConfig>) -> Router {
+    let state = RouterState {
+        store: sqlite,
+        cfg,
+    };
     Router::new()
         .route("/api/schedules", get(list).post(create))
         .route("/api/schedules/{id}", get(get_one).delete(delete_one))
         .route("/api/schedules/{id}/run", post(run_now))
         .route("/api/schedules/{id}/enable", post(enable))
         .route("/api/schedules/{id}/disable", post(disable))
-        .with_state(sqlite)
+        .with_state(state)
 }
 
 #[derive(Debug, Deserialize)]
@@ -37,14 +54,14 @@ pub struct ListQuery {
 }
 
 async fn list(
-    State(store): State<Arc<SqliteStore>>,
+    State(state): State<RouterState>,
     Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
     let filter = ScheduleFilter {
         enabled: q.enabled,
         name_prefix: q.name_prefix,
     };
-    match store.list_schedules(&filter) {
+    match state.store.list_schedules(&filter) {
         Ok(rows) => Json(serde_json::json!({ "schedules": rows })).into_response(),
         Err(e) => err500(e),
     }
@@ -54,17 +71,33 @@ async fn list(
 pub struct CreateBody {
     pub name: String,
     pub cron: String,
-    pub target_url: String,
+    /// `"http"` (default) or `"exec"`. Determines which set of fields the
+    /// validator requires.
+    #[serde(default = "default_target_kind")]
+    pub target_kind: String,
+    // http
+    #[serde(default)]
+    pub target_url: Option<String>,
     #[serde(default = "default_method")]
     pub target_method: String,
     pub body_json: Option<serde_json::Value>,
     pub headers_json: Option<serde_json::Value>,
+    // exec
+    #[serde(default)]
+    pub command: Option<Vec<String>>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub env_keys: Option<Vec<String>>,
     #[serde(default = "default_timeout")]
     pub timeout_secs: i64,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 }
 
+fn default_target_kind() -> String {
+    TARGET_KIND_HTTP.into()
+}
 fn default_method() -> String {
     "POST".into()
 }
@@ -76,7 +109,7 @@ fn default_enabled() -> bool {
 }
 
 async fn create(
-    State(store): State<Arc<SqliteStore>>,
+    State(state): State<RouterState>,
     Json(body): Json<CreateBody>,
 ) -> impl IntoResponse {
     // Validate cron up-front; reject 400 rather than persist a row that will
@@ -92,37 +125,149 @@ async fn create(
         }
     };
     let now = Utc::now().to_rfc3339();
-    let sched = Schedule {
-        id: uuid::Uuid::new_v4().to_string(),
-        name: body.name,
-        cron: body.cron,
-        target_url: body.target_url,
-        target_method: body.target_method,
-        body_json: body.body_json,
-        headers_json: body.headers_json,
-        timeout_secs: body.timeout_secs,
-        enabled: body.enabled,
-        next_run_at: if body.enabled { next } else { None },
-        last_run_at: None,
-        last_status: None,
-        last_response: None,
-        last_error: None,
-        run_count: 0,
-        failure_count: 0,
-        created_at: now.clone(),
-        updated_at: now,
+
+    let sched = match build_schedule(body, next, now, &state.cfg) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": e })),
+            )
+                .into_response();
+        }
     };
-    match store.create_schedule(&sched) {
+    match state.store.create_schedule(&sched) {
         Ok(()) => (StatusCode::CREATED, Json(sched)).into_response(),
         Err(e) => err500(e),
     }
 }
 
+/// Validate the `CreateBody` against the gates declared in `cfg` and assemble
+/// a `Schedule` row. Errors are operator-readable strings — the create handler
+/// renders them as 400 responses.
+fn build_schedule(
+    body: CreateBody,
+    next: Option<String>,
+    now: String,
+    cfg: &SchedulerConfig,
+) -> Result<Schedule, String> {
+    match body.target_kind.as_str() {
+        TARGET_KIND_HTTP => {
+            let url = body
+                .target_url
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "target_url is required for target_kind=http".to_string())?;
+            if body.command.is_some() || body.cwd.is_some() || body.env_keys.is_some() {
+                return Err(
+                    "command/cwd/env_keys MUST NOT be set when target_kind=http".into(),
+                );
+            }
+            Ok(Schedule {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: body.name,
+                cron: body.cron,
+                target_kind: TARGET_KIND_HTTP.into(),
+                target_url: url,
+                target_method: body.target_method,
+                body_json: body.body_json,
+                headers_json: body.headers_json,
+                command: None,
+                cwd: None,
+                env_keys: None,
+                timeout_secs: body.timeout_secs,
+                enabled: body.enabled,
+                next_run_at: if body.enabled { next } else { None },
+                last_run_at: None,
+                last_status: None,
+                last_response: None,
+                last_error: None,
+                run_count: 0,
+                failure_count: 0,
+                created_at: now.clone(),
+                updated_at: now,
+            })
+        }
+        TARGET_KIND_EXEC => {
+            if !cfg.exec_enabled {
+                return Err(
+                    "exec target_kind requires scheduler.exec_enabled=true in daemon config"
+                        .into(),
+                );
+            }
+            let cmd = body
+                .command
+                .filter(|c| !c.is_empty())
+                .ok_or_else(|| "command is required for target_kind=exec".to_string())?;
+            let bin = &cmd[0];
+            if !bin.starts_with('/') {
+                return Err(format!(
+                    "argv[0] must be an absolute path (got {bin:?}) — relative paths are rejected to prevent $PATH-injection via cwd"
+                ));
+            }
+            if cfg.exec_allowed_programs.is_empty() {
+                return Err(
+                    "scheduler.exec_allowed_programs is empty (no programs permitted)".into(),
+                );
+            }
+            let bin_path = std::path::Path::new(bin);
+            if !cfg
+                .exec_allowed_programs
+                .iter()
+                .any(|p| p.as_path() == bin_path)
+            {
+                return Err(format!(
+                    "argv[0]={bin:?} not in scheduler.exec_allowed_programs"
+                ));
+            }
+            let cwd = body
+                .cwd
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "cwd is required for target_kind=exec".to_string())?;
+            if !cwd.starts_with('/') {
+                return Err(format!("cwd must be an absolute path (got {cwd:?})"));
+            }
+            if body.target_url.as_deref().is_some_and(|s| !s.is_empty()) {
+                return Err(
+                    "target_url MUST NOT be set when target_kind=exec".into(),
+                );
+            }
+            Ok(Schedule {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: body.name,
+                cron: body.cron,
+                target_kind: TARGET_KIND_EXEC.into(),
+                // Empty strings tolerated for the NOT NULL columns.
+                target_url: String::new(),
+                target_method: "POST".into(),
+                body_json: None,
+                headers_json: None,
+                command: Some(cmd),
+                cwd: Some(cwd),
+                env_keys: Some(body.env_keys.unwrap_or_default()),
+                timeout_secs: body.timeout_secs,
+                enabled: body.enabled,
+                next_run_at: if body.enabled { next } else { None },
+                last_run_at: None,
+                last_status: None,
+                last_response: None,
+                last_error: None,
+                run_count: 0,
+                failure_count: 0,
+                created_at: now.clone(),
+                updated_at: now,
+            })
+        }
+        other => Err(format!(
+            "unknown target_kind {other:?} (allowed: \"http\", \"exec\")"
+        )),
+    }
+}
+
 async fn get_one(
-    State(store): State<Arc<SqliteStore>>,
+    State(state): State<RouterState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match store.get_schedule(&id) {
+    match state.store.get_schedule(&id) {
         Ok(Some(s)) => Json(s).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => err500(e),
@@ -130,10 +275,10 @@ async fn get_one(
 }
 
 async fn delete_one(
-    State(store): State<Arc<SqliteStore>>,
+    State(state): State<RouterState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match store.delete_schedule(&id) {
+    match state.store.delete_schedule(&id) {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => err500(e),
@@ -152,39 +297,70 @@ struct RunResult {
 /// Manual fire — bypasses cron, updates last_* fields, recomputes next_run_at.
 /// Useful for ops ("did this thing actually work?") and as the primary tool
 /// while iterating on a new schedule.
+///
+/// Branches on `target_kind`: HTTP rows fire a `reqwest`; exec rows go through
+/// the same `run_exec_schedule` path the runner fiber uses, so a manual
+/// trigger and a cron-driven trigger behave identically.
 async fn run_now(
-    State(store): State<Arc<SqliteStore>>,
+    State(state): State<RouterState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let sched = match store.get_schedule(&id) {
+    let sched = match state.store.get_schedule(&id) {
         Ok(Some(s)) => s,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(e) => return err500(e),
     };
-    let client = reqwest::Client::new();
-    let method = match sched.target_method.to_uppercase().as_str() {
-        "GET" => reqwest::Method::GET,
-        "PUT" => reqwest::Method::PUT,
-        "DELETE" => reqwest::Method::DELETE,
-        "PATCH" => reqwest::Method::PATCH,
-        _ => reqwest::Method::POST,
-    };
-    let mut req = client
-        .request(method, &sched.target_url)
-        .timeout(std::time::Duration::from_secs(
-            sched.timeout_secs.max(1) as u64,
-        ));
-    if let Some(b) = &sched.body_json {
-        req = req.json(b);
-    }
 
-    let (success, status, response, error) = match req.send().await {
-        Ok(mut r) => {
-            let st = r.status().as_u16() as i64;
-            let body = read_capped_body(&mut r).await;
-            ((200..400).contains(&st), Some(st), Some(body), None)
+    let timeout_secs = sched.timeout_secs.max(1) as u64;
+    let (success, status, response, error) = if sched.is_exec() {
+        match run_exec_schedule(&sched, timeout_secs, &state.cfg).await {
+            ExecOutcome::Refused { reason } => (
+                false,
+                None,
+                None,
+                Some(truncate(&format!("refused: {reason}"), ERROR_PREVIEW_BYTES)),
+            ),
+            ExecOutcome::Spawned {
+                exit_code,
+                stdout,
+                stderr,
+                timed_out,
+            } => {
+                let success = !timed_out && exit_code == Some(0);
+                let resp = if stdout.is_empty() { None } else { Some(stdout) };
+                let err = if success {
+                    None
+                } else if timed_out {
+                    Some(format!("timed out after {timeout_secs}s"))
+                } else {
+                    Some(truncate(&stderr, ERROR_PREVIEW_BYTES))
+                };
+                (success, exit_code.map(|c| c as i64), resp, err)
+            }
         }
-        Err(e) => (false, None, None, Some(e.to_string())),
+    } else {
+        let client = reqwest::Client::new();
+        let method = match sched.target_method.to_uppercase().as_str() {
+            "GET" => reqwest::Method::GET,
+            "PUT" => reqwest::Method::PUT,
+            "DELETE" => reqwest::Method::DELETE,
+            "PATCH" => reqwest::Method::PATCH,
+            _ => reqwest::Method::POST,
+        };
+        let mut req = client
+            .request(method, &sched.target_url)
+            .timeout(std::time::Duration::from_secs(timeout_secs));
+        if let Some(b) = &sched.body_json {
+            req = req.json(b);
+        }
+        match req.send().await {
+            Ok(mut r) => {
+                let st = r.status().as_u16() as i64;
+                let body = read_capped_body(&mut r).await;
+                ((200..400).contains(&st), Some(st), Some(body), None)
+            }
+            Err(e) => (false, None, None, Some(e.to_string())),
+        }
     };
 
     let now = Utc::now();
@@ -200,7 +376,7 @@ async fn run_now(
         last_error: error.clone(),
         success,
     };
-    if let Err(e) = store.record_schedule_run(&sched.id, &update) {
+    if let Err(e) = state.store.record_schedule_run(&sched.id, &update) {
         return err500(e);
     }
 
@@ -215,17 +391,28 @@ async fn run_now(
 }
 
 async fn enable(
-    State(store): State<Arc<SqliteStore>>,
+    State(state): State<RouterState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    set_enabled(&store, &id, true).await
+    set_enabled(&state.store, &id, true).await
 }
 
 async fn disable(
-    State(store): State<Arc<SqliteStore>>,
+    State(state): State<RouterState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    set_enabled(&store, &id, false).await
+    set_enabled(&state.store, &id, false).await
+}
+
+fn truncate(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut end = max_bytes;
+    while !s.is_char_boundary(end) && end > 0 {
+        end -= 1;
+    }
+    format!("{}…[truncated {} bytes]", &s[..end], s.len() - end)
 }
 
 async fn set_enabled(store: &SqliteStore, id: &str, enabled: bool) -> axum::response::Response {
