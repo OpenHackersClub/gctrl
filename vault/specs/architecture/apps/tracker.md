@@ -170,7 +170,7 @@ pub enum TrackerError {
 
 ## Storage
 
-The Tracker owns `board_issues`, `board_events`, and `board_comments`; Task storage is owned by the Scheduler. For DDL see [domain-model.md § 5.2](../domain-model.md#52-board-application-tables); for the access pattern (kernel-hosted tables, app-driven via shell HTTP API) see [gctl-board.md § Kernel Primitives Used](gctl-board.md#kernel-primitives-used) — both rules MUST live there only, not be restated here.
+The Tracker owns `board_issues`, `board_events`, and `board_comments`; Task storage is owned by the Scheduler. For DDL see [domain-model.md § 5.2](../domain-model.md#52-board-application-tables); for the access pattern (kernel-hosted tables, app-driven via shell HTTP API) see [gctrl-board.md § Kernel Primitives Used](gctrl-board.md#kernel-primitives-used) — both rules MUST live there only, not be restated here.
 
 ### DAG Storage
 

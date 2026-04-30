@@ -118,7 +118,7 @@ The runner calls the substrate `POST /api/eval/score` for every case. There is n
 ## Integration with Other Applications
 
 - **gctrl-board** — Surfaces eval run summaries on Issue cards (e.g., "this branch's run #422 regressed `faithfulness` 0.78 → 0.61"). Subscribes to `EvalRunCompleted`.
-- **gctl-inbox** — `eval_request` items (already defined in [gctl-inbox.md](gctl-inbox.md)) trigger harness runs.
+- **gctrl-inbox** — `eval_request` items (already defined in [gctrl-inbox.md](gctrl-inbox.md)) trigger harness runs.
 - **Observability drivers** — `ObservabilityExportPort` exports `scores` and `eval_runs` to Phoenix / Langfuse / SigNoz for teams that want them mirrored.
 
 ## Status

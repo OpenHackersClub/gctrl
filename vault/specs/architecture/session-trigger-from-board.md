@@ -7,7 +7,7 @@ How dragging an Issue to `in_progress` on the gctrl-board web UI kicks off an ag
 > - [kernel/harness.md](kernel/harness.md) — `AgentHarness` port and built-in runtimes (canonical)
 > - [kernel/compute.md](kernel/compute.md) — `ComputeSubstrate` port and built-in backends (canonical)
 > - [apps/adr-runtime-compute-decoupling.md](apps/adr-runtime-compute-decoupling.md) — invariants and compatibility matrix
-> - [apps/gctl-board.md](apps/gctl-board.md) — what the board tracks (Issues vs. Tasks)
+> - [apps/gctrl-board.md](apps/gctrl-board.md) — what the board tracks (Issues vs. Tasks)
 > - [../gctrl/WORKFLOW.md](../gctrl/WORKFLOW.md) — issue lifecycle + agent dispatch CLI
 
 ---
@@ -183,6 +183,6 @@ The existing `orchestrator.claim` / `orchestrator.dispatch` events fire downstre
 ## Non-Goals
 
 - **No new state machine.** We reuse the existing claim-state machine.
-- **No write-path for Tasks from the board UI.** Tasks remain read-only from the human side per [apps/gctl-board.md](apps/gctl-board.md).
+- **No write-path for Tasks from the board UI.** Tasks remain read-only from the human side per [apps/gctrl-board.md](apps/gctrl-board.md).
 - **No agent-of-the-month picker in the UI** (yet). Which runtime runs is configured via WORKFLOW.md; the drag just means "go".
 - **No per-slice rollback plan** — each slice sits behind a config flag; default stays on the previously shipped slice.
