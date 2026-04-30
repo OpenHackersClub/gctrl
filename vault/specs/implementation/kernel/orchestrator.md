@@ -1,6 +1,6 @@
 # Orchestration — Implementation Details
 
-Implementation details for the orchestration state machine defined in [vault/specs/architecture/kernel/orchestrator.md](../../architecture/kernel/orchestrator.md). This file covers Rust crate structure, agent adapter wiring, and concrete configuration.
+Implementation details for the orchestration state machine defined in [vault/specs/architecture/kernel/orchestrator.md](../../architecture/kernel/orchestrator.md). This file covers Rust crate structure, harness/substrate wiring (per [harness.md](../../architecture/kernel/harness.md) + [compute.md](../../architecture/kernel/compute.md)), and concrete configuration.
 
 ## Tech Stack Rationale
 
@@ -30,15 +30,25 @@ kernel/crates/gctrl-orch/
     orchestrator.rs          -- Main loop: poll, reconcile, dispatch
     dispatch.rs              -- Candidate selection, eligibility, ordering
     retry.rs                 -- Backoff computation, timer scheduling
-    workspace.rs             -- Workspace create/reuse/cleanup
-    agent/
-      mod.rs                 -- AgentKind trait
-      claude_code.rs         -- Claude Code adapter
-      aider.rs               -- Aider adapter
-      custom.rs              -- Custom command adapter
+    workspace.rs             -- Default workspace (local-process substrate)
+    harness/                 -- AgentHarness impls (the "brain")
+      mod.rs                 -- AgentHarness trait re-export from gctrl-core
+      claude_code.rs         -- claude-code harness
+      claude_agent_sdk.rs    -- claude-agent-sdk harness
+      codex.rs               -- codex harness
+      opencode.rs            -- opencode harness
+      aider.rs               -- aider harness
+      custom.rs              -- custom-executable harness
+    compute/                 -- ComputeSubstrate impls (the "hand")
+      mod.rs                 -- ComputeSubstrate trait re-export from gctrl-core
+      local_process.rs       -- local-process substrate (default)
+      cf_containers.rs       -- cf-containers substrate (Slice 2)
+      ssh_remote.rs          -- ssh-remote substrate (Slice 2+)
     config.rs                -- WORKFLOW.md parsing (agent section)
   Cargo.toml
 ```
+
+The trait definitions for `AgentHarness` and `ComputeSubstrate` live in `gctrl-core` (per Crate Ownership rule #1 in [`principles.md`](../../principles.md)); each `harness/` and `compute/` submodule contains one impl per `AgentKind` / `ComputeKind` variant.
 
 ### State Machine (Rust)
 
@@ -88,39 +98,37 @@ pub fn transition(state: ClaimState, trigger: Trigger) -> Option<ClaimState> {
 }
 ```
 
-### Agent Adapter Trait
+### Dispatch Ports
+
+The orchestrator depends on two traits — `AgentHarness` and `ComputeSubstrate` — defined in `gctrl-core`. The canonical specs are [`harness.md`](../../architecture/kernel/harness.md) and [`compute.md`](../../architecture/kernel/compute.md); they MUST NOT be restated here. Brief Rust shape (this file is the implementation plan, not the trait spec):
 
 ```rust
-/// Port: any agent that can execute a prompt in a workspace.
-#[async_trait]
-pub trait AgentAdapter: Send + Sync {
-    /// Human-readable agent kind name.
-    fn kind(&self) -> &str;
-
-    /// Launch the agent process. Returns a handle for monitoring.
-    async fn launch(
-        &self,
-        prompt: &str,
-        workspace: &Path,
-        attempt: u32,
-    ) -> Result<AgentHandle, AgentError>;
+// gctrl-core::ports
+#[async_trait] pub trait AgentHarness: Send + Sync {
+    fn kind(&self) -> AgentKind;
+    fn render_invocation(&self, prompt: &str, workspace: &Path) -> Invocation;
+    async fn import_rollout(&self, session_id: SessionId, source: RolloutSource)
+        -> Result<(), RolloutError>;
 }
 
-pub struct AgentHandle {
-    pub pid: u32,
-    pub kill: Box<dyn FnOnce() -> Result<(), std::io::Error> + Send>,
+#[async_trait] pub trait ComputeSubstrate: Send + Sync {
+    fn kind(&self) -> ComputeKind;
+    async fn launch(&self, invocation: Invocation, spec: ComputeSpec)
+        -> Result<ComputeHandle, ComputeError>;
 }
 ```
 
-### Agent Kind Configuration
+`Invocation`, `ComputeHandle`, `ComputeSpec`, and the failure-as-tool-error rule are in `harness.md` / `compute.md`. The orchestrator obtains both impls from a registry at startup and never references concrete types.
+
+### WORKFLOW.md Configuration (agent section)
 
 ```yaml
-# WORKFLOW.md front matter
+# WORKFLOW.md front matter — see harness.md § 7 + compute.md § 8 for full schema.
 agent:
-  kind: claude-code          # or: aider, custom
-  command: "claude"          # executable name or path
+  runtime: claude-code             # AgentKind — see harness.md § 3 for built-ins
+  compute: local-process           # ComputeKind — see compute.md § 2 for built-ins
   args: ["--print", "--dangerously-skip-permissions"]
-  prompt_flag: "--prompt"    # how to pass the rendered prompt
+  prompt_flag: "--prompt"
   max_turns: 5
   stall_timeout_ms: 300000
   max_concurrent_agents: 4
@@ -128,32 +136,40 @@ agent:
   max_concurrent_agents_by_state:
     in_progress: 3
     todo: 1
+  # compute-specific (forwarded to ComputeSubstrate::launch as ComputeSpec):
+  compute_config:
+    image: "gctrl/claude-code:latest"   # cf-containers / docker only
+    cpu_ms: 30000
+    memory_mb: 2048
 ```
 
-### Built-in Agent Adapters
-
-| Kind | Command | Prompt Delivery | Notes |
-|------|---------|----------------|-------|
-| `claude-code` | `claude` | `--prompt` flag or stdin | Default. Supports `--print` for non-interactive. |
-| `aider` | `aider` | `--message` flag | Requires repo context in workspace. |
-| `custom` | user-defined | `prompt_flag` from config | Any executable that accepts a prompt and exits. |
+The `(runtime, compute)` pair MUST be one of the supported combinations in the [compatibility matrix](../../architecture/apps/adr-runtime-compute-decoupling.md#compatibility-matrix); orchestrator MUST refuse dispatch on unsupported pairs at eligibility check.
 
 ### Dispatch Algorithm (Pseudocode)
 
 ```
-for each candidate in sorted_eligible_issues:
+for each candidate in sorted_eligible_tasks:
     if global_slots_exhausted: break
     if per_state_slots_exhausted(candidate.state): continue
+    if per_compute_slots_exhausted(candidate.compute_kind): continue
     if candidate in claimed or running: continue
-    if candidate.state == "todo" and has_non_terminal_blockers(candidate): continue
+    if candidate.state == "pending" and has_non_terminal_blockers(candidate): continue
+    if not pair_supported(candidate.agent_kind, candidate.compute_kind): fail_fast; continue
 
     claim(candidate)
-    workspace = prepare_workspace(candidate)
-    prompt = render_prompt(candidate, attempt)
+    workspace = prepare_workspace(candidate)             // owned by local-process substrate
+    prompt    = render_prompt(candidate, attempt)
     run_hooks("before_run", workspace)
-    handle = agent_adapter.launch(prompt, workspace, attempt)
-    running[candidate.id] = RunEntry { handle, agent_kind, started_at, attempt }
+
+    harness   = harness_registry.get(candidate.agent_kind)
+    substrate = substrate_registry.get(candidate.compute_kind)
+    invocation = harness.render_invocation(prompt, workspace)
+    handle    = substrate.launch(invocation, compute_spec_from(candidate)).await
+
+    running[candidate.id] = RunEntry { handle, agent_kind, compute_kind, started_at, attempt }
 ```
+
+Compute failure (container crash, SSH drop, e2b quota) MUST surface from `substrate.launch().await` or `handle.wait` as `ComputeExit::{crashed | killed | networkLost}` and be mapped to `Trigger::AgentExitAbnormal` for the existing retry path. See [`KernelSpec/Substrate.lean`](../../../../kernel/specs-lean4/KernelSpec/Substrate.lean) `exit_lands_in_retryQueued`.
 
 ### Retry Constants
 
