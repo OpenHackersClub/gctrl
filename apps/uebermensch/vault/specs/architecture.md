@@ -72,7 +72,7 @@ Dependencies MUST flow inward only (see [principles.md § Architectural Invarian
 | Parse + validate profile | L4 | `ProfileService` | Effect-TS `Schema` over markdown/YAML |
 | Raw source capture | L2 extension | `gctrl-net`, `gctrl-context` | Reuses kernel primitives — no new storage |
 | Knowledge graph | L2 extension | `gctrl-kb` mounted at `$UBER_VAULT_DIR/wiki/` | Investment page types, `kb-schema.md` authored in vault |
-| Scheduling | L2 extension | `Scheduler` + in-process adapter | Daemon registers `uber.*` jobs on startup |
+| Scheduling | L2 extension | `gctrl-scheduler` with `target_kind: exec` | Vault-defined in `directives/schedules.md`; reconciled to kernel via `gctrl uber schedule sync`. Kernel scheduler exec's `uber run-daily` on cron — no uber HTTP daemon. See [scheduling.md](scheduling.md) and [kernel scheduler.md § exec target kind](../../../../vault/specs/architecture/kernel/scheduler.md#exec-target-kind). |
 | LLM invocation | L1 driver | `driver-llm` | Every call → Session, span, prompt_version |
 | External messaging | L1 drivers | `driver-telegram`, `driver-discord` | Kernel holds tokens |
 | External data ingestion | L1 drivers | `driver-rss`, `driver-sec`, `driver-markets` | Pull on schedule; kernel owns secrets |

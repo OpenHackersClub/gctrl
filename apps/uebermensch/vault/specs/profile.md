@@ -342,8 +342,12 @@ budgets:
 
 delivery:
   brief:
-    cron: "0 30 7 * * *"      # 07:30 local, daily
+    # Default body shape for daily briefs. Cadence lives in
+    # `directives/schedules.md`; see [scheduling.md](scheduling.md).
+    # The legacy `cron:` field on this block is deprecated — kept transitionally
+    # as the fallback when `directives/schedules.md` is absent; ignored otherwise.
     format: "long"             # long | short | digest
+    cron: "0 30 7 * * *"       # DEPRECATED — see scheduling.md
 
   channels:
     app:
@@ -640,7 +644,7 @@ CoS reads `action/` to (a) surface upcoming events in briefs, (b) flag stale str
 1. `schema_version` matches a known version; mismatch triggers `gctrl uber profile migrate` prompt.
 2. `budgets.daily_usd > 0`, `budgets.per_brief_usd ≤ budgets.daily_usd`.
 3. At least one channel has `enabled: true`.
-4. `delivery.brief.cron` is a valid 6-field cron.
+4. `delivery.brief.cron` (legacy fallback only — see [scheduling.md § Migration](scheduling.md#migration-from-deliverybriefcron)) is a valid 6-field cron when present.
 5. `identity.tz` is a valid IANA timezone.
 6. No topic slug collides with a reserved namespace (`system`, `uber`, `eval`).
 7. Sum of referenced `watchlist` entries across topics ≤ 500 (soft limit; warning only).
@@ -659,7 +663,7 @@ Full validator in `apps/uebermensch/src/services/profile-validator.ts`.
 On authored-tier change:
 
 1. Re-parse + re-validate.
-2. If valid → emit `ProfileChange` event, reload in-memory profile, re-register Scheduler jobs that reference changed cron/channel configs.
+2. If valid → emit `ProfileChange` event, reload in-memory profile, re-register Scheduler jobs that reference changed channel configs. Cadence changes live in `directives/schedules.md` and are applied via `gctrl uber schedule sync`, not the profile reload — see [scheduling.md](scheduling.md).
 3. If invalid → **keep the previous valid profile**; emit `ProfileInvalid` alert via `uber_alerts`; the CLI + app UI show the error.
 
 Policy: **profile changes apply on next tick**, never mid-brief. A brief in `curating` with an older profile completes with that profile.
@@ -740,7 +744,7 @@ Enforcement:
 ## Profile → Runtime Wiring
 
 1. Daemon start → `ProfileService.load()` → parse → emit initial `Profile`.
-2. Scheduler reads `Profile.sources[*].cadence` + `Profile.delivery.brief.cron` → registers jobs.
+2. Scheduler reads `Profile.sources[*].cadence` for ingest jobs. Brief/deepdive cadence is registered separately via `gctrl uber schedule sync` from `directives/schedules.md` (see [scheduling.md](scheduling.md)) — kernel rows are created with `target_kind: exec`.
 3. `CuratorService` reads `Profile.topics`, `Profile.theses`, `Profile.avoid`, `directives/me.md`, `directives/projects.md` → composes system prompt.
 4. `DelivererService` reads `Profile.delivery.channels` → picks drivers, applies windows + silent.
 5. `EvaluatorService` reads `Profile.budgets` → sets guardrail thresholds.
@@ -749,6 +753,7 @@ Enforcement:
 ## Related
 
 - [domain-model.md § 2.5](domain-model.md#25-profile-read-only-projection) — Effect-TS `Profile` schema
+- [scheduling.md](scheduling.md) — `directives/schedules.md` schema + `uber schedule sync`
 - [knowledge-base.md](knowledge-base.md) — wiki layout under `$UBER_VAULT_DIR/input/wiki/`
 - [briefing-pipeline.md § Prompt Contracts](briefing-pipeline.md#prompt-contracts) — how profile content enters prompts
 - [delivery.md § Channel Router](delivery.md#channel-router) — how `channels` config drives fan-out
