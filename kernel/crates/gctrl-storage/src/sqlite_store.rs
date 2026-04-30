@@ -14,7 +14,7 @@ use gctrl_core::{
     AcceptanceCheck, AcceptanceCheckRow, AcceptanceKind, AcceptanceRollup, AcceptanceStatus,
     GctlError, InboxAction, InboxActionFilter, InboxMessage, InboxMessageFilter, InboxThread,
     PersonaDefinition, PersonaReviewRule, Result, Schedule, ScheduleFilter, ScheduleRunUpdate,
-    Task, VaultMount, VaultMountKind,
+    OrchTask, VaultMount, VaultMountKind,
 };
 use rusqlite::{params, Connection};
 
@@ -745,7 +745,7 @@ impl SqliteStore {
     }
 
     /// Move an Issue and — if the target is `in_progress` — promote it to a
-    /// Task in the same transaction. Returns the resulting Task (or `None` for
+    /// OrchTask in the same transaction. Returns the resulting OrchTask (or `None` for
     /// non-`in_progress` transitions). `agent_kind` is chosen by the caller
     /// (receiver.rs will resolve it from WORKFLOW.md in Tier 2).
     ///
@@ -758,7 +758,7 @@ impl SqliteStore {
         actor_id: &str,
         actor_name: &str,
         actor_type: &str,
-    ) -> Result<Option<Task>> {
+    ) -> Result<Option<OrchTask>> {
         self.update_board_issue_status(id, status, actor_id, actor_name, actor_type)?;
         if status != gctrl_core::IssueStatus::InProgress.as_str() {
             return Ok(None);
@@ -780,11 +780,11 @@ impl SqliteStore {
         Ok(Some(task))
     }
 
-    /// Promote an Issue to a Task. Idempotent while the Task is non-terminal —
-    /// repeated calls return the existing Task row.
+    /// Promote an Issue to a OrchTask. Idempotent while the OrchTask is non-terminal —
+    /// repeated calls return the existing OrchTask row.
     ///
     /// Spec: vault/specs/implementation/kernel/session-trigger.md §Tier 1.
-    pub fn promote_issue_to_task(&self, issue_id: &str, agent_kind: &str) -> Result<Task> {
+    pub fn promote_issue_to_task(&self, issue_id: &str, agent_kind: &str) -> Result<OrchTask> {
         let conn = self.conn.lock().unwrap();
         Self::promote_issue_to_task_inner(&conn, issue_id, agent_kind)
     }
@@ -793,8 +793,8 @@ impl SqliteStore {
         conn: &Connection,
         issue_id: &str,
         agent_kind: &str,
-    ) -> Result<Task> {
-        // Reuse the existing Task if one is still non-terminal.
+    ) -> Result<OrchTask> {
+        // Reuse the existing OrchTask if one is still non-terminal.
         let existing = Self::find_nonterminal_task_for_issue(conn, issue_id)?;
         if let Some(task) = existing {
             return Ok(task);
@@ -830,20 +830,20 @@ impl SqliteStore {
         )
         .map_err(|e| GctlError::Storage(e.to_string()))?;
 
-        Ok(Task {
+        Ok(OrchTask {
             id: task_id,
             issue_id: Some(issue_id.to_string()),
             project_key,
             attempt_ordinal: next_ordinal,
             agent_kind: agent_kind.to_string(),
-            orchestrator_claim: Task::CLAIM_UNCLAIMED.to_string(),
+            orchestrator_claim: OrchTask::CLAIM_UNCLAIMED.to_string(),
             attempt: 0,
             created_at: now,
             updated_at: now,
         })
     }
 
-    fn find_nonterminal_task_for_issue(conn: &Connection, issue_id: &str) -> Result<Option<Task>> {
+    fn find_nonterminal_task_for_issue(conn: &Connection, issue_id: &str) -> Result<Option<OrchTask>> {
         let mut stmt = conn
             .prepare(
                 "SELECT id, issue_id, project_key, attempt_ordinal, agent_kind, orchestrator_claim, attempt, created_at, updated_at
@@ -855,15 +855,15 @@ impl SqliteStore {
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         for row in rows {
             let task = row.map_err(|e| GctlError::Storage(e.to_string()))?;
-            if Task::is_nonterminal_claim(&task.orchestrator_claim) {
+            if OrchTask::is_nonterminal_claim(&task.orchestrator_claim) {
                 return Ok(Some(task));
             }
         }
         Ok(None)
     }
 
-    /// List all Task rows linked to an Issue, ordered by attempt ordinal.
-    pub fn list_tasks_for_issue(&self, issue_id: &str) -> Result<Vec<Task>> {
+    /// List all OrchTask rows linked to an Issue, ordered by attempt ordinal.
+    pub fn list_tasks_for_issue(&self, issue_id: &str) -> Result<Vec<OrchTask>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
@@ -881,7 +881,7 @@ impl SqliteStore {
         Ok(tasks)
     }
 
-    /// Update a Task's orchestrator claim state. Called by the Orchestrator
+    /// Update a OrchTask's orchestrator claim state. Called by the Orchestrator
     /// (Tier 3) as it moves through Unclaimed → Claimed → Running → Released.
     pub fn update_task_claim(&self, task_id: &str, claim: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
@@ -926,7 +926,7 @@ impl SqliteStore {
     /// List tasks whose claim is `Unclaimed` and whose owning Issue is
     /// dispatch-eligible (`status='in_progress'` and `assignee_type='agent'`).
     /// Ordered oldest-first so workers drain the queue FIFO.
-    pub fn list_dispatchable_tasks(&self, limit: usize) -> Result<Vec<Task>> {
+    pub fn list_dispatchable_tasks(&self, limit: usize) -> Result<Vec<OrchTask>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
@@ -2600,10 +2600,10 @@ impl SqliteStore {
 // Row mapping helpers
 // ═══════════════════════════════════════════════════════════════
 
-fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
+fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<OrchTask> {
     let created_at_str: String = row.get(7)?;
     let updated_at_str: String = row.get(8)?;
-    Ok(Task {
+    Ok(OrchTask {
         id: row.get(0)?,
         issue_id: row.get(1)?,
         project_key: row.get(2)?,

@@ -9,6 +9,7 @@ Canonical definitions for gctrl domain terms. When terms are used in specs, they
 | Term | Definition | Layer | Owner |
 |------|-----------|-------|-------|
 | **Task** | The kernel's unit of agent work. Created by agents via the Scheduler. Has a lifecycle (`pending → running → done/failed`). Normalized across all agent systems. | Kernel | Scheduler |
+| **OrchTask** *(Rust impl detail)* | The orchestrator's per-attempt claim record in `kernel/crates/gctrl-core/src/types.rs`. Carries identity (id, issue_id, project_key), attempt ordinal, agent kind, and orchestrator claim state. **NOT the same as the Scheduler's Task** — the Scheduler primitive (full work-item with title/status/dependencies) is the canonical name and lives in `architecture/kernel/scheduler.md`. `OrchTask` is the transitional shape used by Slice 1 of session-trigger-from-board.md until the full Scheduler ships. | Kernel | `gctrl-core` / `gctrl-orch` |
 | **Session** | The unit of agent execution — the gctrl analogue of a Unix process. Has execution state (`active → completed/failed/cancelled`). Each Session executes at most one Task. | Kernel | Telemetry |
 | **Span** | An OpenTelemetry span — a single operation within a Session (LLM call, tool invocation, event marker). Stored in the `spans` table. | Kernel | Telemetry |
 | **Trace** | A tree of related Spans sharing a `trace_id`. Typically one Trace per Session. | Kernel | Telemetry |

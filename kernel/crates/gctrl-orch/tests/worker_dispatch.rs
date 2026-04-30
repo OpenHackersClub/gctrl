@@ -6,11 +6,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use gctrl_core::{BoardComment, BoardIssue, BoardProject, IssueStatus, Task};
+use gctrl_core::{BoardComment, BoardIssue, BoardProject, IssueStatus, OrchTask};
 use gctrl_orch::{DispatchOutcome, OrchConfig, Worker};
 use gctrl_storage::SqliteStore;
 
-fn seed_dispatchable_issue(store: &SqliteStore, issue_id: &str) -> Task {
+fn seed_dispatchable_issue(store: &SqliteStore, issue_id: &str) -> OrchTask {
     let project = BoardProject {
         id: "p".into(),
         name: "Back".into(),
@@ -101,7 +101,7 @@ async fn full_cycle_unclaimed_to_released() {
     );
 
     let tasks = store.list_tasks_for_issue("BACK-1").unwrap();
-    assert_eq!(tasks[0].orchestrator_claim, Task::CLAIM_RELEASED);
+    assert_eq!(tasks[0].orchestrator_claim, OrchTask::CLAIM_RELEASED);
 
     // Worker posted a completion comment in addition to the seed dispatch.
     let comments = store.list_board_comments("BACK-1").unwrap();
@@ -129,7 +129,7 @@ async fn failing_agent_transitions_to_retry_queued() {
         }
     );
     let tasks = store.list_tasks_for_issue("BACK-2").unwrap();
-    assert_eq!(tasks[0].orchestrator_claim, Task::CLAIM_RETRY_QUEUED);
+    assert_eq!(tasks[0].orchestrator_claim, OrchTask::CLAIM_RETRY_QUEUED);
 }
 
 #[tokio::test]
@@ -141,7 +141,7 @@ async fn second_worker_loses_race() {
     // calling run_once. list_dispatchable_tasks won't return it, but we
     // force the race by constructing the task manually.
     store
-        .try_transition_claim(&task.id, Task::CLAIM_UNCLAIMED, Task::CLAIM_CLAIMED)
+        .try_transition_claim(&task.id, OrchTask::CLAIM_UNCLAIMED, OrchTask::CLAIM_CLAIMED)
         .unwrap();
 
     let worker = Worker::new(Arc::clone(&store), cat_config());
@@ -154,7 +154,7 @@ async fn second_worker_loses_race() {
     let tasks = store.list_tasks_for_issue("BACK-3").unwrap();
     assert_eq!(
         tasks[0].orchestrator_claim,
-        Task::CLAIM_CLAIMED,
+        OrchTask::CLAIM_CLAIMED,
         "claim must be untouched"
     );
 }
@@ -180,7 +180,7 @@ async fn dry_run_returns_task_to_unclaimed() {
     // Dry-run is non-destructive: the task lands back in Unclaimed so a
     // real run can pick it up without re-promoting the issue.
     let tasks = store.list_tasks_for_issue("BACK-4").unwrap();
-    assert_eq!(tasks[0].orchestrator_claim, Task::CLAIM_UNCLAIMED);
+    assert_eq!(tasks[0].orchestrator_claim, OrchTask::CLAIM_UNCLAIMED);
 
     // No completion comment in dry-run mode.
     let comments = store.list_board_comments("BACK-4").unwrap();
@@ -209,7 +209,7 @@ async fn spawn_failure_transitions_to_released_not_retry() {
     let tasks = store.list_tasks_for_issue("BACK-5").unwrap();
     assert_eq!(
         tasks[0].orchestrator_claim,
-        Task::CLAIM_RELEASED,
+        OrchTask::CLAIM_RELEASED,
         "spawn failure must land on Released per dispatchFailed; got {}",
         tasks[0].orchestrator_claim
     );

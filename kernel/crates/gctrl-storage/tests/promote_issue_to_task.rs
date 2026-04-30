@@ -1,4 +1,4 @@
-//! TDD contract tests for Issue → Task promotion on status move.
+//! TDD contract tests for Issue → OrchTask promotion on status move.
 //!
 //! These tests describe the contract from
 //! [vault/specs/implementation/kernel/session-trigger.md §Tier 1] that `SqliteStore`
@@ -75,7 +75,7 @@ fn promote_creates_single_task_for_unpromoted_issue() {
     assert_eq!(task.attempt, 0);
 
     let tasks = store.list_tasks_for_issue("BACK-1").expect("list");
-    assert_eq!(tasks.len(), 1, "exactly one Task row should exist");
+    assert_eq!(tasks.len(), 1, "exactly one OrchTask row should exist");
 }
 
 #[test]
@@ -114,7 +114,7 @@ fn move_to_in_progress_promotes_linked_task() {
         )
         .expect("move");
 
-    let task = promoted.expect("move to in_progress must return the promoted Task");
+    let task = promoted.expect("move to in_progress must return the promoted OrchTask");
     assert_eq!(task.orchestrator_claim, "Unclaimed");
     assert_eq!(task.issue_id.as_deref(), Some("BACK-3"));
     assert_eq!(task.agent_kind, "claude-code");
@@ -157,12 +157,12 @@ fn promote_after_released_creates_new_task_with_next_ordinal() {
     assert_eq!(first.id, "BACK-5.T1");
     assert_eq!(first.attempt_ordinal, 1);
 
-    // Orchestrator finishes and releases the Task (terminal claim state).
+    // Orchestrator finishes and releases the OrchTask (terminal claim state).
     store
         .update_task_claim(&first.id, "Released")
         .expect("release");
 
-    // Fresh drag: should mint a new Task with the next ordinal, not reuse.
+    // Fresh drag: should mint a new OrchTask with the next ordinal, not reuse.
     let second = store
         .promote_issue_to_task("BACK-5", "claude-code")
         .expect("promote 2");

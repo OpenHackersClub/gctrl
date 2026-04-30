@@ -118,18 +118,26 @@ pub struct Session {
     pub created_by: CreatedBy,
 }
 
-// --- Task (Scheduler) ---
+// --- OrchTask (Orchestrator claim record) ---
 //
-// A Task is the Scheduler's unit of dispatchable work. Issues (app-level,
-// human-managed) are promoted to Tasks when they transition to `in_progress`
-// on the board. The Orchestrator only ever sees Tasks; it never reads Issues.
+// `OrchTask` is the orchestrator's per-attempt claim record for an Issue. It
+// carries identity (id, issue_id, project_key), attempt ordinal, agent kind,
+// and the current claim state (Unclaimed → Claimed → Running → RetryQueued
+// → Released).
 //
-// `orchestrator_claim` is stored as a string — the full claim-state machine
-// (Unclaimed → Claimed → Running → RetryQueued → Released) lives in the
-// `gctrl-orch` crate and will land alongside the orchestrator stub.
+// NOT the same as the Scheduler's `Task` primitive (full work-item with
+// title, status, dependency edges, prompt_hash, parent_task_id) — see
+// `vault/specs/architecture/kernel/scheduler.md` for that target shape;
+// it is currently spec-only and unimplemented. `OrchTask` is the
+// transitional shape used by Slice 1 of session-trigger-from-board.md.
+//
+// The full claim-state machine is verified in
+// `kernel/specs-lean4/KernelSpec/Orchestrator.lean` and translated to Rust
+// in the `gctrl-orch` crate. `orchestrator_claim` is stored as a string —
+// the constants below are the canonical wire form.
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Task {
+pub struct OrchTask {
     pub id: String,
     pub issue_id: Option<String>,
     pub project_key: String,
@@ -141,15 +149,15 @@ pub struct Task {
     pub updated_at: DateTime<Utc>,
 }
 
-impl Task {
+impl OrchTask {
     pub const CLAIM_UNCLAIMED: &'static str = "Unclaimed";
     pub const CLAIM_CLAIMED: &'static str = "Claimed";
     pub const CLAIM_RUNNING: &'static str = "Running";
     pub const CLAIM_RETRY_QUEUED: &'static str = "RetryQueued";
     pub const CLAIM_RELEASED: &'static str = "Released";
 
-    /// Non-terminal claim states — a Task in any of these should be reused
-    /// when its Issue is re-promoted (idempotent drag-to-in_progress).
+    /// Non-terminal claim states — an `OrchTask` in any of these should be
+    /// reused when its Issue is re-promoted (idempotent drag-to-in_progress).
     pub fn is_nonterminal_claim(claim: &str) -> bool {
         matches!(
             claim,
