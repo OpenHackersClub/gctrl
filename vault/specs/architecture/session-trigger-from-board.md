@@ -4,6 +4,9 @@ How dragging an Issue to `in_progress` on the gctrl-board web UI kicks off an ag
 
 > Related specs:
 > - [kernel/orchestrator.md](kernel/orchestrator.md) — claim states, dispatch, retry (kernel primitive)
+> - [kernel/runtime.md](kernel/runtime.md) — `AgentRuntime` port and built-in runtimes (canonical)
+> - [kernel/compute.md](kernel/compute.md) — `ComputeBackend` port and built-in backends (canonical)
+> - [apps/adr-runtime-compute-decoupling.md](apps/adr-runtime-compute-decoupling.md) — invariants and compatibility matrix
 > - [apps/gctl-board.md](apps/gctl-board.md) — what the board tracks (Issues vs. Tasks)
 > - [../gctrl/WORKFLOW.md](../gctrl/WORKFLOW.md) — issue lifecycle + agent dispatch CLI
 
@@ -68,67 +71,40 @@ sequenceDiagram
 
 Today's [implementation/kernel/orchestrator.md](../implementation/kernel/orchestrator.md) defines `AgentAdapter::launch(prompt, workspace, attempt) -> AgentHandle{pid}`. That conflates two concerns:
 
-1. **Which agent is running?** (the *runtime*) — Claude Code, Claude Agent SDK, opencode, aider, custom.
+1. **Which agent is running?** (the *runtime*) — Claude Code, Claude Agent SDK, Codex, OpenCode, Aider, custom.
 2. **Where is it running?** (the *compute*) — local process, Cloudflare Container, e2b, etc.
 
-We split the port:
+The kernel splits these into two ports:
 
 ```text
 AgentRuntime × ComputeBackend  →  launched Session
 ```
 
-### AgentRuntime
+The canonical specs for these ports — Rust traits, built-in implementations, telemetry-ingest tables, sandbox composition tables, credential delivery, and per-compute concurrency — live in:
 
-```rust
-#[async_trait]
-pub trait AgentRuntime: Send + Sync {
-    fn kind(&self) -> &str;                           // "claude-code" | "claude-agent-sdk" | "opencode" | ...
-    fn render_invocation(&self, prompt: &str,
-                         workspace: &Path) -> Invocation;
-}
-
-/// Describes what to execute inside a ComputeBackend.
-pub struct Invocation {
-    pub command: Vec<String>,     // e.g. ["claude", "--print", "--prompt", ...]
-    pub env: BTreeMap<String, String>,
-    pub stdin: Option<String>,    // for runtimes that pass prompt via stdin
-    pub workspace_mount: PathBuf, // local path to mount/copy
-}
-```
-
-### ComputeBackend
-
-```rust
-#[async_trait]
-pub trait ComputeBackend: Send + Sync {
-    fn kind(&self) -> &str;  // "local-process" | "cf-containers" | ...
-    async fn launch(&self, invocation: Invocation) -> Result<ComputeHandle, ComputeError>;
-}
-
-pub struct ComputeHandle {
-    pub id: String,                               // pid for local, container_id for CF
-    pub kill: Box<dyn FnOnce() -> Result<(), ComputeError> + Send>,
-    pub wait: Box<dyn Future<Output = ComputeExit> + Send>,
-}
-```
+- [kernel/runtime.md](kernel/runtime.md) — `AgentRuntime` trait, built-in runtimes, per-runtime telemetry ingest, inner sandbox table.
+- [kernel/compute.md](kernel/compute.md) — `ComputeBackend` trait, built-in backends, failure-as-tool-error semantics, egress and credential delivery.
+- [apps/adr-runtime-compute-decoupling.md](apps/adr-runtime-compute-decoupling.md) — the invariants (Brain ≠ Hand, many brains × many hands, compute failure is a tool error) and the `(runtime, compute)` compatibility matrix.
 
 The existing `AgentAdapter` becomes a composite: `(runtime, compute) -> AgentHandle`. No changes to the Orchestrator state machine or claim logic.
 
-### Configuration
+### Configuration (summary)
 
-`WORKFLOW.md` frontmatter gains a `compute` key (defaults to `local-process` for backward compatibility):
+`WORKFLOW.md` frontmatter selects the pair (defaults to `runtime = claude-code`, `compute = local-process` for backward compatibility):
 
 ```yaml
 agent:
-  runtime: claude-code
-  compute: local-process           # or: cf-containers
+  runtime: claude-code             # see kernel/runtime.md for built-ins
+  compute: local-process           # see kernel/compute.md for built-ins
   args: ["--print", "--dangerously-skip-permissions"]
-  # cf-containers-specific:
+  # compute-specific:
   compute_config:
     image: "gctrl/claude-code:latest"
     cpu_ms: 30000
     memory_mb: 2048
 ```
+
+Any `(runtime, compute)` combination listed in the [compatibility matrix](apps/adr-runtime-compute-decoupling.md#compatibility-matrix) is permitted. Combinations marked `⚠ no inner sandbox` MUST NOT be deployed to `compute = local-process` for untrusted Tasks.
 
 ---
 
