@@ -42,7 +42,7 @@ Applications observe orchestration state through the shell (HTTP API or CLI quer
 
 ## Orchestration States (Kernel Claim States)
 
-> States, transitions, and required properties are defined below.
+> **Source of truth:** [`kernel/specs-lean4/KernelSpec/Orchestrator.lean`](../../../../kernel/specs-lean4/KernelSpec/Orchestrator.lean). The `step` function and verified theorems define this machine; the prose below is a human-readable summary. If this section disagrees with the Lean module, the Lean module wins. `lake build` MUST pass before this section may be amended.
 
 These are the orchestrator's **internal claim states**, distinct from the Task lifecycle managed by the Scheduler. A Task's Scheduler state (`pending`, `running`, etc.) and its orchestration claim state are independent dimensions.
 
@@ -56,14 +56,7 @@ States: `Unclaimed` → `Claimed` → `Running` → `Released`, with `Paused` an
 
 ### Verified Properties
 
-Required properties:
-
-1. **No duplicate dispatch** — `dispatch_only_from_unclaimed`
-2. **Reachability** — `all_reachable`
-3. **Liveness** — `claimed_always_progresses`, `retryQueued_always_progresses`
-4. **Determinism** — `deterministic`
-5. **Terminal convergence** — `released_reachable_from_any`
-6. **Pause/resume integrity** — `paused_integrity`, `paused_not_dispatchable`
+Six theorems in `Orchestrator.lean` cover: no-duplicate-dispatch, reachability, liveness, determinism, terminal convergence, and pause/resume integrity. See the Lean module's header docstring for theorem names and proof bodies — they MUST NOT be duplicated here.
 
 ---
 

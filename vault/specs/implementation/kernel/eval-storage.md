@@ -11,18 +11,10 @@ It is the foundation every other M4 deliverable depends on:
 
 ## Ownership and Layering
 
-Per [domain-model § 5.3](../../architecture/domain-model.md#53-eval-application-tables) and the namespacing invariant in [os.md § 3](../../architecture/os.md):
+For ownership and namespacing rationale, see [domain-model.md § 5.3](../../architecture/domain-model.md#53-eval-application-tables) — that section is canonical and MUST NOT be restated here. Summary for orientation only:
 
-| Table | Owner | Layer | Why |
-|---|---|---|---|
-| `scores` | Kernel (existing) | `gctrl-storage` | Single sink for substrate + harness, dev + prod. The metric-continuity property depends on this. |
-| `prompt_versions` | Kernel (existing) | `gctrl-storage` | Reused for judge prompts; content-addressed by hash. |
-| `eval_metrics` | Observe & Eval app | `gctrl-storage` | Metric-name resolution must be available to *any* writer (substrate API or harness), so DDL lives in the kernel storage crate even though the table is app-namespaced. |
-| `eval_datasets` | Observe & Eval app | `gctrl-storage` | Same rationale. |
-| `eval_cases` | Observe & Eval app | `gctrl-storage` | Same rationale. |
-| `eval_runs` | Observe & Eval app | `gctrl-storage` | Same rationale. |
-
-The `eval_*` tables are **app-namespaced** (Invariant #3) but their DDL is co-located with kernel schema — same pattern as `board_*` tables, which the kernel does not interpret but does host.
+- `scores`, `prompt_versions` — kernel-owned (the shared sink across all eval modes).
+- `eval_metrics`, `eval_datasets`, `eval_cases`, `eval_runs` — app-namespaced (`eval_*`, per Invariant #3) but DDL co-locates in `gctrl-storage`, same pattern as `board_*` tables.
 
 ## DDL
 
