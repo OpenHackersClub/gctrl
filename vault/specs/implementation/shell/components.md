@@ -125,7 +125,7 @@ cli(process.argv).pipe(
 | `gctrl analytics` | `overview`, `cost`, `latency`, `scores`, `daily` | Analytics dashboard and queries |
 | `gctrl context` | `add`, `list`, `show`, `remove`, `compact`, `stats` | Manage agent context |
 | `gctrl net` | `fetch`, `crawl`, `list`, `show`, `compact` | Web scraping and agent context |
-| `gctrl gh` | `issues`, `prs`, `runs` | GitHub integration (via kernel driver) |
+| `gctrl gh` | `issues`, `prs`, `runs`, `exec` | GitHub integration (via kernel driver). See [GitHub Command Surface](#github-command-surface-gctrl-gh) below for the per-subcommand verb matrix — `prs create` is **not** implemented; use `gctrl gh exec pr create ...` |
 
 ### Adding a New CLI Command
 
@@ -152,6 +152,48 @@ class KernelClient extends Context.Tag("KernelClient")<
   }
 >() {}
 ```
+
+### GitHub Command Surface (`gctrl gh`)
+
+The full verb matrix, derived from `shell/gctrl-shell/src/commands/gh.ts`. **Source is authoritative — `--help` does not enumerate subcommands** (see [Help System Limitation](#help-system-limitation) below).
+
+| Subcommand | Verbs implemented | Verbs NOT implemented | Use when missing |
+|---|---|---|---|
+| `gctrl gh issues` | `list`, `view`, `create` | (none) | — |
+| `gctrl gh prs` | `list`, `view` | `create`, `edit`, `merge`, `comment`, `comments`, `diff`, `checks` | `gctrl gh exec pr <verb> ...` |
+| `gctrl gh runs` | `list`, `view` | `watch`, `cancel`, `rerun` | `gctrl gh exec run <verb> ...` |
+| `gctrl gh exec` | `<args>...` (pass-through to bare `gh`) | — | This is the escape hatch; everything else routes through it |
+
+#### `gctrl gh exec` — pass-through escape hatch
+
+For any `gh` subcommand or verb the shell does not yet wrap, use `gctrl gh exec <args>...`. The kernel driver (`driver-github`) invokes the native `gh` CLI with the provided args, wraps the call in an OTel span, and applies caching where applicable.
+
+**The kernel's working directory is NOT the caller's working directory.** Any flag that takes a file path (`--body-file`, `--input`, etc.) MUST be an **absolute path**. Relative paths fail with `open <path>: no such file or directory` from the kernel side. This applies only to `exec`; the wrapped commands do their own path handling.
+
+**Examples:**
+
+```sh
+# PR create (not in shell — use exec)
+gctrl gh exec pr create \
+  --title "..." \
+  --body-file /Users/me/workspaces/repo/.tmp/pr-body.md \
+  --base main \
+  --head my-branch \
+  --repo OpenHackersClub/gctrl
+
+# Watch a CI run
+gctrl gh exec run watch <run-id> --repo OpenHackersClub/gctrl
+
+# Anything outside the wrapped surface
+gctrl gh exec api repos/owner/repo/branches
+gctrl gh exec workflow dispatch deploy.yml --ref main
+```
+
+**Decision rule:** if the verb is in the matrix above as "implemented", call it directly (`gctrl gh prs list ...`) so you get caching + structured output. Otherwise fall through to `gctrl gh exec`.
+
+#### Help System Limitation
+
+`gctrl gh --help`, `gctrl gh prs --help`, `gctrl gh prs create --help`, etc. do **not** print the subcommand tree — they print only the generic usage stub for whatever the parser landed on, and `--help` after an unknown subcommand returns a misleading top-level "Invalid subcommand" error. To discover the actual command surface, `grep` `Command.make` in `shell/gctrl-shell/src/commands/<area>.ts`. This table IS the canonical reference until the help system is fixed.
 
 ### GitHub Operations (via Kernel Driver)
 
