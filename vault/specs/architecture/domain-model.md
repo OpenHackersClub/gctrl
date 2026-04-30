@@ -290,7 +290,9 @@ pub trait BrowserPort: Send + Sync {
 
 ### 5.1 Kernel-owned tables (implemented)
 
-From `schema.rs`: `sessions`, `spans`, `traffic`, `guardrail_events`, `scores`, `tags`, `prompt_versions`, `session_prompts`, `daily_aggregates`, `alert_rules`, `alert_events`, `context_entries`, `persona_definitions`, `persona_review_rules`, `inbox_messages`, `inbox_threads`, `inbox_actions`, `inbox_subscriptions`.
+From `schema.rs`: `sessions`, `spans`, `traffic`, `guardrail_events`, `scores`, `tags`, `prompt_versions`, `session_prompts`, `daily_aggregates`, `alert_rules`, `alert_events`, `context_entries`, `persona_definitions`, `persona_review_rules`.
+
+> The kernel **hosts** several app-namespaced tables (`board_*`, `inbox_*`, `eval_*`) — `schema.rs` and `all_migrations()` create them, but the kernel does not interpret their rows. Those are listed in §§ 5.2 / 5.2a / 5.3 below per Invariant #3 (app namespacing).
 
 **Spec-only extensions** (not yet in schema.rs):
 
@@ -360,6 +362,12 @@ Every agent MUST create tasks via `SchedulerPort` — never write directly.
 **Source:** [`kernel/crates/gctrl-storage/src/schema.rs`](../../kernel/crates/gctrl-storage/src/schema.rs) — `CREATE_BOARD_*_TABLE` constants: `board_projects`, `board_issues`, `board_events`, `board_comments`.
 
 Per Invariant #3, application tables carry the `board_` namespace prefix.
+
+### 5.2a Inbox application tables
+
+**Source:** [`kernel/crates/gctrl-storage/src/schema.rs`](../../kernel/crates/gctrl-storage/src/schema.rs) — `CREATE_INBOX_*_TABLE` constants: `inbox_messages`, `inbox_threads`, `inbox_actions`, `inbox_subscriptions`.
+
+Per Invariant #3, the `inbox_` prefix marks these as owned by the gctrl-inbox application; the kernel hosts the rows but does not interpret them. See [`apps/gctl-inbox.md`](apps/gctl-inbox.md) for application-level semantics.
 
 ### 5.3 Eval application tables
 

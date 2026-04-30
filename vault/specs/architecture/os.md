@@ -453,7 +453,7 @@ Drivers live in kernel space. Native apps (gctrl-board, Observe & Eval) live in 
 4. **Independently optional**: Each driver is independently feature-gated — zero drivers is the default; add as needed
 5. **Bidirectional where needed**: Pull from external API into gctrl; push gctrl events back to external API
 6. **Cross-module isolation**: Drivers MUST NOT import or call other drivers or native apps. All cross-component communication flows through kernel IPC (events, shell APIs, pipes)
-7. **Prefer native CLIs**: Where a mature native CLI exists (e.g., `gh` for GitHub), drivers SHOULD delegate to it via subprocess rather than reimplementing the REST API client. This reuses the CLI's authentication, pagination, and format handling. The kernel wraps the subprocess call with **caching** (response-level, TTL-based) and **OTel instrumentation** (spans for each call, cost/latency attribution)
+7. **Native CLI delegation (optional)**: A driver MAY delegate to a mature native CLI (e.g., `gh` for GitHub) via subprocess to reuse the CLI's authentication, pagination, and format handling. This is an implementation choice — **the kernel interface trait (rule #2) is the contract**, regardless of whether the driver wraps a CLI subprocess or a direct REST client. The kernel wraps the subprocess call with **caching** (response-level, TTL-based) and **OTel instrumentation** (spans for each call, cost/latency attribution)
 
 ### Driver Execution Model — Kernel Responsibilities
 
