@@ -142,7 +142,7 @@ Soak tests wait until real compute is wired — no value running the stub under 
 - [ ] `cargo test -p gctrl-orch` green.
 - [ ] `pnpm --filter gctrl-board test` green.
 - [ ] `pnpm --filter gctrl-board exec playwright test session-trigger` green locally.
-- [ ] Manual: `gctrl serve` + open local board, drag an Issue to `in_progress`, see a session row in `gctl sessions list`.
+- [ ] Manual: `gctrl serve` + open local board, drag an Issue to `in_progress`, see a session row in `gctrl sessions list`.
 
 ---
 

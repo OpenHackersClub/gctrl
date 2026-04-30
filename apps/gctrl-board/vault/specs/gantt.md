@@ -285,7 +285,7 @@ The Gantt renders **Issues only**. Tasks (Scheduler primitives) do not appear â€
 2. **Task timing is Scheduler-owned and ephemeral.** A Task's `start` / `end` is determined by agent runtime and can change within seconds.
 3. **Invariant preservation.** `architecture.md` defines Tasks as read-only in Kanban; the simplest way to respect that here is to not render them at all.
 
-If an agent-execution timeline is ever needed, it belongs in a separate view (e.g., per-session trace visualization implied by `gctl sessions tree`), not bolted onto the Issue Gantt.
+If an agent-execution timeline is ever needed, it belongs in a separate view (e.g., per-session trace visualization implied by `gctrl sessions tree`), not bolted onto the Issue Gantt.
 
 ## Testing
 
