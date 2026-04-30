@@ -22,7 +22,7 @@ const makeFakeSpawner = (): {
   spawner: Spawner
   spawnCount: () => number
   spawnedConfigs: () => readonly SidecarConfig[]
-  exitLast: (code: number, signal?: NodeJS.Signals | null) => void
+  triggerExit: (code: number, signal?: NodeJS.Signals | null) => void
   killSignals: () => readonly (NodeJS.Signals | undefined)[]
   lastPid: () => number | undefined
 } => {
@@ -62,7 +62,7 @@ const makeFakeSpawner = (): {
     spawner,
     spawnCount: () => spawned.length,
     spawnedConfigs: () => spawned.map((s) => s.config),
-    exitLast: (code, signal = null) => spawned[spawned.length - 1]!.exitHandler(code, signal),
+    triggerExit: (code, signal = null) => spawned[spawned.length - 1]!.exitHandler(code, signal),
     killSignals: () => spawned.map((s) => s.killSignal),
     lastPid: () => spawned[spawned.length - 1]?.pid,
   }
@@ -148,7 +148,7 @@ describe("KernelSidecar watchdog", () => {
     })
 
     sidecar.start()
-    fakeSpawner.exitLast(1)
+    fakeSpawner.triggerExit(1)
 
     expect(sidecar.state).toBe("restartQueued")
     expect(fakeScheduler.pending()).toHaveLength(1)
@@ -165,7 +165,7 @@ describe("KernelSidecar watchdog", () => {
     })
 
     sidecar.start()
-    fakeSpawner.exitLast(1)
+    fakeSpawner.triggerExit(1)
     fakeScheduler.runAll()
 
     expect(fakeSpawner.spawnCount()).toBe(2)
@@ -187,7 +187,7 @@ describe("KernelSidecar watchdog", () => {
     // Crash repeatedly; expect each backoff to match the schedule, with the
     // tail extending at the cap.
     for (let i = 0; i < RESTART_BACKOFF_MS.length + 2; i++) {
-      fakeSpawner.exitLast(1)
+      fakeSpawner.triggerExit(1)
       const next = fakeScheduler.pending()[0]
       expect(next).toBeDefined()
       recordedDelays.push(next!.ms)
@@ -212,9 +212,9 @@ describe("KernelSidecar.stop", () => {
 
     sidecar.start()
     sidecar.stop()
-    // The fake spawner forwards kill() into a synchronous exit handler,
-    // simulating a process that exits promptly on SIGTERM.
-    fakeSpawner.exitLast(0, "SIGTERM")
+    // Fake spawner records the kill signal but does not auto-fire exit;
+    // simulate a process that exits promptly on SIGTERM by triggering it.
+    fakeSpawner.triggerExit(0, "SIGTERM")
 
     expect(fakeSpawner.killSignals()[0]).toBe("SIGTERM")
     expect(sidecar.state).toBe("stopped")
@@ -231,7 +231,7 @@ describe("KernelSidecar.stop", () => {
 
     sidecar.start()
     sidecar.stop()
-    fakeSpawner.exitLast(0, "SIGTERM")
+    fakeSpawner.triggerExit(0, "SIGTERM")
 
     expect(fakeScheduler.pending()).toHaveLength(0)
     expect(fakeSpawner.spawnCount()).toBe(1)
@@ -247,7 +247,7 @@ describe("KernelSidecar.stop", () => {
     })
 
     sidecar.start()
-    fakeSpawner.exitLast(1)
+    fakeSpawner.triggerExit(1)
     expect(fakeScheduler.pending()).toHaveLength(1)
 
     sidecar.stop()
@@ -274,9 +274,37 @@ describe("KernelSidecar.stop", () => {
 
     sidecar.start()
     sidecar.stop()
-    fakeSpawner.exitLast(0, "SIGTERM")
+    fakeSpawner.triggerExit(0, "SIGTERM")
     expect(() => sidecar.stop()).not.toThrow()
     expect(sidecar.state).toBe("stopped")
+  })
+})
+
+describe("KernelSidecar duplicate / stale exit defense", () => {
+  it("ignores a duplicate exit event after the lifecycle has already stopped", () => {
+    // Real OS exit fires once per process, but the SpawnedProcess interface is
+    // adapter-specific — a buggy adapter that wraps `child.on("exit", h)` could
+    // fire twice if multiple listeners are registered. Without a guard, the
+    // second fire (post-stop) would fall through to the unexpected-exit branch
+    // and resurrect the sidecar. Verify the lifecycle no-ops on the duplicate.
+    const fakeSpawner = makeFakeSpawner()
+    const fakeScheduler = makeFakeScheduler()
+    const sidecar = new KernelSidecar(config, {
+      spawner: fakeSpawner.spawner,
+      scheduler: fakeScheduler.scheduler,
+      logger: silentLogger,
+    })
+
+    sidecar.start()
+    fakeSpawner.triggerExit(1) // first (real) exit → restartQueued
+    sidecar.stop() // clears timer → stopped
+    expect(sidecar.state).toBe("stopped")
+
+    fakeSpawner.triggerExit(1) // duplicate / stale fire on the same process
+
+    expect(sidecar.state).toBe("stopped")
+    expect(fakeScheduler.pending()).toHaveLength(0)
+    expect(fakeSpawner.spawnCount()).toBe(1)
   })
 })
 
@@ -291,14 +319,14 @@ describe("KernelSidecar restart after stop", () => {
     })
 
     sidecar.start()
-    fakeSpawner.exitLast(1)
+    fakeSpawner.triggerExit(1)
     fakeScheduler.runAll()
-    fakeSpawner.exitLast(1) // second crash → second backoff
+    fakeSpawner.triggerExit(1) // second crash → second backoff
     expect(fakeScheduler.pending()[0]!.ms).toBe(RESTART_BACKOFF_MS[1])
 
     sidecar.stop()
     sidecar.start()
-    fakeSpawner.exitLast(1)
+    fakeSpawner.triggerExit(1)
 
     expect(fakeScheduler.pending()[0]!.ms).toBe(RESTART_BACKOFF_MS[0])
   })
@@ -320,12 +348,12 @@ describe("KernelSidecar logging", () => {
     })
 
     sidecar.start()
-    fakeSpawner.exitLast(1)
+    fakeSpawner.triggerExit(1)
     expect(logger.warn).toHaveBeenCalled()
 
     fakeScheduler.runAll()
     sidecar.stop()
-    fakeSpawner.exitLast(0, "SIGTERM")
+    fakeSpawner.triggerExit(0, "SIGTERM")
     expect(logger.info).toHaveBeenCalled()
   })
 })

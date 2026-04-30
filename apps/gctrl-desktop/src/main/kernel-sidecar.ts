@@ -11,6 +11,14 @@
 
 export const RESTART_BACKOFF_MS = [1000, 2000, 5000, 15000, 60000] as const
 
+// Compile-time guarantee the schedule is non-empty: `_onExit` indexes into
+// this array, and `as const []` would silently produce `undefined * delay`.
+type _NonEmptyBackoff = typeof RESTART_BACKOFF_MS extends readonly [number, ...number[]]
+  ? true
+  : never
+const _backoffNonEmpty: _NonEmptyBackoff = true
+void _backoffNonEmpty
+
 export type SidecarConfig = {
   readonly binPath: string
   readonly port: number
@@ -21,12 +29,24 @@ export type SidecarConfig = {
 export type SpawnedProcess = {
   readonly pid: number | undefined
   kill(signal?: NodeJS.Signals): void
+  /**
+   * Register a one-shot exit handler.
+   *
+   * Contract: the handler fires AT MOST ONCE per `SpawnedProcess`. Adapters
+   * MUST guard against the underlying runtime emitting `exit` more than once
+   * for the same process — this lifecycle treats a second `_onExit` as a
+   * no-op only when state is `stopped`/`idle`; for other states a duplicate
+   * call would corrupt the state machine.
+   */
   onExit(handler: (code: number | null, signal: NodeJS.Signals | null) => void): void
 }
 
 export type Spawner = (config: SidecarConfig) => SpawnedProcess
 
-export type SchedulerHandle = unknown
+// `node:timers` returns `NodeJS.Timeout` (Node) or `number` (browser). The
+// production scheduler in PR-2 wraps `globalThis.setTimeout`, so this matches
+// what `ReturnType<typeof setTimeout>` produces in a node-types context.
+export type SchedulerHandle = NodeJS.Timeout | number
 
 export type Scheduler = {
   setTimeout(fn: () => void, ms: number): SchedulerHandle
@@ -80,6 +100,17 @@ export class KernelSidecar {
     return this._process?.pid
   }
 
+  /**
+   * Spawn the sidecar.
+   *
+   * - From `idle` or `stopped`: spawns fresh and resets the backoff counter,
+   *   so a `start()` after explicit `stop()` does not inherit a previous flap.
+   * - From `running` or `restartQueued`: no-op (idempotent).
+   * - From `stopping`: no-op. Callers wanting to restart in mid-stop should
+   *   await graceful shutdown (state transitions to `stopped` on `_onExit`)
+   *   and call `start()` again. Composing `start()` over an in-flight `stop()`
+   *   intentionally requires explicit serialization.
+   */
   start(): void {
     if (
       this._state === "running" ||
@@ -88,8 +119,6 @@ export class KernelSidecar {
     ) {
       return
     }
-    // Coming from idle or stopped: fresh launch. Reset backoff so a new
-    // start() after an explicit stop() doesn't inherit a previous flap.
     this._backoffIndex = 0
     this._spawn()
   }
@@ -128,6 +157,16 @@ export class KernelSidecar {
   }
 
   private _onExit(code: number | null, signal: NodeJS.Signals | null): void {
+    // Defense against late / duplicate exit events. If we're already in a
+    // terminal post-stop state, a stale fire from a prior process MUST NOT
+    // queue a phantom restart. Without this guard a delayed OS exit event
+    // arriving after `stop()` would fall through to the unexpected-exit
+    // branch below and resurrect the sidecar.
+    if (this._state === "stopped" || this._state === "idle") {
+      this._process = undefined
+      return
+    }
+
     this._process = undefined
 
     if (this._state === "stopping") {
