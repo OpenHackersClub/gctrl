@@ -7,8 +7,8 @@
 //! { "issue": { ... }, "task_id": "<ISSUE_ID>.T<N>", "dispatched": true }
 //! ```
 //!
-//! - Moving to `in_progress` auto-promotes the Issue to a Task in the same
-//!   transaction and returns `dispatched: true` + `task_id`.
+//! - Moving to `in_progress` auto-promotes the Issue to an `OrchTask` row in
+//!   the same transaction and returns `dispatched: true` + `task_id`.
 //! - Any other transition leaves `task_id: null` and `dispatched: false`.
 
 use std::sync::Arc;

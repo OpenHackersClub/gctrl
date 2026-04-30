@@ -21,7 +21,7 @@ Implementation plan for the Slice 1 subset of [architecture/session-trigger-from
 ## Crate / File Touch List
 
 ### `kernel/crates/gctrl-core/`
-- `src/types.rs` — new structs: `Task`, `TaskDispatchability`, `AgentHarnessKind`, `ComputeKind`.
+- `src/types.rs` — new structs: `OrchTask` (orchestrator claim record — distinct from the Scheduler's `Task` primitive in [domain-model.md § 2](../../architecture/domain-model.md#task-specs-only)), `TaskDispatchability`, `AgentHarnessKind`, `ComputeKind`.
 - `src/ports.rs` (new) — trait `AgentHarness`, trait `ComputeSubstrate`, struct `Invocation`, struct `ComputeHandle`. No impls.
 
 ### `kernel/crates/gctrl-storage/`

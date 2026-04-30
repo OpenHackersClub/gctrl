@@ -7,7 +7,7 @@
 //! two workers race for the same `Unclaimed → Claimed` transition.
 
 use chrono::Utc;
-use gctrl_core::{BoardIssue, BoardProject, IssueStatus, Task};
+use gctrl_core::{BoardIssue, BoardProject, IssueStatus, OrchTask};
 use gctrl_storage::SqliteStore;
 
 fn test_store() -> SqliteStore {
@@ -77,14 +77,14 @@ fn try_transition_claim_succeeds_from_expected_state() {
     let ok = store
         .try_transition_claim(
             &task.id,
-            Task::CLAIM_UNCLAIMED,
-            Task::CLAIM_CLAIMED,
+            OrchTask::CLAIM_UNCLAIMED,
+            OrchTask::CLAIM_CLAIMED,
         )
         .unwrap();
     assert!(ok, "CAS should succeed when row is in expected state");
 
     let tasks = store.list_tasks_for_issue("BACK-1").unwrap();
-    assert_eq!(tasks[0].orchestrator_claim, Task::CLAIM_CLAIMED);
+    assert_eq!(tasks[0].orchestrator_claim, OrchTask::CLAIM_CLAIMED);
 }
 
 #[test]
@@ -97,10 +97,10 @@ fn try_transition_claim_fails_when_already_moved() {
     let task = store.promote_issue_to_task("BACK-1", "claude-code").unwrap();
 
     let a = store
-        .try_transition_claim(&task.id, Task::CLAIM_UNCLAIMED, Task::CLAIM_CLAIMED)
+        .try_transition_claim(&task.id, OrchTask::CLAIM_UNCLAIMED, OrchTask::CLAIM_CLAIMED)
         .unwrap();
     let b = store
-        .try_transition_claim(&task.id, Task::CLAIM_UNCLAIMED, Task::CLAIM_CLAIMED)
+        .try_transition_claim(&task.id, OrchTask::CLAIM_UNCLAIMED, OrchTask::CLAIM_CLAIMED)
         .unwrap();
     assert!(a);
     assert!(!b, "second CAS from same `from` state must fail");
@@ -110,7 +110,7 @@ fn try_transition_claim_fails_when_already_moved() {
 fn try_transition_claim_missing_task_returns_false() {
     let store = test_store();
     let ok = store
-        .try_transition_claim("GHOST-1.T1", Task::CLAIM_UNCLAIMED, Task::CLAIM_CLAIMED)
+        .try_transition_claim("GHOST-1.T1", OrchTask::CLAIM_UNCLAIMED, OrchTask::CLAIM_CLAIMED)
         .unwrap();
     assert!(!ok);
 }
@@ -149,7 +149,7 @@ fn list_dispatchable_tasks_excludes_already_claimed() {
     let task = store.promote_issue_to_task("BACK-1", "claude-code").unwrap();
 
     store
-        .try_transition_claim(&task.id, Task::CLAIM_UNCLAIMED, Task::CLAIM_CLAIMED)
+        .try_transition_claim(&task.id, OrchTask::CLAIM_UNCLAIMED, OrchTask::CLAIM_CLAIMED)
         .unwrap();
 
     let dispatchable = store.list_dispatchable_tasks(10).unwrap();

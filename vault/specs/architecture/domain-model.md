@@ -367,7 +367,7 @@ Per Invariant #3, application tables carry the `board_` namespace prefix.
 
 **Source:** [`kernel/crates/gctrl-storage/src/schema.rs`](../../kernel/crates/gctrl-storage/src/schema.rs) — `CREATE_INBOX_*_TABLE` constants: `inbox_messages`, `inbox_threads`, `inbox_actions`, `inbox_subscriptions`.
 
-Per Invariant #3, the `inbox_` prefix marks these as owned by the gctrl-inbox application; the kernel hosts the rows but does not interpret them. See [`apps/gctl-inbox.md`](apps/gctl-inbox.md) for application-level semantics.
+Per Invariant #3, the `inbox_` prefix marks these as owned by the gctrl-inbox application; the kernel hosts the rows but does not interpret them. See [`apps/gctrl-inbox.md`](apps/gctrl-inbox.md) for application-level semantics.
 
 ### 5.3 Eval application tables
 
