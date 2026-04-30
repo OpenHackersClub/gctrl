@@ -392,6 +392,75 @@ CREATE TABLE IF NOT EXISTS schedules (
 )
 "#;
 
+// =============================================================================
+// Eval primitives — see vault/specs/implementation/kernel/eval-storage.md.
+// App-namespaced (`eval_*`) but DDL co-located with kernel schema, same pattern
+// as `board_*`. Substrate API + harness runner are the two writers; both target
+// the same `scores` sink.
+// =============================================================================
+
+pub const CREATE_EVAL_METRICS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS eval_metrics (
+    name              VARCHAR PRIMARY KEY,
+    kind              VARCHAR NOT NULL,
+    prompt_hash       VARCHAR,
+    threshold         DOUBLE,
+    higher_is_better  BOOLEAN NOT NULL DEFAULT TRUE,
+    schema_json       VARCHAR,
+    description       VARCHAR,
+    created_at        VARCHAR NOT NULL,
+    updated_at        VARCHAR NOT NULL
+)
+"#;
+
+pub const CREATE_EVAL_DATASETS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS eval_datasets (
+    id          VARCHAR PRIMARY KEY,
+    name        VARCHAR NOT NULL UNIQUE,
+    description VARCHAR,
+    created_at  VARCHAR NOT NULL,
+    updated_at  VARCHAR NOT NULL
+)
+"#;
+
+pub const CREATE_EVAL_CASES_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS eval_cases (
+    id         VARCHAR PRIMARY KEY,
+    dataset_id VARCHAR NOT NULL,
+    input      VARCHAR NOT NULL,
+    expected   VARCHAR,
+    context    VARCHAR,
+    tags       VARCHAR,
+    created_at VARCHAR NOT NULL
+)
+"#;
+
+pub const CREATE_EVAL_RUNS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS eval_runs (
+    id              VARCHAR PRIMARY KEY,
+    suite_name      VARCHAR NOT NULL,
+    status          VARCHAR NOT NULL,
+    baseline_run_id VARCHAR,
+    git_sha         VARCHAR,
+    env             VARCHAR,
+    model           VARCHAR,
+    prompt_hash     VARCHAR,
+    judge_model     VARCHAR,
+    metadata        VARCHAR,
+    started_at      VARCHAR NOT NULL,
+    completed_at    VARCHAR,
+    pass_count      INTEGER NOT NULL DEFAULT 0,
+    fail_count      INTEGER NOT NULL DEFAULT 0,
+    error_count     INTEGER NOT NULL DEFAULT 0
+)
+"#;
+
+// Idempotent column add — `target_id` alone cannot identify the parent run
+// because cases are templates many runs share. NULL for non-eval scores.
+pub const ADD_SCORES_EVAL_RUN_ID: &str = r#"
+ALTER TABLE scores ADD COLUMN IF NOT EXISTS eval_run_id VARCHAR
+"#;
+
 pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_spans_session ON spans(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(trace_id)",
@@ -433,6 +502,13 @@ pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_inbox_subscriptions_user ON inbox_subscriptions(user_id)",
     "CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules(enabled, next_run_at)",
     "CREATE INDEX IF NOT EXISTS idx_schedules_name ON schedules(name)",
+    // Eval indexes
+    "CREATE INDEX IF NOT EXISTS idx_eval_cases_dataset ON eval_cases(dataset_id)",
+    "CREATE INDEX IF NOT EXISTS idx_eval_runs_suite ON eval_runs(suite_name, started_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_eval_runs_baseline ON eval_runs(baseline_run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_eval_runs_status ON eval_runs(status)",
+    "CREATE INDEX IF NOT EXISTS idx_scores_eval_run ON scores(eval_run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_eval_metrics_kind ON eval_metrics(kind)",
 ];
 
 pub fn all_migrations() -> Vec<&'static str> {
@@ -465,6 +541,13 @@ pub fn all_migrations() -> Vec<&'static str> {
         CREATE_INBOX_ACTIONS_TABLE,
         CREATE_INBOX_SUBSCRIPTIONS_TABLE,
         CREATE_SCHEDULES_TABLE,
+        // Eval primitives — datasets before cases (FK), runs last so the
+        // self-FK on baseline_run_id is well-defined at every point.
+        CREATE_EVAL_METRICS_TABLE,
+        CREATE_EVAL_DATASETS_TABLE,
+        CREATE_EVAL_CASES_TABLE,
+        CREATE_EVAL_RUNS_TABLE,
+        ADD_SCORES_EVAL_RUN_ID,
     ];
     stmts.extend(CREATE_INDEXES.iter());
     stmts
