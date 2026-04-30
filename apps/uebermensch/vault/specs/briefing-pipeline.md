@@ -245,16 +245,18 @@ The deepdive pipeline is structurally identical — the difference is prompt tem
 
 ## Scheduler Integration
 
-Registered at daemon start by `SchedPort.registerRecurring`:
+Cadence is **vault-defined**, kernel-registered. The kernel scheduler (`gctrl-scheduler`) holds the canonical schedule rows and fires them on cron via `target_kind: exec` — spawning the `uber` CLI directly, with no app-side HTTP daemon. See [scheduling.md](scheduling.md) for the schema and reconciler; [kernel scheduler.md § exec target kind](../../../../vault/specs/architecture/kernel/scheduler.md#exec-target-kind) for the kernel primitive.
 
-| Job name | Cron (from profile) | Handler |
-|----------|--------------------|---------|
-| `uber.brief.daily` | `delivery.brief.cron` | `BriefingService.generateDaily` |
-| `uber.deepdive.<thesis-slug>` | per-thesis `horizon_months / 12` cadence (monthly default) | `BriefingService.generateDeepdive(slug)` |
-| `uber.ingest.<source-slug>` | `sources[slug].cadence` | `IngestService.tick(slug)` |
-| `uber.eval.daily` | `0 0 1 * * *` (01:00 daily) | `EvaluatorService.runDaily` |
+| Schedule (kernel `name`) | Cron source | Fires |
+|--------------------------|-------------|-------|
+| `uber.<schedule-name>` (e.g. `uber.morning_brief`) | `directives/schedules.md` → `schedules.<name>.cron` (TZ-converted to UTC at sync) | `uber run-daily` |
+| `uber.deepdive.<thesis-slug>` | per-thesis `horizon_months / 12` (monthly default) — registered by `uber schedule sync` from thesis frontmatter | `uber deepdive <slug>` |
+| `uber.ingest.<source-slug>` | `sources[slug].cadence` (legacy — uses `target_kind: http` against the kernel ingest route) | kernel ingest tick |
+| `uber.eval.daily` | `0 0 1 * * *` (01:00 daily) | `uber eval run-daily` |
 
-On profile change, jobs referencing modified cron fields are re-registered atomically — the Scheduler MUST support "replace schedule" in a single call to avoid a window where the job fires twice or not at all.
+On vault edits to `directives/schedules.md`, the user runs `gctrl uber schedule sync` to reconcile. Drift (manual edits to `uber.*` rows via curl) is clobbered on next sync — the vault is authoritative.
+
+`run-daily` itself is idempotent (re-uses today's brief if already generated; per-channel delivery has its own idempotency key). A double-fire from a daemon-crash race window therefore produces at most one delivered brief per channel per day.
 
 ## Observability
 
@@ -281,6 +283,8 @@ Implemented in `apps/uebermensch/src/entrypoints/cli/`.
 | `gctrl uber brief` | Run `BriefingService.generateDaily(today)`; print markdown to stdout; persist row |
 | `gctrl uber brief --date YYYY-MM-DD` | Same, but scoped to that day's window |
 | `gctrl uber brief --dry-run` | Run pipeline but do NOT persist or deliver; dump rendered markdown |
+| `gctrl uber run-daily` | Idempotent: generate today's brief if missing, then `send` against today. The kernel scheduler invokes this on cron — see [scheduling.md](scheduling.md). |
+| `gctrl uber schedule sync` | Reconcile `directives/schedules.md` → kernel `/api/schedules` (`name_prefix=uber.`). Vault is authoritative. |
 | `gctrl uber deepdive <slug>` | Run `BriefingService.generateDeepdive(slug)` |
 | `gctrl uber briefs list` | `GET /api/uber/briefs` — list recent |
 | `gctrl uber briefs show <id>` | `GET /api/uber/briefs/<id>` — resolves `vault_path` and prints the vault markdown file |

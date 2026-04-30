@@ -248,6 +248,18 @@ pub struct SchedulerConfig {
     /// Default per-job HTTP timeout in seconds. Individual schedules may
     /// override via `Schedule::timeout_secs`.
     pub default_timeout_secs: u64,
+    /// Operator opt-in for `target_kind: exec` schedules. With this `false`
+    /// (the default), `POST /api/schedules` rejects exec rows with 400 and
+    /// the runner refuses to spawn even if a row sneaks in via direct DB
+    /// access. The exec primitive lets a caller run arbitrary commands as
+    /// the daemon user — keep it off until allowlisted programs are set.
+    #[serde(default)]
+    pub exec_enabled: bool,
+    /// Allowlist of absolute binary paths permitted as `argv[0]` for exec
+    /// schedules. Empty = no exec schedules accepted, even when
+    /// `exec_enabled` is true. The create handler and runner both enforce.
+    #[serde(default)]
+    pub exec_allowed_programs: Vec<PathBuf>,
 }
 
 impl Default for SchedulerConfig {
@@ -257,6 +269,8 @@ impl Default for SchedulerConfig {
             poll_interval_secs: 30,
             max_per_tick: 16,
             default_timeout_secs: 60,
+            exec_enabled: false,
+            exec_allowed_programs: Vec::new(),
         }
     }
 }

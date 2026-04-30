@@ -10,6 +10,7 @@ pub mod analytics_scores;
 pub mod analytics_spans;
 pub mod auto_score;
 pub mod check;
+pub mod host_allowlist_middleware;
 pub mod net;
 pub mod orch;
 pub mod personas;

@@ -16,6 +16,7 @@
 //! orchestration with periodic ingest/cleanup/health jobs.
 
 pub mod cron;
+pub mod exec;
 pub mod http;
 pub mod runner;
 

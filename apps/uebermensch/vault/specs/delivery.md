@@ -2,7 +2,19 @@
 
 > How a rendered brief reaches the user across App (web UI + SSE), Telegram, Discord, and (future) email — with idempotent per-channel writes, profile-driven routing, and inbound URL ingestion.
 >
-> See [briefing-pipeline.md](briefing-pipeline.md) for what produces `Brief`; [domain-model.md § 2.3](domain-model.md#23-delivery) for the `Delivery` shape; [architecture.md § 11](architecture.md#11-open-interfaces-new-kernel-ports) for the `MessagingPort` trait.
+> See [briefing-pipeline.md](briefing-pipeline.md) for what produces `Brief`; [domain-model.md § 2.3](domain-model.md#23-delivery) for the `Delivery` shape; [architecture.md § 11](architecture.md#11-open-interfaces-new-kernel-ports) for the `MessagingPort` trait; [scheduling.md](scheduling.md) for what triggers the deliverer on cron.
+
+## How delivery is triggered
+
+Three entry points, all converging on `DelivererService`:
+
+| Entry | Trigger | Notes |
+|-------|---------|-------|
+| `gctrl uber send --date <d>` | Manual | Reads existing brief at `input/briefs/<d>.md`; fans out per channels. |
+| `gctrl uber run-daily` | Manual or kernel scheduler | Generates today's brief if missing, then sends. This is the recurring entry point. |
+| `POST /api/uber/briefs/{id}/deliver` | App-initiated re-send | Idempotent unless `force=true`. |
+
+Recurring delivery is fired by the **kernel scheduler** (`gctrl-scheduler`) using `target_kind: exec` rows registered via `uber schedule sync` from `directives/schedules.md`. There is no uebermensch HTTP daemon listening for scheduler callbacks — the kernel scheduler exec's the `uber` CLI directly. See [scheduling.md](scheduling.md) for the wiring.
 
 ## Responsibilities
 

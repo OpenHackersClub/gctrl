@@ -327,3 +327,19 @@ export const TimeboxProfileConfig = Schema.Struct({
   })),
 })
 export type TimeboxProfileConfig = typeof TimeboxProfileConfig.Type
+
+// === Scheduling (vault/specs/scheduling.md) ===
+
+export const ScheduleEntry = Schema.Struct({
+  cron: Schema.String,
+  tz: Schema.Literal("Asia/Hong_Kong"),
+  job: Schema.Literal("brief-and-send"),
+  enabled: Schema.optional(Schema.Boolean),
+})
+export type ScheduleEntry = typeof ScheduleEntry.Type
+
+export const SchedulesConfig = Schema.Struct({
+  schema_version: Schema.Number,
+  schedules: Schema.Record({ key: Schema.String, value: ScheduleEntry }),
+})
+export type SchedulesConfig = typeof SchedulesConfig.Type

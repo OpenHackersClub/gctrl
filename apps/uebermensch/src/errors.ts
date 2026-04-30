@@ -63,3 +63,8 @@ export class DeliveryError extends Schema.TaggedError<DeliveryError>()("Delivery
   kind: Schema.Literal("config", "unreachable", "rate_limited", "invalid", "io_failure"),
   status: Schema.optional(Schema.Number),
 }) {}
+
+export class ScheduleError extends Schema.TaggedError<ScheduleError>()("ScheduleError", {
+  message: Schema.String,
+  kind: Schema.Literal("config", "schema_invalid", "kernel_unreachable", "io_failure"),
+}) {}

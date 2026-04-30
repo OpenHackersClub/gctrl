@@ -5,14 +5,19 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use gctrl_core::SchedulerConfig;
 use gctrl_scheduler::http;
 use gctrl_storage::SqliteStore;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 fn router() -> axum::Router {
+    router_with_cfg(SchedulerConfig::default())
+}
+
+fn router_with_cfg(cfg: SchedulerConfig) -> axum::Router {
     let store = Arc::new(SqliteStore::open(":memory:").unwrap());
-    http::router(store)
+    http::router(store, Arc::new(cfg))
 }
 
 async fn body_json(resp: axum::response::Response) -> serde_json::Value {

@@ -15,7 +15,7 @@ use axum::{
 use async_stream::stream;
 use futures_core::Stream;
 use gctrl_context::ContextManager;
-use gctrl_core::{NetConfig, SyncConfig};
+use gctrl_core::{NetConfig, SchedulerConfig, SyncConfig};
 use gctrl_storage::{DuckDbStore, SqliteStore};
 use serde::Deserialize;
 
@@ -97,6 +97,25 @@ pub fn create_router_full(
     sync_config: Option<Arc<SyncConfig>>,
     net_config: Arc<NetConfig>,
 ) -> Router {
+    create_router_full_with_scheduler(
+        store,
+        sqlite,
+        sync_config,
+        net_config,
+        Arc::new(SchedulerConfig::default()),
+    )
+}
+
+/// Same as `create_router_full` but lets the caller pass an explicit
+/// `SchedulerConfig`. The scheduler HTTP routes need it to enforce
+/// `exec_enabled` and `exec_allowed_programs` gates at create-time.
+pub fn create_router_full_with_scheduler(
+    store: Arc<DuckDbStore>,
+    sqlite: Arc<SqliteStore>,
+    sync_config: Option<Arc<SyncConfig>>,
+    net_config: Arc<NetConfig>,
+    scheduler_config: Arc<SchedulerConfig>,
+) -> Router {
     let llm_capture = build_llm_capture(Arc::clone(&store));
     let state = Arc::new(AppState {
         store,
@@ -109,7 +128,7 @@ pub fn create_router_full(
         event_bus: EventBus::default_capacity(),
         llm_capture,
     });
-    build_router(state).merge(gctrl_scheduler::http::router(sqlite))
+    build_router(state).merge(gctrl_scheduler::http::router(sqlite, scheduler_config))
 }
 
 pub fn create_router_with_context(store: DuckDbStore, context: Option<ContextManager>) -> Router {

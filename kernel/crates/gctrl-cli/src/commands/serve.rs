@@ -7,7 +7,29 @@ use gctrl_proxy::{Capture, CaptureConfig, LlmRelay, RelayConfig};
 use gctrl_scheduler::ScheduleRunner;
 use gctrl_storage::{DuckDbStore, SqliteStore};
 
+use super::host_allowlist_middleware;
 use super::watch;
+
+/// Read scheduler config from env. Operators opt into exec target by setting:
+///
+///   GCTRL_SCHEDULER_EXEC_ENABLED=1
+///   GCTRL_SCHEDULER_EXEC_ALLOWED_PROGRAMS=/abs/path/to/node:/abs/path/to/uv
+///
+/// Both default to off-and-empty. Config-file parsing is a separate work item.
+fn scheduler_config_from_env() -> SchedulerConfig {
+    let mut cfg = SchedulerConfig::default();
+    if let Ok(v) = std::env::var("GCTRL_SCHEDULER_EXEC_ENABLED") {
+        cfg.exec_enabled = matches!(v.as_str(), "1" | "true" | "yes" | "on");
+    }
+    if let Ok(v) = std::env::var("GCTRL_SCHEDULER_EXEC_ALLOWED_PROGRAMS") {
+        cfg.exec_allowed_programs = v
+            .split(':')
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .collect();
+    }
+    cfg
+}
 
 /// Options for the gctrl-proxy LLM relay. `None` disables the relay.
 #[derive(Debug, Clone)]
@@ -59,10 +81,23 @@ pub async fn run(
         tracing::info!("Cloudflare Browser Rendering enabled");
     }
 
-    // Spawn the scheduler runner. Uses defaults from `SchedulerConfig::default()`
-    // (30s poll, 16 jobs/tick, 60s timeout) — operators can override later via
-    // config file once we wire `~/.config/gctrl/config.toml` parsing.
-    let scheduler_config = SchedulerConfig::default();
+    // Spawn the scheduler runner. Defaults: 30s poll, 16 jobs/tick, 60s
+    // timeout, exec disabled. Operators opt into exec by setting env
+    // variables — config-file parsing is a separate work item.
+    let scheduler_config = scheduler_config_from_env();
+    if scheduler_config.exec_enabled {
+        if scheduler_config.exec_allowed_programs.is_empty() {
+            tracing::warn!(
+                "scheduler.exec_enabled=true but exec_allowed_programs is empty — exec rows will be refused at fire-time"
+            );
+        } else {
+            tracing::info!(
+                "scheduler exec target enabled with {} allowed program(s)",
+                scheduler_config.exec_allowed_programs.len()
+            );
+        }
+    }
+    let scheduler_config_arc = Arc::new(scheduler_config.clone());
     if scheduler_config.enabled {
         let runner_store = Arc::clone(&sqlite);
         let runner_cfg = scheduler_config.clone();
@@ -112,12 +147,14 @@ pub async fn run(
         tracing::info!("LLM relay disabled (--no-relay)");
     }
 
-    let router = gctrl_otel::create_router_full(
+    let router = gctrl_otel::create_router_full_with_scheduler(
         Arc::clone(&store),
         Arc::clone(&sqlite),
         sync_config,
         Arc::new(net_config),
+        Arc::clone(&scheduler_config_arc),
     );
+    let router = host_allowlist_middleware::apply(router);
     let addr = format!("{host}:{port}");
     tracing::info!("gctrl OTel receiver listening on {addr}");
     tracing::info!("database: {db_path}");

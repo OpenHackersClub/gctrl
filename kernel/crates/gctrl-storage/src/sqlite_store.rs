@@ -290,10 +290,14 @@ CREATE TABLE IF NOT EXISTS schedules (
     id              TEXT PRIMARY KEY,
     name            TEXT NOT NULL UNIQUE,
     cron            TEXT NOT NULL,
+    target_kind     TEXT NOT NULL DEFAULT 'http',
     target_url      TEXT NOT NULL,
     target_method   TEXT NOT NULL DEFAULT 'POST',
     body_json       TEXT,
     headers_json    TEXT,
+    command_json    TEXT,
+    cwd             TEXT,
+    env_keys_json   TEXT,
     timeout_secs    INTEGER NOT NULL DEFAULT 60,
     enabled         INTEGER NOT NULL DEFAULT 1,
     next_run_at     TEXT,
@@ -443,6 +447,12 @@ impl SqliteStore {
             "ALTER TABLE board_comments ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE board_comments ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'))",
             "ALTER TABLE board_comments ADD COLUMN synced INTEGER NOT NULL DEFAULT 0",
+            // Schedule exec target kind — added April 2026. Existing rows are
+            // implicitly `target_kind='http'`; columns default appropriately.
+            "ALTER TABLE schedules ADD COLUMN target_kind TEXT NOT NULL DEFAULT 'http'",
+            "ALTER TABLE schedules ADD COLUMN command_json TEXT",
+            "ALTER TABLE schedules ADD COLUMN cwd TEXT",
+            "ALTER TABLE schedules ADD COLUMN env_keys_json TEXT",
         ];
         for stmt in alters {
             if let Err(e) = conn.execute_batch(stmt) {
@@ -2453,16 +2463,20 @@ impl SqliteStore {
     pub fn create_schedule(&self, sched: &Schedule) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO schedules (id, name, cron, target_url, target_method, body_json, headers_json, timeout_secs, enabled, next_run_at, last_run_at, last_status, last_response, last_error, run_count, failure_count, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            "INSERT INTO schedules (id, name, cron, target_kind, target_url, target_method, body_json, headers_json, command_json, cwd, env_keys_json, timeout_secs, enabled, next_run_at, last_run_at, last_status, last_response, last_error, run_count, failure_count, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
             params![
                 sched.id,
                 sched.name,
                 sched.cron,
+                sched.target_kind,
                 sched.target_url,
                 sched.target_method,
                 sched.body_json.as_ref().map(|v| v.to_string()),
                 sched.headers_json.as_ref().map(|v| v.to_string()),
+                sched.command.as_ref().map(|v| serde_json::to_string(v).unwrap_or_default()),
+                sched.cwd,
+                sched.env_keys.as_ref().map(|v| serde_json::to_string(v).unwrap_or_default()),
                 sched.timeout_secs,
                 sched.enabled,
                 sched.next_run_at,
@@ -2482,7 +2496,7 @@ impl SqliteStore {
     pub fn get_schedule(&self, id_or_name: &str) -> Result<Option<Schedule>> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT id, name, cron, target_url, target_method, body_json, headers_json, timeout_secs, enabled, next_run_at, last_run_at, last_status, last_response, last_error, run_count, failure_count, created_at, updated_at
+            "SELECT id, name, cron, target_kind, target_url, target_method, body_json, headers_json, command_json, cwd, env_keys_json, timeout_secs, enabled, next_run_at, last_run_at, last_status, last_response, last_error, run_count, failure_count, created_at, updated_at
              FROM schedules WHERE id = ?1 OR name = ?1",
             [id_or_name],
             row_to_schedule,
@@ -2496,7 +2510,7 @@ impl SqliteStore {
 
     pub fn list_schedules(&self, filter: &ScheduleFilter) -> Result<Vec<Schedule>> {
         let conn = self.conn.lock().unwrap();
-        let mut sql = "SELECT id, name, cron, target_url, target_method, body_json, headers_json, timeout_secs, enabled, next_run_at, last_run_at, last_status, last_response, last_error, run_count, failure_count, created_at, updated_at FROM schedules WHERE 1=1".to_string();
+        let mut sql = "SELECT id, name, cron, target_kind, target_url, target_method, body_json, headers_json, command_json, cwd, env_keys_json, timeout_secs, enabled, next_run_at, last_run_at, last_status, last_response, last_error, run_count, failure_count, created_at, updated_at FROM schedules WHERE 1=1".to_string();
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         let mut idx = 1;
         if let Some(en) = filter.enabled {
@@ -2521,7 +2535,7 @@ impl SqliteStore {
     pub fn list_due_schedules(&self, now_rfc3339: &str, limit: usize) -> Result<Vec<Schedule>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, cron, target_url, target_method, body_json, headers_json, timeout_secs, enabled, next_run_at, last_run_at, last_status, last_response, last_error, run_count, failure_count, created_at, updated_at
+            "SELECT id, name, cron, target_kind, target_url, target_method, body_json, headers_json, command_json, cwd, env_keys_json, timeout_secs, enabled, next_run_at, last_run_at, last_status, last_response, last_error, run_count, failure_count, created_at, updated_at
              FROM schedules
              WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ?1
              ORDER BY next_run_at LIMIT ?2"
@@ -2621,27 +2635,42 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<OrchTask> {
 }
 
 fn row_to_schedule(row: &rusqlite::Row<'_>) -> rusqlite::Result<Schedule> {
-    let body_json_str: Option<String> = row.get(5)?;
-    let headers_json_str: Option<String> = row.get(6)?;
+    // Column order — kept in lockstep with create/select queries:
+    //   0 id              1 name            2 cron
+    //   3 target_kind     4 target_url      5 target_method
+    //   6 body_json       7 headers_json
+    //   8 command_json    9 cwd            10 env_keys_json
+    //  11 timeout_secs   12 enabled
+    //  13 next_run_at    14 last_run_at
+    //  15 last_status    16 last_response  17 last_error
+    //  18 run_count      19 failure_count  20 created_at  21 updated_at
+    let body_json_str: Option<String> = row.get(6)?;
+    let headers_json_str: Option<String> = row.get(7)?;
+    let command_json_str: Option<String> = row.get(8)?;
+    let env_keys_json_str: Option<String> = row.get(10)?;
     Ok(Schedule {
         id: row.get(0)?,
         name: row.get(1)?,
         cron: row.get(2)?,
-        target_url: row.get(3)?,
-        target_method: row.get(4)?,
+        target_kind: row.get(3)?,
+        target_url: row.get(4)?,
+        target_method: row.get(5)?,
         body_json: body_json_str.and_then(|s| serde_json::from_str(&s).ok()),
         headers_json: headers_json_str.and_then(|s| serde_json::from_str(&s).ok()),
-        timeout_secs: row.get(7)?,
-        enabled: row.get(8)?,
-        next_run_at: row.get(9)?,
-        last_run_at: row.get(10)?,
-        last_status: row.get(11)?,
-        last_response: row.get(12)?,
-        last_error: row.get(13)?,
-        run_count: row.get(14)?,
-        failure_count: row.get(15)?,
-        created_at: row.get(16)?,
-        updated_at: row.get(17)?,
+        command: command_json_str.and_then(|s| serde_json::from_str(&s).ok()),
+        cwd: row.get(9)?,
+        env_keys: env_keys_json_str.and_then(|s| serde_json::from_str(&s).ok()),
+        timeout_secs: row.get(11)?,
+        enabled: row.get(12)?,
+        next_run_at: row.get(13)?,
+        last_run_at: row.get(14)?,
+        last_status: row.get(15)?,
+        last_response: row.get(16)?,
+        last_error: row.get(17)?,
+        run_count: row.get(18)?,
+        failure_count: row.get(19)?,
+        created_at: row.get(20)?,
+        updated_at: row.get(21)?,
     })
 }
 
