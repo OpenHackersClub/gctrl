@@ -45,6 +45,8 @@ const stubEvent = (overrides: Partial<CalendarEvent> = {}): CalendarEvent => ({
   contentHash: null,
   createdAt: null,
   updatedAt: null,
+  matchScore: null,
+  matchedTerms: [],
   body: "",
   relPath: "",
   absPath: "",

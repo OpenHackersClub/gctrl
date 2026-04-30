@@ -17,6 +17,8 @@ export const Identity = Schema.Struct({
   slug: Slug,
   tz: Schema.String,
   lang: Schema.String,
+  city: Schema.optional(Slug),
+  country: Schema.optional(Schema.String.pipe(Schema.pattern(/^[A-Z]{2}$/))),
 })
 
 export const Budgets = Schema.Struct({
@@ -48,11 +50,28 @@ export const Delivery = Schema.Struct({
   ),
 })
 
+// Events discovery (specs/events.md). Optional — vaults without an `events:`
+// block fall back to driver-disabled defaults.
+export const EventsSourceConfig = Schema.Struct({
+  driver: Schema.Literal("luma"),
+  city: Schema.optional(Slug),
+})
+
+export const EventsConfig = Schema.Struct({
+  enabled: Schema.optional(Schema.Boolean),
+  min_match_score: Schema.optional(
+    Schema.Number.pipe(Schema.between(0, 1)),
+  ),
+  interests: Schema.optional(Schema.Array(Schema.String)),
+  sources: Schema.optional(Schema.Array(EventsSourceConfig)),
+})
+
 export const ProfileConfig = Schema.Struct({
   schema_version: Schema.Number,
   identity: Identity,
   budgets: Budgets,
   delivery: Delivery,
+  events: Schema.optional(EventsConfig),
 })
 
 // Person topics open up name/alias matching and feed discovery.
@@ -163,6 +182,7 @@ export const EventSource = Schema.Literal(
   "driver-markets",
   "driver-sec",
   "driver-gcal",
+  "driver-events",
   "import",
 )
 export type EventSource = typeof EventSource.Type
@@ -227,6 +247,10 @@ export const EventFrontmatter = Schema.Struct({
   step: Schema.optional(Schema.Int.pipe(Schema.greaterThanOrEqualTo(1))),
   step_total: Schema.optional(Schema.Int.pipe(Schema.greaterThanOrEqualTo(1))),
   step_units: Schema.optional(Schema.String),
+  // Events-discovery extension (specs/events.md). Optional, set by
+  // driver-events; ignored by other sources.
+  match_score: Schema.optional(Schema.Number.pipe(Schema.between(0, 1))),
+  matched_terms: Schema.optional(Schema.Array(Schema.String)),
 })
 export type EventFrontmatter = typeof EventFrontmatter.Type
 

@@ -217,6 +217,8 @@ const decodeEvent = (
       contentHash: decoded.content_hash ?? null,
       createdAt: decoded.created_at ?? null,
       updatedAt: decoded.updated_at ?? null,
+      matchScore: decoded.match_score ?? null,
+      matchedTerms: decoded.matched_terms ?? [],
       body: parsed.content,
       relPath: entry.rel,
       absPath: entry.abs,

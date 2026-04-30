@@ -107,6 +107,8 @@ describe("calendar — pure helpers (parseDateShortcut, matchesFilter, sortBySta
       contentHash: null,
       createdAt: null,
       updatedAt: null,
+      matchScore: null,
+      matchedTerms: [],
       body: "Quarterly call",
       relPath: "action/events/2026-05-21--nvda.md",
       absPath: "/x",
