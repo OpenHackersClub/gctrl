@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use gctrl_core::{BoardComment, Task};
+use gctrl_core::{BoardComment, OrchTask};
 use gctrl_storage::SqliteStore;
 
 use crate::agent;
@@ -65,14 +65,14 @@ impl Worker {
         }
     }
 
-    async fn dispatch_one(&self, task: &Task) -> Result<DispatchOutcome> {
+    async fn dispatch_one(&self, task: &OrchTask) -> Result<DispatchOutcome> {
         // Unclaimed → Claimed. If the CAS loses, another worker got here
         // first; silently move on. This is the only place double-dispatch
         // is prevented.
         let won = self.store.try_transition_claim(
             &task.id,
-            Task::CLAIM_UNCLAIMED,
-            Task::CLAIM_CLAIMED,
+            OrchTask::CLAIM_UNCLAIMED,
+            OrchTask::CLAIM_CLAIMED,
         )?;
         if !won {
             tracing::info!(task_id = %task.id, "orch: lost claim race, skipping");
@@ -107,7 +107,7 @@ impl Worker {
             // Non-destructive: put it back in the queue so a real run picks
             // it up. The CAS target is Unclaimed — same pool list_dispatchable
             // filters on.
-            self.strict_transition(&task.id, Task::CLAIM_CLAIMED, Task::CLAIM_UNCLAIMED)?;
+            self.strict_transition(&task.id, OrchTask::CLAIM_CLAIMED, OrchTask::CLAIM_UNCLAIMED)?;
             return Ok(DispatchOutcome::DryRun {
                 task_id: task.id.clone(),
             });
@@ -124,7 +124,7 @@ impl Worker {
                 Err(e) => {
                     let body = format!("## Agent run failed (spawn)\n\n{e}");
                     self.post_completion_comment(issue_id, &body, false)?;
-                    self.strict_transition(&task.id, Task::CLAIM_CLAIMED, Task::CLAIM_RELEASED)?;
+                    self.strict_transition(&task.id, OrchTask::CLAIM_CLAIMED, OrchTask::CLAIM_RELEASED)?;
                     tracing::warn!(task_id = %task.id, err = %e, "orch: dispatchFailed");
                     return Ok(DispatchOutcome::Retried {
                         task_id: task.id.clone(),
@@ -133,12 +133,12 @@ impl Worker {
             };
 
         // agentLaunched.
-        self.strict_transition(&task.id, Task::CLAIM_CLAIMED, Task::CLAIM_RUNNING)?;
+        self.strict_transition(&task.id, OrchTask::CLAIM_CLAIMED, OrchTask::CLAIM_RUNNING)?;
 
         match agent::await_agent(child, self.config.task_timeout).await {
             Ok(result) => {
                 self.post_completion_comment(issue_id, &result.stdout, true)?;
-                self.strict_transition(&task.id, Task::CLAIM_RUNNING, Task::CLAIM_RELEASED)?;
+                self.strict_transition(&task.id, OrchTask::CLAIM_RUNNING, OrchTask::CLAIM_RELEASED)?;
                 tracing::info!(task_id = %task.id, "orch: released on clean exit");
                 Ok(DispatchOutcome::Released {
                     task_id: task.id.clone(),
@@ -147,7 +147,7 @@ impl Worker {
             Err(e) => {
                 let body = format!("## Agent run failed\n\n{e}");
                 self.post_completion_comment(issue_id, &body, false)?;
-                self.strict_transition(&task.id, Task::CLAIM_RUNNING, Task::CLAIM_RETRY_QUEUED)?;
+                self.strict_transition(&task.id, OrchTask::CLAIM_RUNNING, OrchTask::CLAIM_RETRY_QUEUED)?;
                 tracing::warn!(task_id = %task.id, err = %e, "orch: retry-queued");
                 Ok(DispatchOutcome::Retried {
                     task_id: task.id.clone(),
