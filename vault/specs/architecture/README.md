@@ -40,9 +40,11 @@ vault/specs/architecture/
 │
 ├── shell/             ← shell layer (CLI dispatcher, HTTP API, query engine)
 │
-└── apps/              ← native applications and utilities (Issues live here)
-    ├── gctrl-board.md      kanban — issues, board visualization, agent integration
-    └── tracker.md         Issue lifecycle, DAG, auto-transitions, TrackerPort
+└── apps/              ← native applications, utilities, and distribution targets (Issues live here)
+    ├── gctrl-board.md       kanban — issues, board visualization, agent integration
+    ├── tracker.md          Issue lifecycle, DAG, auto-transitions, TrackerPort
+    ├── gctrl-desktop.md    Electron macOS distribution — kernel sidecar, native packaging
+    └── gctrl-mobile.md     Mobile companion app — remote-only, no kernel, comms + prompting + analytics
 ```
 
 | Document | Scope |
@@ -58,6 +60,8 @@ vault/specs/architecture/
 | [kernel/browser.md](kernel/browser.md) | Browser control kernel extension — CDP daemon, ref system, tab management |
 | [apps/gctrl-board.md](apps/gctrl-board.md) | Kanban application — Issues, board visualization, agent integration |
 | [apps/tracker.md](apps/tracker.md) | Tracker application component — Issue lifecycle, DAG, auto-transitions, TrackerPort |
+| [apps/gctrl-desktop.md](apps/gctrl-desktop.md) | Electron macOS distribution — kernel sidecar, native packaging, tech stack rationale |
+| [apps/gctrl-mobile.md](apps/gctrl-mobile.md) | Mobile companion — remote-only, no kernel, scoped to comms + prompting + analytics |
 
 ---
 
