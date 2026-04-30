@@ -1,6 +1,7 @@
 pub mod contributions;
 pub mod event_bus;
 pub mod receiver;
+pub mod rss;
 pub mod span_processor;
 
 pub use event_bus::{EventBus, ReplayResult, SessionEvent};

@@ -27,8 +27,13 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 http = { workspace = true }
+# driver-rss
+feed-rs = { workspace = true }
+sha2 = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true }
 http-body-util = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+tempfile = { workspace = true }
