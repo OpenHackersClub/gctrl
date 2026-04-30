@@ -1,0 +1,219 @@
+import { readFile } from "node:fs/promises"
+import { join } from "node:path"
+import { Command } from "@effect/cli"
+import { Console, Effect, Either, Layer } from "effect"
+import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js"
+import { FileSystemVaultLive } from "../adapters/FileSystemVault.js"
+import { HttpDelivererLive } from "../adapters/HttpDeliverer.js"
+import { KernelLlmLive } from "../adapters/KernelLlm.js"
+import { StrictRendererLive } from "../adapters/StrictRenderer.js"
+import { selectCandidates } from "../lib/candidates.js"
+import { resolveChannels } from "../lib/channels.js"
+import { publicBriefUrl, resolveVaultDir } from "../lib/env.js"
+import { INPUT_BRIEFS_DIR } from "../lib/vault-paths.js"
+import { DelivererService } from "../services/DelivererService.js"
+import { LlmService } from "../services/LlmService.js"
+import { ProfileService } from "../services/ProfileService.js"
+import { RendererService } from "../services/RendererService.js"
+import { VaultService } from "../services/VaultService.js"
+
+const today = () => new Date().toISOString().slice(0, 10)
+
+const itemsForFormat = (format: "long" | "short" | "digest"): number => {
+  switch (format) {
+    case "long":
+      return 12
+    case "short":
+      return 6
+    case "digest":
+      return 3
+  }
+}
+
+// Generates today's brief if the file is absent, skips if already present.
+// Returns the brief markdown content either way.
+const runBriefGeneration = (
+  date: string,
+  vaultDir: string,
+): Effect.Effect<string, unknown, ProfileService | VaultService | LlmService | RendererService> =>
+  Effect.gen(function* () {
+    const briefAbs = join(vaultDir, `${INPUT_BRIEFS_DIR}/${date}.md`)
+    const existing = yield* Effect.tryPromise({
+      try: () => readFile(briefAbs, "utf8"),
+      catch: () => null as null,
+    })
+    if (existing !== null) {
+      yield* Console.log(`brief already exists for ${date}, reusing`)
+      return existing
+    }
+
+    yield* Console.log(`generating brief for ${date}`)
+    const profileSvc = yield* ProfileService
+    const vaultSvc = yield* VaultService
+    const llm = yield* LlmService
+    const renderer = yield* RendererService
+    const profile = yield* profileSvc.load()
+
+    const pages = yield* vaultSvc.recentlyChanged(24)
+    yield* Console.log(`  ${pages.length} page(s) changed in last 24h`)
+
+    const topicWeights = profile.topics.topics.map((t) => ({
+      slug: t.slug,
+      weight: t.weight,
+    }))
+    const candidates = selectCandidates({
+      pages,
+      topics: topicWeights,
+      thesesSlugs: [],
+      now: new Date(),
+      windowHours: 24,
+      maxCandidates: 40,
+    })
+    yield* Console.log(`  ${candidates.length} candidate(s) after ranking`)
+
+    const maxItems = itemsForFormat(profile.profile.delivery.brief.format)
+    const response = yield* llm.generateBrief({
+      date,
+      profileName: profile.profile.identity.name,
+      topics: topicWeights.map((t) => t.slug),
+      thesesSlugs: [],
+      candidates,
+      maxItems,
+    })
+
+    const vaultSlugs = yield* vaultSvc.listSlugs()
+    const rendered = yield* renderer.render({
+      date,
+      generator: llm.name(),
+      model: response.model,
+      promptHash: response.promptHash,
+      costUsd: response.costUsd,
+      profileName: profile.profile.identity.name,
+      topicsCovered: response.topicsCovered,
+      thesesCovered: response.thesesCovered,
+      candidates,
+      items: response.items,
+      vaultSlugs,
+    })
+
+    const written = yield* vaultSvc.writeBrief(date, rendered.markdown)
+    yield* Console.log(
+      `  wrote ${written.relPath} (${written.contentHash}) — ${rendered.citedClaims}/${rendered.totalClaims} claims cited`,
+    )
+    return rendered.markdown
+  })
+
+// Fans out the brief content to all configured channels.
+// Returns { successes, failures } counts; never fails — errors are counted.
+const runSend = (
+  date: string,
+  vaultDir: string,
+  content: string,
+): Effect.Effect<{ successes: number; failures: number }, never, ProfileService | DelivererService> =>
+  Effect.gen(function* () {
+    const briefRel = `${INPUT_BRIEFS_DIR}/${date}.md`
+    yield* Console.log(`sending ${briefRel} from ${vaultDir}`)
+
+    const profileSvc = yield* ProfileService
+    const deliverer = yield* DelivererService
+
+    const loadResult = yield* profileSvc.load().pipe(Effect.either)
+    if (Either.isLeft(loadResult)) {
+      yield* Console.error(`  profile load failed: ${String(loadResult.left)}`)
+      return { successes: 0, failures: 1 }
+    }
+    const loaded = loadResult.right
+
+    const channelsResult = yield* resolveChannels(
+      loaded.profile.delivery.channels as Record<string, unknown>,
+      null,
+    ).pipe(Effect.either)
+    if (Either.isLeft(channelsResult)) {
+      yield* Console.error(`  channel resolve failed: ${String(channelsResult.left)}`)
+      return { successes: 0, failures: 1 }
+    }
+    const channels = channelsResult.right
+    yield* Console.log(`  ${channels.length} channel(s) to deliver`)
+
+    const briefUrl = publicBriefUrl(date)
+    const deliveryContent = briefUrl ? `${briefUrl}\n\n${content}` : content
+
+    let successes = 0
+    let failures = 0
+    for (const ch of channels) {
+      const result = yield* deliverer
+        .send({
+          channel: ch.name,
+          driver: ch.driver,
+          targetRef: ch.targetRef,
+          silent: ch.silent,
+          content: deliveryContent,
+          briefDate: date,
+        })
+        .pipe(
+          Effect.tap((r) =>
+            Console.log(`  ok ${r.channel} (${r.driver}) — ${r.parts} part(s)`),
+          ),
+          Effect.tapError((e) =>
+            Console.log(`  fail ${ch.name} (${ch.driver}) — ${e.kind}: ${e.message}`),
+          ),
+          Effect.either,
+        )
+      Either.match(result, {
+        onLeft: () => {
+          failures++
+        },
+        onRight: () => {
+          successes++
+        },
+      })
+    }
+    return { successes, failures }
+  })
+
+export const runDaily = Command.make("run-daily", {}, () =>
+  Effect.gen(function* () {
+    const vaultDir = yield* resolveVaultDir()
+    const date = today()
+    yield* Console.log(`uber run-daily ${date}`)
+
+    const briefLayer = Layer.mergeAll(
+      FileSystemProfileLive(vaultDir),
+      FileSystemVaultLive(vaultDir),
+      KernelLlmLive,
+      StrictRendererLive,
+    )
+
+    const briefResult = yield* runBriefGeneration(date, vaultDir).pipe(
+      Effect.provide(briefLayer),
+      Effect.either,
+    )
+
+    if (Either.isLeft(briefResult)) {
+      yield* Console.error(`brief generation failed: ${String(briefResult.left)}`)
+      process.exit(1)
+    }
+
+    const briefContent = briefResult.right
+
+    const { successes, failures } = yield* runSend(date, vaultDir, briefContent).pipe(
+      Effect.provide(Layer.mergeAll(FileSystemProfileLive(vaultDir), HttpDelivererLive)),
+    )
+
+    yield* Console.log(`delivery: ${successes} ok, ${failures} failed`)
+
+    if (successes === 0 && failures === 0) {
+      // No channels configured, or all kind=config — exit 2
+      process.exit(2)
+    }
+    if (successes > 0 && failures > 0) {
+      // Partial — exit 3; scheduler treats this as success
+      process.exit(3)
+    }
+    if (successes === 0 && failures > 0) {
+      // All deliveries failed
+      process.exit(2)
+    }
+    // successes > 0 && failures === 0: exit 0 (default)
+  }),
+).pipe(Command.withDescription("Generate today's brief and fan out to all configured channels"))

@@ -33,6 +33,7 @@ export const DIRECTIVES_PERSONAS_DIR = `${DIRECTIVES_DIR}/personas`
 export const DIRECTIVES_THESES_DIR = `${DIRECTIVES_DIR}/theses`
 export const DIRECTIVES_RESEARCH_DIR = `${DIRECTIVES_DIR}/research`
 export const DIRECTIVES_PROMPTS_DIR = `${DIRECTIVES_DIR}/prompts`
+export const DIRECTIVES_SCHEDULES_FILE = `${DIRECTIVES_DIR}/schedules.md`
 
 // input/ — generated tier (CoS → user; what the user reads)
 export const INPUT_RAW_DIR = `${INPUT_DIR}/raw`
