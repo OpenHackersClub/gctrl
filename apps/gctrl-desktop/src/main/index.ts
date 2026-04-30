@@ -3,6 +3,7 @@
 // the preload bridge.
 
 import { app, BrowserWindow, Menu, ipcMain, shell } from "electron"
+import { autoUpdater } from "electron-updater"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -11,6 +12,7 @@ import { buildAppMenu } from "./menu"
 import { resolveKernelBinPath, resolveKernelDataDir } from "./paths"
 import { createScheduler } from "./scheduler"
 import { createSpawner } from "./spawner"
+import { startAutoUpdater } from "./updater"
 
 const KERNEL_PORT = 4318
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -90,6 +92,15 @@ void app.whenReady().then(() => {
   sidecar = createSidecar()
   sidecar?.start()
   mainWindow = createWindow()
+
+  startAutoUpdater({
+    isPackaged: app.isPackaged,
+    // `checkForUpdatesAndNotify` returns the resolved manifest or null; we
+    // don't need the value here, only the success/failure signal.
+    checkForUpdates: () => autoUpdater.checkForUpdatesAndNotify().then(() => undefined),
+    setInterval: (fn, ms) => globalThis.setInterval(fn, ms),
+    logger: console,
+  })
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {

@@ -1,0 +1,131 @@
+name: release-mac
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+# Token permissions: read for source, write for GitHub Releases (so the
+# workflow can attach the .dmg even when R2 upload is skipped).
+permissions:
+  contents: write
+
+concurrency:
+  group: release-mac-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-14
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install pnpm dependencies
+        run: pnpm install --frozen-lockfile
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Install zig + cargo-zigbuild
+        run: |
+          brew install zig
+          cargo install --locked cargo-zigbuild
+
+      - name: Build kernel (universal2)
+        run: pnpm --filter gctrl-desktop build:kernel
+
+      - name: Build Electron main + preload
+        run: pnpm --filter gctrl-desktop build
+
+      - name: Build gctrl-board SPA into the renderer slot
+        run: pnpm --filter gctrl-desktop build:renderer-spa
+
+      # Decode the App Store Connect API key from a base64 secret. Self-skips
+      # when the secret is empty so non-release-secret runs still produce an
+      # unsigned smoke artifact instead of failing.
+      - name: Stage Apple API key
+        env:
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+        run: |
+          if [ -z "${APPLE_API_KEY_BASE64}" ]; then
+            echo "No APPLE_API_KEY_BASE64 secret set — skipping notarization key stage."
+            exit 0
+          fi
+          mkdir -p "${RUNNER_TEMP}/apple"
+          printf '%s' "${APPLE_API_KEY_BASE64}" | base64 -d > "${RUNNER_TEMP}/apple/AuthKey.p8"
+          echo "APPLE_API_KEY=${RUNNER_TEMP}/apple/AuthKey.p8" >> "${GITHUB_ENV}"
+
+      - name: Package, sign, and notarize
+        env:
+          # Code-signing — base64-encoded .p12 from Developer ID cert.
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          # Notarization — referenced by build/notarize.cjs.
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: pnpm --filter gctrl-desktop exec electron-builder --mac
+
+      # Verify Gatekeeper acceptance before publishing the artifact. Self-
+      # skips when no signing cert is configured (unsigned smoke build).
+      - name: Verify code signature
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+        run: |
+          if [ -z "${CSC_LINK}" ]; then
+            echo "No CSC_LINK secret — unsigned build, skipping verification."
+            exit 0
+          fi
+          APP_PATH="$(find apps/gctrl-desktop/release -maxdepth 3 -name '*.app' -type d | head -n 1)"
+          if [ -z "${APP_PATH}" ]; then
+            echo "No .app produced — verification skipped."
+            exit 0
+          fi
+          codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
+          spctl -a -t exec -vv "${APP_PATH}" || true
+
+      - name: Attach DMG to GitHub Release
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            apps/gctrl-desktop/release/*.dmg
+            apps/gctrl-desktop/release/*.zip
+            apps/gctrl-desktop/release/latest-mac.yml
+            apps/gctrl-desktop/release/*.blockmap
+          fail_on_unmatched_files: false
+
+      # R2-hosted update feed for electron-updater. Self-skips when bucket
+      # credentials are absent; the GitHub Release attachment above is
+      # already a viable fallback distribution channel.
+      - name: Publish update manifest to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          if [ -z "${R2_BUCKET}" ] || [ -z "${R2_ENDPOINT}" ] || [ -z "${AWS_ACCESS_KEY_ID}" ]; then
+            echo "R2 credentials not configured — skipping update-feed publish."
+            exit 0
+          fi
+          aws s3 cp apps/gctrl-desktop/release/ "s3://${R2_BUCKET}/mac/" \
+            --endpoint-url "${R2_ENDPOINT}" \
+            --recursive \
+            --exclude "*" \
+            --include "*.dmg" \
+            --include "*.zip" \
+            --include "*.blockmap" \
+            --include "latest-mac.yml"
