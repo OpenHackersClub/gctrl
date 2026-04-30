@@ -21,6 +21,7 @@ import { searchCommand } from "./commands/search"
 import { personaCommand } from "./commands/persona"
 import { teamCommand } from "./commands/team"
 import { inboxCommand } from "./commands/inbox"
+import { vaultCommand } from "./commands/vault"
 import { wranglerCommand } from "./commands/wrangler"
 import { HttpKernelClientLive } from "./adapters/HttpKernelClient"
 
@@ -38,6 +39,7 @@ const command = Command.make("gctrl").pipe(
     personaCommand,
     teamCommand,
     inboxCommand,
+    vaultCommand,
     wranglerCommand,
   ])
 )

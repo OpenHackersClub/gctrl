@@ -9,7 +9,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse,
     },
-    routing::{get, patch, post},
+    routing::{delete, get, patch, post},
     Json, Router,
 };
 use async_stream::stream;
@@ -246,6 +246,15 @@ fn build_router(state: Arc<AppState>) -> Router {
         // RSS driver (LKM — fetch + parse RSS/Atom/JSON Feed, write entries
         // to a vault dir under `<vault>/input/raw/`)
         .route("/api/rss/poll", post(rss_poll))
+        // Vault mounts (kernel KB primitive — registry of named vault roots
+        // that any app can read/write through the kernel, replacing per-app
+        // FS shims). Atomic page write reuses gctrl-storage::vault_io.
+        .route(
+            "/api/vault/mounts",
+            get(vault_mounts_list).post(vault_mounts_create),
+        )
+        .route("/api/vault/mounts/{name}", delete(vault_mounts_delete))
+        .route("/api/vault/page", get(vault_page_get).post(vault_page_put))
         // Search driver (Brave Search API)
         .route("/api/search/web", post(search_web))
         .route("/api/search/news", post(search_news))
@@ -4381,6 +4390,172 @@ async fn rss_poll(
         "failed": failed,
     }))
     .into_response()
+}
+
+// =============================================================================
+// Vault mounts — kernel KB primitive.
+// Apps register a named mount once, then read/write atomic markdown pages
+// through `/api/vault/page` instead of carrying their own filesystem shims.
+// `vault_io::write_atomic` already gives us torn-write-free updates.
+// =============================================================================
+
+#[derive(Deserialize)]
+struct VaultMountCreateBody {
+    name: String,
+    root_path: String,
+    /// `workspace` | `app` | `external`. Defaults to `workspace`.
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    git_url: Option<String>,
+    #[serde(default)]
+    app_id: Option<String>,
+}
+
+async fn vault_mounts_list(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match state.sqlite.list_vault_mounts() {
+        Ok(mounts) => Json(mounts).into_response(),
+        Err(e) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn vault_mounts_create(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<VaultMountCreateBody>,
+) -> impl IntoResponse {
+    let kind = body
+        .kind
+        .as_deref()
+        .and_then(gctrl_core::VaultMountKind::from_str)
+        .unwrap_or(gctrl_core::VaultMountKind::Workspace);
+    let now = chrono::Utc::now();
+    let mount = gctrl_core::VaultMount {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: body.name.clone(),
+        root_path: body.root_path,
+        kind,
+        git_url: body.git_url,
+        app_id: body.app_id,
+        last_commit_sha: None,
+        last_synced_at: None,
+        created_at: now,
+        updated_at: now,
+    };
+    match state.sqlite.create_vault_mount(&mount) {
+        Ok(()) => (StatusCode::CREATED, Json(mount)).into_response(),
+        Err(e) => {
+            // UNIQUE constraint → 409.
+            let msg = e.to_string();
+            let status = if msg.contains("UNIQUE") || msg.contains("constraint") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (status, msg).into_response()
+        }
+    }
+}
+
+async fn vault_mounts_delete(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    match state.sqlite.delete_vault_mount(&name) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct VaultPageQuery {
+    /// Mount name (looked up via `gctrl_vault_mounts.name`).
+    mount: String,
+    /// Path relative to the mount's `root_path`. Must not escape the root.
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct VaultPagePutBody {
+    mount: String,
+    path: String,
+    content: String,
+}
+
+async fn vault_page_get(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<VaultPageQuery>,
+) -> impl IntoResponse {
+    let mount = match state.sqlite.get_vault_mount(&q.mount) {
+        Ok(Some(m)) => m,
+        Ok(None) => return (StatusCode::NOT_FOUND, format!("mount {} not found", q.mount)).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let abs = match resolve_within(&mount.root_path, &q.path) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+    };
+    match std::fs::read_to_string(&abs) {
+        Ok(content) => Json(serde_json::json!({
+            "mount": q.mount,
+            "path": q.path,
+            "abs_path": abs.to_string_lossy(),
+            "content_hash": gctrl_storage::sha256_hex(&content),
+            "content": content,
+        }))
+        .into_response(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            (StatusCode::NOT_FOUND, e.to_string()).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn vault_page_put(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<VaultPagePutBody>,
+) -> impl IntoResponse {
+    let mount = match state.sqlite.get_vault_mount(&body.mount) {
+        Ok(Some(m)) => m,
+        Ok(None) => return (StatusCode::NOT_FOUND, format!("mount {} not found", body.mount)).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let abs = match resolve_within(&mount.root_path, &body.path) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+    };
+    match gctrl_storage::write_atomic(&abs, &body.content) {
+        Ok(hash) => Json(serde_json::json!({
+            "mount": body.mount,
+            "path": body.path,
+            "abs_path": abs.to_string_lossy(),
+            "content_hash": hash,
+        }))
+        .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// Refuse paths that escape `root` via `..` or absolute components. The
+/// kernel exposes vault writes to apps; without this, an app could write
+/// anywhere on disk via `path: "../../../etc/passwd"`.
+fn resolve_within(root: &str, rel: &str) -> Result<std::path::PathBuf, String> {
+    use std::path::{Component, PathBuf};
+    let rel_path = PathBuf::from(rel);
+    if rel_path.is_absolute() {
+        return Err("path must be relative to mount root".into());
+    }
+    for c in rel_path.components() {
+        match c {
+            Component::ParentDir => return Err("path must not contain ..".into()),
+            Component::RootDir | Component::Prefix(_) => {
+                return Err("path must be relative to mount root".into())
+            }
+            _ => {}
+        }
+    }
+    Ok(PathBuf::from(root).join(rel_path))
 }
 
 #[cfg(test)]
