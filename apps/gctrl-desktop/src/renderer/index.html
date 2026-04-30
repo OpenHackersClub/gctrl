@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' http://127.0.0.1:4318" />
+    <title>gctrl</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #0b0b0e; color: #e6e6e8;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+      #app { display: flex; align-items: center; justify-content: center; height: 100%; }
+      .placeholder { text-align: center; opacity: 0.7; max-width: 480px; padding: 24px; }
+      .placeholder code { background: #1a1a20; padding: 2px 6px; border-radius: 4px; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div class="placeholder">
+        <h2>gctrl desktop</h2>
+        <p>Packaged renderer not yet wired — PR-3 bundles the gctrl-board SPA into the app.</p>
+        <p>For dev: run <code>pnpm --filter gctrl-board dev</code> and reopen this window.</p>
+      </div>
+    </div>
+    <script type="module" src="./index.ts"></script>
+  </body>
+</html>
