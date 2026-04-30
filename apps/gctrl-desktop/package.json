@@ -1,0 +1,21 @@
+{
+  "name": "gctrl-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "description": "Electron-based macOS distribution for gctrl. Bundles the Rust kernel as a sidecar.",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "type-check": "tsc --noEmit",
+    "lint": "biome lint src/"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7",
+    "vitest": "^3.0.0"
+  }
+}
