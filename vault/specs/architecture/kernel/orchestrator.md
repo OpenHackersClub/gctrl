@@ -91,15 +91,16 @@ Every transition strictly increases phase ordering, guaranteeing termination (no
 
 ---
 
-## Agent Port
+## Dispatch Ports — Harness × Substrate
 
-The orchestrator is agent-agnostic. It communicates with agents through a **port** — an abstract interface that any executable can implement:
+The orchestrator is harness-agnostic and substrate-agnostic. At dispatch time it composes two kernel ports:
 
-- Accepts a rendered prompt (via flag, stdin, or file).
-- Runs in an isolated workspace directory.
-- Exits with a status code when complete.
+- **`AgentHarness`** (the brain) — defines *which agent program runs*. Built-in: `claude-code`, `claude-agent-sdk`, `codex`, `opencode`, `aider`, `custom`. Canonical spec: [`harness.md`](harness.md).
+- **`ComputeSubstrate`** (the hand) — defines *where it runs*. Built-in: `local-process`, `cf-containers`, `e2b`, `ssh-remote`, `docker`, `browser-tab`. Canonical spec: [`compute.md`](compute.md).
 
-Built-in adapters ship for `claude-code`, `aider`, and `custom` (any executable). Agent kind is resolved at runtime from `WORKFLOW.md` configuration — the orchestrator never hardcodes a specific agent.
+Per-Task, the orchestrator resolves a `(harness, substrate)` pair from `WORKFLOW.md` and dispatches in two steps: `AgentHarness::render_invocation(prompt, workspace) → Invocation`, then `ComputeSubstrate::launch(invocation, spec) → ComputeHandle`. The orchestrator never hardcodes a specific harness or substrate; both ports are independently swappable.
+
+The decoupling invariants — Brain ≠ Hand, many brains × many hands, compute failure surfaces as `agentExitAbnormal` — are codified in [`apps/adr-runtime-compute-decoupling.md`](../apps/adr-runtime-compute-decoupling.md) and mechanically verified in [`KernelSpec/Substrate.lean`](../../../../kernel/specs-lean4/KernelSpec/Substrate.lean) (orthogonality of `step` over `(harness, substrate)`).
 
 ---
 
