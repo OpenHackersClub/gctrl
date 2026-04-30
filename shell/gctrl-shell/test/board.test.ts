@@ -4,7 +4,7 @@ import { KernelClient } from "../src/services/KernelClient"
 import { createMockKernelClient } from "./helpers/mock-kernel"
 
 const mockProjects = [
-  { id: "proj-1", name: "GroundCtrl", key: "GCTL", counter: 42 },
+  { id: "proj-1", name: "Board", key: "BOARD", counter: 42 },
 ]
 
 const mockIssues = [
@@ -107,7 +107,7 @@ describe("Board commands (via KernelClient)", () => {
 
     const result = await Effect.runPromise(program.pipe(Effect.provide(MockLayer)))
     expect(result).toHaveLength(1)
-    expect(result[0].key).toBe("GCTL")
+    expect(result[0].key).toBe("BOARD")
   })
 
   it("create project", async () => {
@@ -117,7 +117,7 @@ describe("Board commands (via KernelClient)", () => {
     })
 
     const result = await Effect.runPromise(program.pipe(Effect.provide(MockLayer)))
-    expect(result.name).toBe("GroundCtrl")
+    expect(result.name).toBe("Board")
   })
 
   it("list issues", async () => {

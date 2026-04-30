@@ -441,7 +441,7 @@ const resolveLinkedProject = (projectKey: string) =>
   })
 
 const syncProject = Options.text("project").pipe(
-  Options.withDescription("Project key (e.g. GCTL)")
+  Options.withDescription("Project key (e.g. BOARD)")
 )
 
 // --- sync subcommands ---
