@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    Hardened-runtime entitlements for the Electron renderer (V8 JIT) and the
+    bundled Rust kernel sidecar. Required for notarization to succeed; the
+    app crashes immediately on launch under hardened runtime without these.
+  -->
+
+  <!-- V8 just-in-time compilation: writes generated code to RWX pages. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+
+  <!--
+    Electron loads its own native modules (ASAR helpers, `node_modules`
+    addons) which are not signed by Apple. Without this entitlement they
+    fail library validation under hardened runtime.
+  -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+
+  <!--
+    Network client — the renderer makes outbound HTTP to the kernel sidecar
+    on 127.0.0.1:4318 and to the auto-update feed.
+  -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+
+  <!--
+    Network server — the bundled gctrl-kernel binds a listening socket on
+    127.0.0.1:4318. Always loopback only; never 0.0.0.0. Apple may flag
+    inbound connections at MAS review, which is one reason we ship via
+    direct DMG distribution rather than the App Store in v1.
+  -->
+  <key>com.apple.security.network.server</key>
+  <true/>
+</dict>
+</plist>

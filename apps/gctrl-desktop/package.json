@@ -12,17 +12,63 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
+    "build:kernel": "bash scripts/build-kernel-universal.sh",
+    "build:renderer-spa": "pnpm --filter gctrl-board build:web && rm -rf out/renderer && cp -r ../gctrl-board/dist-web out/renderer",
+    "pack": "electron-builder --mac --dir",
+    "release:mac": "pnpm build:kernel && pnpm build && pnpm build:renderer-spa && electron-builder --mac",
     "test": "vitest run",
     "test:watch": "vitest",
     "type-check": "tsc --noEmit",
     "lint": "biome lint src/"
   },
+  "dependencies": {
+    "electron-updater": "^6.3.0"
+  },
   "devDependencies": {
+    "@electron/notarize": "^2.5.0",
     "@types/node": "^22.0.0",
     "electron": "^34.0.0",
+    "electron-builder": "^25.1.0",
     "electron-vite": "^5.0.0",
     "typescript": "^5.7",
     "vite": "^7.0.0",
     "vitest": "^3.0.0"
+  },
+  "build": {
+    "appId": "dev.fractalbox.gctrl",
+    "productName": "gctrl",
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/kernel/",
+        "to": "kernel/",
+        "filter": ["**/*"]
+      }
+    ],
+    "asar": true,
+    "asarUnpack": ["resources/kernel/**"],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        { "target": "dmg", "arch": "universal" }
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": false
+    },
+    "afterSign": "build/notarize.cjs",
+    "publish": {
+      "provider": "generic",
+      "url": "https://updates.gctrl.dev/mac"
+    }
   }
 }
