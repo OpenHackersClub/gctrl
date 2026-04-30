@@ -130,6 +130,21 @@ export const brief = Command.make(
         yield* Console.log(
           `✓ wrote ${written.relPath} (${written.contentHash}) — ${rendered.citedClaims}/${rendered.totalClaims} claims cited`,
         )
+
+        yield* registerBriefInKernel({
+          date,
+          vaultPath: written.relPath,
+          contentHash: written.contentHash,
+          profileName: profile.profile.identity.name,
+          generator: llm.name(),
+          model: response.model,
+          promptHash: response.promptHash,
+          costUsd: response.costUsd,
+          itemCount: rendered.itemCount,
+          citedClaims: rendered.citedClaims,
+          totalClaims: rendered.totalClaims,
+        })
+
         yield* Console.log("")
         yield* Console.log(rendered.markdown)
       })
@@ -142,3 +157,52 @@ export const brief = Command.make(
       )
     }),
 ).pipe(Command.withDescription("Generate a daily brief from wiki pages + stub LLM"))
+
+// Best-effort POST to the kernel index. The brief is already written to the
+// vault (which is the source of truth); a kernel-down condition shouldn't
+// fail the command. We log a warning instead.
+type RegisterArgs = {
+  readonly date: string
+  readonly vaultPath: string
+  readonly contentHash: string
+  readonly profileName: string
+  readonly generator: string
+  readonly model: string
+  readonly promptHash: string
+  readonly costUsd: number
+  readonly itemCount: number
+  readonly citedClaims: number
+  readonly totalClaims: number
+}
+
+const registerBriefInKernel = (args: RegisterArgs) =>
+  Effect.gen(function* () {
+    const base = (process.env.GCTRL_KERNEL_URL ?? "http://127.0.0.1:4318").replace(/\/+$/, "")
+    const result = yield* Effect.tryPromise({
+      try: async () => {
+        const resp = await fetch(`${base}/api/uber/briefs`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            date: args.date,
+            kind: "daily",
+            vault_path: args.vaultPath,
+            content_hash: args.contentHash,
+            profile_name: args.profileName,
+            generator: args.generator,
+            model: args.model,
+            prompt_hash: args.promptHash,
+            cost_usd: args.costUsd,
+            item_count: args.itemCount,
+            cited_claims: args.citedClaims,
+            total_claims: args.totalClaims,
+          }),
+        })
+        return resp.ok
+      },
+      catch: (e) => new Error(String(e)),
+    }).pipe(Effect.catchAll(() => Effect.succeed(false)))
+    if (!result) {
+      yield* Console.log("(kernel offline — brief written to vault but not indexed)")
+    }
+  })

@@ -274,6 +274,13 @@ fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/vault/mounts/{name}", delete(vault_mounts_delete))
         .route("/api/vault/page", get(vault_page_get).post(vault_page_put))
+        // Uebermensch briefs index — `(date, kind)` keyed; vault file is the
+        // source of truth, this is the queryable index for listing/filtering.
+        .route(
+            "/api/uber/briefs",
+            get(uber_briefs_list).post(uber_briefs_upsert),
+        )
+        .route("/api/uber/briefs/{date}", get(uber_briefs_get_by_date))
         // Search driver (Brave Search API)
         .route("/api/search/web", post(search_web))
         .route("/api/search/news", post(search_news))
@@ -4575,6 +4582,110 @@ fn resolve_within(root: &str, rel: &str) -> Result<std::path::PathBuf, String> {
         }
     }
     Ok(PathBuf::from(root).join(rel_path))
+}
+
+// =============================================================================
+// Uebermensch briefs index — `(date, kind)` keyed app-namespaced table.
+// Vault markdown is the source of truth; this is the queryable metadata index.
+// =============================================================================
+
+#[derive(Deserialize)]
+struct UberBriefUpsertBody {
+    date: String,
+    #[serde(default)]
+    kind: Option<String>,
+    vault_path: String,
+    content_hash: String,
+    #[serde(default)]
+    profile_name: Option<String>,
+    #[serde(default)]
+    generator: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    prompt_hash: Option<String>,
+    #[serde(default)]
+    cost_usd: Option<f64>,
+    #[serde(default)]
+    item_count: Option<i64>,
+    #[serde(default)]
+    cited_claims: Option<i64>,
+    #[serde(default)]
+    total_claims: Option<i64>,
+    #[serde(default)]
+    failed_reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct UberBriefListQuery {
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct UberBriefByDateQuery {
+    #[serde(default)]
+    kind: Option<String>,
+}
+
+async fn uber_briefs_upsert(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<UberBriefUpsertBody>,
+) -> impl IntoResponse {
+    let now = chrono::Utc::now();
+    let kind = body.kind.unwrap_or_else(|| "daily".to_string());
+    // Stable id per (date, kind) so re-running doesn't churn ids.
+    let id = format!("brief-{}-{}", body.date, kind);
+    let failed_at = body.failed_reason.as_ref().map(|_| now);
+    let brief = gctrl_core::UberBrief {
+        id,
+        date: body.date,
+        kind,
+        vault_path: body.vault_path,
+        content_hash: body.content_hash,
+        profile_name: body.profile_name,
+        generator: body.generator,
+        model: body.model,
+        prompt_hash: body.prompt_hash,
+        cost_usd: body.cost_usd,
+        item_count: body.item_count,
+        cited_claims: body.cited_claims,
+        total_claims: body.total_claims,
+        failed_at,
+        failed_reason: body.failed_reason,
+        created_at: now,
+        updated_at: now,
+    };
+    match state.sqlite.upsert_uber_brief(&brief) {
+        Ok(()) => Json(brief).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn uber_briefs_list(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<UberBriefListQuery>,
+) -> impl IntoResponse {
+    let limit = q.limit.unwrap_or(50).clamp(1, 500);
+    match state.sqlite.list_uber_briefs(q.kind.as_deref(), limit) {
+        Ok(briefs) => Json(briefs).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn uber_briefs_get_by_date(
+    State(state): State<Arc<AppState>>,
+    Path(date): Path<String>,
+    Query(q): Query<UberBriefByDateQuery>,
+) -> impl IntoResponse {
+    let kind = q.kind.unwrap_or_else(|| "daily".to_string());
+    match state.sqlite.get_uber_brief(&date, &kind) {
+        Ok(Some(brief)) => Json(brief).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, format!("no brief for {date}/{kind}")).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 #[cfg(test)]

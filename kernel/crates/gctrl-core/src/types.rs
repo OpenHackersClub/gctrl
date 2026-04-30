@@ -818,6 +818,40 @@ pub struct VaultMount {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Index row for an Uebermensch brief. Vault file is the source of truth;
+/// this row carries the metadata needed to list/filter without re-reading
+/// every markdown file. `(date, kind)` is the natural unique key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UberBrief {
+    pub id: String,
+    pub date: String,
+    pub kind: String,
+    pub vault_path: String,
+    pub content_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generator: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cited_claims: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_claims: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed_reason: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
