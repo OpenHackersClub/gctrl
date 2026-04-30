@@ -75,6 +75,9 @@ sha2 = "0.10"
 # URL parsing
 url = "2"
 
+# Feed parsing (RSS 2.0 + Atom + JSON Feed) — used by driver-rss
+feed-rs = "2"
+
 # Filesystem paths
 dirs = "6"
 

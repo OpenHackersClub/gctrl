@@ -243,6 +243,9 @@ fn build_router(state: Arc<AppState>) -> Router {
         // /completions → Workers AI OpenAI-compat upstream (e.g. @cf/google/gemma-*)
         .route("/api/llm/messages", post(llm_messages))
         .route("/api/llm/completions", post(llm_completions))
+        // RSS driver (LKM — fetch + parse RSS/Atom/JSON Feed, write entries
+        // to a vault dir under `<vault>/input/raw/`)
+        .route("/api/rss/poll", post(rss_poll))
         // Search driver (Brave Search API)
         .route("/api/search/web", post(search_web))
         .route("/api/search/news", post(search_news))
@@ -4304,6 +4307,80 @@ fn llm_capture_header(headers: &HeaderMap, name: &str) -> Option<String> {
         .get(name)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
+}
+
+// =============================================================================
+// driver-rss — fetch + parse RSS/Atom/JSON Feed → vault markdown.
+// Scheduler wiring (cron-driven polling) lands in a follow-up after the
+// kb→kernel promotion (#104) defines the canonical vault mount port.
+// =============================================================================
+
+#[derive(Deserialize)]
+struct RssPollBody {
+    feed_url: String,
+    /// Absolute path to a vault root. Entries land under
+    /// `<vault_dir>/input/raw/<YYYY-MM-DD>--<slug>--<guid_hash8>.md`.
+    vault_dir: String,
+}
+
+async fn rss_poll(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<RssPollBody>,
+) -> impl IntoResponse {
+    let bytes = match state.http_client.get(&body.feed_url).send().await {
+        Ok(r) => match r.bytes().await {
+            Ok(b) => b,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    format!("read feed body: {e}"),
+                )
+                    .into_response()
+            }
+        },
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("fetch feed: {e}"),
+            )
+                .into_response()
+        }
+    };
+
+    let entries = match crate::rss::parse_feed(&bytes) {
+        Ok(es) => es,
+        Err(e) => {
+            return (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
+        }
+    };
+
+    let vault = std::path::PathBuf::from(&body.vault_dir);
+    let mut written: Vec<String> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    let mut failed: Vec<serde_json::Value> = Vec::new();
+    for entry in &entries {
+        match crate::rss::write_entry(&vault, entry, &body.feed_url) {
+            Ok(crate::rss::WriteOutcome::Written(p)) => {
+                written.push(p.to_string_lossy().into_owned())
+            }
+            Ok(crate::rss::WriteOutcome::SkippedExisting(p)) => {
+                skipped.push(p.to_string_lossy().into_owned())
+            }
+            Err(e) => failed.push(serde_json::json!({
+                "guid": entry.guid,
+                "error": e.to_string(),
+            })),
+        }
+    }
+
+    Json(serde_json::json!({
+        "ok": true,
+        "fetched": entries.len(),
+        "written": written,
+        "skipped": skipped,
+        "failed": failed,
+    }))
+    .into_response()
 }
 
 #[cfg(test)]
