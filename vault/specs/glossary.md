@@ -14,7 +14,11 @@ Canonical definitions for gctrl domain terms. When terms are used in specs, they
 | **Trace** | A tree of related Spans sharing a `trace_id`. Typically one Trace per Session. | Kernel | Telemetry |
 | **User** | An identity (human or agent persona) with a `user_id`. Every Session runs on behalf of a User. See `os.md` § 6. | Kernel | Storage |
 | **Persona** | A configured agent identity with a fixed capability set. Like a Unix system account — defines *what* the agent may do. One LLM can run under multiple Personas. Configured in `WORKFLOW.md`. | Kernel | Orchestrator |
-| **AgentKind** | The agent system/program: `claude-code`, `codex`, `aider`, `openai`, `custom`. Identifies *which software* is running, not who is running it (that is Persona). | Kernel | Scheduler |
+| **AgentKind** | The agent system/program: `claude-code`, `claude-agent-sdk`, `codex`, `opencode`, `aider`, `openai`, `custom`. Identifies *which software* is running, not who is running it (that is Persona) and not where it runs (that is ComputeKind). Tracked per Task. See `architecture/kernel/harness.md`. | Kernel | Scheduler |
+| **AgentHarness** | The kernel port that defines *which agent program runs* — the brain. Each `AgentKind` has one Runtime implementation. Decoupled from `ComputeSubstrate`. See `architecture/kernel/harness.md`. | Kernel | Orchestrator |
+| **ComputeSubstrate** | The kernel port that defines *where an agent runs* — the hand. Built-in: `local-process`, `cf-containers`, `e2b`, `ssh-remote`, `docker`, `browser-tab`. Decoupled from `AgentHarness`. See `architecture/kernel/compute.md`. | Kernel | Orchestrator |
+| **ComputeKind** | The execution-environment identifier on a Task — companion of `AgentKind`. Together they fully identify a dispatch. See `architecture/kernel/compute.md`. | Kernel | Scheduler |
+| **Invocation** | The Runtime-rendered description of how to execute the agent: command, env, stdin, workspace mount. Produced by `AgentHarness::render_invocation`, consumed by `ComputeSubstrate::launch`. | Kernel | `gctrl-orch` |
 | **Slot** | A concurrency permit. The Orchestrator manages a fixed pool of Slots; each running Session holds one. Limits parallel agent work. See `orchestrator.md` § Concurrency. | Kernel | Orchestrator |
 | **Prompt** | The rendered instruction text given to an agent for a Task. Stored in `prompt_versions` by content hash. Tasks reference it via `prompt_hash`. | Kernel | Storage |
 | **Guardrail** | A policy that constrains Sessions — cost budgets, loop detection, command allowlists. The kernel analogue of `cgroups`/`ulimit`. | Kernel | Guardrails |
@@ -56,4 +60,6 @@ Canonical definitions for gctrl domain terms. When terms are used in specs, they
 | **Native Application** | A stateful program built on gctrl (gctrl-board, Observe & Eval, Capacity Engine). Owns namespaced tables. | Like `vim`, `git` on Unix |
 | **External Application** | A third-party tool connected to gctrl (Linear, Notion, Phoenix). Connected via a Driver (loadable kernel module). | Like hardware accessed via a kernel module |
 | **Utility** | A stateless, single-purpose tool (`net fetch`, `browser goto`). Composes via stdin/stdout. No owned tables. | Like `curl`, `grep` on Unix |
-| **Workspace** | An isolated directory for a Task. Persists across retries. Managed by the Orchestrator. | One workspace per Task |
+| **Workspace** | An isolated directory for a Task. Persists across retries. Today, an implementation detail of the `local-process` ComputeSubstrate; under the runtime/compute split (see `architecture/kernel/compute.md`), each backend defines its own workspace mount semantics. | One workspace per Task |
+| **Inner sandbox** | The OS-level isolation a Runtime ships with itself (Seatbelt for Claude Code, bubblewrap+seccomp for Codex, none for OpenCode/Aider). See the table in `architecture/kernel/harness.md`. | Distinct from outer compute |
+| **Outer compute** | The OS-level isolation a `ComputeSubstrate` provides (process / container / VM / namespace). When the runtime has no inner sandbox, the outer compute is the only boundary — see `architecture/kernel/compute.md`. | Distinct from inner sandbox |

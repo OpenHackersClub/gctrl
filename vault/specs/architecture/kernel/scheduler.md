@@ -2,7 +2,7 @@
 
 The Scheduler is a kernel primitive with two responsibilities:
 
-1. **Task tracking** — the kernel-level record of all work items created and executed by agents, normalized across agent systems (Claude Code, Codex, Aider, OpenAI, custom).
+1. **Task tracking** — the kernel-level record of all work items created and executed by agents, normalized across agent systems (Claude Code, Claude Agent SDK, Codex, OpenCode, Aider, OpenAI, custom). The agent program is captured as `agent_kind` (the harness kind — see [harness.md](harness.md)); where it executes is captured as `compute_kind` (see [compute.md](compute.md)).
 2. **Deferred and recurring execution** — scheduling Tasks to run at a point in time or on a recurring cadence.
 
 Defined as a **kernel interface trait** with **platform-specific implementations** — the kernel defines *what* to schedule; each platform implementation decides *how*.
@@ -26,7 +26,7 @@ Unifying the two behind a single `SchedulerPort` is **deferred** — the contrac
 
 ## Tasks
 
-A **Task** is the kernel's unit of agent work. Every agent — regardless of system (Claude Code, Codex, Aider, OpenAI API, custom) — creates Tasks through the Scheduler. The kernel tracks them uniformly.
+A **Task** is the kernel's unit of agent work. Every agent — regardless of system (Claude Code, Claude Agent SDK, Codex, OpenCode, Aider, OpenAI API, custom) — creates Tasks through the Scheduler. The kernel tracks them uniformly.
 
 ### Why kernel-level?
 
@@ -35,33 +35,51 @@ Different agent systems have incompatible internal representations of work. The 
 | Agent System | How work is represented internally | Kernel normalization |
 |---|---|---|
 | Claude Code | WORKFLOW.md prompt template + conversation | `Task` row with `prompt_hash`, `agent_kind = claude-code` |
+| Claude Agent SDK | SDK event log | `Task` row with `prompt_hash`, `agent_kind = claude-agent-sdk` |
 | Codex (OpenAI) | Instructions + file context | `Task` row with `prompt_hash`, `agent_kind = codex` |
+| OpenCode | SQLite Drizzle session rows | `Task` row with `prompt_hash`, `agent_kind = opencode` |
 | Aider | Commit message + diff context | `Task` row with `prompt_hash`, `agent_kind = aider` |
 | OpenAI API direct | System prompt + messages | `Task` row with `prompt_hash`, `agent_kind = openai` |
 | Custom | Arbitrary | `Task` row with `prompt_hash`, `agent_kind = custom` |
 
 By routing all agent work through the Scheduler, gctrl gets a single queryable record of what every agent did, what prompt drove it, and what session it ran in — regardless of the agent system used.
 
+For the per-harness architectural details (process model, sandbox, IPC, OTel) consumed by these importers, see [harness.md](harness.md) and [`../../references/agent_orchestration.md`](../../references/agent_orchestration.md).
+
 ### Task Domain Type
 
-See [domain-model.md § 2 Task](../domain-model.md#task-specs-only) for `TaskId` and `Task` struct. `TaskStatus` (`Pending` | `Running` | `Paused` | `Done` | `Failed` | `Cancelled`), `AgentKind` (`ClaudeCode` | `Codex` | `Aider` | `OpenAI` | `Custom`), and `ActorKind` (`Human` | `Agent`) are defined there.
+See [domain-model.md § 2 Task](../domain-model.md#task-specs-only) for `TaskId` and `Task` struct. `TaskStatus` (`Pending` | `Running` | `Paused` | `Done` | `Failed` | `Cancelled`), `AgentKind` (`ClaudeCode` | `ClaudeAgentSdk` | `Codex` | `OpenCode` | `Aider` | `OpenAI` | `Custom`), and `ActorKind` (`Human` | `Agent`) are defined there.
+
+The companion `ComputeKind` (`LocalProcess` | `CfContainers` | `E2b` | `SshRemote` | `Docker` | `BrowserTab`) lives alongside `AgentKind` — see [compute.md](compute.md). Tasks carry both: `agent_kind` identifies the runtime; `compute_kind` identifies where it ran. The pair, not either alone, fully identifies a dispatch.
 
 ### Context Field — Agent-System Metadata
 
-The `context` JSON field stores agent-system-specific metadata, normalized at task creation time:
+The `context` JSON field stores agent-system-specific metadata, normalized at task creation time. It MAY carry a `compute` block describing the target ComputeSubstrate (see [compute.md § Configuration](compute.md#configuration)); when omitted, the orchestrator defaults to `local-process`.
 
 ```json
-// claude-code
-{ "model": "claude-sonnet-4-6", "workflow_file": "WORKFLOW.md", "persona": "reviewer-bot" }
+// claude-code on local-process
+{ "model": "claude-sonnet-4-6", "workflow_file": "WORKFLOW.md", "persona": "reviewer-bot",
+  "compute": { "kind": "local-process" } }
 
-// codex
-{ "model": "o1", "temperature": 1.0 }
+// claude-code on cf-containers
+{ "model": "claude-sonnet-4-6", "persona": "reviewer-bot",
+  "compute": { "kind": "cf-containers", "image": "gctrl/claude-code:latest", "memory_mb": 2048 } }
 
-// aider
-{ "model": "gpt-4o", "auto_commits": true }
+// codex on cf-containers
+{ "model": "o1", "temperature": 1.0,
+  "compute": { "kind": "cf-containers", "image": "gctrl/codex:latest" } }
+
+// opencode on cf-containers (no inner sandbox — outer compute IS the boundary)
+{ "model": "claude-sonnet-4-6", "persona": "explorer",
+  "compute": { "kind": "cf-containers", "image": "gctrl/opencode:latest" } }
+
+// aider on local-process (trusted Task only — see compatibility matrix)
+{ "model": "gpt-4o", "auto_commits": true,
+  "compute": { "kind": "local-process" } }
 
 // custom
-{ "executable": "/path/to/agent", "args": ["--prompt-file", "task.md"] }
+{ "executable": "/path/to/agent", "args": ["--prompt-file", "task.md"],
+  "compute": { "kind": "local-process" } }
 ```
 
 Applications (gctrl-board) MAY read `context` for display purposes but MUST NOT write to it.

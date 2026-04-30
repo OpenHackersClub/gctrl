@@ -42,6 +42,8 @@ kernel/crates/gctrl-orch/
 
 ### State Machine (Rust)
 
+> **Single source of truth:** [`kernel/specs-lean4/KernelSpec/Orchestrator.lean`](../../../../kernel/specs-lean4/KernelSpec/Orchestrator.lean). The Rust translation below is a spec for the `gctrl-orch` crate to implement; it MUST match the Lean `step` function exactly. If the Lean module is updated, this Rust translation MUST be regenerated — divergence is a bug, not a deliberate decision. The conformance tests in §5 verify equivalence.
+
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaimState {

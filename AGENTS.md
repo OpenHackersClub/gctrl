@@ -118,21 +118,18 @@ Detailed programming patterns, code examples, and how-to guides live under `vaul
 
 ## Invariants
 
-> Quick reference. Canonical rules with full context live in `vault/specs/principles.md`.
+> Quick reference. **Canonical rules with full context live in `vault/specs/principles.md`** — if anything below disagrees with `principles.md`, the latter wins. Sub-rules are not duplicated here; each entry cites where to read the full text.
 
-1. Dependencies MUST flow inward: Shell → Kernel → Domain, never reverse.
-2. DuckDB is single-writer: the daemon MUST hold the lock; shell and apps MUST use the HTTP API.
-3. Application tables MUST use namespaced prefixes (`board_*`, `eval_*`, `capacity_*`, `inbox_*`).
-4. Code MUST NOT access Effect-TS `._tag` directly — use combinators (`Effect.catchTag`, `Match.tag`, `Option.match`). Also: no bare `new Error` in Effect contexts (use `Schema.TaggedError`), no `as any` on external JSON (use `Schema.decodeUnknown`), no `export *` barrels, no dynamic `require` inside Effect generators. Full list with Bad/Good examples: `vault/specs/principles.md` § Effect-TS Invariants and `vault/specs/implementation/{apps,shell}/style.md`. Reviewer sweep: `rg -n 'new Error\(|Effect\.fail\(new Error|as any|: any\b|^export \*|require\(|\._tag\b' shell apps --type ts`.
-5. **TDD is the default.** Write a failing test first, then make it pass, then refactor. No production code without a pre-existing test.
-6. Every new public function MUST have at least one test. Coverage: storage CRUD + HTTP routes (happy + error) + shell commands.
-7. Contributors MUST use feature branches — MUST NOT push directly to main.
-8. All changes to main MUST go through a pull request — MUST NOT merge with `--admin` bypass.
-9. MUST NOT rebase main — use merge commits only. MUST NOT force-push to main.
-10. The Kernel MUST NOT make assumptions about applications.
-11. Shell (Effect-TS CLI) MUST mediate all user-facing access to the kernel via HTTP API.
-12. External tools (GitHub, Slack, AWS) MUST be accessed from the shell via direct REST API adapters — never from the kernel.
-13. Every application MUST have its own `apps/{app-name}/` directory with `PRD.md` and `WORKFLOW.md`.
+1. **Dependencies flow inward.** Shell → Kernel → Domain, never reverse. (`principles.md` § Architectural Invariants #1)
+2. **DuckDB is single-writer.** Daemon holds the lock; shell + apps go through the HTTP API. (§ Architectural Invariants #2)
+3. **App tables are namespaced** — `board_*`, `eval_*`, `inbox_*`, `capacity_*`. (§ Architectural Invariants #3)
+4. **Kernel makes no assumptions about apps; shell mediates all kernel access.** (§ Architectural Invariants #4–5)
+5. **External tools go through kernel drivers (LKMs)** that implement kernel interface traits (`TrackerPort`, `ObservabilityExportPort`, `KnowledgeSourcePort`). Shell + apps MUST NOT hold secrets or call external APIs directly. (§ Design Principles #7; § os.md "Drivers")
+6. **Effect-TS hygiene** — no `._tag` access, no bare `new Error` in Effect contexts, no `as any` on external JSON, no `export *` barrels, no dynamic `require` inside Effect generators, no untyped `catchAll`, no mutable module state. Reviewer sweep: `rg -n 'new Error\(|Effect\.fail\(new Error|as any|: any\b|^export \*|require\(|\._tag\b' shell apps --type ts`. (§ Effect-TS Invariants #1–8; `implementation/{apps,shell}/style.md`)
+7. **TDD is default** — failing test first, then implementation. Storage tests use `:memory:` DuckDB; HTTP tests use `axum::test::oneshot`; shell tests use mock `KernelClient`. (§ Testing Invariants #1–11)
+8. **Every new public function MUST have a test.** (§ Testing Invariants #4)
+9. **Git workflow** — feature branches only, no `--admin` merges, no force-push to main, no rebase of main. (§ Git Workflow #1–2; CLAUDE.md)
+10. **Apps live under `apps/{app-name}/`** with `PRD.md` and `WORKFLOW.md`. (§ Specs Table of Contents below)
 
 ## Agent Conventions
 

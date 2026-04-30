@@ -23,6 +23,10 @@ gctrl uses **Unix terminology** as the primary architectural language. Some term
 | **Kernel Interface** | Trait in `gctrl-core` that drivers implement (`TrackerPort`, `ObservabilityExportPort`) | Driver interface / syscall interface | "Port" as a network port |
 | **Kernel IPC** | Cross-app communication (event bus, pipes, sockets) | Unix IPC (pipes, signals, sockets) | — |
 | **Adapter** | Internal kernel implementation of a trait (DuckDB storage, OTel receiver) — used only in [implementation specs](../implementation/kernel/components.md) | — | "Driver" (which connects external apps) |
+| **AgentHarness** | Kernel port that defines *which agent program runs* — Claude Code, Codex, OpenCode, Aider. The "brain". See [kernel/harness.md](kernel/harness.md). | Process binary — `bash`, `zsh` | "Persona" (which is *who* is acting) |
+| **ComputeSubstrate** | Kernel port that defines *where the agent runs* — local process, container, e2b, SSH host. The "hand". See [kernel/compute.md](kernel/compute.md). | `chroot` + `cgroup` namespace, or remote shell | "Workspace" (which is one backend's mount detail) |
+| **Inner sandbox** | OS-level isolation the Runtime ships with itself (Seatbelt, bubblewrap, seccomp). | Per-process MAC policy | "Outer compute" |
+| **Outer compute** | OS-level isolation the ComputeSubstrate provides (process, container, VM). | Container / VM | "Inner sandbox" |
 
 **Rule:** In architecture specs and user-facing docs, use **driver** for loadable kernel modules that connect external apps, and **kernel interface** for the traits they implement. Drivers live inside the kernel (like Unix LKMs), not as a separate layer. Reserve **adapter** for implementation-level discussion of internal kernel code only.
 
@@ -449,7 +453,7 @@ Drivers live in kernel space. Native apps (gctrl-board, Observe & Eval) live in 
 4. **Independently optional**: Each driver is independently feature-gated — zero drivers is the default; add as needed
 5. **Bidirectional where needed**: Pull from external API into gctrl; push gctrl events back to external API
 6. **Cross-module isolation**: Drivers MUST NOT import or call other drivers or native apps. All cross-component communication flows through kernel IPC (events, shell APIs, pipes)
-7. **Prefer native CLIs**: Where a mature native CLI exists (e.g., `gh` for GitHub), drivers SHOULD delegate to it via subprocess rather than reimplementing the REST API client. This reuses the CLI's authentication, pagination, and format handling. The kernel wraps the subprocess call with **caching** (response-level, TTL-based) and **OTel instrumentation** (spans for each call, cost/latency attribution)
+7. **Native CLI delegation (optional)**: A driver MAY delegate to a mature native CLI (e.g., `gh` for GitHub) via subprocess to reuse the CLI's authentication, pagination, and format handling. This is an implementation choice — **the kernel interface trait (rule #2) is the contract**, regardless of whether the driver wraps a CLI subprocess or a direct REST client. The kernel wraps the subprocess call with **caching** (response-level, TTL-based) and **OTel instrumentation** (spans for each call, cost/latency attribution)
 
 ### Driver Execution Model — Kernel Responsibilities
 

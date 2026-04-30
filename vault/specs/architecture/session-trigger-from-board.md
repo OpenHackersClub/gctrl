@@ -4,6 +4,9 @@ How dragging an Issue to `in_progress` on the gctrl-board web UI kicks off an ag
 
 > Related specs:
 > - [kernel/orchestrator.md](kernel/orchestrator.md) — claim states, dispatch, retry (kernel primitive)
+> - [kernel/harness.md](kernel/harness.md) — `AgentHarness` port and built-in runtimes (canonical)
+> - [kernel/compute.md](kernel/compute.md) — `ComputeSubstrate` port and built-in backends (canonical)
+> - [apps/adr-runtime-compute-decoupling.md](apps/adr-runtime-compute-decoupling.md) — invariants and compatibility matrix
 > - [apps/gctl-board.md](apps/gctl-board.md) — what the board tracks (Issues vs. Tasks)
 > - [../gctrl/WORKFLOW.md](../gctrl/WORKFLOW.md) — issue lifecycle + agent dispatch CLI
 
@@ -38,8 +41,8 @@ sequenceDiagram
     participant B as gctrl-board (web/worker)
     participant K as Kernel (HTTP :4318)
     participant O as Orchestrator
-    participant R as AgentRuntime
-    participant C as ComputeBackend
+    participant R as AgentHarness
+    participant C as ComputeSubstrate
 
     U->>B: drag BACK-42 → in_progress
     B->>K: POST /api/board/issues/BACK-42/move {status: "in_progress"}
@@ -59,8 +62,8 @@ sequenceDiagram
 - The **board** is a dumb trigger. It sends `move` and renders state. It never decides which agent to run.
 - The **kernel** owns the Issue → Task promotion and feeds the Orchestrator.
 - The **Orchestrator** owns dispatch eligibility, claim, and retry. Unchanged from [kernel/orchestrator.md](kernel/orchestrator.md).
-- The **AgentRuntime** renders + launches the agent. It is a new abstraction that wraps today's `AgentAdapter` (see next section).
-- The **ComputeBackend** is where the runtime runs. It is a new abstraction.
+- The **AgentHarness** renders + launches the agent. It is a new abstraction that wraps today's `AgentAdapter` (see next section).
+- The **ComputeSubstrate** is where the runtime runs. It is a new abstraction.
 
 ---
 
@@ -68,67 +71,40 @@ sequenceDiagram
 
 Today's [implementation/kernel/orchestrator.md](../implementation/kernel/orchestrator.md) defines `AgentAdapter::launch(prompt, workspace, attempt) -> AgentHandle{pid}`. That conflates two concerns:
 
-1. **Which agent is running?** (the *runtime*) — Claude Code, Claude Agent SDK, opencode, aider, custom.
+1. **Which agent is running?** (the *runtime*) — Claude Code, Claude Agent SDK, Codex, OpenCode, Aider, custom.
 2. **Where is it running?** (the *compute*) — local process, Cloudflare Container, e2b, etc.
 
-We split the port:
+The kernel splits these into two ports:
 
 ```text
-AgentRuntime × ComputeBackend  →  launched Session
+AgentHarness × ComputeSubstrate  →  launched Session
 ```
 
-### AgentRuntime
+The canonical specs for these ports — Rust traits, built-in implementations, telemetry-ingest tables, sandbox composition tables, credential delivery, and per-compute concurrency — live in:
 
-```rust
-#[async_trait]
-pub trait AgentRuntime: Send + Sync {
-    fn kind(&self) -> &str;                           // "claude-code" | "claude-agent-sdk" | "opencode" | ...
-    fn render_invocation(&self, prompt: &str,
-                         workspace: &Path) -> Invocation;
-}
-
-/// Describes what to execute inside a ComputeBackend.
-pub struct Invocation {
-    pub command: Vec<String>,     // e.g. ["claude", "--print", "--prompt", ...]
-    pub env: BTreeMap<String, String>,
-    pub stdin: Option<String>,    // for runtimes that pass prompt via stdin
-    pub workspace_mount: PathBuf, // local path to mount/copy
-}
-```
-
-### ComputeBackend
-
-```rust
-#[async_trait]
-pub trait ComputeBackend: Send + Sync {
-    fn kind(&self) -> &str;  // "local-process" | "cf-containers" | ...
-    async fn launch(&self, invocation: Invocation) -> Result<ComputeHandle, ComputeError>;
-}
-
-pub struct ComputeHandle {
-    pub id: String,                               // pid for local, container_id for CF
-    pub kill: Box<dyn FnOnce() -> Result<(), ComputeError> + Send>,
-    pub wait: Box<dyn Future<Output = ComputeExit> + Send>,
-}
-```
+- [kernel/harness.md](kernel/harness.md) — `AgentHarness` trait, built-in runtimes, per-runtime telemetry ingest, inner sandbox table.
+- [kernel/compute.md](kernel/compute.md) — `ComputeSubstrate` trait, built-in backends, failure-as-tool-error semantics, egress and credential delivery.
+- [apps/adr-runtime-compute-decoupling.md](apps/adr-runtime-compute-decoupling.md) — the invariants (Brain ≠ Hand, many brains × many hands, compute failure is a tool error) and the `(runtime, compute)` compatibility matrix.
 
 The existing `AgentAdapter` becomes a composite: `(runtime, compute) -> AgentHandle`. No changes to the Orchestrator state machine or claim logic.
 
-### Configuration
+### Configuration (summary)
 
-`WORKFLOW.md` frontmatter gains a `compute` key (defaults to `local-process` for backward compatibility):
+`WORKFLOW.md` frontmatter selects the pair (defaults to `runtime = claude-code`, `compute = local-process` for backward compatibility):
 
 ```yaml
 agent:
-  runtime: claude-code
-  compute: local-process           # or: cf-containers
+  runtime: claude-code             # see kernel/harness.md for built-ins
+  compute: local-process           # see kernel/compute.md for built-ins
   args: ["--print", "--dangerously-skip-permissions"]
-  # cf-containers-specific:
+  # compute-specific:
   compute_config:
     image: "gctrl/claude-code:latest"
     cpu_ms: 30000
     memory_mb: 2048
 ```
+
+Any `(runtime, compute)` combination listed in the [compatibility matrix](apps/adr-runtime-compute-decoupling.md#compatibility-matrix) is permitted. Combinations marked `⚠ no inner sandbox` MUST NOT be deployed to `compute = local-process` for untrusted Tasks.
 
 ---
 
@@ -139,13 +115,13 @@ The deployed gctrl-board runs on Cloudflare Workers and has no local kernel to t
 ### Slice 1 — Local trigger (this PR)
 
 - Board drag works when run locally against a local kernel.
-- `ComputeBackend = local-process`, `AgentRuntime = claude-code`.
+- `ComputeSubstrate = local-process`, `AgentHarness = claude-code`.
 - **No CF Containers yet, no deployed flow yet.** The deployed board still shows sessions read-only.
 - Acceptance: Playwright local — drag card → `GET /api/sessions?issue_id=X` returns a row.
 
 ### Slice 2 — Remote compute, local orchestrator
 
-- Add `cf-containers` ComputeBackend. Same `claude-code` runtime.
+- Add `cf-containers` ComputeSubstrate. Same `claude-code` runtime.
 - Local kernel orchestrates; agent runs in a CF Container and streams OTLP back to the local kernel.
 - Still requires a local kernel daemon. Deployed board unchanged.
 - Acceptance: local kernel + CF Container — session completes, spans land in DuckDB.
