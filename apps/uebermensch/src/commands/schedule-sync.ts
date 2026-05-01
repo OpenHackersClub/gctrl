@@ -70,7 +70,7 @@ type JobKind = (typeof VALID_JOBS)[number]
 
 const TIMEOUT_SECS = 300
 
-type KernelScheduleRow = {
+export type KernelScheduleRow = {
   name: string
   cron: string
   target_kind: string
@@ -79,6 +79,13 @@ type KernelScheduleRow = {
   env_keys: ReadonlyArray<string>
   enabled: boolean
   timeout_secs: number
+}
+
+export type ScheduleDiff = {
+  creates: ReadonlyArray<KernelScheduleRow>
+  updates: ReadonlyArray<KernelScheduleRow>
+  deletes: ReadonlyArray<string>
+  unchanged: ReadonlyArray<string>
 }
 
 const kernelBase = () =>
@@ -148,6 +155,20 @@ const buildRow = (
   }
 }
 
+export const buildDesiredRows = (
+  config: SchedulesConfig,
+  vaultDir: string,
+  uberDistPath: string,
+  nodePath: string,
+): Map<string, KernelScheduleRow> => {
+  const desired = new Map<string, KernelScheduleRow>()
+  for (const [localName, entry] of Object.entries(config.schedules)) {
+    const kernelName = `uber.${localName}`
+    desired.set(kernelName, buildRow(kernelName, entry, vaultDir, uberDistPath, nodePath))
+  }
+  return desired
+}
+
 const rowsEqual = (a: KernelScheduleRow, b: KernelScheduleRow): boolean =>
   a.cron === b.cron &&
   a.target_kind === b.target_kind &&
@@ -156,6 +177,27 @@ const rowsEqual = (a: KernelScheduleRow, b: KernelScheduleRow): boolean =>
   JSON.stringify(a.env_keys) === JSON.stringify(b.env_keys) &&
   a.enabled === b.enabled &&
   a.timeout_secs === b.timeout_secs
+
+export const diffSchedules = (
+  desired: ReadonlyMap<string, KernelScheduleRow>,
+  existing: ReadonlyMap<string, KernelScheduleRow>,
+): ScheduleDiff => {
+  const creates: Array<KernelScheduleRow> = []
+  const updates: Array<KernelScheduleRow> = []
+  const deletes: Array<string> = []
+  const unchanged: Array<string> = []
+
+  for (const [name, desiredRow] of desired) {
+    const existingRow = existing.get(name)
+    if (!existingRow) creates.push(desiredRow)
+    else if (!rowsEqual(existingRow, desiredRow)) updates.push(desiredRow)
+    else unchanged.push(name)
+  }
+  for (const [name] of existing) {
+    if (!desired.has(name)) deletes.push(name)
+  }
+  return { creates, updates, deletes, unchanged }
+}
 
 export const scheduleSyncProgram = Effect.gen(function* () {
   const vaultDir = yield* resolveVaultDir()
@@ -229,12 +271,7 @@ export const scheduleSyncProgram = Effect.gen(function* () {
     }
   }
 
-  // Compute desired rows
-  const desired = new Map<string, KernelScheduleRow>()
-  for (const [localName, entry] of Object.entries(config.schedules)) {
-    const kernelName = `uber.${localName}`
-    desired.set(kernelName, buildRow(kernelName, entry, vaultDir, uberDistPath, nodePath))
-  }
+  const desired = buildDesiredRows(config, vaultDir, uberDistPath, nodePath)
 
   // Fetch existing uber.* rows from kernel
   const existingRaw = yield* kernelFetch("GET", "/api/schedules?name_prefix=uber.").pipe(
@@ -253,39 +290,25 @@ export const scheduleSyncProgram = Effect.gen(function* () {
     Array.isArray(existingRaw) ? (existingRaw as Array<KernelScheduleRow>) : []
   const existing = new Map<string, KernelScheduleRow>(existingRows.map((r) => [r.name, r]))
 
-  let created = 0
-  let updated = 0
-  let deleted = 0
-  let unchanged = 0
+  const diff = diffSchedules(desired, existing)
 
-  // Apply: create or update (delete + create)
-  for (const [name, desiredRow] of desired) {
-    const existingRow = existing.get(name)
-    if (!existingRow) {
-      yield* kernelFetch("POST", "/api/schedules", desiredRow)
-      created++
-      yield* Console.log(`  created ${name}`)
-    } else if (!rowsEqual(existingRow, desiredRow)) {
-      // Kernel does not have PUT; delete then re-create
-      yield* kernelFetch("DELETE", `/api/schedules/${encodeURIComponent(name)}`)
-      yield* kernelFetch("POST", "/api/schedules", desiredRow)
-      updated++
-      yield* Console.log(`  updated ${name}`)
-    } else {
-      unchanged++
-    }
+  for (const row of diff.creates) {
+    yield* kernelFetch("POST", "/api/schedules", row)
+    yield* Console.log(`  created ${row.name}`)
   }
-
-  // Delete rows no longer in desired
-  for (const [name] of existing) {
-    if (!desired.has(name)) {
-      yield* kernelFetch("DELETE", `/api/schedules/${encodeURIComponent(name)}`)
-      deleted++
-      yield* Console.log(`  deleted ${name}`)
-    }
+  for (const row of diff.updates) {
+    // Kernel does not have PUT; delete then re-create
+    yield* kernelFetch("DELETE", `/api/schedules/${encodeURIComponent(row.name)}`)
+    yield* kernelFetch("POST", "/api/schedules", row)
+    yield* Console.log(`  updated ${row.name}`)
+  }
+  for (const name of diff.deletes) {
+    yield* kernelFetch("DELETE", `/api/schedules/${encodeURIComponent(name)}`)
+    yield* Console.log(`  deleted ${name}`)
   }
 
   yield* Console.log(
-    `schedule sync done: created ${created}, updated ${updated}, deleted ${deleted}, unchanged ${unchanged}`,
+    `schedule sync done: created ${diff.creates.length}, updated ${diff.updates.length}, ` +
+      `deleted ${diff.deletes.length}, unchanged ${diff.unchanged.length}`,
   )
 })
