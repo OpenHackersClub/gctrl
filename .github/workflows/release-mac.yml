@@ -71,7 +71,16 @@ jobs:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: pnpm --filter gctrl-desktop exec electron-builder --mac
+        run: |
+          # Without a signing cert, electron-builder defaults to keychain
+          # auto-discovery and dies on a CI runner with no keychain. Force
+          # an unsigned smoke build in that case so the rest of the
+          # pipeline still produces a verifiable artifact.
+          if [ -z "${CSC_LINK}" ]; then
+            echo "[release-mac] no CSC_LINK — disabling identity auto-discovery (unsigned smoke build)"
+            export CSC_IDENTITY_AUTO_DISCOVERY=false
+          fi
+          pnpm --filter gctrl-desktop exec electron-builder --mac
 
       # Verify Gatekeeper acceptance before publishing the artifact. Self-
       # skips when no signing cert is configured (unsigned smoke build).
