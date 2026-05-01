@@ -58,15 +58,44 @@ const ratesForModel = (model: string): CostRates => {
   return [3.0, 15.0];
 };
 
-// Billing mode override. When the operator is on a Claude Pro/Team/Max
-// subscription (or otherwise prepaid), per-token cost is irrelevant and
-// would just clutter the run output. UBER_LLM_BILLING=subscription forces
-// every cost calculation to $0; default is `metered` (per-token rates above).
-type BillingMode = "metered" | "subscription";
+// Effort tier — operator-facing knob for how much LLM work to spend on a
+// run. Maps to (max output tokens, thinking config). The lower-level
+// per-provider billing concern (subscription vs metered, AI Gateway vs
+// BYOK) lives in the kernel's driver-llm — uebermensch should not know
+// or care.
+type Effort = "low" | "medium" | "high";
 
-const billingMode = (): BillingMode => {
-  const raw = process.env.UBER_LLM_BILLING?.toLowerCase().trim();
-  return raw === "subscription" ? "subscription" : "metered";
+const effortFromEnv = (): Effort => {
+  const raw = process.env.UBER_LLM_EFFORT?.toLowerCase().trim();
+  if (raw === "low" || raw === "high") return raw;
+  return "medium";
+};
+
+// Anthropic `thinking` parameter shapes:
+// - "off"      → no thinking field (model answers directly)
+// - "adaptive" → `{ type: "adaptive" }` — model decides budget
+// - "extended" → `{ type: "enabled", budget_tokens: N }` — explicit budget
+type ThinkingMode = "off" | "adaptive" | "extended";
+
+type EffortConfig = {
+  readonly maxTokens: number;
+  readonly thinking: ThinkingMode;
+  readonly thinkingBudgetTokens: number;
+};
+
+const effortConfigFor = (effort: Effort): EffortConfig => {
+  switch (effort) {
+    case "low":
+      // Tight cap, no thinking. Single-pass, fast, cheap.
+      return { maxTokens: 4000, thinking: "off", thinkingBudgetTokens: 0 };
+    case "high":
+      // Generous output budget + explicit extended-thinking budget for
+      // deeper synthesis. Doubles default max for long deep-dives.
+      return { maxTokens: 32000, thinking: "extended", thinkingBudgetTokens: 16000 };
+    default:
+      // Adaptive thinking — model decides budget. Current default behavior.
+      return { maxTokens: DEFAULT_MAX_TOKENS, thinking: "adaptive", thinkingBudgetTokens: 0 };
+  }
 };
 
 // Per-article summarization shares the curator default by design — LM Studio
@@ -327,12 +356,24 @@ const fetchKernel = (
     return raw;
   });
 
+const thinkingBody = (
+  thinking: ThinkingMode,
+  budgetTokens: number,
+): Record<string, unknown> => {
+  if (thinking === "off") return {};
+  if (thinking === "extended") {
+    return { thinking: { type: "enabled", budget_tokens: budgetTokens } };
+  }
+  return { thinking: { type: "adaptive" } };
+};
+
 const postAnthropic = (
   model: string,
   system: string,
   userPrompt: string,
   maxTokens: number,
-  thinking: boolean,
+  thinking: ThinkingMode,
+  thinkingBudgetTokens: number,
 ): Effect.Effect<NormalizedResponse, LlmError> =>
   Effect.gen(function* () {
     const body: Record<string, unknown> = {
@@ -340,7 +381,7 @@ const postAnthropic = (
       max_tokens: maxTokens,
       system,
       messages: [{ role: "user", content: userPrompt }],
-      ...(thinking ? { thinking: { type: "adaptive" } } : {}),
+      ...thinkingBody(thinking, thinkingBudgetTokens),
     };
     const raw = yield* fetchKernel("/api/llm/messages", body);
     const parsed = yield* Effect.try({
@@ -428,12 +469,13 @@ const postLlm = (
   system: string,
   userPrompt: string,
   maxTokens: number,
-  thinking: boolean,
+  thinking: ThinkingMode,
+  thinkingBudgetTokens: number,
   jsonFormat: JsonResponseFormat | null,
 ): Effect.Effect<NormalizedResponse, LlmError> =>
   isWorkersAiModel(model)
     ? postWorkersAi(model, system, userPrompt, maxTokens, jsonFormat)
-    : postAnthropic(model, system, userPrompt, maxTokens, thinking);
+    : postAnthropic(model, system, userPrompt, maxTokens, thinking, thinkingBudgetTokens);
 
 // Effect schemas → JSON Schema, computed once. Used as the `response_format`
 // hint so local backends (LMStudio, llama.cpp grammar, vLLM) constrain the
@@ -488,7 +530,6 @@ const costForResponse = (
   inputRateOverride?: number,
   outputRateOverride?: number,
 ): number => {
-  if (billingMode() === "subscription") return 0;
   if (isWorkersAiModel(res.model)) return 0;
   if (inputRateOverride !== undefined && outputRateOverride !== undefined) {
     return tokensCost(res.inputTokens, res.outputTokens, inputRateOverride, outputRateOverride);
@@ -771,12 +812,14 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
       const model = modelFor();
       const userPrompt = buildUserPrompt(req);
       const promptHash = sha256(`${SYSTEM_PROMPT}\n---\n${userPrompt}`);
+      const eff = effortConfigFor(effortFromEnv());
       const res = yield* postLlm(
         model,
         SYSTEM_PROMPT,
         userPrompt,
-        DEFAULT_MAX_TOKENS,
-        true,
+        eff.maxTokens,
+        eff.thinking,
+        eff.thinkingBudgetTokens,
         briefJsonFormat(),
       );
       const decoded = yield* decodeLlmJson(res.text, LlmOutputSchema, "kernel /api/llm/messages");
@@ -804,12 +847,14 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
       const model = modelFor();
       const userPrompt = buildSubtopicUserPrompt(req);
       const promptHash = sha256(`${SUBTOPIC_SYSTEM_PROMPT}\n---\n${userPrompt}`);
+      const eff = effortConfigFor(effortFromEnv());
       const res = yield* postLlm(
         model,
         SUBTOPIC_SYSTEM_PROMPT,
         userPrompt,
-        DEFAULT_MAX_TOKENS,
-        true,
+        eff.maxTokens,
+        eff.thinking,
+        eff.thinkingBudgetTokens,
         subtopicJsonFormat(),
       );
       const decoded = yield* decodeLlmJson(
@@ -847,12 +892,14 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
       const model = modelFor();
       const userPrompt = buildInterestReportUserPrompt(req);
       const promptHash = sha256(`${REPORT_SYSTEM_PROMPT}\n---\n${userPrompt}`);
+      const eff = effortConfigFor(effortFromEnv());
       const res = yield* postLlm(
         model,
         REPORT_SYSTEM_PROMPT,
         userPrompt,
-        DEFAULT_MAX_TOKENS,
-        true,
+        eff.maxTokens,
+        eff.thinking,
+        eff.thinkingBudgetTokens,
         interestReportJsonFormat(),
       );
       const decoded = yield* decodeLlmJson(
@@ -886,12 +933,14 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
       const model = modelFor();
       const userPrompt = buildResearchQueryUserPrompt(req);
       const promptHash = sha256(`${RESEARCH_SYSTEM_PROMPT}\n---\n${userPrompt}`);
+      const eff = effortConfigFor(effortFromEnv());
       const res = yield* postLlm(
         model,
         RESEARCH_SYSTEM_PROMPT,
         userPrompt,
-        DEFAULT_MAX_TOKENS,
-        true,
+        eff.maxTokens,
+        eff.thinking,
+        eff.thinkingBudgetTokens,
         null,
       );
       const answerMd = res.text.trim();
@@ -909,12 +958,16 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
           : req.text;
       const userPrompt = buildSummaryUserPrompt(req.title, req.url, req.topics, capped);
       const promptHash = sha256(`${SUMMARY_SYSTEM_PROMPT}\n---\n${userPrompt}`);
+      // Summary lane is always low-effort: short, cheap, no thinking. Not
+      // operator-tunable — bumping summarization to "high" would 10x the
+      // ingest spend with negligible quality lift.
       const res = yield* postLlm(
         summaryModelFor(),
         SUMMARY_SYSTEM_PROMPT,
         userPrompt,
         SUMMARY_MAX_TOKENS,
-        false,
+        "off",
+        0,
         null,
       );
       const insightsMd = normalizeInsights(res.text);
@@ -962,4 +1015,6 @@ export const _internal = {
   SERVICE_NAME,
   isAnthropicModel,
   isWorkersAiModel,
+  effortFromEnv,
+  effortConfigFor,
 };

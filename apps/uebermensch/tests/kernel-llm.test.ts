@@ -5,7 +5,7 @@ import type { CandidateRef } from "../src/lib/candidates.js"
 import { LlmService } from "../src/services/LlmService.js"
 import type { WikiPage } from "../src/services/VaultService.js"
 
-const { extractJson, buildUserPrompt, kernelBase, normalizeInsights } = _internal
+const { extractJson, buildUserPrompt, kernelBase, normalizeInsights, effortFromEnv, effortConfigFor } = _internal
 
 // The Anthropic-routed tests in this file pin UBER_LLM_MODEL /
 // UBER_LLM_SUMMARY_MODEL to claude-* via beforeEach so they keep exercising
@@ -550,5 +550,41 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
     )
 
     expect(result.selectedSlug).toBe("real-slug")
+  })
+
+  describe("effort tier mapping", () => {
+    const prevEffort = process.env.UBER_LLM_EFFORT
+
+    afterEach(() => {
+      if (prevEffort === undefined) delete process.env.UBER_LLM_EFFORT
+      else process.env.UBER_LLM_EFFORT = prevEffort
+    })
+
+    it("default effort is medium with adaptive thinking and 16k tokens", () => {
+      delete process.env.UBER_LLM_EFFORT
+      const cfg = effortConfigFor(effortFromEnv())
+      expect(cfg.maxTokens).toBe(16000)
+      expect(cfg.thinking).toBe("adaptive")
+    })
+
+    it("low effort caps tokens to 4k and disables thinking", () => {
+      process.env.UBER_LLM_EFFORT = "low"
+      const cfg = effortConfigFor(effortFromEnv())
+      expect(cfg.maxTokens).toBe(4000)
+      expect(cfg.thinking).toBe("off")
+    })
+
+    it("high effort doubles to 32k tokens with extended thinking budget", () => {
+      process.env.UBER_LLM_EFFORT = "high"
+      const cfg = effortConfigFor(effortFromEnv())
+      expect(cfg.maxTokens).toBe(32000)
+      expect(cfg.thinking).toBe("extended")
+      expect(cfg.thinkingBudgetTokens).toBeGreaterThan(0)
+    })
+
+    it("invalid UBER_LLM_EFFORT falls back to medium", () => {
+      process.env.UBER_LLM_EFFORT = "ludicrous"
+      expect(effortFromEnv()).toBe("medium")
+    })
   })
 })
