@@ -14,7 +14,7 @@ use gctrl_core::{
     AcceptanceCheck, AcceptanceCheckRow, AcceptanceKind, AcceptanceRollup, AcceptanceStatus,
     GctlError, InboxAction, InboxActionFilter, InboxMessage, InboxMessageFilter, InboxThread,
     PersonaDefinition, PersonaReviewRule, Result, Schedule, ScheduleFilter, ScheduleRunUpdate,
-    OrchTask, UberBrief, VaultMount, VaultMountKind,
+    OrchTask, UberBrief, UberSinkinSession, VaultMount, VaultMountKind,
 };
 use rusqlite::{params, Connection};
 
@@ -311,6 +311,35 @@ CREATE TABLE IF NOT EXISTS uber_briefs (
 )
 "#;
 
+// App-namespaced (per the `<app>_*` invariant). One row per SinkIn run.
+// Per apps/uebermensch/vault/specs/sinkin.md, SinkIn introspects the wiki
+// and files Question + Connection markdown pages; this table tracks the
+// run itself (cost, scope, counts). The resulting Question/Connection
+// pages live in the vault and are indexed via the watcher in a follow-up.
+const CREATE_UBER_SINKIN_SESSIONS: &str = r#"
+CREATE TABLE IF NOT EXISTS uber_sinkin_sessions (
+    id                TEXT PRIMARY KEY,
+    started_at        TEXT NOT NULL,
+    completed_at      TEXT,
+    status            TEXT NOT NULL DEFAULT 'running',
+    -- 'scheduled' | 'interactive' | 'manual'
+    mode              TEXT NOT NULL,
+    -- Optional scope: a topic or thesis slug to constrain the pass.
+    scope_kind        TEXT,
+    scope_value       TEXT,
+    pages_scanned     INTEGER NOT NULL DEFAULT 0,
+    gaps_found        INTEGER NOT NULL DEFAULT 0,
+    gaps_answered     INTEGER NOT NULL DEFAULT 0,
+    connections_found INTEGER NOT NULL DEFAULT 0,
+    cost_usd          REAL NOT NULL DEFAULT 0.0,
+    model             TEXT,
+    prompt_hash       TEXT,
+    failed_reason     TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+)
+"#;
+
 const CREATE_SCHEDULES: &str = r#"
 CREATE TABLE IF NOT EXISTS schedules (
     id              TEXT PRIMARY KEY,
@@ -391,6 +420,10 @@ const CREATE_INDEXES: &[&str] = &[
     // Uebermensch briefs index — date lookup + reverse-chrono listing
     "CREATE INDEX IF NOT EXISTS idx_uber_briefs_date ON uber_briefs(date DESC)",
     "CREATE INDEX IF NOT EXISTS idx_uber_briefs_kind_date ON uber_briefs(kind, date DESC)",
+    // Uebermensch sinkin sessions index — list recent runs + scope filtering
+    "CREATE INDEX IF NOT EXISTS idx_uber_sinkin_started ON uber_sinkin_sessions(started_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_uber_sinkin_status ON uber_sinkin_sessions(status, started_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_uber_sinkin_scope ON uber_sinkin_sessions(scope_kind, scope_value)",
 ];
 
 // ═══════════════════════════════════════════════════════════════
@@ -453,6 +486,7 @@ impl SqliteStore {
             CREATE_MEMORY_ENTRIES,
             CREATE_VAULT_MOUNTS,
             CREATE_UBER_BRIEFS,
+            CREATE_UBER_SINKIN_SESSIONS,
             CREATE_SCHEDULES,
         ];
         for stmt in &tables {
@@ -2592,6 +2626,110 @@ impl SqliteStore {
         }
     }
 
+    // ───────────────────────── Uebermensch sinkin sessions ─────────────────────────
+
+    /// Idempotent upsert by `id`. The CLI generates the id at run start;
+    /// subsequent updates (counts, completion) replace by id.
+    pub fn upsert_uber_sinkin_session(&self, sess: &UberSinkinSession) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO uber_sinkin_sessions
+                (id, started_at, completed_at, status, mode, scope_kind, scope_value,
+                 pages_scanned, gaps_found, gaps_answered, connections_found, cost_usd,
+                 model, prompt_hash, failed_reason, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+             ON CONFLICT(id) DO UPDATE SET
+                completed_at = excluded.completed_at,
+                status = excluded.status,
+                pages_scanned = excluded.pages_scanned,
+                gaps_found = excluded.gaps_found,
+                gaps_answered = excluded.gaps_answered,
+                connections_found = excluded.connections_found,
+                cost_usd = excluded.cost_usd,
+                model = excluded.model,
+                prompt_hash = excluded.prompt_hash,
+                failed_reason = excluded.failed_reason,
+                updated_at = excluded.updated_at",
+            params![
+                sess.id,
+                sess.started_at.to_rfc3339(),
+                sess.completed_at.map(|dt| dt.to_rfc3339()),
+                sess.status,
+                sess.mode,
+                sess.scope_kind,
+                sess.scope_value,
+                sess.pages_scanned,
+                sess.gaps_found,
+                sess.gaps_answered,
+                sess.connections_found,
+                sess.cost_usd,
+                sess.model,
+                sess.prompt_hash,
+                sess.failed_reason,
+                sess.created_at.to_rfc3339(),
+                sess.updated_at.to_rfc3339(),
+            ],
+        )
+        .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_uber_sinkin_session(&self, id: &str) -> Result<Option<UberSinkinSession>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, started_at, completed_at, status, mode, scope_kind, scope_value,
+                    pages_scanned, gaps_found, gaps_answered, connections_found, cost_usd,
+                    model, prompt_hash, failed_reason, created_at, updated_at
+             FROM uber_sinkin_sessions WHERE id = ?1",
+            [id],
+            row_to_uber_sinkin_session,
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(GctlError::Storage(other.to_string())),
+        })
+    }
+
+    /// Reverse-chrono list. Optional `status` filter (`running`, `completed`, …).
+    pub fn list_uber_sinkin_sessions(
+        &self,
+        status: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<UberSinkinSession>> {
+        let conn = self.conn.lock().unwrap();
+        match status {
+            Some(s) => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, started_at, completed_at, status, mode, scope_kind, scope_value,
+                                pages_scanned, gaps_found, gaps_answered, connections_found, cost_usd,
+                                model, prompt_hash, failed_reason, created_at, updated_at
+                         FROM uber_sinkin_sessions WHERE status = ?1 ORDER BY started_at DESC LIMIT ?2",
+                    )
+                    .map_err(|e| GctlError::Storage(e.to_string()))?;
+                let rows = stmt
+                    .query_map(params![s, limit], row_to_uber_sinkin_session)
+                    .map_err(|e| GctlError::Storage(e.to_string()))?;
+                Ok(rows.filter_map(|r| r.ok()).collect())
+            }
+            None => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, started_at, completed_at, status, mode, scope_kind, scope_value,
+                                pages_scanned, gaps_found, gaps_answered, connections_found, cost_usd,
+                                model, prompt_hash, failed_reason, created_at, updated_at
+                         FROM uber_sinkin_sessions ORDER BY started_at DESC LIMIT ?1",
+                    )
+                    .map_err(|e| GctlError::Storage(e.to_string()))?;
+                let rows = stmt
+                    .query_map(params![limit], row_to_uber_sinkin_session)
+                    .map_err(|e| GctlError::Storage(e.to_string()))?;
+                Ok(rows.filter_map(|r| r.ok()).collect())
+            }
+        }
+    }
+
     // ───────────────────────── Schedules ─────────────────────────
 
     pub fn create_schedule(&self, sched: &Schedule) -> Result<()> {
@@ -2859,6 +2997,37 @@ fn row_to_uber_brief(row: &rusqlite::Row<'_>) -> rusqlite::Result<UberBrief> {
         cited_claims: row.get(11)?,
         total_claims: row.get(12)?,
         failed_at: failed_at_str.as_deref().map(parse_dt),
+        failed_reason: row.get(14)?,
+        created_at: parse_dt(&created_at_str),
+        updated_at: parse_dt(&updated_at_str),
+    })
+}
+
+fn row_to_uber_sinkin_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<UberSinkinSession> {
+    let started_at_str: String = row.get(1)?;
+    let completed_at_str: Option<String> = row.get(2)?;
+    let created_at_str: String = row.get(15)?;
+    let updated_at_str: String = row.get(16)?;
+    let parse_dt = |s: &str| -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now())
+    };
+    Ok(UberSinkinSession {
+        id: row.get(0)?,
+        started_at: parse_dt(&started_at_str),
+        completed_at: completed_at_str.as_deref().map(parse_dt),
+        status: row.get(3)?,
+        mode: row.get(4)?,
+        scope_kind: row.get(5)?,
+        scope_value: row.get(6)?,
+        pages_scanned: row.get(7)?,
+        gaps_found: row.get(8)?,
+        gaps_answered: row.get(9)?,
+        connections_found: row.get(10)?,
+        cost_usd: row.get(11)?,
+        model: row.get(12)?,
+        prompt_hash: row.get(13)?,
         failed_reason: row.get(14)?,
         created_at: parse_dt(&created_at_str),
         updated_at: parse_dt(&updated_at_str),

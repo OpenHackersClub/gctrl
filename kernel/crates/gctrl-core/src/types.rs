@@ -852,6 +852,41 @@ pub struct UberBrief {
     pub updated_at: DateTime<Utc>,
 }
 
+/// One row per SinkIn run. SinkIn introspects the wiki and files
+/// Question + Connection markdown pages; this row tracks the run itself
+/// (cost, scope, counts). Filed pages live in the vault.
+/// Spec: apps/uebermensch/vault/specs/sinkin.md
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UberSinkinSession {
+    pub id: String,
+    pub started_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<DateTime<Utc>>,
+    /// `running` | `completed` | `failed` | `aborted`
+    pub status: String,
+    /// `scheduled` | `interactive` | `manual`
+    pub mode: String,
+    /// e.g. `topic` or `thesis`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_kind: Option<String>,
+    /// The slug being scoped to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_value: Option<String>,
+    pub pages_scanned: i64,
+    pub gaps_found: i64,
+    pub gaps_answered: i64,
+    pub connections_found: i64,
+    pub cost_usd: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed_reason: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

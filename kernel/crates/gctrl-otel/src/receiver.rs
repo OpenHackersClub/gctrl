@@ -281,6 +281,16 @@ fn build_router(state: Arc<AppState>) -> Router {
             get(uber_briefs_list).post(uber_briefs_upsert),
         )
         .route("/api/uber/briefs/{date}", get(uber_briefs_get_by_date))
+        // Uebermensch SinkIn sessions — wiki-introspection runs.
+        // Spec: apps/uebermensch/vault/specs/sinkin.md
+        .route(
+            "/api/uber/sinkin/sessions",
+            get(uber_sinkin_sessions_list).post(uber_sinkin_sessions_upsert),
+        )
+        .route(
+            "/api/uber/sinkin/sessions/{id}",
+            get(uber_sinkin_sessions_get),
+        )
         // Search driver (Brave Search API)
         .route("/api/search/web", post(search_web))
         .route("/api/search/news", post(search_news))
@@ -4684,6 +4694,122 @@ async fn uber_briefs_get_by_date(
     match state.sqlite.get_uber_brief(&date, &kind) {
         Ok(Some(brief)) => Json(brief).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, format!("no brief for {date}/{kind}")).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+// =============================================================================
+// Uebermensch SinkIn sessions — wiki-introspection runs.
+// `id` is supplied by the caller (the CLI/service generates it at run start)
+// so subsequent updates (counts, completion status) replace by id.
+// Spec: apps/uebermensch/vault/specs/sinkin.md
+// =============================================================================
+
+#[derive(Deserialize)]
+struct UberSinkinUpsertBody {
+    id: String,
+    /// `running` | `completed` | `failed` | `aborted`. Defaults to `running`.
+    #[serde(default)]
+    status: Option<String>,
+    /// `scheduled` | `interactive` | `manual`. Defaults to `manual`.
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    scope_kind: Option<String>,
+    #[serde(default)]
+    scope_value: Option<String>,
+    #[serde(default)]
+    pages_scanned: Option<i64>,
+    #[serde(default)]
+    gaps_found: Option<i64>,
+    #[serde(default)]
+    gaps_answered: Option<i64>,
+    #[serde(default)]
+    connections_found: Option<i64>,
+    #[serde(default)]
+    cost_usd: Option<f64>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    prompt_hash: Option<String>,
+    #[serde(default)]
+    failed_reason: Option<String>,
+    /// If supplied, marks the run as completed at this time.
+    #[serde(default)]
+    completed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Deserialize)]
+struct UberSinkinListQuery {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
+async fn uber_sinkin_sessions_upsert(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<UberSinkinUpsertBody>,
+) -> impl IntoResponse {
+    let now = chrono::Utc::now();
+    // If the row already exists, preserve started_at; otherwise stamp now.
+    let started_at = state
+        .sqlite
+        .get_uber_sinkin_session(&body.id)
+        .ok()
+        .flatten()
+        .map(|prev| prev.started_at)
+        .unwrap_or(now);
+    let created_at = state
+        .sqlite
+        .get_uber_sinkin_session(&body.id)
+        .ok()
+        .flatten()
+        .map(|prev| prev.created_at)
+        .unwrap_or(now);
+    let sess = gctrl_core::UberSinkinSession {
+        id: body.id,
+        started_at,
+        completed_at: body.completed_at,
+        status: body.status.unwrap_or_else(|| "running".to_string()),
+        mode: body.mode.unwrap_or_else(|| "manual".to_string()),
+        scope_kind: body.scope_kind,
+        scope_value: body.scope_value,
+        pages_scanned: body.pages_scanned.unwrap_or(0),
+        gaps_found: body.gaps_found.unwrap_or(0),
+        gaps_answered: body.gaps_answered.unwrap_or(0),
+        connections_found: body.connections_found.unwrap_or(0),
+        cost_usd: body.cost_usd.unwrap_or(0.0),
+        model: body.model,
+        prompt_hash: body.prompt_hash,
+        failed_reason: body.failed_reason,
+        created_at,
+        updated_at: now,
+    };
+    match state.sqlite.upsert_uber_sinkin_session(&sess) {
+        Ok(()) => Json(sess).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn uber_sinkin_sessions_list(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<UberSinkinListQuery>,
+) -> impl IntoResponse {
+    let limit = q.limit.unwrap_or(50).clamp(1, 500);
+    match state.sqlite.list_uber_sinkin_sessions(q.status.as_deref(), limit) {
+        Ok(rows) => Json(rows).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn uber_sinkin_sessions_get(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.sqlite.get_uber_sinkin_session(&id) {
+        Ok(Some(sess)) => Json(sess).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, format!("no sinkin session {id}")).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
