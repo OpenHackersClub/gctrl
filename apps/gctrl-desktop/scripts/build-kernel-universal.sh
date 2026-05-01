@@ -18,7 +18,11 @@ WORKSPACE_ROOT="$(cd "${PACKAGE_ROOT}/../.." && pwd)"
 
 OUT_DIR="${PACKAGE_ROOT}/resources/kernel"
 TARGET="universal2-apple-darwin"
-BIN_NAME="gctrl"
+# Source binary defined in `kernel/crates/gctrl-cli/Cargo.toml`. The kernel
+# daemon binary is `gctrld` (with the `d` suffix); we bundle it under a
+# friendlier `gctrl-kernel` name so the desktop's path resolver doesn't have
+# to know about the daemon convention.
+BIN_NAME="gctrld"
 DEST_NAME="gctrl-kernel"
 
 echo "[build-kernel] workspace: ${WORKSPACE_ROOT}"

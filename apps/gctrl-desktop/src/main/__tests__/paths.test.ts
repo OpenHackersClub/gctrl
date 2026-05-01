@@ -24,9 +24,9 @@ describe("resolveKernelBinPath", () => {
     )
   })
 
-  it("dev: defaults to the workspace's cargo release binary at ../../target/release/gctrl", () => {
+  it("dev: defaults to the workspace's cargo release binary at ../../target/release/gctrld", () => {
     expect(resolveKernelBinPath(devCtx)).toBe(
-      path.join("/Users/alice/repo/apps/gctrl-desktop", "..", "..", "target", "release", "gctrl"),
+      path.join("/Users/alice/repo/apps/gctrl-desktop", "..", "..", "target", "release", "gctrld"),
     )
   })
 

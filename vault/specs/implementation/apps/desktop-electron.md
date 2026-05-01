@@ -156,15 +156,16 @@ cargo zigbuild \
   --release \
   --workspace \
   --target universal2-apple-darwin \
-  --bin gctrl
+  --bin gctrld
 
-# Output
-ls target/universal2-apple-darwin/release/gctrl
-# → universal2 binary; verify with: file target/universal2-apple-darwin/release/gctrl
+# Output (the kernel daemon binary is `gctrld`, with the `d` suffix)
+ls target/universal2-apple-darwin/release/gctrld
+# → universal2 binary; verify with: file target/universal2-apple-darwin/release/gctrld
 
-# Copy into desktop bundle
+# Copy into desktop bundle, renaming gctrld → gctrl-kernel so the consumer
+# (paths.ts) doesn't have to know about the daemon naming convention.
 mkdir -p apps/gctrl-desktop/resources/kernel
-cp target/universal2-apple-darwin/release/gctrl \
+cp target/universal2-apple-darwin/release/gctrld \
    apps/gctrl-desktop/resources/kernel/gctrl-kernel
 ```
 
@@ -374,9 +375,9 @@ jobs:
 
       - name: Build kernel (universal2)
         run: |
-          cargo zigbuild --release --workspace --target universal2-apple-darwin --bin gctrl
+          cargo zigbuild --release --workspace --target universal2-apple-darwin --bin gctrld
           mkdir -p apps/gctrl-desktop/resources/kernel
-          cp target/universal2-apple-darwin/release/gctrl apps/gctrl-desktop/resources/kernel/gctrl-kernel
+          cp target/universal2-apple-darwin/release/gctrld apps/gctrl-desktop/resources/kernel/gctrl-kernel
 
       - name: Build web bundle
         run: |
