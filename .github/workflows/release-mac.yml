@@ -38,12 +38,7 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - name: Install zig + cargo-zigbuild
-        run: |
-          brew install zig
-          cargo install --locked cargo-zigbuild
-
-      - name: Build kernel (universal2)
+      - name: Build kernel (universal2 via cargo + lipo)
         run: pnpm --filter gctrl-desktop build:kernel
 
       - name: Build Electron main + preload

@@ -12,7 +12,7 @@ See the canonical specs:
 | Slice | Adds | PR |
 |---|---|---|
 | **#1+2** | Scaffold, kernel sidecar lifecycle, Electron main/preload/menu, dev-mode wiring | merged |
-| **#3+4** | `electron-builder` config, hardened-runtime entitlements, `@electron/notarize` afterSign, `cargo-zigbuild` universal2 binary, gctrl-board SPA bundled into the renderer slot, `electron-updater`, `release-mac.yml` CI workflow | this PR |
+| **#3+4** | `electron-builder` config, hardened-runtime entitlements, `@electron/notarize` afterSign, vanilla cargo + `lipo` universal2 binary, gctrl-board SPA bundled into the renderer slot, `electron-updater`, `release-mac.yml` CI workflow | this PR |
 
 ## Layout
 
@@ -23,7 +23,7 @@ apps/gctrl-desktop/
 │   ├── entitlements.mac.plist       # hardened-runtime entitlements
 │   └── notarize.cjs                 # electron-builder afterSign — @electron/notarize
 ├── scripts/
-│   └── build-kernel-universal.sh    # cargo-zigbuild → universal2 kernel binary
+│   └── build-kernel-universal.sh    # vanilla cargo + lipo → universal2 kernel binary
 ├── resources/
 │   └── kernel/                      # universal2 binary staged here for extraResources (gitignored)
 ├── src/
@@ -76,7 +76,7 @@ pnpm --filter gctrl-desktop release:mac
 
 Under the hood:
 
-1. `pnpm build:kernel` — `cargo-zigbuild` produces a `universal2-apple-darwin` kernel binary at `resources/kernel/gctrl-kernel`.
+1. `pnpm build:kernel` — vanilla cargo builds for `aarch64-apple-darwin` and `x86_64-apple-darwin` separately, then `lipo` fuses them into a universal2 binary at `resources/kernel/gctrl-kernel`.
 2. `pnpm build` — `electron-vite build` emits `out/main`, `out/preload`, `out/renderer` (placeholder).
 3. `pnpm build:renderer-spa` — builds `gctrl-board` and overwrites `out/renderer` with its production SPA bundle.
 4. `electron-builder --mac` — signs every binary in the `.app`, runs the `afterSign` hook to notarize via `notarytool`, staples the ticket, and emits a universal `.dmg` plus an `electron-updater` manifest under `release/`.
