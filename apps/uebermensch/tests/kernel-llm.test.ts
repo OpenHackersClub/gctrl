@@ -138,8 +138,9 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
     expect(res.items[0].source_candidate_ids).toEqual(["cand-0000"])
     expect(res.topicsCovered).toEqual(["alpha"])
     expect(res.model).toBe(TEST_ANTHROPIC_MODEL)
-    // 100 * $5/M input + 200 * $25/M output = $0.0005 + $0.005 = $0.0055
-    expect(res.costUsd).toBeCloseTo(0.0055, 6)
+    // claude-opus-4-7 → $15/$75 per Mtok.
+    // 100 * $15/M input + 200 * $75/M output = $0.0015 + $0.015 = $0.0165
+    expect(res.costUsd).toBeCloseTo(0.0165, 6)
     expect(res.promptHash).toMatch(/^sha256:[0-9a-f]{64}$/)
 
     expect(fetchMock).toHaveBeenCalledOnce()
