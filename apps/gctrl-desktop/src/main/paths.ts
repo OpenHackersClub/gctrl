@@ -36,10 +36,12 @@ export type PathContext = {
 /**
  * Resolve the absolute path to the bundled kernel binary.
  *
- * Packaged: `<resourcesPath>/kernel/gctrl-kernel`.
+ * Packaged: `<resourcesPath>/kernel/gctrl-kernel` — renamed from `gctrld`
+ * by the `build-kernel-universal.sh` script so the consumer doesn't have
+ * to know about the daemon `d`-suffix convention.
  * Dev (override): the `devKernelPath` value verbatim.
- * Dev (default): `<appRoot>/../../target/release/gctrl` — the workspace's
- * cargo release binary.
+ * Dev (default): `<appRoot>/../../target/release/gctrld` — the workspace's
+ * cargo release binary as produced by `cargo build --bin gctrld`.
  */
 export const resolveKernelBinPath = (ctx: PathContext): string => {
   if (ctx.isPackaged) {
@@ -48,7 +50,7 @@ export const resolveKernelBinPath = (ctx: PathContext): string => {
   if (ctx.devKernelPath) {
     return ctx.devKernelPath
   }
-  return path.join(ctx.appRoot, "..", "..", "target", "release", "gctrl")
+  return path.join(ctx.appRoot, "..", "..", "target", "release", "gctrld")
 }
 
 /**
