@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { Effect, Exit, Schema } from "effect"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { ScheduleError } from "../src/errors.js"
-import { hktCronToUtc, scheduleSyncProgram } from "../src/commands/schedule-sync.js"
+import { buildCommand, hktCronToUtc, scheduleSyncProgram } from "../src/commands/schedule-sync.js"
 import { SchedulesConfig } from "../src/schemas.js"
 
 // --- HKT → UTC conversion unit tests ---
@@ -46,6 +46,30 @@ describe("hktCronToUtc", () => {
   })
 })
 
+// --- buildCommand argv per job kind ---
+
+describe("buildCommand", () => {
+  const node = "/usr/local/bin/node"
+  const dist = "/abs/path/uber.js"
+
+  it("returns run-daily argv for brief-and-send", () => {
+    expect(buildCommand(dist, node, "brief-and-send")).toEqual([
+      node,
+      dist,
+      "run-daily",
+    ])
+  })
+
+  it("returns report --send argv for report-and-send", () => {
+    expect(buildCommand(dist, node, "report-and-send")).toEqual([
+      node,
+      dist,
+      "report",
+      "--send",
+    ])
+  })
+})
+
 // --- SchedulesConfig schema validation ---
 
 describe("SchedulesConfig schema", () => {
@@ -65,6 +89,22 @@ describe("SchedulesConfig schema", () => {
     expect(result.schema_version).toBe(1)
     expect(result.schedules.morning_brief.cron).toBe("30 8 * * *")
     expect(result.schedules.morning_brief.enabled).toBe(true)
+  })
+
+  it("accepts report-and-send as a valid job", async () => {
+    const raw = {
+      schema_version: 1,
+      schedules: {
+        weekly_report: {
+          cron: "0 9 * * 1",
+          tz: "Asia/Hong_Kong",
+          job: "report-and-send",
+          enabled: true,
+        },
+      },
+    }
+    const result = await Effect.runPromise(Schema.decodeUnknown(SchedulesConfig)(raw))
+    expect(result.schedules.weekly_report.job).toBe("report-and-send")
   })
 
   it("rejects unknown job value", async () => {
@@ -218,6 +258,75 @@ describe("scheduleSyncProgram", () => {
     expect((posted.command as string[])[2]).toBe("run-daily")
     expect(posted.cwd).toBe(vaultDir)
     expect(posted.timeout_secs).toBe(300)
+  })
+
+  it("POSTs report-and-send schedule with report --send argv and HKT→UTC cron", async () => {
+    // Mondays 09:00 HKT → Mondays 01:00 UTC (no day rollover)
+    await writeFile(
+      join(vaultDir, "directives/schedules.md"),
+      [
+        "---",
+        "schema_version: 1",
+        "schedules:",
+        "  weekly_report:",
+        "    cron: \"0 9 * * 1\"",
+        "    tz: Asia/Hong_Kong",
+        "    job: report-and-send",
+        "    enabled: true",
+        "---",
+        "",
+      ].join("\n"),
+    )
+
+    const postCalls: Array<{ url: string; body: unknown }> = []
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET"
+      if (method === "GET") {
+        return { ok: true, status: 200, text: async () => JSON.stringify([]) }
+      }
+      if (method === "POST") {
+        postCalls.push({ url: String(url), body: JSON.parse(String(init?.body ?? "{}")) })
+        return { ok: true, status: 201, text: async () => JSON.stringify({ ok: true }) }
+      }
+      return { ok: true, status: 200, text: async () => "{}" }
+    })
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+
+    const exit = await Effect.runPromiseExit(scheduleSyncProgram)
+    expect(Exit.isSuccess(exit)).toBe(true)
+    expect(postCalls).toHaveLength(1)
+    const posted = postCalls[0]!.body as Record<string, unknown>
+    expect(posted.name).toBe("uber.weekly_report")
+    expect(posted.cron).toBe("0 1 * * 1") // HKT 09:00 Mon → UTC 01:00 Mon
+    expect(posted.target_kind).toBe("exec")
+    const cmd = posted.command as string[]
+    expect(cmd).toEqual(["/usr/local/bin/node", "/abs/path/uber.js", "report", "--send"])
+    expect(posted.cwd).toBe(vaultDir)
+    expect(posted.timeout_secs).toBe(300)
+  })
+
+  it("rejects unknown job values without touching kernel", async () => {
+    await writeFile(
+      join(vaultDir, "directives/schedules.md"),
+      [
+        "---",
+        "schema_version: 1",
+        "schedules:",
+        "  bogus:",
+        "    cron: \"0 9 * * *\"",
+        "    tz: Asia/Hong_Kong",
+        "    job: deepdive",
+        "---",
+        "",
+      ].join("\n"),
+    )
+
+    const fetchMock = vi.fn()
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+
+    const exit = await Effect.runPromiseExit(scheduleSyncProgram)
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it("DELETEs then POSTs when cron changes (diff logic)", async () => {

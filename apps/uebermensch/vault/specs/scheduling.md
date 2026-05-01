@@ -41,7 +41,7 @@ Free-form notes below the frontmatter. Edit cron strings here; run
 | `name` (map key) | `[a-z0-9_]+` | Local name; sync prepends `uber.` to derive the kernel schedule's `name`. |
 | `cron` | string | 5-field cron, in `tz`. Validated by the same parser as the kernel (`cron::Schedule`). |
 | `tz` | IANA tz | Today: `Asia/Hong_Kong` only (constant +8). Other zones rejected at sync until the conversion gains DST awareness. |
-| `job` | enum | `brief-and-send` ⇒ `uber run-daily`. Future jobs (`deepdive`, `ingest`) extend this enum. |
+| `job` | enum | `brief-and-send` ⇒ `uber run-daily`. `report-and-send` ⇒ `uber report --send`. Future jobs (`deepdive`, `ingest`) extend this enum. |
 | `enabled` | bool | Default `true`. `false` rows are still synced (`enabled=false` on kernel row) so a re-enable doesn't drop history. |
 
 Schedule names MUST be unique within the file. Foreign top-level frontmatter keys fail validation.
@@ -53,6 +53,7 @@ The `job` enum is the contract between vault and CLI. Each job maps to an argv t
 | `job` | argv (after sync) | `env_keys` | Notes |
 |-------|-------------------|------------|-------|
 | `brief-and-send` | `["<abs>/node", "<abs>/uber.js", "run-daily"]` | `UBER_VAULT_DIR`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_PRIMARY_CHAT_ID`, `DISCORD_NOTIFY_WEBHOOK_URL`, `GCTRL_KERNEL_URL` | Generates today's brief if missing, then fans out per `profile.delivery.channels`. |
+| `report-and-send` | `["<abs>/node", "<abs>/uber.js", "report", "--send"]` | (same as above) | Generates per-interest deep research reports under `input/reports/`, then sends the index to channels. Cadence is typically weekly. |
 
 The argv MUST use absolute paths — the kernel scheduler rejects relative `argv[0]` (`PATH`-injection defence; see [scheduler.md § exec target kind](../../../../vault/specs/architecture/kernel/scheduler.md#exec-target-kind)). Resolution happens in `uber schedule sync` once at sync time and is stored verbatim in the kernel row.
 

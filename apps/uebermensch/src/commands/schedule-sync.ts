@@ -55,13 +55,18 @@ const shiftDowBack = (dow: string): string => {
     .join(",")
 }
 
-const ENV_KEYS_BRIEF_AND_SEND = [
+// Same allowlist for all uber jobs: brief and report both deliver via the same
+// Telegram/Discord channels and read the vault from $UBER_VAULT_DIR.
+const ENV_KEYS_UBER_JOB = [
   "UBER_VAULT_DIR",
   "TELEGRAM_BOT_TOKEN",
   "TELEGRAM_PRIMARY_CHAT_ID",
   "DISCORD_NOTIFY_WEBHOOK_URL",
   "GCTRL_KERNEL_URL",
 ] as const
+
+const VALID_JOBS = ["brief-and-send", "report-and-send"] as const
+type JobKind = (typeof VALID_JOBS)[number]
 
 const TIMEOUT_SECS = 300
 
@@ -110,10 +115,18 @@ const kernelFetch = (
           }),
   })
 
-const buildCommand = (
+export const buildCommand = (
   uberDistPath: string,
   nodePath: string,
-): ReadonlyArray<string> => [nodePath, uberDistPath, "run-daily"]
+  job: JobKind,
+): ReadonlyArray<string> => {
+  switch (job) {
+    case "brief-and-send":
+      return [nodePath, uberDistPath, "run-daily"]
+    case "report-and-send":
+      return [nodePath, uberDistPath, "report", "--send"]
+  }
+}
 
 const buildRow = (
   name: string,
@@ -127,9 +140,9 @@ const buildRow = (
     name,
     cron: cronUtc,
     target_kind: "exec",
-    command: buildCommand(uberDistPath, nodePath),
+    command: buildCommand(uberDistPath, nodePath, entry.job),
     cwd: vaultDir,
-    env_keys: [...ENV_KEYS_BRIEF_AND_SEND],
+    env_keys: [...ENV_KEYS_UBER_JOB],
     enabled: entry.enabled ?? true,
     timeout_secs: TIMEOUT_SECS,
   }
@@ -205,11 +218,11 @@ export const scheduleSyncProgram = Effect.gen(function* () {
 
   // Validate all jobs in the config exist in registry before touching anything
   for (const [localName, entry] of Object.entries(config.schedules)) {
-    if (entry.job !== "brief-and-send") {
+    if (!(VALID_JOBS as ReadonlyArray<string>).includes(entry.job)) {
       return yield* Effect.fail(
         new ScheduleError({
           message: `schedule "${localName}" references unknown job "${entry.job}". ` +
-            `Valid jobs at M2: brief-and-send`,
+            `Valid jobs: ${VALID_JOBS.join(", ")}`,
           kind: "schema_invalid",
         }),
       )
