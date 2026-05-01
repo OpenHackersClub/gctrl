@@ -38,10 +38,13 @@ const runBriefGeneration = (
 ): Effect.Effect<string, unknown, ProfileService | VaultService | LlmService | RendererService> =>
   Effect.gen(function* () {
     const briefAbs = join(vaultDir, `${INPUT_BRIEFS_DIR}/${date}.md`)
-    const existing = yield* Effect.tryPromise({
-      try: () => readFile(briefAbs, "utf8"),
-      catch: () => null as null,
-    })
+    // ENOENT means "no brief yet, generate one" — must be a successful null,
+    // NOT a failure. Effect.tryPromise's `catch` produces a failure value, so
+    // an absent file was killing the pipeline with `error: null` (the morning
+    // cron run-daily was hitting this every day the brief didn't pre-exist).
+    const existing = yield* Effect.tryPromise(() => readFile(briefAbs, "utf8")).pipe(
+      Effect.orElseSucceed(() => null as string | null),
+    )
     if (existing !== null) {
       yield* Console.log(`brief already exists for ${date}, reusing`)
       return existing
