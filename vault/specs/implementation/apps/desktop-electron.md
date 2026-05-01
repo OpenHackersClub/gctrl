@@ -25,7 +25,7 @@ apps/gctrl-desktop/
 │   └── notarize.cjs                  ← @electron/notarize afterSign hook
 ├── resources/
 │   └── kernel/                       ← populated at build time by CI
-│       └── gctrl-kernel              ← universal2 binary (built by cargo-zigbuild)
+│       └── gctrl-kernel              ← universal2 binary (built by cargo + lipo)
 └── README.md
 ```
 
@@ -40,7 +40,7 @@ The renderer is *not* in this package. The build pipeline copies the prebuilt SP
 | **`@electron/notarize`** | Apple notarization via `notarytool` | Invoked from `electron-builder`'s `afterSign` hook |
 | **`electron-updater`** | Auto-update from a hosted feed | Used with `generic` provider (R2-hosted JSON manifest) or GitHub Releases |
 | **`@1password/electron-hardener`** | Optional: defense-in-depth wrapper from 1Password | Locks down powerful Electron APIs not used by the renderer |
-| **`cargo-zigbuild`** | Cross-compile Rust kernel as `universal2-apple-darwin` | Produces single binary for arm64 + x86_64; runs on any host |
+| **vanilla cargo + `lipo`** | Build Rust kernel for both `apple-darwin` arches and fuse into universal2 | macOS host required; Apple SDK handles the x86_64 cross-compile from Apple Silicon. (We tried `cargo-zigbuild` for one-command output, but zig's `ar` is incompatible with the `ring` crate's bundled assembly — see § Universal Kernel Binary.) |
 
 `pnpm` is the package manager — consistent with the rest of the workspace. The `apps/gctrl-desktop` package is registered in `pnpm-workspace.yaml`.
 
@@ -50,7 +50,7 @@ End-to-end build for a release `.dmg`:
 
 ```mermaid
 flowchart LR
-  Rust["cargo-zigbuild<br/>--target universal2-apple-darwin"] --> KernelBin["resources/kernel/gctrl-kernel<br/>(universal2)"]
+  Rust["cargo build --target {arm64,x86_64}-apple-darwin<br/>+ lipo -create"] --> KernelBin["resources/kernel/gctrl-kernel<br/>(universal2)"]
   Web["pnpm --filter gctrl-board build:web"] --> WebDist["apps/gctrl-board/dist-web/"]
   Main["electron-vite build<br/>(main + preload + renderer)"] --> ElectronDist["apps/gctrl-desktop/dist/"]
   WebDist --> ElectronDist
@@ -110,7 +110,7 @@ Key flags:
 - **`asarUnpack: ["resources/kernel/**"]`** — without this, the kernel binary is packed inside `app.asar` and cannot be `execFile`'d.
 - **`hardenedRuntime: true`** + entitlements file — required for notarization and for V8 JIT to function.
 - **`notarize: false`** at the builder level — we run notarization explicitly from `afterSign` for better error visibility and CI logging.
-- **`target: dmg, arch: universal`** — produces a single universal2 DMG. The `extraResources` kernel binary must also be universal2 (built by `cargo-zigbuild`).
+- **`target: dmg, arch: universal`** — produces a single universal2 DMG. The `extraResources` kernel binary must also be universal2 (built via vanilla cargo + `lipo`).
 
 ### Hardened-Runtime Entitlements
 
@@ -143,33 +143,33 @@ Rationale per entitlement:
 - `network.client` — the renderer makes outbound HTTP to the kernel sidecar on `127.0.0.1:4318` and to update feeds.
 - `network.server` — the kernel sidecar binds a listening socket on `127.0.0.1:4318`. *Note: Apple may flag inbound connections at MAS review; this is one of the reasons we skip MAS for v1.*
 
-### Universal Kernel Binary (`cargo-zigbuild`)
+### Universal Kernel Binary (vanilla cargo + `lipo`)
 
 ```sh
-# One-time setup
-brew install zig
-cargo install --locked cargo-zigbuild
+# One-time setup (no zig required)
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
-# Build (in CI or locally)
-cargo zigbuild \
-  --release \
-  --workspace \
-  --target universal2-apple-darwin \
-  --bin gctrld
+# Build each arch separately (Apple SDK handles the x86_64 cross-compile
+# from arm64), then fuse them into a universal2 binary with lipo.
+cargo build --release --target aarch64-apple-darwin --workspace --bin gctrld
+cargo build --release --target x86_64-apple-darwin  --workspace --bin gctrld
 
-# Output (the kernel daemon binary is `gctrld`, with the `d` suffix)
-ls target/universal2-apple-darwin/release/gctrld
-# → universal2 binary; verify with: file target/universal2-apple-darwin/release/gctrld
+# Verify both arches built
+file target/aarch64-apple-darwin/release/gctrld
+file target/x86_64-apple-darwin/release/gctrld
 
-# Copy into desktop bundle, renaming gctrld → gctrl-kernel so the consumer
-# (paths.ts) doesn't have to know about the daemon naming convention.
+# Fuse + stage under the consumer-facing name
 mkdir -p apps/gctrl-desktop/resources/kernel
-cp target/universal2-apple-darwin/release/gctrld \
-   apps/gctrl-desktop/resources/kernel/gctrl-kernel
+lipo -create \
+  -output apps/gctrl-desktop/resources/kernel/gctrl-kernel \
+  target/aarch64-apple-darwin/release/gctrld \
+  target/x86_64-apple-darwin/release/gctrld
+
+file apps/gctrl-desktop/resources/kernel/gctrl-kernel
+# → Mach-O universal binary with 2 architectures: [arm64], [x86_64]
 ```
 
-`cargo-zigbuild` is preferred over manual `lipo` because it cross-compiles in one invocation and works on any CI host (no need for x86_64 macOS runners).
+We initially tried `cargo-zigbuild` for single-command universal2 output, but zig's C toolchain is incompatible with the `ring` crate's bundled assembly (zig's `ar` fails to link `libring_core_*.a`). Vanilla cargo + `lipo` works because each per-arch build uses Apple's own toolchain. Trade-off: requires a macOS host (zigbuild would have worked on Linux runners). For gctrl this is fine — we already need macos-14 for `electron-builder` to sign and notarize.
 
 ## Kernel Sidecar Lifecycle
 
@@ -358,7 +358,7 @@ on:
 
 jobs:
   release:
-    runs-on: macos-14   # arm64 runner; cargo-zigbuild produces universal2 from any host
+    runs-on: macos-14   # arm64 runner with full Apple SDK for x86_64 cross-compile
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -368,16 +368,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: aarch64-apple-darwin,x86_64-apple-darwin }
 
-      - name: Install zig + cargo-zigbuild
+      - name: Build kernel (universal2 via cargo + lipo)
         run: |
-          brew install zig
-          cargo install --locked cargo-zigbuild
-
-      - name: Build kernel (universal2)
-        run: |
-          cargo zigbuild --release --workspace --target universal2-apple-darwin --bin gctrld
+          cargo build --release --target aarch64-apple-darwin --workspace --bin gctrld
+          cargo build --release --target x86_64-apple-darwin  --workspace --bin gctrld
           mkdir -p apps/gctrl-desktop/resources/kernel
-          cp target/universal2-apple-darwin/release/gctrld apps/gctrl-desktop/resources/kernel/gctrl-kernel
+          lipo -create \
+            -output apps/gctrl-desktop/resources/kernel/gctrl-kernel \
+            target/aarch64-apple-darwin/release/gctrld \
+            target/x86_64-apple-darwin/release/gctrld
 
       - name: Build web bundle
         run: |
@@ -427,7 +426,7 @@ The renderer-dev mode is the day-to-day workflow. The bundled-kernel mode is for
 2. ☐ `Developer ID Application` cert in Keychain + `.p12` exported with password
 3. ☐ App Store Connect API key (`.p8`, key ID, issuer ID) generated
 4. ☐ Bundle ID registered (`dev.fractalbox.gctrl` or chosen)
-5. ☐ `cargo-zigbuild` produces a universal2 kernel binary that runs on both arm64 and x86_64 Macs
+5. ☐ `cargo build` + `lipo` produce a universal2 kernel binary that runs on both arm64 and x86_64 Macs
 6. ☐ `electron-builder` config with `extraResources` + `asarUnpack` + hardened-runtime entitlements
 7. ☐ `afterSign` notarize hook produces a stapled `.dmg`
 8. ☐ Verified: `codesign --verify --deep` and `spctl -a -t exec` both pass
