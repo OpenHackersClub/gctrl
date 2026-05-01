@@ -11,12 +11,13 @@ import { report } from "../commands/report.js"
 import { runDaily } from "../commands/run-daily.js"
 import { schedule } from "../commands/schedule.js"
 import { send } from "../commands/send.js"
+import { sinkin } from "../commands/sinkin.js"
 import { sync } from "../commands/sync.js"
 import { timebox } from "../commands/timebox.js"
 import { vault } from "../commands/vault.js"
 
 const root = Command.make("uber").pipe(
-  Command.withSubcommands([vault, profile, brief, ingest, send, report, prompts, calendar, events, timebox, sync, runDaily, schedule]),
+  Command.withSubcommands([vault, profile, brief, ingest, send, report, prompts, calendar, events, timebox, sinkin, sync, runDaily, schedule]),
   Command.withDescription("uebermensch Chief-of-Staff CLI"),
 )
 
