@@ -104,9 +104,9 @@ const modelOpt = Options.text("model").pipe(
   Options.optional,
 )
 
-const billingOpt = Options.choice("billing", ["metered", "subscription"]).pipe(
+const effortOpt = Options.choice("effort", ["low", "medium", "high"]).pipe(
   Options.withDescription(
-    "Cost accounting mode. 'metered' (default) bills per-token at published rates; 'subscription' zeros all costs (use when on Claude Pro/Team/Max). Sets UBER_LLM_BILLING for the process.",
+    "How much LLM effort to spend per stage. 'low' caps output tokens and disables thinking; 'medium' (default) is adaptive thinking with the standard token budget; 'high' enables extended thinking with a budget bump and doubles the output cap. Sets UBER_LLM_EFFORT for the process. Per-token billing is a kernel/driver-llm concern, not exposed here.",
   ),
   Options.optional,
 )
@@ -186,7 +186,7 @@ export const report = Command.make(
     syncOpt,
     llmOpt,
     modelOpt,
-    billingOpt,
+    effortOpt,
   },
   ({
     sinceDaysOpt: sinceDays,
@@ -198,7 +198,7 @@ export const report = Command.make(
     syncOpt: doSyncOpt,
     llmOpt: llmKind,
     modelOpt: modelOverride,
-    billingOpt: billingOverride,
+    effortOpt: effortOverride,
   }) =>
     Effect.gen(function* () {
       const vaultDir = yield* resolveVaultDir()
@@ -211,27 +211,27 @@ export const report = Command.make(
           process.env.UBER_LLM_MODEL = m
         },
       })
-      Option.match(billingOverride, {
+      Option.match(effortOverride, {
         onNone: () => {},
-        onSome: (b) => {
-          process.env.UBER_LLM_BILLING = b
+        onSome: (e) => {
+          process.env.UBER_LLM_EFFORT = e
         },
       })
       const activeModel =
         Option.getOrUndefined(modelOverride) ??
         process.env.UBER_LLM_MODEL ??
         "(default)"
-      const activeBilling =
-        Option.getOrUndefined(billingOverride) ??
-        process.env.UBER_LLM_BILLING ??
-        "metered"
+      const activeEffort =
+        Option.getOrUndefined(effortOverride) ??
+        process.env.UBER_LLM_EFFORT ??
+        "medium"
       const anchor = Option.getOrElse(dateOptVal, today)
       const anchorDate = new Date(`${anchor}T00:00:00Z`)
       const { label: periodLabel } = isoWeekLabel(anchorDate)
       const periodEnd = anchor
       const periodStart = toYmd(addDays(anchorDate, -sinceDays))
       yield* Console.log(
-        `generating weekly reports ${periodLabel} (${periodStart} → ${periodEnd}) from ${vaultDir} (llm=${llmKind}, model=${activeModel}, billing=${activeBilling}, concurrency=${concurrency})`,
+        `generating weekly reports ${periodLabel} (${periodStart} → ${periodEnd}) from ${vaultDir} (llm=${llmKind}, model=${activeModel}, effort=${activeEffort}, concurrency=${concurrency})`,
       )
 
       const program = Effect.gen(function* () {

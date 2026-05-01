@@ -181,6 +181,20 @@ Routing follows the model id prefix:
 
 Switching model does not change the prompt — `prompt_hash` stays stable across model switches, which makes A/B comparison clean. Cost rates are looked up per-model on the kernel side.
 
+### Effort tiers
+
+Orthogonal to model selection. `--effort low|medium|high` (or `UBER_LLM_EFFORT`) controls how much LLM work each stage spends on a single call. The tier maps to (max output tokens, thinking config):
+
+| Effort | Max output tokens | Thinking | Notes |
+|---|---|---|---|
+| `low` | 4 000 | off | Single-pass, fast, cheap. Use for bulk runs or when iterating on prompts. |
+| `medium` (default) | 16 000 | adaptive | Model decides thinking budget. Current default behavior. |
+| `high` | 32 000 | extended (`budget_tokens: 16000`) | Explicit extended-thinking budget for deep synthesis. Roughly doubles output cap and adds a fixed thinking budget. |
+
+Effort applies uniformly across the brief / subtopic-propose / deep-dive / research-query stages. The summary lane (per-article ingest summarization) is hard-pinned to low effort and is not operator-tunable — high effort there would 10× ingest spend with negligible quality lift.
+
+Effort is an app-level knob (how hard to work). Per-token billing (subscription vs metered, BYOK vs gateway) lives in the kernel's driver-llm and is intentionally not exposed at the app layer.
+
 ### Prompt Versioning
 
 Every curator call:
@@ -316,7 +330,7 @@ Implemented in `apps/uebermensch/src/entrypoints/cli/`.
 | `gctrl uber run-daily` | Idempotent: generate today's brief if missing, then `send` against today. The kernel scheduler invokes this on cron — see [scheduling.md](scheduling.md). |
 | `gctrl uber schedule sync` | Reconcile `directives/schedules.md` → kernel `/api/schedules` (`name_prefix=uber.`). Vault is authoritative. |
 | `gctrl uber brief --model <id>` | Override model for this run (e.g. `claude-opus-4-7`); same flag on `report` and `deepdive` |
-| `gctrl uber report --billing <metered\|subscription>` | Cost accounting mode for the run. `metered` (default) bills per-token at published rates; `subscription` zeros all costs (use when on Claude Pro/Team/Max). Sets `UBER_LLM_BILLING` for the process. |
+| `gctrl uber report --effort <low\|medium\|high>` | How much LLM effort to spend per stage. `low` caps output tokens and disables thinking; `medium` (default) is adaptive thinking with the standard token budget; `high` enables extended thinking with a budget bump and doubles the output cap. Sets `UBER_LLM_EFFORT` for the process. Per-token billing is a kernel/driver-llm concern, not exposed at the app layer. |
 | `gctrl uber deepdive <slug>` | Run `BriefingService.generateDeepdive(slug)` |
 | `gctrl uber report` | Run weekly research reports across **all** `directives/research/*` interests (one report file per interest + one index) |
 | `gctrl uber report --model <id>` | Override model for the run; applies to subtopic-propose + deep-dive stages uniformly |

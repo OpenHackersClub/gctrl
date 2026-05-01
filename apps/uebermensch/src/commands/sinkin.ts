@@ -127,7 +127,7 @@ export const sinkin = Command.make(
       const program = Effect.gen(function* () {
         const vaultSvc = yield* VaultService
         const slugs = yield* vaultSvc.listSlugs()
-        return slugs.length
+        return slugs.size
       })
       const pagesScanned = yield* program.pipe(
         Effect.provide(FileSystemVaultLive(vaultDir)),
