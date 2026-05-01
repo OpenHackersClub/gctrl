@@ -63,7 +63,8 @@
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
-      "notarize": false
+      "notarize": false,
+      "x64ArchFiles": "Contents/Resources/kernel/*"
     },
     "afterSign": "build/notarize.cjs",
     "publish": {
