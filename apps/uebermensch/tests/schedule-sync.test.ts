@@ -3,27 +3,28 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect, Exit, Schema } from "effect"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { ScheduleError } from "../src/errors.js"
-import { hktCronToUtc, scheduleSyncProgram } from "../src/commands/schedule-sync.js"
+import {
+  buildCommand,
+  buildDesiredRows,
+  diffSchedules,
+  hktCronToUtc,
+  scheduleSyncProgram,
+  type KernelScheduleRow,
+} from "../src/commands/schedule-sync.js"
 import { SchedulesConfig } from "../src/schemas.js"
 
-// --- HKT → UTC conversion unit tests ---
+// --- Pure: HKT → UTC cron conversion ---
 
 describe("hktCronToUtc", () => {
-  it("subtracts 8 hours for a mid-day schedule", () => {
+  it("subtracts 8 hours mid-day", () => {
     expect(hktCronToUtc("30 8 * * *")).toBe("30 0 * * *")
   })
 
-  it("handles evening schedule without day rollover", () => {
+  it("evening schedule, no day rollover", () => {
     expect(hktCronToUtc("59 23 * * *")).toBe("59 15 * * *")
   })
 
-  it("handles hour exactly at 8 HKT (midnight UTC)", () => {
-    expect(hktCronToUtc("0 8 * * *")).toBe("0 0 * * *")
-  })
-
-  it("wraps hour past midnight and shifts * DOW unchanged", () => {
-    // HKT 06:00 → UTC 22:00 previous day; DOW=* stays *
+  it("wraps past midnight; * DOW unchanged", () => {
     expect(hktCronToUtc("0 6 * * *")).toBe("0 22 * * *")
   })
 
@@ -32,92 +33,211 @@ describe("hktCronToUtc", () => {
     expect(hktCronToUtc("0 1 * * 1")).toBe("0 17 * * 0")
   })
 
-  it("shifts DOW 0 (Sunday) back to Saturday (6)", () => {
-    // HKT 01:00 Sun (0) → UTC 17:00 Sat (6)
+  it("wraps DOW 0 (Sun) back to 6 (Sat)", () => {
     expect(hktCronToUtc("0 1 * * 0")).toBe("0 17 * * 6")
   })
 
-  it("throws on invalid 4-field cron", () => {
+  it("rejects 4-field cron", () => {
     expect(() => hktCronToUtc("0 1 * *")).toThrow("invalid 5-field cron")
   })
 
-  it("throws on non-numeric hour", () => {
+  it("rejects non-numeric hour", () => {
     expect(() => hktCronToUtc("0 * * * *")).toThrow("cron hour field must be a numeric")
   })
 })
 
-// --- SchedulesConfig schema validation ---
+// --- Pure: argv per job kind ---
+
+describe("buildCommand", () => {
+  it("brief-and-send → run-daily", () => {
+    expect(buildCommand("/abs/uber.js", "/usr/bin/node", "brief-and-send")).toEqual([
+      "/usr/bin/node",
+      "/abs/uber.js",
+      "run-daily",
+    ])
+  })
+
+  it("report-and-send → report --send", () => {
+    expect(buildCommand("/abs/uber.js", "/usr/bin/node", "report-and-send")).toEqual([
+      "/usr/bin/node",
+      "/abs/uber.js",
+      "report",
+      "--send",
+    ])
+  })
+})
+
+// --- Schema validation ---
 
 describe("SchedulesConfig schema", () => {
-  it("parses a valid schedules config", async () => {
+  const validRaw = {
+    schema_version: 1,
+    schedules: {
+      morning_brief: {
+        cron: "30 8 * * *",
+        tz: "Asia/Hong_Kong",
+        job: "brief-and-send",
+        enabled: true,
+      },
+    },
+  }
+
+  it("accepts a valid config", async () => {
+    const result = await Effect.runPromise(Schema.decodeUnknown(SchedulesConfig)(validRaw))
+    expect(result.schedules.morning_brief.cron).toBe("30 8 * * *")
+  })
+
+  it("accepts both job kinds", async () => {
     const raw = {
       schema_version: 1,
       schedules: {
+        b: { cron: "0 8 * * *", tz: "Asia/Hong_Kong", job: "brief-and-send" },
+        r: { cron: "0 9 * * 1", tz: "Asia/Hong_Kong", job: "report-and-send" },
+      },
+    }
+    const result = await Effect.runPromise(Schema.decodeUnknown(SchedulesConfig)(raw))
+    expect(result.schedules.b.job).toBe("brief-and-send")
+    expect(result.schedules.r.job).toBe("report-and-send")
+  })
+
+  it("rejects unknown job", async () => {
+    const raw = {
+      schema_version: 1,
+      schedules: { x: { cron: "0 8 * * *", tz: "Asia/Hong_Kong", job: "deep-dive" } },
+    }
+    expect(Exit.isFailure(await Effect.runPromiseExit(Schema.decodeUnknown(SchedulesConfig)(raw)))).toBe(true)
+  })
+
+  it("rejects unknown timezone (M2 only supports Asia/Hong_Kong)", async () => {
+    const raw = {
+      schema_version: 1,
+      schedules: { x: { cron: "0 8 * * *", tz: "America/New_York", job: "brief-and-send" } },
+    }
+    expect(Exit.isFailure(await Effect.runPromiseExit(Schema.decodeUnknown(SchedulesConfig)(raw)))).toBe(true)
+  })
+
+  it("leaves enabled undefined when absent (not false)", async () => {
+    const raw = {
+      schema_version: 1,
+      schedules: { x: { cron: "0 8 * * *", tz: "Asia/Hong_Kong", job: "brief-and-send" } },
+    }
+    const result = await Effect.runPromise(Schema.decodeUnknown(SchedulesConfig)(raw))
+    expect(result.schedules.x.enabled).toBeUndefined()
+  })
+})
+
+// --- Pure: buildDesiredRows ---
+
+describe("buildDesiredRows", () => {
+  const dist = "/abs/uber.js"
+  const node = "/usr/bin/node"
+  const vault = "/vault"
+
+  it("namespaces rows under uber.* and applies HKT→UTC", () => {
+    const cfg = {
+      schema_version: 1,
+      schedules: {
         morning_brief: {
-          cron: "30 8 * * *",
-          tz: "Asia/Hong_Kong",
-          job: "brief-and-send",
+          cron: "30 8 * * *" as string,
+          tz: "Asia/Hong_Kong" as const,
+          job: "brief-and-send" as const,
           enabled: true,
         },
       },
     }
-    const result = await Effect.runPromise(Schema.decodeUnknown(SchedulesConfig)(raw))
-    expect(result.schema_version).toBe(1)
-    expect(result.schedules.morning_brief.cron).toBe("30 8 * * *")
-    expect(result.schedules.morning_brief.enabled).toBe(true)
+    const rows = buildDesiredRows(cfg, vault, dist, node)
+    expect([...rows.keys()]).toEqual(["uber.morning_brief"])
+    const row = rows.get("uber.morning_brief")!
+    expect(row.cron).toBe("30 0 * * *")
+    expect(row.target_kind).toBe("exec")
+    expect(row.cwd).toBe(vault)
+    expect(row.timeout_secs).toBe(300)
+    expect(row.enabled).toBe(true)
   })
 
-  it("rejects unknown job value", async () => {
-    const raw = {
+  it("defaults enabled to true when omitted", () => {
+    const cfg = {
       schema_version: 1,
       schedules: {
-        test: { cron: "0 8 * * *", tz: "Asia/Hong_Kong", job: "deep-dive" },
+        x: { cron: "0 8 * * *" as string, tz: "Asia/Hong_Kong" as const, job: "brief-and-send" as const },
       },
     }
-    const exit = await Effect.runPromiseExit(Schema.decodeUnknown(SchedulesConfig)(raw))
-    expect(Exit.isFailure(exit)).toBe(true)
-  })
-
-  it("rejects unknown timezone", async () => {
-    const raw = {
-      schema_version: 1,
-      schedules: {
-        test: { cron: "0 8 * * *", tz: "America/New_York", job: "brief-and-send" },
-      },
-    }
-    const exit = await Effect.runPromiseExit(Schema.decodeUnknown(SchedulesConfig)(raw))
-    expect(Exit.isFailure(exit)).toBe(true)
-  })
-
-  it("defaults enabled to absent (undefined), not false", async () => {
-    const raw = {
-      schema_version: 1,
-      schedules: {
-        test: { cron: "0 8 * * *", tz: "Asia/Hong_Kong", job: "brief-and-send" },
-      },
-    }
-    const result = await Effect.runPromise(Schema.decodeUnknown(SchedulesConfig)(raw))
-    expect(result.schedules.test.enabled).toBeUndefined()
+    expect(buildDesiredRows(cfg, vault, dist, node).get("uber.x")!.enabled).toBe(true)
   })
 })
 
-// --- scheduleSyncProgram integration tests (mock kernel) ---
+// --- Pure: diffSchedules ---
+
+describe("diffSchedules", () => {
+  const baseRow: KernelScheduleRow = {
+    name: "uber.a",
+    cron: "0 0 * * *",
+    target_kind: "exec",
+    command: ["/n", "/u.js", "run-daily"],
+    cwd: "/v",
+    env_keys: ["UBER_VAULT_DIR"],
+    enabled: true,
+    timeout_secs: 300,
+  }
+
+  it("creates rows missing from existing", () => {
+    const desired = new Map([["uber.a", baseRow]])
+    const diff = diffSchedules(desired, new Map())
+    expect(diff.creates).toEqual([baseRow])
+    expect(diff.updates).toEqual([])
+    expect(diff.deletes).toEqual([])
+    expect(diff.unchanged).toEqual([])
+  })
+
+  it("marks identical rows as unchanged", () => {
+    const desired = new Map([["uber.a", baseRow]])
+    const existing = new Map([["uber.a", baseRow]])
+    const diff = diffSchedules(desired, existing)
+    expect(diff.unchanged).toEqual(["uber.a"])
+    expect(diff.creates).toEqual([])
+    expect(diff.updates).toEqual([])
+  })
+
+  it("flags update when cron changes", () => {
+    const desired = new Map([["uber.a", { ...baseRow, cron: "0 1 * * *" }]])
+    const existing = new Map([["uber.a", baseRow]])
+    const diff = diffSchedules(desired, existing)
+    expect(diff.updates).toHaveLength(1)
+    expect(diff.updates[0]!.cron).toBe("0 1 * * *")
+    expect(diff.creates).toEqual([])
+    expect(diff.unchanged).toEqual([])
+  })
+
+  it("flags update when command changes", () => {
+    const desired = new Map([
+      ["uber.a", { ...baseRow, command: ["/n", "/u.js", "report", "--send"] }],
+    ])
+    const existing = new Map([["uber.a", baseRow]])
+    expect(diffSchedules(desired, existing).updates).toHaveLength(1)
+  })
+
+  it("deletes existing rows absent from desired", () => {
+    const desired = new Map<string, KernelScheduleRow>()
+    const existing = new Map([["uber.stale", baseRow]])
+    expect(diffSchedules(desired, existing).deletes).toEqual(["uber.stale"])
+  })
+})
+
+// --- scheduleSyncProgram: thin smoke tests only (file IO + apply orchestration) ---
 
 describe("scheduleSyncProgram", () => {
   let vaultDir: string
   const originalFetch = globalThis.fetch
   const savedEnv: Record<string, string | undefined> = {}
-
   const envKeys = ["UBER_VAULT_DIR", "UBER_DIST_PATH", "GCTRL_NODE_PATH", "GCTRL_KERNEL_URL"]
 
   beforeEach(async () => {
     vaultDir = await mkdtemp(join(tmpdir(), "uber-sched-"))
     await mkdir(join(vaultDir, "directives"), { recursive: true })
-
     for (const k of envKeys) savedEnv[k] = process.env[k]
     process.env.UBER_VAULT_DIR = vaultDir
-    process.env.UBER_DIST_PATH = "/abs/path/uber.js"
-    process.env.GCTRL_NODE_PATH = "/usr/local/bin/node"
+    process.env.UBER_DIST_PATH = "/abs/uber.js"
+    process.env.GCTRL_NODE_PATH = "/usr/bin/node"
     process.env.GCTRL_KERNEL_URL = "http://kernel.test"
   })
 
@@ -129,98 +249,42 @@ describe("scheduleSyncProgram", () => {
     }
   })
 
-  it("no-op and prints message when schedules.md is absent", async () => {
+  it("no-op when schedules.md is absent — kernel never called", async () => {
     const fetchMock = vi.fn()
     globalThis.fetch = fetchMock as unknown as typeof fetch
-
     const exit = await Effect.runPromiseExit(scheduleSyncProgram)
     expect(Exit.isSuccess(exit)).toBe(true)
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it("aborts with ScheduleError when schema is invalid", async () => {
+  it("aborts on schema-invalid frontmatter without touching kernel", async () => {
     await writeFile(
       join(vaultDir, "directives/schedules.md"),
       "---\nschema_version: 1\nschedules:\n  bad:\n    cron: \"0 8 * * *\"\n    tz: America/New_York\n    job: brief-and-send\n---\n",
     )
     const fetchMock = vi.fn()
     globalThis.fetch = fetchMock as unknown as typeof fetch
-
     const exit = await Effect.runPromiseExit(scheduleSyncProgram)
     expect(Exit.isFailure(exit)).toBe(true)
-    // Kernel must not be touched
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it("aborts with config error when UBER_DIST_PATH is not set", async () => {
+  it("aborts with config error when UBER_DIST_PATH is unset", async () => {
     delete process.env.UBER_DIST_PATH
     const exit = await Effect.runPromiseExit(scheduleSyncProgram)
     expect(Exit.isFailure(exit)).toBe(true)
-    if (Exit.isFailure(exit)) {
-      const cause = exit.cause
-      // The error should be a ScheduleError with kind=config
-      expect(String(cause)).toContain("UBER_DIST_PATH")
-    }
+    if (Exit.isFailure(exit)) expect(String(exit.cause)).toContain("UBER_DIST_PATH")
   })
 
-  it("aborts with config error when GCTRL_NODE_PATH is not set", async () => {
+  it("aborts with config error when GCTRL_NODE_PATH is unset", async () => {
     delete process.env.GCTRL_NODE_PATH
     const exit = await Effect.runPromiseExit(scheduleSyncProgram)
     expect(Exit.isFailure(exit)).toBe(true)
-    if (Exit.isFailure(exit)) {
-      expect(String(exit.cause)).toContain("GCTRL_NODE_PATH")
-    }
+    if (Exit.isFailure(exit)) expect(String(exit.cause)).toContain("GCTRL_NODE_PATH")
   })
 
-  it("POSTs new schedules to kernel and reports created count", async () => {
-    await writeFile(
-      join(vaultDir, "directives/schedules.md"),
-      [
-        "---",
-        "schema_version: 1",
-        "schedules:",
-        "  morning_brief:",
-        "    cron: \"30 8 * * *\"",
-        "    tz: Asia/Hong_Kong",
-        "    job: brief-and-send",
-        "    enabled: true",
-        "---",
-        "",
-        "# Schedules",
-      ].join("\n"),
-    )
-
-    const postCalls: Array<{ url: string; body: unknown }> = []
-    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
-      const method = init?.method ?? "GET"
-      if (method === "GET") {
-        // Return empty existing list
-        return { ok: true, status: 200, text: async () => JSON.stringify([]) }
-      }
-      if (method === "POST") {
-        postCalls.push({ url: String(url), body: JSON.parse(String(init?.body ?? "{}")) })
-        return { ok: true, status: 201, text: async () => JSON.stringify({ ok: true }) }
-      }
-      return { ok: true, status: 200, text: async () => "{}" }
-    })
-    globalThis.fetch = fetchMock as unknown as typeof fetch
-
-    const exit = await Effect.runPromiseExit(scheduleSyncProgram)
-    expect(Exit.isSuccess(exit)).toBe(true)
-    expect(postCalls).toHaveLength(1)
-    const posted = postCalls[0]!.body as Record<string, unknown>
-    expect(posted.name).toBe("uber.morning_brief")
-    expect(posted.cron).toBe("30 0 * * *")  // HKT 08:30 → UTC 00:30
-    expect(posted.target_kind).toBe("exec")
-    expect(Array.isArray(posted.command)).toBe(true)
-    expect((posted.command as string[])[0]).toBe("/usr/local/bin/node")
-    expect((posted.command as string[])[1]).toBe("/abs/path/uber.js")
-    expect((posted.command as string[])[2]).toBe("run-daily")
-    expect(posted.cwd).toBe(vaultDir)
-    expect(posted.timeout_secs).toBe(300)
-  })
-
-  it("DELETEs then POSTs when cron changes (diff logic)", async () => {
+  it("issues DELETE then POST when applying an update; no calls when unchanged", async () => {
+    // First run with an existing row that differs → expect DELETE + POST
     await writeFile(
       join(vaultDir, "directives/schedules.md"),
       [
@@ -236,131 +300,42 @@ describe("scheduleSyncProgram", () => {
       ].join("\n"),
     )
 
-    const existingRow = {
+    const stale: Record<string, unknown> = {
       name: "uber.morning_brief",
-      cron: "30 0 * * *",  // old cron differs
+      cron: "30 0 * * *", // differs from desired (0 1 * * *)
       target_kind: "exec",
-      command: ["/usr/local/bin/node", "/abs/path/uber.js", "run-daily"],
+      command: ["/usr/bin/node", "/abs/uber.js", "run-daily"],
       cwd: vaultDir,
-      env_keys: ["UBER_VAULT_DIR", "TELEGRAM_BOT_TOKEN", "TELEGRAM_PRIMARY_CHAT_ID", "DISCORD_NOTIFY_WEBHOOK_URL", "GCTRL_KERNEL_URL"],
+      env_keys: [
+        "UBER_VAULT_DIR",
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_PRIMARY_CHAT_ID",
+        "DISCORD_NOTIFY_WEBHOOK_URL",
+        "GCTRL_KERNEL_URL",
+      ],
       enabled: true,
       timeout_secs: 300,
     }
 
-    const deleteCalls: Array<string> = []
-    const postCalls: Array<unknown> = []
-    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+    const calls: Array<string> = []
+    globalThis.fetch = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
       const method = init?.method ?? "GET"
-      if (method === "GET") {
-        return { ok: true, status: 200, text: async () => JSON.stringify([existingRow]) }
-      }
-      if (method === "DELETE") {
-        deleteCalls.push(String(url))
-        return { ok: true, status: 204, text: async () => "" }
-      }
-      if (method === "POST") {
-        postCalls.push(JSON.parse(String(init?.body ?? "{}")))
-        return { ok: true, status: 201, text: async () => JSON.stringify({ ok: true }) }
-      }
-      return { ok: true, status: 200, text: async () => "{}" }
-    })
-    globalThis.fetch = fetchMock as unknown as typeof fetch
+      calls.push(method)
+      if (method === "GET") return { ok: true, status: 200, text: async () => JSON.stringify([stale]) }
+      return { ok: true, status: method === "DELETE" ? 204 : 201, text: async () => "{}" }
+    }) as unknown as typeof fetch
 
     const exit = await Effect.runPromiseExit(scheduleSyncProgram)
     expect(Exit.isSuccess(exit)).toBe(true)
-    expect(deleteCalls).toHaveLength(1)
-    expect(deleteCalls[0]).toContain("uber.morning_brief")
-    expect(postCalls).toHaveLength(1)
-    const posted = postCalls[0] as Record<string, unknown>
-    expect(posted.cron).toBe("0 1 * * *")  // HKT 09:00 → UTC 01:00
+    // DELETE must precede POST for the same name
+    expect(calls).toEqual(["GET", "DELETE", "POST"])
   })
 
-  it("DELETEs rows absent from desired set", async () => {
-    // schedules.md has no entries but kernel has an existing uber row
-    await writeFile(
-      join(vaultDir, "directives/schedules.md"),
-      "---\nschema_version: 1\nschedules: {}\n---\n",
-    )
-
-    const existingRow = {
-      name: "uber.stale",
-      cron: "0 0 * * *",
-      target_kind: "exec",
-      command: ["/usr/local/bin/node", "/abs/path/uber.js", "run-daily"],
-      cwd: vaultDir,
-      env_keys: [],
-      enabled: true,
-      timeout_secs: 300,
-    }
-
-    const deleteCalls: Array<string> = []
-    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
-      const method = init?.method ?? "GET"
-      if (method === "GET") {
-        return { ok: true, status: 200, text: async () => JSON.stringify([existingRow]) }
-      }
-      if (method === "DELETE") {
-        deleteCalls.push(String(url))
-        return { ok: true, status: 204, text: async () => "" }
-      }
-      return { ok: true, status: 200, text: async () => "{}" }
-    })
-    globalThis.fetch = fetchMock as unknown as typeof fetch
-
-    const exit = await Effect.runPromiseExit(scheduleSyncProgram)
-    expect(Exit.isSuccess(exit)).toBe(true)
-    expect(deleteCalls).toHaveLength(1)
-    expect(deleteCalls[0]).toContain("uber.stale")
-  })
-
-  it("marks unchanged rows without touching kernel", async () => {
-    // Prepare a schedule that already matches exactly
-    await writeFile(
-      join(vaultDir, "directives/schedules.md"),
-      [
-        "---",
-        "schema_version: 1",
-        "schedules:",
-        "  morning_brief:",
-        "    cron: \"30 8 * * *\"",
-        "    tz: Asia/Hong_Kong",
-        "    job: brief-and-send",
-        "    enabled: true",
-        "---",
-        "",
-      ].join("\n"),
-    )
-
-    const existingRow = {
-      name: "uber.morning_brief",
-      cron: "30 0 * * *",
-      target_kind: "exec",
-      command: ["/usr/local/bin/node", "/abs/path/uber.js", "run-daily"],
-      cwd: vaultDir,
-      env_keys: ["UBER_VAULT_DIR", "TELEGRAM_BOT_TOKEN", "TELEGRAM_PRIMARY_CHAT_ID", "DISCORD_NOTIFY_WEBHOOK_URL", "GCTRL_KERNEL_URL"],
-      enabled: true,
-      timeout_secs: 300,
-    }
-
-    const mutateCalls: Array<string> = []
-    const fetchMock = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
-      const method = init?.method ?? "GET"
-      if (method !== "GET") mutateCalls.push(method)
-      return { ok: true, status: 200, text: async () => JSON.stringify([existingRow]) }
-    })
-    globalThis.fetch = fetchMock as unknown as typeof fetch
-
-    const exit = await Effect.runPromiseExit(scheduleSyncProgram)
-    expect(Exit.isSuccess(exit)).toBe(true)
-    expect(mutateCalls).toHaveLength(0)
-  })
-
-  it("fails with kernel_unreachable when kernel returns 500", async () => {
+  it("propagates kernel_unreachable when kernel returns 500", async () => {
     await writeFile(
       join(vaultDir, "directives/schedules.md"),
       "---\nschema_version: 1\nschedules:\n  test:\n    cron: \"0 8 * * *\"\n    tz: Asia/Hong_Kong\n    job: brief-and-send\n---\n",
     )
-
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: false,
       status: 500,

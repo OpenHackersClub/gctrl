@@ -333,7 +333,7 @@ export type TimeboxProfileConfig = typeof TimeboxProfileConfig.Type
 export const ScheduleEntry = Schema.Struct({
   cron: Schema.String,
   tz: Schema.Literal("Asia/Hong_Kong"),
-  job: Schema.Literal("brief-and-send"),
+  job: Schema.Literal("brief-and-send", "report-and-send"),
   enabled: Schema.optional(Schema.Boolean),
 })
 export type ScheduleEntry = typeof ScheduleEntry.Type
