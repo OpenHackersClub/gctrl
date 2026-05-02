@@ -17,7 +17,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use gctrl_core::{ScheduleRunUpdate, SchedulerConfig};
+use gctrl_core::{
+    ScheduleRun, ScheduleRunUpdate, SchedulerConfig, FIRE_KIND_CRON, RUN_STATUS_FAILURE,
+    RUN_STATUS_REFUSED, RUN_STATUS_SUCCESS, RUN_STATUS_TIMED_OUT,
+};
 use gctrl_storage::SqliteStore;
 use tracing::{debug, error, info, warn};
 
@@ -95,6 +98,7 @@ impl ScheduleRunner {
     }
 
     async fn fire_one(&self, sched: gctrl_core::Schedule) {
+        let started_wall = Utc::now();
         let started = std::time::Instant::now();
         let timeout_secs = if sched.timeout_secs > 0 {
             sched.timeout_secs as u64
@@ -128,12 +132,19 @@ impl ScheduleRunner {
             last_run_at: now.to_rfc3339(),
             next_run_at: next,
             last_status: outcome.status,
-            last_response: outcome.response,
-            last_error: outcome.error,
+            last_response: outcome.response.clone(),
+            last_error: outcome.error.clone(),
             success: outcome.success,
         };
         if let Err(e) = self.store.record_schedule_run(&sched.id, &update) {
             error!(schedule = %sched.name, "scheduler: record_schedule_run failed: {e}");
+        }
+        // Append durable history. Done after the row UPDATE today; PR-2 of
+        // M1a folds this into a single SQLite transaction together with the
+        // inbox emit on streak boundary.
+        let run = build_run_row(&sched, &outcome, started_wall, now, FIRE_KIND_CRON);
+        if let Err(e) = self.store.insert_schedule_run(&run) {
+            error!(schedule = %sched.name, "scheduler: insert_schedule_run failed: {e}");
         }
     }
 
@@ -192,6 +203,8 @@ impl ScheduleRunner {
                     status: Some(status),
                     response: Some(preview),
                     error: None,
+                    timed_out: false,
+                    refused: false,
                 }
             }
             Err(e) => {
@@ -200,11 +213,14 @@ impl ScheduleRunner {
                     error = %e,
                     "scheduler: fire failed"
                 );
+                let timed_out = e.is_timeout();
                 FireOutcome {
                     success: false,
                     status: None,
                     response: None,
                     error: Some(e.to_string()),
+                    timed_out,
+                    refused: false,
                 }
             }
         }
@@ -233,6 +249,8 @@ impl ScheduleRunner {
                     status: None,
                     response: None,
                     error: Some(truncate(&format!("refused: {reason}"), ERROR_PREVIEW_BYTES)),
+                    timed_out: false,
+                    refused: true,
                 }
             }
             ExecOutcome::Spawned {
@@ -290,6 +308,8 @@ impl ScheduleRunner {
                     status: exit_code.map(|c| c as i64),
                     response: response_preview,
                     error: error_preview,
+                    timed_out,
+                    refused: false,
                 }
             }
         }
@@ -327,11 +347,72 @@ impl ScheduleRunner {
     }
 }
 
-struct FireOutcome {
-    success: bool,
-    status: Option<i64>,
-    response: Option<String>,
-    error: Option<String>,
+/// Outcome of a single fire — produced by `fire_http` / `fire_exec` and
+/// consumed by both `fire_one` (cron path) and `http::run_now` (manual path)
+/// when assembling a `ScheduleRun` history row.
+pub(crate) struct FireOutcome {
+    pub(crate) success: bool,
+    /// HTTP status (`http`) or child exit code (`exec`). The runner stuffs
+    /// both into the same `i64` for storage in the `schedules.last_status`
+    /// cache; `build_run_row` un-mixes them into the typed
+    /// `scheduler_runs.{http_status, exit_code}` columns.
+    pub(crate) status: Option<i64>,
+    pub(crate) response: Option<String>,
+    pub(crate) error: Option<String>,
+    /// `true` iff the failure is due to the `tokio::time::timeout` wrapper
+    /// expiring (exec path) or the http request timing out at the reqwest
+    /// layer (http path). PR-1 only sets this for exec; http timeouts are
+    /// recorded as plain `failure` until PR-2 surfaces a typed error path.
+    pub(crate) timed_out: bool,
+    /// `true` iff the exec path refused to spawn (gate violation). Surfaces
+    /// in `scheduler_runs.status = "refused"`. Unused for http rows.
+    pub(crate) refused: bool,
+}
+
+/// Translate a `FireOutcome` plus its timing into the durable history row.
+///
+/// `started_wall` and `finished_wall` MUST be the wall-clock UTC instants
+/// captured in `fire_one` / `run_now`; `Instant::now()` is monotonic and
+/// not serialisable.
+pub(crate) fn build_run_row(
+    sched: &gctrl_core::Schedule,
+    outcome: &FireOutcome,
+    started_wall: chrono::DateTime<Utc>,
+    finished_wall: chrono::DateTime<Utc>,
+    fire_kind: &str,
+) -> ScheduleRun {
+    let status = if outcome.refused {
+        RUN_STATUS_REFUSED
+    } else if outcome.timed_out {
+        RUN_STATUS_TIMED_OUT
+    } else if outcome.success {
+        RUN_STATUS_SUCCESS
+    } else {
+        RUN_STATUS_FAILURE
+    };
+    // Disambiguate the `outcome.status` overload on target_kind.
+    let (exit_code, http_status) = if sched.is_exec() {
+        (outcome.status, None)
+    } else {
+        (None, outcome.status)
+    };
+    let duration_ms = finished_wall
+        .signed_duration_since(started_wall)
+        .num_milliseconds();
+    ScheduleRun {
+        id: uuid::Uuid::new_v4().to_string(),
+        schedule_id: sched.id.clone(),
+        started_at: started_wall.to_rfc3339(),
+        finished_at: Some(finished_wall.to_rfc3339()),
+        status: status.into(),
+        fire_kind: fire_kind.into(),
+        exit_code,
+        http_status,
+        response_preview: outcome.response.clone(),
+        error_preview: outcome.error.clone(),
+        duration_ms: Some(duration_ms),
+        created_at: finished_wall.to_rfc3339(),
+    }
 }
 
 /// Read at most `RESPONSE_BODY_CAP_BYTES` from `resp` using chunked reads.

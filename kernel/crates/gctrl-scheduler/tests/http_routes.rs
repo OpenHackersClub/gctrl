@@ -169,6 +169,136 @@ async fn delete_returns_no_content_then_404() {
 }
 
 #[tokio::test]
+async fn runs_route_404_when_schedule_missing() {
+    let app = router();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/schedules/does-not-exist/runs")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn runs_route_returns_empty_for_no_history() {
+    let app = router();
+    let body = serde_json::json!({
+        "name": "fresh",
+        "cron": "0 */2 * * *",
+        "target_url": "http://x"
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/schedules")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let id = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(&format!("/api/schedules/{}/runs", id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["schedule_id"], id);
+    assert_eq!(json["runs"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn runs_route_resolves_schedule_by_name() {
+    // The dynamic-id route MUST accept either id or human-readable name —
+    // mirrors the existing /api/schedules/{id} behaviour. The Schedule
+    // page deep-links use the routine name for readability.
+    let app = router();
+    let body = serde_json::json!({
+        "name": "audit.codebase",
+        "cron": "0 */2 * * *",
+        "target_url": "http://x"
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/schedules")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/schedules/audit.codebase/runs")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["schedule_name"], "audit.codebase");
+}
+
+#[tokio::test]
+async fn global_runs_feed_empty_initially() {
+    let app = router();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/schedules/runs")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["runs"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn global_runs_feed_does_not_collide_with_id_route() {
+    // `/api/schedules/runs` MUST resolve to the global feed, not be
+    // interpreted as `/api/schedules/{id}` with id="runs". Regression
+    // guard for axum's longest-match semantics.
+    let app = router();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/schedules/runs")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // If shadowed by `{id}`, this would be 404 (no schedule named "runs").
+    // We expect 200 with a runs feed.
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert!(json["runs"].is_array());
+}
+
+#[tokio::test]
 async fn disable_clears_due_status() {
     let app = router();
     let body = serde_json::json!({

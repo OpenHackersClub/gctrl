@@ -5,7 +5,10 @@
 use std::sync::Arc;
 
 use chrono::{TimeZone, Utc};
-use gctrl_core::{Schedule, SchedulerConfig};
+use gctrl_core::{
+    Schedule, ScheduleRunFilter, SchedulerConfig, FIRE_KIND_CRON, RUN_STATUS_FAILURE,
+    RUN_STATUS_SUCCESS,
+};
 use gctrl_scheduler::ScheduleRunner;
 use gctrl_storage::SqliteStore;
 use wiremock::matchers::{method, path};
@@ -122,6 +125,59 @@ async fn runner_caps_huge_response_body() {
     // Preview cap (4 KB) is what actually lands in storage; the body cap
     // (64 KB) is what's read off the wire. The preview is well below either.
     assert!(stored.len() <= 8 * 1024, "stored len {}", stored.len());
+}
+
+#[tokio::test]
+async fn runner_appends_scheduler_runs_row_on_success() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&mock)
+        .await;
+
+    let store = Arc::new(SqliteStore::open(":memory:").unwrap());
+    let sched = make_due_schedule(&format!("{}/hook", mock.uri()));
+    store.create_schedule(&sched).unwrap();
+
+    let runner = ScheduleRunner::new(Arc::clone(&store), SchedulerConfig::default());
+    runner.tick().await.unwrap();
+
+    let runs = store
+        .list_schedule_runs(&sched.id, &ScheduleRunFilter::default())
+        .expect("list runs");
+    assert_eq!(runs.len(), 1, "exactly one history row per fire");
+    let r = &runs[0];
+    assert_eq!(r.status, RUN_STATUS_SUCCESS);
+    assert_eq!(r.fire_kind, FIRE_KIND_CRON);
+    assert_eq!(r.http_status, Some(200));
+    assert!(r.exit_code.is_none(), "http rows do not set exit_code");
+    assert!(r.duration_ms.unwrap() >= 0);
+    assert!(r.finished_at.is_some(), "cron path always closes the row");
+}
+
+#[tokio::test]
+async fn runner_appends_scheduler_runs_row_on_failure() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/boom"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&mock)
+        .await;
+
+    let store = Arc::new(SqliteStore::open(":memory:").unwrap());
+    let sched = make_due_schedule(&format!("{}/boom", mock.uri()));
+    store.create_schedule(&sched).unwrap();
+
+    let runner = ScheduleRunner::new(Arc::clone(&store), SchedulerConfig::default());
+    runner.tick().await.unwrap();
+
+    let runs = store
+        .list_schedule_runs(&sched.id, &ScheduleRunFilter::default())
+        .expect("list runs");
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].status, RUN_STATUS_FAILURE);
+    assert_eq!(runs[0].http_status, Some(503));
 }
 
 #[tokio::test]

@@ -241,12 +241,9 @@ mod tests {
 
     fn cfg_with(allowed: Vec<PathBuf>, enabled: bool) -> SchedulerConfig {
         SchedulerConfig {
-            enabled: true,
-            poll_interval_secs: 30,
-            max_per_tick: 16,
-            default_timeout_secs: 60,
             exec_enabled: enabled,
             exec_allowed_programs: allowed,
+            ..SchedulerConfig::default()
         }
     }
 
