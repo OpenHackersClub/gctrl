@@ -1687,6 +1687,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "gctrl-browser"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "gctrl-cli"
 version = "0.1.0"
 dependencies = [
@@ -1850,6 +1864,7 @@ dependencies = [
  "duckdb",
  "feed-rs",
  "futures-core",
+ "gctrl-browser",
  "gctrl-context",
  "gctrl-core",
  "gctrl-driver-macos",

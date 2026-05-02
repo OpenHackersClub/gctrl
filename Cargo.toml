@@ -15,6 +15,7 @@ members = [
     "kernel/crates/gctrl-scheduler",
     "kernel/crates/gctrl-gcal",
     "kernel/crates/gctrl-driver-macos",
+    "kernel/crates/gctrl-browser",
 ]
 
 [workspace.package]

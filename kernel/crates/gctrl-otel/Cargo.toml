@@ -16,6 +16,7 @@ gctrl-scheduler = { path = "../gctrl-scheduler" }
 gctrl-proxy = { path = "../gctrl-proxy" }
 gctrl-gcal = { path = "../gctrl-gcal" }
 gctrl-driver-macos = { path = "../gctrl-driver-macos" }
+gctrl-browser = { path = "../gctrl-browser" }
 reqwest = { workspace = true }
 duckdb = { workspace = true }
 axum = { workspace = true }
