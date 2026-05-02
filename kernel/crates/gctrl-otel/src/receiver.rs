@@ -364,6 +364,10 @@ fn build_router(state: Arc<AppState>) -> Router {
                 spaces_state,
             })
         })
+        // Browser driver (LKM — CDP attach layer; PR1 stubs the pool, real
+        // chromium launch + WS proxy land in PR2). Recorder routes ship
+        // with gctrl-recorder in PR3.
+        .merge(crate::browser_routes::router::<()>())
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {

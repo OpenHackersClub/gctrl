@@ -223,6 +223,8 @@ gctrl browser stop
 
 All endpoints under `/api/browser/*`, protected by the daemon's bearer token.
 
+### Agent command layer (high-level — this document)
+
 ```
 POST /api/browser/command    { "command": "snapshot", "args": ["-i"] }
 GET  /api/browser/status
@@ -231,6 +233,21 @@ POST /api/browser/stop
 ```
 
 Response format: plain text for agent consumption (minimal token overhead). Errors include actionable guidance.
+
+### CDP attach layer (low-level — see implementation spec)
+
+Underneath the agent commands, the same `gctrl-browser` crate exposes a **raw CDP attach endpoint** for clients that want to drive Chromium directly via Chrome DevTools Protocol — primarily Playwright-based acceptance tests in apps. Each acquired session is a `BrowserContext` on a pooled Chromium; clients connect via `chromium.connectOverCDP(<cdpEndpoint>)` and observation (network, console, performance, screenshots) is captured by a sibling `gctrl-recorder` crate and queryable as JSON.
+
+```
+POST   /api/browser/sessions                      { viewport, recording, ttlSeconds }
+GET    /api/browser/sessions
+DELETE /api/browser/sessions/:id
+WS     /api/browser/sessions/:id/cdp?token=...    # raw CDP, per-session bearer-gated
+GET    /api/browser/sessions/:id/{network,console,metrics,report}
+GET    /api/browser/health
+```
+
+The agent command layer is itself implemented on top of this — `gctrl browser snapshot` acquires a session under the hood. See [vault/specs/implementation/kernel/driver-browser.md](../../implementation/kernel/driver-browser.md) for the pool semantics, recycle policy, recording cap, configuration schema, and migration plan.
 
 ---
 
