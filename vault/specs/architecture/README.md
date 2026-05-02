@@ -29,6 +29,7 @@ See `vault/specs/principles.md` for the full Unix philosophy mapping and design 
 vault/specs/architecture/
 ├── README.md          ← this file — system overview, Unix philosophy, data flow
 ├── os.md              ← layer guide: kernel, shell, apps, utilities, external apps
+├── app-decoupling.md  ← app ↔ kernel contract: zero duplication, port-based capabilities, ejection model
 ├── domain-model.md    ← domain types, storage schema (DDL), Effect-TS schemas
 │
 ├── kernel/            ← kernel primitives and extensions (Tasks + Sessions only)
@@ -52,6 +53,7 @@ vault/specs/architecture/
 | This file | System layers, Unix philosophy, internal code architecture, data flow |
 | [domain-model.md](domain-model.md) | Domain types, traits, storage schema (DDL), Effect-TS schemas |
 | [os.md](os.md) | Unix layers in depth — kernel, shell, applications, utilities, drivers (loadable kernel modules), and how to extend each |
+| [app-decoupling.md](app-decoupling.md) | App ↔ kernel contract — zero-duplication rule, capability ports, ejection as rebinding (not rewriting), reviewer boundary tests |
 | [kernel/orchestrator.md](kernel/orchestrator.md) | Orchestrator kernel primitive — Task claim states, dispatch eligibility, retry/backoff, concurrency control |
 | [kernel/scheduler.md](kernel/scheduler.md) | Scheduler kernel primitive — Task lifecycle, interface trait, platform implementations |
 | [kernel/harness.md](kernel/harness.md) | `AgentHarness` port — which agent program runs (`claude-code`, `codex`, `opencode`, …) |

@@ -52,6 +52,17 @@ These apply the Unix philosophy to gctrl's specific architecture.
 4. **Kernel MUST NOT make assumptions about applications.** It captures telemetry, stores data, enforces safety, and provides primitives. What you do with that — through the shell — is the application and utility layer's job.
 5. **Shell MUST mediate all external access to the kernel.** Agents and applications MUST interact with kernel primitives through CLI commands or HTTP API, never by importing kernel crates directly (except Rust apps compiled into the binary).
 
+## App ↔ Kernel Decoupling
+
+> Full spec: [architecture/app-decoupling.md](architecture/app-decoupling.md). The invariants below are non-negotiable.
+
+1. **Apps declare capability requirements; the kernel provides capability implementations.** Apps own their *ports* (e.g. `LlmService`, `DelivererService`, `VaultWriterPort`, `SecretsService`) and their business logic. The kernel — or, on a non-gctrl host, a user-supplied wiring — fulfills those ports through drivers / kernel modules.
+2. **Zero duplication by default.** An app MUST NOT ship in-app code that duplicates a capability the kernel already provides. If `driver-llm` routes Anthropic traffic, the app does NOT add its own `AnthropicLlm` adapter. If `driver-telegram` POSTs to the Bot API, the app does NOT add its own `TelegramDeliverer`. Two implementations drift; caching, OTel capture, secret injection, and rate limiting all live in the kernel — re-implementing the transport in the app silently regresses every one of those concerns.
+3. **The default Layer binds ports to the kernel.** Every app ships a default `Layer.mergeAll(...)` that wires each port to its kernel-fulfilled adapter (`KernelLlmLive`, `HttpDelivererLive`, `FileSystemVaultLive`, etc.). On a gctrl host, this is the only wiring needed.
+4. **Ejection is rebinding, not rewriting.** Installing an app on a non-gctrl host swaps the default Layer for a user-supplied Layer that satisfies the same port surface. The business logic, the ports, and the vault MUST NOT change. The app MUST NOT bundle hard-coded "alternate modes" (`local-direct`, `cloud-only`) that simply re-implement kernel drivers in app code.
+5. **Apps MUST NOT depend on app-specific kernel SQL tables.** The vault is the source of truth for app-owned data. The kernel watches the filesystem and indexes mtime + content_hash via a generic vault index — apps MUST NOT request per-app schemas in the kernel's DuckDB. (Application tables that DO exist in the kernel are deprecated; new apps MUST NOT add more.)
+6. **Ejection MUST NOT require touching app source.** A user installing the app on another host configures the binding (env var pointing to a Layer module, `gctrl-app.toml` capability mapping, etc.) — they do not edit app code. If the port surface forces source changes to swap implementations, the port surface is wrong.
+
 ## Crate Ownership
 
 When modifying code, respect crate boundaries:
