@@ -177,16 +177,25 @@ wrangler d1 migrations create gctrl-board-db "<description>"
 
 ## Markdown Directory Convention
 
-Issues are authored as plain markdown files inside the gctrl-board app vault. The kernel daemon (`gctrld serve --board-dir <path>`) runs a file watcher that imports new/modified `*.md` files into the local DuckDB `board_*` tables (content-hash deduped).
+Issues are authored as plain markdown files in an **external vault directory** (Obsidian-mountable, decoupled from git). The kernel daemon runs a file watcher that imports new/modified `*.md` files into the local DuckDB `board_*` tables (content-hash deduped).
+
+The vault path is resolved in this order:
+1. `--board-dir <path>` CLI flag
+2. `GCTRL_BOARD_DIR` env var (preferred for launchd/systemd; the launchd plist already sets this)
+3. `./gctrl/` in the daemon's cwd (legacy in-repo fallback)
+
+Reference layout:
 
 ```
-apps/gctrl-board/vault/      # Pass to --board-dir
-└── BOARD/                   # Subdirectory name = project key (uppercased)
-    ├── BOARD-1.md           #   filename stem must match issue key
+~/workspaces/ohc/vault-gctrl/   # External vault — Obsidian opens this folder
+└── BOARD/                      # Subdirectory name = project key (uppercased)
+    ├── BOARD-1.md              #   filename stem must match issue key
     └── BOARD-2.md
 ```
 
-INBOX records live in the gctrl-inbox app vault (`apps/gctrl-inbox/vault/INBOX/`) and follow the same convention; the daemon watches each app vault separately.
+The in-repo `apps/gctrl-board/vault/BOARD/` is gitignored — operational issue data is no longer tracked in source control. `apps/gctrl-board/vault/specs/` stays in the repo (project specs, not operational data).
+
+INBOX records follow the same convention under the same vault root (e.g. `~/workspaces/ohc/vault-gctrl/INBOX/`).
 
 Rules:
 
