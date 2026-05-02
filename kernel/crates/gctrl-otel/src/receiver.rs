@@ -430,6 +430,9 @@ fn build_router(state: Arc<AppState>) -> Router {
         // recorder observation endpoints.
         .merge(crate::browser_routes::router::<()>())
         .merge(crate::recorder_routes::router::<()>())
+        // macOS communication driver (LKM — focus iTerm2/Terminal sessions
+        // from inbox deeplinks). On non-macOS the routes return 501.
+        .merge(crate::comm_routes::router::<()>())
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {

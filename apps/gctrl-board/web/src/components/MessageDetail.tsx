@@ -1,5 +1,12 @@
 import { useState } from "react"
-import type { InboxMessage } from "../types"
+import {
+  buildFocusCliCommand,
+  buildFocusUrl,
+  labelFor,
+  shouldShowFocus,
+} from "../lib/deeplink"
+import { useCapabilities } from "../hooks/useCapabilities"
+import type { InboxMessage, TerminalContext } from "../types"
 
 const URGENCY_DOT: Record<string, string> = {
   urgent: "#f43f5e",
@@ -32,6 +39,7 @@ interface Props {
 export function MessageDetail({ message, onAction }: Props) {
   const [acting, setActing] = useState<string | null>(null)
   const [contextOpen, setContextOpen] = useState(false)
+  const { capabilities, refresh: refreshCapabilities } = useCapabilities()
 
   const urgencyColor = URGENCY_DOT[message.urgency] ?? URGENCY_DOT.low
 
@@ -45,7 +53,21 @@ export function MessageDetail({ message, onAction }: Props) {
     }
   }
 
-  const contextEntries = message.context ? Object.entries(message.context) : []
+  const terminal: TerminalContext | undefined =
+    message.context && typeof message.context === "object"
+      ? (message.context as { terminal?: TerminalContext }).terminal
+      : undefined
+
+  const focusUrl = terminal ? buildFocusUrl(terminal) : null
+  const showFocus = shouldShowFocus(capabilities, terminal) && focusUrl !== null
+  const automationDenied =
+    capabilities?.os === "macos" && capabilities.automation_granted === false
+
+  // For the "Context" panel below, hide the `terminal` block so it isn't
+  // double-rendered (the Focus button + tooltip already surfaces it).
+  const contextEntries = message.context
+    ? Object.entries(message.context).filter(([k]) => k !== "terminal")
+    : []
 
   return (
     <div className="flex flex-col h-full animate-fade-in">
@@ -143,6 +165,15 @@ export function MessageDetail({ message, onAction }: Props) {
 
       {/* Action bar */}
       <div className="px-5 py-3 border-t border-zinc-800/50 flex items-center gap-2 shrink-0">
+        {showFocus && focusUrl && terminal && (
+          <FocusButton url={focusUrl} terminal={terminal} />
+        )}
+        {automationDenied && terminal && terminal.app !== "unknown" && (
+          <AutomationDeniedHint
+            terminal={terminal}
+            onRefresh={refreshCapabilities}
+          />
+        )}
         <ActionButton
           label="Approve"
           actionType="approve"
@@ -172,6 +203,88 @@ export function MessageDetail({ message, onAction }: Props) {
           className="bg-amber-500/10 text-amber-400 border-amber-500/25 hover:bg-amber-500/20"
         />
       </div>
+    </div>
+  )
+}
+
+// --- Focus button ---------------------------------------------------------
+//
+// Renders an anchor with the `gctrl://focus/...` href. On macOS with
+// gctrl-desktop installed, LaunchServices catches the click and forwards
+// to `/api/comm/focus` (defense-in-depth: kernel re-validates).
+//
+// If the user doesn't have gctrl-desktop, clicking does nothing visible —
+// the OS shows a "no app handles this URL" prompt. We surface a copy-to-
+// clipboard fallback in the tooltip so headless users still have a path.
+
+function FocusButton({
+  url,
+  terminal,
+}: {
+  url: string
+  terminal: TerminalContext
+}) {
+  const [copied, setCopied] = useState(false)
+  const cli = buildFocusCliCommand(terminal)
+  const tooltip = `${labelFor(terminal.app)}${terminal.cwd ? ` · ${terminal.cwd}` : ""}`
+
+  const copyCli = async (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!cli) return
+    try {
+      await navigator.clipboard.writeText(cli)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // Clipboard may be denied (e.g. http://). Fall through silently —
+      // the user can still click the main anchor below.
+    }
+  }
+
+  return (
+    <span className="inline-flex items-stretch gap-px mr-1">
+      <a
+        href={url}
+        title={tooltip}
+        className="px-3 py-1.5 text-[13px] font-display font-medium tracking-wide border border-sky-500/25 bg-sky-500/10 text-sky-400 hover:bg-sky-500/20 transition-colors cursor-pointer no-underline"
+      >
+        FOCUS {labelFor(terminal.app).toUpperCase()}
+      </a>
+      {cli && (
+        <button
+          type="button"
+          onClick={copyCli}
+          title={copied ? "Copied!" : `Copy: ${cli}`}
+          className="px-2 py-1.5 text-[11px] font-mono border border-l-0 border-sky-500/25 bg-sky-500/5 text-sky-300/80 hover:bg-sky-500/15 transition-colors cursor-pointer"
+        >
+          {copied ? "✓" : "⧉"}
+        </button>
+      )}
+    </span>
+  )
+}
+
+function AutomationDeniedHint({
+  terminal,
+  onRefresh,
+}: {
+  terminal: TerminalContext
+  onRefresh: () => void
+}) {
+  return (
+    <div className="flex items-center gap-2 mr-2 px-2 py-1.5 text-[11px] font-mono text-amber-400/80 border border-amber-500/25 bg-amber-500/5">
+      <span>
+        Automation denied for {labelFor(terminal.app)} · grant in System
+        Settings → Privacy & Security → Automation
+      </span>
+      <button
+        type="button"
+        onClick={onRefresh}
+        className="px-1.5 py-0.5 text-[10px] tracking-wider uppercase border border-amber-500/30 hover:bg-amber-500/15 cursor-pointer"
+      >
+        Refresh
+      </button>
     </div>
   )
 }

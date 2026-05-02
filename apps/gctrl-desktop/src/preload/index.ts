@@ -23,6 +23,12 @@ declare global {
       readonly openExternal: (url: string) => Promise<void>
       readonly showInFinder: (path: string) => Promise<void>
       readonly appVersion: () => Promise<string>
+      /**
+       * Subscribe to `gctrl://inbox/...` deep-link navigation events. The
+       * main process emits these when LaunchServices delivers a deep link
+       * (handled in `main/url-handler.ts`). Returns an unsubscribe fn.
+       */
+      readonly onNavigate: (cb: (route: string) => void) => () => void
     }
   }
 }
@@ -37,4 +43,13 @@ contextBridge.exposeInMainWorld("desktop", {
   openExternal: (url: string) => ipcRenderer.invoke("open-external", url),
   showInFinder: (path: string) => ipcRenderer.invoke("show-in-finder", path),
   appVersion: () => ipcRenderer.invoke("app-version"),
+  onNavigate: (cb: (route: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, route: string): void => {
+      cb(route)
+    }
+    ipcRenderer.on("gctrl-navigate", handler)
+    return () => {
+      ipcRenderer.removeListener("gctrl-navigate", handler)
+    }
+  },
 })

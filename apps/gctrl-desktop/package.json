@@ -54,6 +54,12 @@
     ],
     "asar": true,
     "asarUnpack": ["resources/kernel/**"],
+    "protocols": [
+      {
+        "name": "gctrl",
+        "schemes": ["gctrl"]
+      }
+    ],
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": [
@@ -64,7 +70,14 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "notarize": false,
-      "x64ArchFiles": "Contents/Resources/kernel/*"
+      "x64ArchFiles": "Contents/Resources/kernel/*",
+      "extendInfo": {
+        "NSAppleEventsUsageDescription": "gctrl uses Apple Events to focus the terminal session that issued an agent permission request from your inbox.",
+        "NSAppleEventsUsageDescriptionTargets": {
+          "com.googlecode.iterm2": "gctrl uses Apple Events to bring the iTerm2 window that issued an agent permission request to the front.",
+          "com.apple.Terminal": "gctrl uses Apple Events to bring the Terminal.app tab that issued an agent permission request to the front."
+        }
+      }
     },
     "afterSign": "build/notarize.cjs",
     "publish": {

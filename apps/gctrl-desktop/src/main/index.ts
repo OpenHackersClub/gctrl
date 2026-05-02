@@ -14,12 +14,18 @@ import { resolveKernelBinPath, resolveKernelDataDir } from "./paths"
 import { createScheduler } from "./scheduler"
 import { createSpawner } from "./spawner"
 import { startAutoUpdater } from "./updater"
+import { handleGctrlUrl, type UrlHandlerDeps } from "./url-handler"
 
 const KERNEL_PORT = 4318
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 let sidecar: KernelSidecar | undefined
 let mainWindow: BrowserWindow | undefined
+
+// Buffer URLs that arrive before the BrowserWindow is ready (cold-launch
+// path: `open gctrl://...` starts the app, fires `open-url`, then the
+// window is created). Drained on `did-finish-load`.
+const pendingUrls: string[] = []
 
 const createSidecar = (): KernelSidecar | undefined => {
   // Only spawn the kernel sidecar in packaged mode. In dev, contributors run
@@ -100,6 +106,12 @@ const createWindow = (): BrowserWindow => {
     return { action: "deny" }
   })
 
+  // Drain any URLs that arrived before this window existed.
+  win.webContents.on("did-finish-load", () => {
+    const urls = pendingUrls.splice(0)
+    for (const url of urls) void dispatchGctrlUrl(url)
+  })
+
   return win
 }
 
@@ -108,6 +120,53 @@ ipcMain.handle("show-in-finder", (_event, p: string) => {
   shell.showItemInFolder(p)
 })
 ipcMain.handle("app-version", () => app.getVersion())
+
+// --- gctrl:// URL scheme ----------------------------------------------------
+
+// Register `gctrl://` once on app startup (idempotent). LaunchServices then
+// routes any `gctrl://...` click — from a browser, an inbox anchor, or
+// `open(1)` — to this app via the `open-url` event.
+if (!app.isDefaultProtocolClient("gctrl")) {
+  app.setAsDefaultProtocolClient("gctrl")
+}
+
+const urlHandlerDeps = (): UrlHandlerDeps => ({
+  kernelPost: async (path, body) => {
+    const res = await fetch(`http://127.0.0.1:${KERNEL_PORT}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })
+    return { ok: res.ok, status: res.status, bodyText: await res.text() }
+  },
+  bringToFront: () => {
+    if (!mainWindow) return
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  },
+  navigateSpa: (route) => {
+    // Renderer subscribes to `gctrl-navigate` via the preload bridge.
+    if (mainWindow) mainWindow.webContents.send("gctrl-navigate", route)
+  },
+  logger: console,
+})
+
+async function dispatchGctrlUrl(url: string): Promise<void> {
+  const deps = urlHandlerDeps()
+  await handleGctrlUrl(url, deps)
+}
+
+app.on("open-url", (event, url) => {
+  event.preventDefault()
+  // If the BrowserWindow isn't ready yet, buffer the URL — the cold-launch
+  // path fires `open-url` before any window exists.
+  if (!mainWindow || !mainWindow.webContents || mainWindow.webContents.isLoading()) {
+    pendingUrls.push(url)
+    return
+  }
+  void dispatchGctrlUrl(url)
+})
 
 void app.whenReady().then(() => {
   Menu.setApplicationMenu(buildAppMenu())
