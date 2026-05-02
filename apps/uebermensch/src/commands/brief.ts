@@ -158,7 +158,3 @@ export const brief = Command.make(
       )
     }),
 ).pipe(Command.withDescription("Generate a daily brief from wiki pages + stub LLM"))
-<<<<<<< HEAD
-=======
-
->>>>>>> 059f5d1 (test(uebermensch): regression guard — brief pipeline makes zero kernel fetch calls)
