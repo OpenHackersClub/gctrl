@@ -389,17 +389,20 @@ const fetchKernel = (
     return raw;
   });
 
-// Bounded retry loop for `rate_limited` LlmErrors only. Honors
-// `retryAfterMs` from the upstream when present and otherwise falls
-// back to exponential backoff capped at MAX_MS. Other LlmError kinds
-// propagate immediately so a 503 / invalid request surfaces fast.
+// Bounded retry loop for transient LlmErrors. Two kinds qualify:
+//   - `rate_limited` (HTTP 429): honors `retryAfterMs` when present,
+//     otherwise exponential backoff capped at MAX_MS.
+//   - `unavailable`  (HTTP 502/503 + connection failures): exponential
+//     backoff only — upstream doesn't supply a hint.
+// `invalid` (4xx other than 429) propagates immediately so a malformed
+// request surfaces fast.
 //
 // Knobs (env, all optional):
 //   UBER_LLM_RATE_LIMIT_RETRIES  attempts after the first failure (default 4)
 //   UBER_LLM_RATE_LIMIT_BASE_MS  base delay for exponential backoff (default 2000)
 //   UBER_LLM_RATE_LIMIT_MAX_MS   ceiling delay (default 60000)
-// Setting RETRIES=0 disables retry entirely — the typed `LlmError` with
-// kind=rate_limited surfaces directly to the caller (used by tests).
+// Setting RETRIES=0 disables retry entirely — the typed `LlmError`
+// surfaces directly to the caller (used by tests).
 const envInt = (key: string, fallback: number, min = 0): number => {
   const raw = process.env[key];
   if (raw === undefined || raw === null) return fallback;
@@ -419,6 +422,9 @@ const rateLimitConfig = (): RateLimitConfig => ({
   maxMs: envInt("UBER_LLM_RATE_LIMIT_MAX_MS", 60_000, 1),
 });
 
+const isTransientKind = (kind: LlmError["kind"]): boolean =>
+  kind === "rate_limited" || kind === "unavailable";
+
 const withRateLimitRetry = <A>(
   eff: Effect.Effect<A, LlmError>,
 ): Effect.Effect<A, LlmError> => {
@@ -426,11 +432,16 @@ const withRateLimitRetry = <A>(
   const loop = (attempt: number): Effect.Effect<A, LlmError> =>
     eff.pipe(
       Effect.catchTag("LlmError", (e) => {
-        if (e.kind !== "rate_limited" || attempt >= cfg.maxRetries) {
+        if (!isTransientKind(e.kind) || attempt >= cfg.maxRetries) {
           return Effect.fail(e);
         }
         const expBackoff = Math.min(cfg.baseMs * 2 ** attempt, cfg.maxMs);
-        const delayMs = e.retryAfterMs ?? expBackoff;
+        // 429 supplies retryAfterMs; 5xx does not — fall back to
+        // exponential. Cap the hint at MAX_MS too so a buggy upstream
+        // can't stall a run.
+        const hint = e.retryAfterMs;
+        const delayMs =
+          hint !== undefined ? Math.min(hint, cfg.maxMs) : expBackoff;
         return Effect.sleep(Duration.millis(delayMs)).pipe(
           Effect.andThen(loop(attempt + 1)),
         );

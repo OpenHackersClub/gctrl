@@ -8,7 +8,7 @@ import { _internal as KernelLlmInternal, KernelLlmLive } from "../adapters/Kerne
 import { R2SyncConfigFromEnv, R2SyncLive } from "../adapters/R2Sync.js"
 import { StrictRendererLive } from "../adapters/StrictRenderer.js"
 import { StubLlmLive } from "../adapters/StubLlm.js"
-import { DeliveryError } from "../errors.js"
+import { DeliveryError, LlmError } from "../errors.js"
 import { selectCandidates, type CandidateRef } from "../lib/candidates.js"
 import { isChatChannel, resolveChannels } from "../lib/channels.js"
 import { publicBaseUrl, publicReportUrl, requiresR2Sync, resolveVaultDir } from "../lib/env.js"
@@ -343,7 +343,14 @@ export const report = Command.make(
           readonly proposeCostUsd: number
           readonly response: InterestReportResponse
         }
-        const responses: ReadonlyArray<DeepResponse> = yield* Effect.all(
+        // Per-interest pipeline wrapped in Effect.either so a single
+        // transient failure (rate-limit-after-retries, gateway 502, etc.)
+        // doesn't abort the whole batch — every other interest still runs.
+        // Failed interests are reported in the run summary and skipped
+        // when rendering.
+        const perInterest: ReadonlyArray<
+          Either.Either<DeepResponse, LlmError>
+        > = yield* Effect.all(
           interestInputs.map((ii) =>
             Effect.gen(function* () {
               yield* Console.log(`  → ${ii.slug}: proposing subtopic ...`)
@@ -411,10 +418,30 @@ export const report = Command.make(
                 proposeCostUsd: propose.costUsd,
                 response,
               }
-            }),
+            }).pipe(Effect.either),
           ),
           { concurrency },
         )
+
+        const responses: ReadonlyArray<DeepResponse> = []
+        const failures: Array<{ slug: string; error: LlmError }> = []
+        for (let i = 0; i < perInterest.length; i += 1) {
+          const result = perInterest[i]!
+          const slug = interestInputs[i]!.slug
+          if (Either.isLeft(result)) {
+            failures.push({ slug, error: result.left })
+            yield* Console.log(
+              `  ✗ ${slug}: ${result.left.kind ?? "error"} — ${result.left.message}`,
+            )
+          } else {
+            ;(responses as DeepResponse[]).push(result.right)
+          }
+        }
+        if (failures.length > 0) {
+          yield* Console.log(
+            `  ${failures.length}/${interestInputs.length} interest(s) failed: ${failures.map((f) => f.slug).join(", ")}`,
+          )
+        }
 
         // Render per-interest reports; drop empty ones (insight-only).
         type Written = {

@@ -93,12 +93,18 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
   const prevModel = process.env.UBER_LLM_MODEL
   const prevSummaryModel = process.env.UBER_LLM_SUMMARY_MODEL
 
+  // Default to retries=0 across this suite so failure-shape assertions
+  // observe the typed error directly. Tests that exercise retry behavior
+  // (transient 502, 429 then 200) override this env in their setup.
+  const prevRetries = process.env.UBER_LLM_RATE_LIMIT_RETRIES
+
   beforeEach(() => {
     process.env.GCTRL_KERNEL_URL = "http://kernel.test"
     // Pin to claude-* models so these tests exercise the Anthropic /messages
     // path. The live defaults are now LM Studio (OpenAI-compat /completions).
     process.env.UBER_LLM_MODEL = TEST_ANTHROPIC_MODEL
     process.env.UBER_LLM_SUMMARY_MODEL = TEST_ANTHROPIC_SUMMARY_MODEL
+    process.env.UBER_LLM_RATE_LIMIT_RETRIES = "0"
   })
 
   afterEach(() => {
@@ -108,6 +114,8 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
     else process.env.UBER_LLM_MODEL = prevModel
     if (prevSummaryModel === undefined) delete process.env.UBER_LLM_SUMMARY_MODEL
     else process.env.UBER_LLM_SUMMARY_MODEL = prevSummaryModel
+    if (prevRetries === undefined) delete process.env.UBER_LLM_RATE_LIMIT_RETRIES
+    else process.env.UBER_LLM_RATE_LIMIT_RETRIES = prevRetries
   })
 
   it("POSTs to kernel /api/llm/messages and decodes items", async () => {
@@ -247,6 +255,88 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
     } finally {
       if (prevModel === undefined) delete process.env.UBER_LLM_MODEL
       else process.env.UBER_LLM_MODEL = prevModel
+    }
+  })
+
+  it("transient unavailable 502 retries with exponential backoff then succeeds", async () => {
+    const prevRetries = process.env.UBER_LLM_RATE_LIMIT_RETRIES
+    const prevBase = process.env.UBER_LLM_RATE_LIMIT_BASE_MS
+    process.env.UBER_LLM_RATE_LIMIT_RETRIES = "3"
+    process.env.UBER_LLM_RATE_LIMIT_BASE_MS = "1"
+    try {
+      const failResponse = {
+        ok: false,
+        status: 502,
+        text: async () => "ai gateway request failed",
+      }
+      const okResponse = {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify(anthropicJson({
+            items: [],
+            topicsCovered: [],
+            thesesCovered: [],
+          })),
+      }
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(failResponse)
+        .mockResolvedValue(okResponse)
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+
+      const res = await Effect.runPromise(
+        Effect.gen(function* () {
+          const llm = yield* LlmService
+          return yield* llm.generateBrief({
+            date: "2026-04-22",
+            profileName: "Test",
+            topics: [],
+            thesesSlugs: [],
+            candidates: [],
+            maxItems: 1,
+          })
+        }).pipe(Effect.provide(KernelLlmLive)),
+      )
+      expect(res.items).toEqual([])
+      expect(fetchMock.mock.calls.length).toBe(2)
+    } finally {
+      if (prevRetries === undefined) delete process.env.UBER_LLM_RATE_LIMIT_RETRIES
+      else process.env.UBER_LLM_RATE_LIMIT_RETRIES = prevRetries
+      if (prevBase === undefined) delete process.env.UBER_LLM_RATE_LIMIT_BASE_MS
+      else process.env.UBER_LLM_RATE_LIMIT_BASE_MS = prevBase
+    }
+  })
+
+  it("invalid 400 surfaces immediately without retrying", async () => {
+    const prevRetries = process.env.UBER_LLM_RATE_LIMIT_RETRIES
+    process.env.UBER_LLM_RATE_LIMIT_RETRIES = "3"
+    try {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        text: async () => "bad request",
+      })
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+
+      const exit = await Effect.runPromiseExit(
+        Effect.gen(function* () {
+          const llm = yield* LlmService
+          return yield* llm.generateBrief({
+            date: "2026-04-22",
+            profileName: "Test",
+            topics: [],
+            thesesSlugs: [],
+            candidates: [],
+            maxItems: 1,
+          })
+        }).pipe(Effect.provide(KernelLlmLive)),
+      )
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(fetchMock).toHaveBeenCalledOnce() // no retry on `invalid`
+    } finally {
+      if (prevRetries === undefined) delete process.env.UBER_LLM_RATE_LIMIT_RETRIES
+      else process.env.UBER_LLM_RATE_LIMIT_RETRIES = prevRetries
     }
   })
 
