@@ -1,15 +1,22 @@
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { Command, Options } from "@effect/cli"
-import { Console, Effect, Option } from "effect"
+import { Console, Effect, Layer, Option } from "effect"
 import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js"
 import { HttpDelivererLive } from "../adapters/HttpDeliverer.js"
-import { VaultError } from "../errors.js"
-import { resolveChannels } from "../lib/channels.js"
-import { publicBriefUrl, resolveVaultDir } from "../lib/env.js"
-import { INPUT_BRIEFS_DIR } from "../lib/vault-paths.js"
+import { R2SyncConfigFromEnv, R2SyncLive } from "../adapters/R2Sync.js"
+import { DeliveryError, VaultError } from "../errors.js"
+import { isChatChannel, resolveChannels } from "../lib/channels.js"
+import { publicBaseUrl, publicBriefUrl, requiresR2Sync, resolveVaultDir } from "../lib/env.js"
+import {
+  INPUT_BRIEFS_DIR,
+  INPUT_RAW_DIR,
+  INPUT_REPORTS_DIR,
+  INPUT_WIKI_DIR,
+} from "../lib/vault-paths.js"
 import { DelivererService } from "../services/DelivererService.js"
 import { ProfileService } from "../services/ProfileService.js"
+import { SyncService } from "../services/SyncService.js"
 
 const dateOpt = Options.text("date").pipe(
   Options.withDescription("Brief date (YYYY-MM-DD); defaults to today"),
@@ -69,9 +76,57 @@ export const send = Command.make(
           return
         }
 
+        // Hosted-link invariant (specs/delivery.md): chat channels must link
+        // to a hosted URL (Cloudflare Pages, Tailscale Serve, or any HTTPS
+        // host). UBER_PUBLIC_BASE_URL is required for chat fan-out. The app
+        // driver is exempt — it renders the brief in-app from the vault.
         const briefUrl = publicBriefUrl(date)
-        const deliveryContent = briefUrl ? `🌐 ${briefUrl}\n\n${content}` : content
+        const chatChannels = channels.filter(isChatChannel)
+        if (chatChannels.length > 0 && briefUrl === null) {
+          return yield* Effect.fail(
+            new DeliveryError({
+              message:
+                "UBER_PUBLIC_BASE_URL is not set; refusing to send brief to chat channels (telegram/discord) without a hosted link. Set UBER_PUBLIC_BASE_URL=https://<host> (Cloudflare Pages, Tailscale Serve `https://<device>.<tailnet>.ts.net`, or any HTTPS host serving the vault) or restrict to --channel <app-channel>.",
+              kind: "config",
+            }),
+          )
+        }
+
+        // R2 sync only applies to the Cloudflare Pages backend. Tailscale-
+        // served / localhost / self-hosted setups serve the vault directly.
+        if (chatChannels.length > 0 && requiresR2Sync(publicBaseUrl())) {
+          yield* Console.log(`syncing vault → R2 (briefs/reports/raw/wiki) ...`)
+          const sync = yield* SyncService
+          const result = yield* sync
+            .run({
+              vaultDir,
+              prefixes: [
+                INPUT_BRIEFS_DIR,
+                INPUT_REPORTS_DIR,
+                INPUT_RAW_DIR,
+                INPUT_WIKI_DIR,
+              ],
+              dryRun: false,
+              force: false,
+            })
+            .pipe(
+              Effect.mapError(
+                (e) =>
+                  new DeliveryError({
+                    message: `R2 sync failed before chat send (${e.kind}): ${e.message}; refusing to send chat messages whose hosted link would 404.`,
+                    kind: "unreachable",
+                  }),
+              ),
+            )
+          yield* Console.log(
+            `  uploaded=${result.uploaded} skipped=${result.skipped} failed=${result.failed}`,
+          )
+        }
+
         for (const ch of channels) {
+          const deliveryContent = isChatChannel(ch)
+            ? `🌐 ${briefUrl}\n\n${content}`
+            : content
           const result = yield* deliverer
             .send({
               channel: ch.name,
@@ -96,9 +151,11 @@ export const send = Command.make(
         }
       })
 
+      const syncLayer = R2SyncLive.pipe(Layer.provide(R2SyncConfigFromEnv))
       yield* program.pipe(
         Effect.provide(FileSystemProfileLive(vaultDir)),
         Effect.provide(HttpDelivererLive),
+        Effect.provide(syncLayer),
       )
     }),
 ).pipe(

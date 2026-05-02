@@ -6,15 +6,22 @@ import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js"
 import { FileSystemVaultLive } from "../adapters/FileSystemVault.js"
 import { HttpDelivererLive } from "../adapters/HttpDeliverer.js"
 import { KernelLlmLive } from "../adapters/KernelLlm.js"
+import { R2SyncConfigFromEnv, R2SyncLive } from "../adapters/R2Sync.js"
 import { StrictRendererLive } from "../adapters/StrictRenderer.js"
 import { selectCandidates } from "../lib/candidates.js"
-import { resolveChannels } from "../lib/channels.js"
-import { publicBriefUrl, resolveVaultDir } from "../lib/env.js"
-import { INPUT_BRIEFS_DIR } from "../lib/vault-paths.js"
+import { isChatChannel, resolveChannels } from "../lib/channels.js"
+import { publicBaseUrl, publicBriefUrl, requiresR2Sync, resolveVaultDir } from "../lib/env.js"
+import {
+  INPUT_BRIEFS_DIR,
+  INPUT_RAW_DIR,
+  INPUT_REPORTS_DIR,
+  INPUT_WIKI_DIR,
+} from "../lib/vault-paths.js"
 import { DelivererService } from "../services/DelivererService.js"
 import { LlmService } from "../services/LlmService.js"
 import { ProfileService } from "../services/ProfileService.js"
 import { RendererService } from "../services/RendererService.js"
+import { SyncService } from "../services/SyncService.js"
 import { VaultService } from "../services/VaultService.js"
 
 const today = () => new Date().toISOString().slice(0, 10)
@@ -108,11 +115,22 @@ const runBriefGeneration = (
 
 // Fans out the brief content to all configured channels.
 // Returns { successes, failures } counts; never fails — errors are counted.
+//
+// Hosted-link invariant (specs/delivery.md): chat channels (telegram /
+// discord) must link to a hosted URL (Cloudflare Pages, Tailscale Serve, or
+// any HTTPS host). If any chat channel is enabled, require UBER_PUBLIC_BASE_URL.
+// R2 sync runs only for the Cloudflare Pages backend; Tailscale / localhost /
+// self-hosted setups serve the vault directly. The app driver is exempt and is
+// delivered to even if the chat path is short-circuited.
 const runSend = (
   date: string,
   vaultDir: string,
   content: string,
-): Effect.Effect<{ successes: number; failures: number }, never, ProfileService | DelivererService> =>
+): Effect.Effect<
+  { successes: number; failures: number },
+  never,
+  ProfileService | DelivererService | SyncService
+> =>
   Effect.gen(function* () {
     const briefRel = `${INPUT_BRIEFS_DIR}/${date}.md`
     yield* Console.log(`sending ${briefRel} from ${vaultDir}`)
@@ -139,11 +157,58 @@ const runSend = (
     yield* Console.log(`  ${channels.length} channel(s) to deliver`)
 
     const briefUrl = publicBriefUrl(date)
-    const deliveryContent = briefUrl ? `${briefUrl}\n\n${content}` : content
+    const chatChannels = channels.filter(isChatChannel)
+    const appChannels = channels.filter((c) => !isChatChannel(c))
+
+    let chatAllowed = true
+    if (chatChannels.length > 0 && briefUrl === null) {
+      yield* Console.error(
+        "  UBER_PUBLIC_BASE_URL is not set — refusing to send brief to chat channels (telegram/discord) without a hosted link. Configure UBER_PUBLIC_BASE_URL=https://<host> (Cloudflare Pages, Tailscale Serve `https://<device>.<tailnet>.ts.net`, or any HTTPS host serving the vault) or remove chat channels from profile.",
+      )
+      chatAllowed = false
+    }
+
+    if (chatAllowed && chatChannels.length > 0 && requiresR2Sync(publicBaseUrl())) {
+      yield* Console.log(`  syncing vault → R2 (briefs/reports/raw/wiki) ...`)
+      const sync = yield* SyncService
+      const syncResult = yield* sync
+        .run({
+          vaultDir,
+          prefixes: [
+            INPUT_BRIEFS_DIR,
+            INPUT_REPORTS_DIR,
+            INPUT_RAW_DIR,
+            INPUT_WIKI_DIR,
+          ],
+          dryRun: false,
+          force: false,
+        })
+        .pipe(Effect.either)
+      if (Either.isLeft(syncResult)) {
+        const err = syncResult.left
+        yield* Console.error(
+          `  R2 sync failed (${err.kind}): ${err.message} — refusing to send chat messages whose hosted link would 404`,
+        )
+        chatAllowed = false
+      } else {
+        yield* Console.log(
+          `    uploaded=${syncResult.right.uploaded} skipped=${syncResult.right.skipped} failed=${syncResult.right.failed}`,
+        )
+      }
+    }
 
     let successes = 0
     let failures = 0
-    for (const ch of channels) {
+    const eligible = chatAllowed ? channels : appChannels
+    if (eligible.length === 0 && channels.length > 0) {
+      // All channels were chat and we short-circuited — count as failure so
+      // run-daily exits non-zero and the scheduler retries / surfaces it.
+      failures = chatChannels.length
+    }
+    for (const ch of eligible) {
+      const deliveryContent = isChatChannel(ch)
+        ? `${briefUrl}\n\n${content}`
+        : content
       const result = yield* deliverer
         .send({
           channel: ch.name,
@@ -199,8 +264,15 @@ export const runDaily = Command.make("run-daily", {}, () =>
 
     const briefContent = briefResult.right
 
+    const syncLayer = R2SyncLive.pipe(Layer.provide(R2SyncConfigFromEnv))
     const { successes, failures } = yield* runSend(date, vaultDir, briefContent).pipe(
-      Effect.provide(Layer.mergeAll(FileSystemProfileLive(vaultDir), HttpDelivererLive)),
+      Effect.provide(
+        Layer.mergeAll(
+          FileSystemProfileLive(vaultDir),
+          HttpDelivererLive,
+          syncLayer,
+        ),
+      ),
     )
 
     yield* Console.log(`delivery: ${successes} ok, ${failures} failed`)

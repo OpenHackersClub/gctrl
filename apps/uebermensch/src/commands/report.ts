@@ -7,9 +7,10 @@ import { KernelLlmLive } from "../adapters/KernelLlm.js"
 import { R2SyncConfigFromEnv, R2SyncLive } from "../adapters/R2Sync.js"
 import { StrictRendererLive } from "../adapters/StrictRenderer.js"
 import { StubLlmLive } from "../adapters/StubLlm.js"
+import { DeliveryError } from "../errors.js"
 import { selectCandidates, type CandidateRef } from "../lib/candidates.js"
-import { resolveChannels } from "../lib/channels.js"
-import { publicReportUrl, resolveVaultDir } from "../lib/env.js"
+import { isChatChannel, resolveChannels } from "../lib/channels.js"
+import { publicBaseUrl, publicReportUrl, requiresR2Sync, resolveVaultDir } from "../lib/env.js"
 import {
   DIRECTIVES_RESEARCH_DIR,
   DIRECTIVES_SOURCES_FILE,
@@ -530,7 +531,16 @@ export const report = Command.make(
         )
 
         const indexUrl = publicReportUrl(periodLabel)
-        const doSync = doSyncOpt || (doSend && indexUrl !== null)
+
+        // Hosted-link invariant (specs/delivery.md): if --send is requested
+        // and any chat channel is enabled, UBER_PUBLIC_BASE_URL must be set
+        // so chat messages can link to a hosted report (Cloudflare Pages,
+        // Tailscale Serve, etc.). The strict channel check happens just
+        // before the fan-out below; sync is scheduled up-front so chat
+        // content is live before delivery. R2 sync only applies to the
+        // Cloudflare Pages backend — Tailscale / localhost setups serve the
+        // vault directly and skip the upload.
+        const doSync = (doSyncOpt || doSend) && requiresR2Sync(publicBaseUrl())
         if (doSync) {
           yield* Console.log(`syncing vault → R2 ...`)
           const syncResult = yield* Effect.serviceOption(SyncService).pipe(
@@ -581,17 +591,33 @@ export const report = Command.make(
           return
         }
 
-        const deliveryContent = indexUrl
-          ? `🌐 ${indexUrl}\n\n${indexRendered.markdown}`
-          : indexRendered.markdown
-
         const deliverer = yield* DelivererService
         const channels = yield* resolveChannels(
           profile.profile.delivery.channels as Record<string, unknown>,
           null,
         )
         yield* Console.log(`  ${channels.length} channel(s) to deliver`)
+
+        // Hosted-link invariant: chat channels MUST link to a hosted URL
+        // (Cloudflare Pages, Tailscale Serve, or any HTTPS host). If any chat
+        // channel is enabled and UBER_PUBLIC_BASE_URL is unset, fail rather
+        // than ship a chat message without a hosted link. App-driver channels
+        // are exempt.
+        const chatChannels = channels.filter(isChatChannel)
+        if (chatChannels.length > 0 && indexUrl === null) {
+          return yield* Effect.fail(
+            new DeliveryError({
+              message:
+                "UBER_PUBLIC_BASE_URL is not set; refusing to send weekly report to chat channels (telegram/discord) without a hosted link. Set UBER_PUBLIC_BASE_URL=https://<host> (Cloudflare Pages, Tailscale Serve `https://<device>.<tailnet>.ts.net`, or any HTTPS host serving the vault) or drop --send.",
+              kind: "config",
+            }),
+          )
+        }
+
         for (const ch of channels) {
+          const deliveryContent = isChatChannel(ch)
+            ? `🌐 ${indexUrl}\n\n${indexRendered.markdown}`
+            : indexRendered.markdown
           const result = yield* deliverer
             .send({
               channel: ch.name,
