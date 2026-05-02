@@ -19,11 +19,11 @@ It is the load-bearing piece for the [zero-duplication invariant](app-decoupling
 
 | Concept | Definition |
 |---|---|
-| **Manifest** | `gctrl-app.toml` at the app's package root. Declares the app's identity, the **capability requirements** it has, the **vault mounts** it owns, and the **scheduler hooks** it registers. |
+| **Manifest** | `gctrl-app.toml` at the app's package root. Declares the app's identity, the **capability requirements** it has, the **vault project key(s)** it owns under the shared external vault root, and the **scheduler hooks** it registers. |
 | **Capability** | A named kernel-provided service (`llm`, `deliverer.telegram`, `vault.write`, `vault.sync`, `secrets`, `scheduler`, `otel.capture`, `search.brave`, `gcal`, `browser.cdp`, …). The kernel publishes the registry of capability ids it knows how to fulfill. |
 | **Capability requirement** | An entry in `[requires]` declaring the app needs a capability. Optional capabilities go in `[optional]` — the app starts without them and feature-gates the relevant code paths. |
 | **Capability binding** | The concrete kernel driver that fulfills a capability on this host. The capability registry pins a single default driver per capability id; install just records that the app is using it. |
-| **Install** | `gctrl app install <ref>`. Reads the manifest, validates required capabilities are in the kernel registry, registers vault mounts, registers scheduler hooks, persists the install record. |
+| **Install** | `gctrl app install <ref>`. Reads the manifest, validates required capabilities are in the kernel registry, registers project keys under the kernel's vault root, registers scheduler hooks, persists the install record. |
 
 ## Manifest schema (`gctrl-app.toml`)
 
@@ -68,12 +68,15 @@ description = "Brave Search API for ingest discovery"
 [optional.browser.cdp]
 description = "Headless Chromium for paywalled article extraction"
 
-# Vault mounts the app owns. Registered in `gctrl_vault_mounts` at install
-# time; the kernel watcher indexes path changes thereafter.
-[[vault-mounts]]
-name = "uber"                          # unique; used as R2 prefix
-root = "${UBER_VAULT_DIR:-~/uber-vault}"
-description = "Uebermensch app vault — directives + input + output"
+# Vault project keys this app owns. The vault ROOT is owned by the kernel
+# (resolved from `--board-dir` → `GCTRL_BOARD_DIR` env → `./gctrl/`); each
+# subdirectory of the root is a project key. The app declares which keys
+# it claims at install time. Registered in `gctrl_vault_mounts` so the
+# kernel watcher knows which app owns each key. See PR #163 for the
+# externalized-vault model that this builds on.
+[[vault-projects]]
+key = "UBER"                           # uppercase; matches subdir under vault root
+description = "Uebermensch namespace — directives / input / output / action subtrees"
 
 # Scheduler hooks. Registered as kernel `schedules` rows at install time.
 # The kernel scheduler runs them; the app does not own a scheduler.
@@ -117,7 +120,8 @@ description = "Base URL where the synced vault is hosted (Cloudflare Pages, Tail
 - All names are kebab-case. `[requires.<dot.path>]` and `[optional.<dot.path>]` use dotted capability identifiers.
 - Capability identifiers MUST come from the published kernel capability registry (see [§ Capability Registry](#capability-registry)). Manifests referencing unknown capabilities are rejected at install. New capabilities require a kernel update.
 - A capability listed in both `[requires]` and `[optional]` is an error.
-- Vault mount names are globally unique within the kernel (one row per `gctrl_vault_mounts.name`).
+- Project keys (`[[vault-projects]] key`) are uppercase, globally unique within a single vault root, and become subdirectory names directly. The kernel rejects install if the key collides with an already-registered project owned by a different app.
+- The vault root is **kernel-owned**, not per-app. It comes from `--board-dir` → `GCTRL_BOARD_DIR` → `./gctrl/` (per [#163](https://github.com/OpenHackersClub/gctrl/pull/163)). Apps DO NOT declare a vault `root` in the manifest.
 
 ## Install flow
 
@@ -133,8 +137,10 @@ sequenceDiagram
   K->>K: validate manifest (schema + every cap exists in registry)
   alt Required cap missing from registry
     K-->>U: error "uebermensch requires unknown capability `vault.frobnicate`"
-  else All required caps present
-    K->>DB: register vault mounts (gctrl_vault_mounts)
+  else Project key collides with another app
+    K-->>U: error "project key `UBER` already owned by app `<other>`"
+  else All checks pass
+    K->>DB: register vault projects (gctrl_vault_mounts, owner=<app name>)
     K->>DB: register schedules (schedules)
     K->>DB: persist install record (gctrl_app_installs)
     K->>DB: persist resolved bindings (gctrl_app_bindings)
@@ -146,10 +152,10 @@ sequenceDiagram
 
 | Command | What it does |
 |---|---|
-| `gctrl app install <ref>` | `<ref>` = local path or git URL. Reads manifest, validates capabilities, registers mounts + schedules + bindings. |
+| `gctrl app install <ref>` | `<ref>` = local path or git URL. Reads manifest, validates capabilities, registers project keys + schedules + bindings. |
 | `gctrl app status <name>` | Shows resolved bindings + last-checked status. |
-| `gctrl app reload <name>` | Re-reads the manifest (after a version bump); re-validates capabilities; reconciles mounts / schedules / bindings. |
-| `gctrl app uninstall <name>` | Removes vault mount registrations (files NOT deleted), schedules, install record, bindings. |
+| `gctrl app reload <name>` | Re-reads the manifest (after a version bump); re-validates capabilities; reconciles project keys / schedules / bindings. |
+| `gctrl app uninstall <name>` | Removes the app's project-key registrations (files in the vault root NOT deleted), schedules, install record, bindings. |
 
 There is no `--override` / `--disable` flag in v1. Bindings come exclusively from the capability registry. To run with different fulfillments, fork the app — see [Non-gctrl hosts](#non-gctrl-hosts) below.
 
@@ -234,9 +240,9 @@ The manifest is therefore **a self-documenting capability requirements document*
 
 ## Versioning + reload
 
-- The manifest carries `version`. On `gctrl app reload`, the kernel re-reads the file, re-validates capabilities against the registry, and reconciles mounts / schedules / bindings.
+- The manifest carries `version`. On `gctrl app reload`, the kernel re-reads the file, re-validates capabilities against the registry, and reconciles project keys / schedules / bindings.
 - Schedules are reconciled by `name` — re-running `reload` is idempotent.
-- Vault mounts are append-only by `name` — removing a mount from the manifest does NOT remove it from `gctrl_vault_mounts` (operator-owned data; explicit `--prune-mounts` flag for the destructive case).
+- Vault project keys are append-only by `key` — removing a `[[vault-projects]]` entry from the manifest does NOT delete the subdirectory under the kernel's vault root (operator-owned data; explicit `--prune-projects` flag for the destructive case).
 - New required capabilities introduced by a manifest version bump fail the install if the kernel registry doesn't know them — operator must upgrade the kernel first.
 
 ## What apps look like at runtime
@@ -256,10 +262,11 @@ The `gctrl-app.toml` manifest is the **declarative** description of what the app
 ## Migration path for uebermensch
 
 1. **Land this spec.** No code changes yet.
-2. **Add `gctrl-app.toml`** to `apps/uebermensch/` describing what the app needs today (LLM, deliverers, vault.write, vault.sync, secrets, optional gcal, optional brave search, optional browser.cdp).
-3. **Build the kernel-side install machinery**: `/api/app/install`, `/api/app/status`, `gctrl_app_installs` + `gctrl_app_bindings` tables, capability registry.
-4. **Replace `lib/mode.ts` + `--mode` flag** with: read the install record at startup; build the runtime Layer from the resolved bindings. The `Mode` enum becomes legacy / deleted.
-5. **Document the fork-to-eject path** in uebermensch's README so an operator on a non-gctrl host can swap the default Layer for a host-specific one.
+2. **Add `gctrl-app.toml`** to `apps/uebermensch/` describing what the app needs today (LLM, deliverers, vault.write, vault.sync, secrets, optional gcal, optional brave search, optional browser.cdp). Vault declaration: `[[vault-projects]] key = "UBER"` — no per-app `root`.
+3. **Migrate uebermensch's vault into the kernel's shared root** (per [#163](https://github.com/OpenHackersClub/gctrl/pull/163)). The kernel's `--board-dir` / `GCTRL_BOARD_DIR` already names the root; uebermensch's content moves from `$UBER_VAULT_DIR/` to `${GCTRL_BOARD_DIR}/UBER/`. The legacy `UBER_VAULT_DIR` env var is removed once the watcher is generalized to every `gctrl_vault_mounts` row.
+4. **Build the kernel-side install machinery**: `/api/app/install`, `/api/app/status`, `gctrl_app_installs` + `gctrl_app_bindings` tables, capability registry, project-key collision check against `gctrl_vault_mounts`.
+5. **Replace `lib/mode.ts` + `--mode` flag** with: read the install record at startup; build the runtime Layer from the resolved bindings. The `Mode` enum becomes legacy / deleted.
+6. **Document the fork-to-eject path** in uebermensch's README so an operator on a non-gctrl host can swap the default Layer for a host-specific one.
 
 ## Why this is the right shape
 

@@ -17,7 +17,7 @@ The kernel already has:
 - `gctrl-sync::R2Client` — S3-compat PUT/GET/DELETE against R2 (`kernel/crates/gctrl-sync/src/r2.rs`).
 - `gctrl-sync::R2SyncEngine` — push/pull manifest, status, scheduling (`kernel/crates/gctrl-sync/src/engine.rs`).
 - `/api/sync/push` HTTP route — currently scoped to telemetry tables (`kernel/crates/gctrl-otel/src/receiver.rs`).
-- `gctrl_vault_mounts` table — registry of per-app vaults the kernel watches.
+- `gctrl_vault_mounts` table — registry of project keys the kernel watches under the shared vault root (one row per `[[vault-projects]]` declared by an installed app; see [`app-install-protocol.md`](../../architecture/app-install-protocol.md) and [#163](https://github.com/OpenHackersClub/gctrl/pull/163) for the externalized-vault model).
 
 Vault file sync uses *all* of these. A new driver crate would duplicate transport, auth, manifest, and OTel instrumentation that already exist. Per the [zero-duplication invariant](../../architecture/app-decoupling.md), vault file sync extends the existing crate.
 
@@ -25,11 +25,11 @@ Vault file sync uses *all* of these. A new driver crate would duplicate transpor
 
 `apps/uebermensch/src/adapters/R2Sync.ts` (247 LOC). Today this:
 
-- walks `$UBER_VAULT_DIR` recursively
+- walks `$UBER_VAULT_DIR` recursively (uebermensch's standalone vault, separate from `GCTRL_BOARD_DIR`)
 - SHA-256-hashes each file and dedupes against a manifest at `$UBER_VAULT_DIR/.uber-sync-state.json`
 - shells out to `pnpm dlx wrangler@latest r2 object put` per uploaded file
 
-After this spec lands, the same logic runs once inside `gctrl-sync`, against the kernel's already-configured R2 credentials, using the direct S3-compat client (no `wrangler` subprocess). The app's `R2Sync.ts` collapses into a thin `KernelR2Sync` Layer (~30 LOC) that POSTs `/api/sync/vault/push` through the kernel HTTP client.
+After this spec lands and uebermensch's vault migrates into the kernel's shared root as the `UBER` project key (per [#163](https://github.com/OpenHackersClub/gctrl/pull/163) and the migration step in `app-install-protocol.md`), the same logic runs once inside `gctrl-sync` against the kernel's already-configured R2 credentials, using the direct S3-compat client (no `wrangler` subprocess). The app's `R2Sync.ts` collapses into a thin `KernelR2Sync` Layer (~30 LOC) that POSTs `/api/sync/vault/push` through the kernel HTTP client.
 
 ## Surface area
 
@@ -38,7 +38,7 @@ After this spec lands, the same logic runs once inside `gctrl-sync`, against the
 ```rust
 // kernel/crates/gctrl-sync/src/vault.rs (new)
 pub struct VaultSyncPlanEntry {
-    pub mount_name: String,
+    pub project_key: String,
     pub rel_path: String,
     pub sha256: String,
     pub size_bytes: u64,
@@ -55,21 +55,21 @@ pub struct VaultSyncResult {
 }
 
 impl R2SyncEngine {
-    /// Push every file under the vault mount to R2 vaults/{mount}/.
+    /// Push every file under `<vault_root>/<project_key>/` to R2 `vaults/<project_key>/`.
     /// Honors content_hash dedup (skip if remote sha matches manifest).
     /// `prefixes` narrows to subtrees (e.g. ["input/briefs", "input/raw"]).
     pub async fn push_vault(
         &self,
-        mount_name: &str,
+        project_key: &str,
         prefixes: &[&str],
         opts: VaultSyncOpts,
     ) -> Result<VaultSyncResult, SyncError>;
 
-    /// Pull from R2 vaults/{mount}/ into the local mount root.
+    /// Pull from R2 `vaults/<project_key>/` into `<vault_root>/<project_key>/`.
     /// Atomic file writes (tmp+rename). Returns the same VaultSyncResult shape.
     pub async fn pull_vault(
         &self,
-        mount_name: &str,
+        project_key: &str,
         prefixes: &[&str],
         opts: VaultSyncOpts,
     ) -> Result<VaultSyncResult, SyncError>;
@@ -82,21 +82,23 @@ pub struct VaultSyncOpts {
 }
 ```
 
+The vault root used for both `push_vault` and `pull_vault` is the **kernel-owned root** (resolved at daemon startup from `--board-dir` → `GCTRL_BOARD_DIR` → `./gctrl/`). It is NOT a per-call argument — apps cannot point sync at a different root. The `project_key` MUST exist as a registered row in `gctrl_vault_mounts` (i.e. some installed app declared it via `[[vault-projects]]`).
+
 ### HTTP routes
 
 Mounted alongside the existing `/api/sync/push` in `gctrl-otel::receiver`:
 
 | Route | Verb | Purpose |
 |---|---|---|
-| `/api/sync/vault/push` | POST | Push the named vault mount's files to R2 |
-| `/api/sync/vault/pull` | POST | Pull the named vault mount's files from R2 |
-| `/api/sync/vault/status` | GET | Query last-pushed sha + manifest state for a mount |
+| `/api/sync/vault/push` | POST | Push a project key's subtree to R2 |
+| `/api/sync/vault/pull` | POST | Pull a project key's subtree from R2 |
+| `/api/sync/vault/status` | GET | Query last-pushed sha + manifest state for a project key |
 
 Request body for push/pull:
 
 ```json
 {
-  "mount_name": "uber",
+  "project_key": "UBER",
   "prefixes": ["input/briefs", "input/raw", "input/wiki"],
   "dry_run": false,
   "force": false
@@ -118,16 +120,16 @@ Response (success):
 }
 ```
 
-Errors map per [`sync.md § 11`](../../architecture/kernel/sync.md#11-error-handling) (HTTP 503 when sync isn't configured; 404 for unknown mount; 502 for R2 failures).
+Errors map per [`sync.md § 11`](../../architecture/kernel/sync.md#11-error-handling) (HTTP 503 when sync isn't configured; 404 for unknown project key; 502 for R2 failures).
 
 ### Manifest
 
-Per-mount manifest at `~/.local/share/gctrl/sync/vaults/{mount-name}.json`:
+Per-project-key manifest at `~/.local/share/gctrl/sync/vaults/{project-key}.json`:
 
 ```json
 {
   "version": 1,
-  "mount_name": "uber",
+  "project_key": "UBER",
   "updated_at": "2026-05-03T12:00:00Z",
   "entries": {
     "input/briefs/2026-05-03.md": {
@@ -140,7 +142,7 @@ Per-mount manifest at `~/.local/share/gctrl/sync/vaults/{mount-name}.json`:
 }
 ```
 
-Atomic write (tmp+rename), same pattern as the existing telemetry manifest. Manifest path is *kernel-owned*, not under the app's vault — replaces the in-vault `.uber-sync-state.json` that today pollutes the app's filesystem.
+Atomic write (tmp+rename), same pattern as the existing telemetry manifest. Manifest path is *kernel-owned*, **not** under the app's vault — replaces the in-vault `.uber-sync-state.json` that today pollutes the app's filesystem.
 
 ## Auth + configuration
 
@@ -155,7 +157,7 @@ If `SyncConfig` is `None`, the routes return `503 sync_not_configured` so the ap
 3. **Concurrency**: bounded `tokio::task::JoinSet` (default 8). Don't spam R2 with hundreds of parallel PUTs.
 4. **Hashing**: streaming SHA-256 (don't load whole files). For ≤16 MB files, `tokio::fs::read` + `Sha256::digest` is fine; for larger, stream.
 5. **No DuckDB writes**: vault-sync state lives in the JSON manifest, not in DuckDB. Vault contents themselves are content-addressable and don't need a relational index.
-6. **OTel spans**: wrap each push/pull in a span (`sync.vault.push`, `sync.vault.pull`) with attributes `mount_name`, `uploaded`, `bytes`. Reuses the existing kernel telemetry pipeline.
+6. **OTel spans**: wrap each push/pull in a span (`sync.vault.push`, `sync.vault.pull`) with attributes `project_key`, `uploaded`, `bytes`. Reuses the existing kernel telemetry pipeline.
 
 ## Test plan
 
@@ -167,7 +169,7 @@ If `SyncConfig` is `None`, the routes return `503 sync_not_configured` so the ap
 
 1. **Land the kernel extension** (`push_vault` / `pull_vault` + HTTP routes + tests) — non-breaking; the existing `/api/sync/push` keeps working.
 2. **Replace the app's `R2Sync.ts`** with `KernelR2Sync.ts` that calls `/api/sync/vault/push`. Net –217 LOC in the app.
-3. **Move the in-vault manifest** out of `$UBER_VAULT_DIR/.uber-sync-state.json` into the kernel's `~/.local/share/gctrl/sync/vaults/uber.json`. One-shot migration on first run: read the old file, write the new one, delete the old.
+3. **Move the in-vault manifest** out of `$UBER_VAULT_DIR/.uber-sync-state.json` into the kernel's `~/.local/share/gctrl/sync/vaults/UBER.json`. One-shot migration on first run: read the old file, write the new one, delete the old. (This step rides alongside the `UBER_VAULT_DIR` → `${GCTRL_BOARD_DIR}/UBER/` migration in `app-install-protocol.md` step 3.)
 4. **Remove `wrangler` from the app's runtime path** — it's no longer needed for sync. (Build-time wrangler for Worker deploys stays.)
 
 ## Out of scope
