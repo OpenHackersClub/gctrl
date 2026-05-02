@@ -13,6 +13,7 @@ members = [
     "kernel/crates/gctrl-context",
     "kernel/crates/gctrl-orch",
     "kernel/crates/gctrl-scheduler",
+    "kernel/crates/gctrl-gcal",
 ]
 
 [workspace.package]

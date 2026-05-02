@@ -342,6 +342,9 @@ fn build_router(state: Arc<AppState>) -> Router {
         // Health
         .route("/health", get(health))
         .with_state(state)
+        // Google Calendar driver (LKM — read-by-default; writes gated by
+        // GCAL_ALLOWED_SCOPES; no DELETE handler is mounted at all).
+        .merge(crate::gcal_routes::router::<()>())
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
