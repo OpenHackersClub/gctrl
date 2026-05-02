@@ -598,10 +598,17 @@ async fn run_dispatch(cli: Cli) -> Result<()> {
             let dir = if no_watch {
                 None
             } else {
+                // Resolution order: explicit --board-dir flag, then
+                // GCTRL_BOARD_DIR env (for launchd / systemd / containers
+                // where flags are awkward to pass), then ./gctrl/ in cwd
+                // for legacy in-repo usage. The env path lets operators
+                // mount the BOARD vault outside the source tree
+                // (Obsidian-mountable, decoupled from git) without
+                // touching the daemon launch script.
                 board_dir
                     .map(std::path::PathBuf::from)
+                    .or_else(|| std::env::var("GCTRL_BOARD_DIR").ok().map(std::path::PathBuf::from))
                     .or_else(|| {
-                        // Auto-detect: if ./gctrl/ exists, watch it
                         let default = std::path::PathBuf::from("gctrl");
                         if default.is_dir() { Some(default) } else { None }
                     })

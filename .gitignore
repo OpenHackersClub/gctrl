@@ -21,3 +21,9 @@ test-results/
 !.env.example
 !.env.vault
 .env.keys
+
+# App vaults — operational data (BOARD issues, INBOX items, agent comments)
+# lives in an external vault dir (Obsidian-mountable, not git-tracked).
+# Configure via GCTRL_BOARD_DIR. apps/gctrl-board/vault/specs/ stays in repo.
+apps/gctrl-board/vault/BOARD/
+apps/gctrl-board/vault/INBOX/
