@@ -6,8 +6,8 @@
 
 use chrono::Utc;
 use gctrl_core::{
-    Schedule, ScheduleRun, ScheduleRunFilter, FIRE_KIND_CRON, FIRE_KIND_MANUAL,
-    RUN_STATUS_FAILURE, RUN_STATUS_SUCCESS, TARGET_KIND_HTTP,
+    Schedule, ScheduleRun, ScheduleRunFilter, ScheduleRunUpdate, FIRE_KIND_CRON, FIRE_KIND_MANUAL,
+    RUN_STATUS_FAILURE, RUN_STATUS_INTERRUPTED, RUN_STATUS_SUCCESS, TARGET_KIND_HTTP,
 };
 use gctrl_storage::SqliteStore;
 
@@ -40,6 +40,7 @@ fn seed_schedule(store: &SqliteStore, name: &str) -> Schedule {
         failure_count: 0,
         created_at: now.clone(),
         updated_at: now,
+        health: None,
     };
     store.create_schedule(&s).expect("create_schedule");
     s
@@ -239,6 +240,139 @@ fn delete_schedule_cascades_to_runs() {
         .list_schedule_runs(&sched.id, &ScheduleRunFilter::default())
         .expect("list after delete");
     assert!(rows.is_empty(), "cascade should drop history");
+}
+
+#[test]
+fn record_v2_writes_both_rows_atomically() {
+    // record_schedule_run_v2 must update the schedules cache row AND
+    // append a scheduler_runs history row in a single transaction. A
+    // successful call must leave both visible.
+    let s = store();
+    let sched = seed_schedule(&s, "audit.codebase");
+    let now = Utc::now();
+    let run = run_at(&sched.id, now, RUN_STATUS_SUCCESS, FIRE_KIND_CRON);
+    let update = ScheduleRunUpdate {
+        last_run_at: now.to_rfc3339(),
+        next_run_at: Some((now + chrono::Duration::hours(2)).to_rfc3339()),
+        last_status: Some(200),
+        last_response: Some("ok".into()),
+        last_error: None,
+        success: true,
+    };
+    s.record_schedule_run_v2(&sched.id, &run, &update)
+        .expect("record_v2");
+
+    let after = s.get_schedule(&sched.id).unwrap().unwrap();
+    assert_eq!(after.run_count, 1);
+    assert_eq!(after.failure_count, 0);
+    assert_eq!(after.last_status, Some(200));
+
+    let runs = s
+        .list_schedule_runs(&sched.id, &ScheduleRunFilter::default())
+        .unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].id, run.id);
+}
+
+#[test]
+fn record_v2_increments_failure_count_on_unsuccessful_run() {
+    let s = store();
+    let sched = seed_schedule(&s, "audit.codebase");
+    let now = Utc::now();
+    let run = run_at(&sched.id, now, RUN_STATUS_FAILURE, FIRE_KIND_CRON);
+    let update = ScheduleRunUpdate {
+        last_run_at: now.to_rfc3339(),
+        next_run_at: None,
+        last_status: Some(503),
+        last_response: None,
+        last_error: Some("server angry".into()),
+        success: false,
+    };
+    s.record_schedule_run_v2(&sched.id, &run, &update).unwrap();
+    let after = s.get_schedule(&sched.id).unwrap().unwrap();
+    assert_eq!(after.run_count, 1);
+    assert_eq!(after.failure_count, 1);
+    assert_eq!(after.last_status, Some(503));
+}
+
+#[test]
+fn record_v2_rolls_back_when_run_id_collides() {
+    // PRIMARY KEY conflict on the INSERT must roll the entire
+    // transaction back — the cache row UPDATE that ran first MUST
+    // also revert. Without rollback, run_count would advance without
+    // a corresponding history row.
+    let s = store();
+    let sched = seed_schedule(&s, "audit.codebase");
+    let now = Utc::now();
+
+    // Seed a history row directly so the next v2 call collides.
+    let existing = run_at(&sched.id, now, RUN_STATUS_SUCCESS, FIRE_KIND_CRON);
+    s.insert_schedule_run(&existing).unwrap();
+
+    let conflict = ScheduleRun {
+        id: existing.id.clone(), // same primary key — INSERT must fail
+        ..run_at(&sched.id, now, RUN_STATUS_FAILURE, FIRE_KIND_CRON)
+    };
+    let update = ScheduleRunUpdate {
+        last_run_at: now.to_rfc3339(),
+        next_run_at: None,
+        last_status: Some(500),
+        last_response: None,
+        last_error: Some("won't survive".into()),
+        success: false,
+    };
+    let r = s.record_schedule_run_v2(&sched.id, &conflict, &update);
+    assert!(r.is_err(), "duplicate INSERT must fail the transaction");
+
+    // Cache row stayed at the seeded values: zero runs (we never
+    // legitimately recorded a run via v2 here).
+    let after = s.get_schedule(&sched.id).unwrap().unwrap();
+    assert_eq!(after.run_count, 0, "rollback: run_count never advanced");
+    assert_eq!(after.failure_count, 0, "rollback: failure_count never advanced");
+    assert!(after.last_status.is_none(), "rollback: last_status untouched");
+}
+
+#[test]
+fn reap_marks_unfinished_rows_interrupted() {
+    let s = store();
+    let sched = seed_schedule(&s, "audit.codebase");
+    let now = Utc::now();
+    // Two rows: one finished (don't touch), one open (must reap).
+    let finished = run_at(&sched.id, now - chrono::Duration::minutes(5), RUN_STATUS_SUCCESS, FIRE_KIND_CRON);
+    let mut open = run_at(&sched.id, now, RUN_STATUS_SUCCESS, FIRE_KIND_MANUAL);
+    open.finished_at = None; // simulates manual run-now interrupted by daemon crash
+    s.insert_schedule_run(&finished).unwrap();
+    s.insert_schedule_run(&open).unwrap();
+
+    let n = s.reap_interrupted_schedule_runs(&now.to_rfc3339()).unwrap();
+    assert_eq!(n, 1, "exactly the open row should be reaped");
+
+    let runs = s
+        .list_schedule_runs(&sched.id, &ScheduleRunFilter::default())
+        .unwrap();
+    let reaped = runs.iter().find(|r| r.id == open.id).unwrap();
+    assert_eq!(reaped.status, RUN_STATUS_INTERRUPTED);
+    assert!(reaped.finished_at.is_some());
+    let still_finished = runs.iter().find(|r| r.id == finished.id).unwrap();
+    assert_eq!(still_finished.status, RUN_STATUS_SUCCESS, "finished row untouched");
+}
+
+#[test]
+fn reap_is_idempotent() {
+    let s = store();
+    let sched = seed_schedule(&s, "audit.codebase");
+    let mut open = run_at(&sched.id, Utc::now(), RUN_STATUS_SUCCESS, FIRE_KIND_MANUAL);
+    open.finished_at = None;
+    s.insert_schedule_run(&open).unwrap();
+
+    let n1 = s
+        .reap_interrupted_schedule_runs(&Utc::now().to_rfc3339())
+        .unwrap();
+    let n2 = s
+        .reap_interrupted_schedule_runs(&Utc::now().to_rfc3339())
+        .unwrap();
+    assert_eq!(n1, 1);
+    assert_eq!(n2, 0, "already-reaped rows do not reap again");
 }
 
 #[test]

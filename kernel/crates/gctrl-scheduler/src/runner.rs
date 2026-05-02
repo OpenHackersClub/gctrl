@@ -26,6 +26,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::cron::next_after;
 use crate::exec::{run_exec_schedule, ExecOutcome};
+use crate::redact::redact_and_truncate;
 
 /// Hard cap on bytes read from a callback response. A misconfigured or
 /// malicious target could otherwise stream gigabytes into memory before we
@@ -66,6 +67,12 @@ impl ScheduleRunner {
             poll_interval_secs = self.config.poll_interval_secs,
             "scheduler: runner started"
         );
+        // Reap any `scheduler_runs` rows left mid-flight by a daemon crash
+        // before yesterday's fires masquerade as "still running" forever.
+        // `manual` rows are the only realistic source today (the cron path
+        // closes the row in one go); reaping in startup keeps that
+        // invariant straightforward.
+        self.reap_interrupted().await;
         // Backfill `next_run_at` for any schedule that has none (e.g. created
         // while the daemon was down). One pass on startup; the runner loop
         // recomputes on every fire after that.
@@ -136,15 +143,12 @@ impl ScheduleRunner {
             last_error: outcome.error.clone(),
             success: outcome.success,
         };
-        if let Err(e) = self.store.record_schedule_run(&sched.id, &update) {
-            error!(schedule = %sched.name, "scheduler: record_schedule_run failed: {e}");
-        }
-        // Append durable history. Done after the row UPDATE today; PR-2 of
-        // M1a folds this into a single SQLite transaction together with the
-        // inbox emit on streak boundary.
+        // Cache row UPDATE + history INSERT in one SQLite transaction so a
+        // mid-fire crash leaves no half-state. M3 will fold the inbox emit
+        // into the same tx; the helper signature is shaped for that.
         let run = build_run_row(&sched, &outcome, started_wall, now, FIRE_KIND_CRON);
-        if let Err(e) = self.store.insert_schedule_run(&run) {
-            error!(schedule = %sched.name, "scheduler: insert_schedule_run failed: {e}");
+        if let Err(e) = self.store.record_schedule_run_v2(&sched.id, &run, &update) {
+            error!(schedule = %sched.name, "scheduler: record_schedule_run_v2 failed: {e}");
         }
     }
 
@@ -181,7 +185,10 @@ impl ScheduleRunner {
             Ok(mut resp) => {
                 let status = resp.status().as_u16() as i64;
                 let body = read_capped_body(&mut resp).await;
-                let preview = truncate(&body, RESPONSE_PREVIEW_BYTES);
+                // Defence-in-depth: HTTP callback responses don't usually
+                // carry secret-shaped content, but a misconfigured callback
+                // that echoes auth headers would leak otherwise.
+                let preview = redact_and_truncate(&body, RESPONSE_PREVIEW_BYTES);
                 let success = (200..400).contains(&status);
                 if success {
                     info!(
@@ -248,7 +255,10 @@ impl ScheduleRunner {
                     success: false,
                     status: None,
                     response: None,
-                    error: Some(truncate(&format!("refused: {reason}"), ERROR_PREVIEW_BYTES)),
+                    error: Some(redact_and_truncate(
+                        &format!("refused: {reason}"),
+                        ERROR_PREVIEW_BYTES,
+                    )),
                     timed_out: false,
                     refused: true,
                 }
@@ -288,12 +298,12 @@ impl ScheduleRunner {
                 let response_preview = if stdout.is_empty() {
                     None
                 } else {
-                    Some(truncate(&stdout, RESPONSE_PREVIEW_BYTES))
+                    Some(redact_and_truncate(&stdout, RESPONSE_PREVIEW_BYTES))
                 };
                 let error_preview = if success {
                     None
                 } else if timed_out {
-                    Some(truncate(
+                    Some(redact_and_truncate(
                         &format!("timed out after {timeout_secs}s"),
                         ERROR_PREVIEW_BYTES,
                     ))
@@ -301,7 +311,7 @@ impl ScheduleRunner {
                     // Tight cap: stderr is the primary leak vector for child
                     // processes that echo secrets. Full stderr is in the log
                     // stream above; only the prefix is in the DB.
-                    Some(truncate(&stderr, ERROR_PREVIEW_BYTES))
+                    Some(redact_and_truncate(&stderr, ERROR_PREVIEW_BYTES))
                 };
                 FireOutcome {
                     success,
@@ -312,6 +322,15 @@ impl ScheduleRunner {
                     refused: false,
                 }
             }
+        }
+    }
+
+    async fn reap_interrupted(&self) {
+        let now = Utc::now().to_rfc3339();
+        match self.store.reap_interrupted_schedule_runs(&now) {
+            Ok(0) => debug!("scheduler: no interrupted runs to reap"),
+            Ok(n) => warn!(reaped = n, "scheduler: reaped interrupted runs from prior crash"),
+            Err(e) => error!("scheduler: reap_interrupted_schedule_runs failed: {e}"),
         }
     }
 
@@ -442,31 +461,7 @@ pub(crate) async fn read_capped_body(resp: &mut reqwest::Response) -> String {
     }
 }
 
-fn truncate(s: &str, max_bytes: usize) -> String {
-    if s.len() <= max_bytes {
-        return s.to_string();
-    }
-    let mut end = max_bytes;
-    while !s.is_char_boundary(end) && end > 0 {
-        end -= 1;
-    }
-    format!("{}…[truncated {} bytes]", &s[..end], s.len() - end)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn truncate_short_passthrough() {
-        assert_eq!(truncate("abc", 100), "abc");
-    }
-
-    #[test]
-    fn truncate_long_appends_marker() {
-        let s = "x".repeat(50);
-        let t = truncate(&s, 10);
-        assert!(t.starts_with("xxxxxxxxxx"));
-        assert!(t.contains("truncated"));
-    }
-}
+// truncate(): retired with PR-2. All callsites moved to
+// `crate::redact::redact_and_truncate`, which composes redaction with
+// the same UTF-8-safe byte cap. Behavioural test coverage lives in
+// `redact::tests` (truncate_short_passthrough, truncate_long_appends_marker).
