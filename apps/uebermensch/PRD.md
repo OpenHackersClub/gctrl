@@ -1,6 +1,8 @@
 # Uebermensch — Product Requirements Document
 
-> Personal Chief of Staff for investors. Watches the topics you care about, files them into a Karpathy-style knowledge wiki stored as a plain-markdown Obsidian vault, syncs the vault across devices via R2, and delivers timely briefs + long-horizon analyses to the App, Telegram, and Discord. A native gctrl application.
+> Personal Chief of Staff for investors. Watches the topics you care about, files them into a Karpathy-style knowledge wiki stored as a plain-markdown vault, syncs the vault across devices via R2, and delivers timely briefs + long-horizon analyses to the Web, Telegram, and Discord. A native gctrl application.
+>
+> The vault is **Obsidian-compatible** (every file is CommonMark + YAML frontmatter), but Obsidian is **never required** — onboarding, channel configuration, and reading reports are all first-class on the web. See [§ Deployment Modes](#deployment-modes).
 >
 > Instantiates the [PRD template](../gctrl-board/vault/specs/workflows/prd-template.md).
 
@@ -15,7 +17,7 @@ flowchart TB
     CLI["CLI surface (gctrl uber ...)"]
     Svc["Services (Briefing, Curator, Deliverer, Evaluator)"]
   end
-  subgraph Vault["$UBER_VAULT_DIR (Obsidian-mountable)"]
+  subgraph Vault["$UBER_VAULT_DIR (markdown; Obsidian-compatible, optional)"]
     direction LR
     Authored["directives/ + output/ + action/\nprofile.md · topics.md · sources.md · theses/ · personas/ · prompts/ · action/events/"]
     Generated["input/\ninput/briefs/ · input/reports/ · input/raw/ · input/wiki/"]
@@ -45,8 +47,9 @@ flowchart TB
   Shell --> Kernel
   Kernel -->|read/write markdown| Vault
   Kernel --> Drivers
-  Sync -.->|30s debounce| R2[("R2 bucket")]
-  Vault -.->|mount| Obsidian(["Obsidian app"])
+  Sync -.->|30s debounce| R2[("R2 bucket\n(optional source of truth\nin cloud-only mode)")]
+  Vault -.->|optional mount| Obsidian(["Obsidian app\n(optional)"])
+  UI -.->|"web onboarding,\nchannel config,\nreports"| Browser(["Browser\n(no editor required)"])
 ```
 
 - **Table namespace:** `uber_*` (see Invariant #3 in [principles.md](../../vault/specs/principles.md))
@@ -79,17 +82,18 @@ The non-obvious bets:
 
 ## Principles
 
-1. **Vault is portable and Obsidian-mountable.** `$UBER_VAULT_DIR` is a git-versioned Obsidian vault outside the gctrl repo, readable without Uebermensch running. Every file is CommonMark markdown with YAML frontmatter; wikilinks use plain `[[slug]]` form (typed prefixes like `[[thesis:slug]]` are forbidden — they break Obsidian's resolver). The app MUST NOT write to the authored tier (`directives/`) without explicit user confirmation. The single exception: `directives/prompts/<slug>.md` frontmatter is updated in-place by the prompts processor (`gctrl uber prompts process`) to record `status`/`output`/`processed_at`; the body is never touched.
+1. **Vault is portable and Obsidian-compatible (not Obsidian-required).** The vault is a plain-markdown directory readable without Uebermensch running and openable in Obsidian for users who want a graph view — but Obsidian is never on the critical path. Every file is CommonMark markdown with YAML frontmatter; wikilinks use plain `[[slug]]` form (typed prefixes like `[[thesis:slug]]` are forbidden — they break Obsidian's resolver and our own). The app MUST NOT write to the authored tier (`directives/`) without explicit user confirmation, **whether the edit comes from a CLI command, a web onboarding wizard, or the user opening the file in Obsidian** — every authored-tier write is an atomic markdown rewrite plus a `VaultWatcher` reload. The single exception: `directives/prompts/<slug>.md` frontmatter is updated in-place by the prompts processor (`gctrl uber prompts process`) to record `status`/`output`/`processed_at`; the body is never touched.
 2. **Markdown is the source of truth.** Briefs, wiki pages, sources, and theses live on disk as markdown files. SQLite tables (`uber_briefs`, `uber_brief_items`, …) hold `vault_path` + `content_hash` only — pure index. Opening the vault in Obsidian MUST show everything; deleting SQLite MUST be recoverable by re-indexing.
 3. **Wiki compounds.** Every ingest MUST file at least one wiki page (source summary) and update relevant entity/topic pages. Drop-and-forget ingestion is a bug, not a feature.
 4. **Primary sources over commentary.** The curator MUST weight SEC filings, earnings transcripts, primary research, and official announcements above secondary commentary. Hype-tagged sources are tracked but never lead a brief.
 5. **Cite everything.** Every claim in a brief MUST link back to a source page in the wiki. No unsourced statements. "The LLM said so" is not a source.
 6. **Delivery is idempotent.** Sending the same brief twice to the same channel MUST NOT duplicate. Channel delivery state lives in kernel storage, not in messages.
 7. **Eval is continuous.** Every brief produced MUST be scoreable by the human (thumbs up/down, dimension scores) and by automated evaluators (citation coverage, hype ratio, scrape health). Scores flow into the kernel `scores` table and close the loop on prompt improvement. Evaluators read the brief markdown from the vault and pin results with `content_hash` so scores survive later edits.
-8. **Local-first, cloud-optional.** Briefs render locally, to the local vault. Vault sync to R2 is a first-class feature (not opt-in by M1) so a second device can mount the same vault; the local daemon is still authoritative and the user MUST be able to read yesterday's brief offline.
+8. **Local-first, cloud-symmetric.** Briefs render to a markdown vault — the only question is *where* the vault lives. In **local mode** the vault is on disk and R2 is a sync target; in **cloud-only mode** R2 is the vault (the byte store) and a hosted Worker reads/writes through it; in **hybrid mode** both coexist and a local daemon pulls a live mirror down from R2. All three modes share one data model — markdown + YAML — so a user can start cloud-only on a phone and later run `gctrl uber vault pull --from r2` to bring the same vault to a laptop with zero migration. See [§ Deployment Modes](#deployment-modes).
 9. **Agent-native.** Every surface (ingest, query, brief, deliver, score) MUST be reachable via CLI and HTTP API, so agents can run Uebermensch workflows and gctrl-board can dispatch Uebermensch tasks.
 10. **Cost-visible.** Each brief shows its accumulated LLM cost. A daily brief that exceeds the configured budget is paused, not silently truncated.
 11. **No opinion without a thesis.** Briefs tag items as `aligns-with`, `contradicts`, or `unrelated` to the user's active theses. An item that doesn't map to any thesis is either filed under "watch" or demoted from the brief.
+12. **Web is a primary surface, not a fallback.** The Web UI is the equal peer of CLI and Obsidian for the **user-facing surface** (onboarding, channel configuration, reading briefs and reports, scoring). Anything a user can do in Obsidian — edit a thesis, configure a topic, add a source, set delivery windows — must also be doable in the web UI without dropping to a markdown editor. Both surfaces produce the same atomic markdown commits via the same write path; neither is privileged.
 
 ## Target Users
 
@@ -120,6 +124,19 @@ The non-obvious bets:
 ### Tertiary: Any knowledge worker who wants a Chief of Staff
 
 Uebermensch is profile-parameterised. An ML researcher, policy wonk, or clinician can swap in a profile scoped to their topics and reuse the same pipeline.
+
+### Quaternary: Cloud-only user (no laptop / no editor / mobile-first)
+
+A user who never installs Obsidian, never runs the CLI, and may never own a workstation that runs the local daemon. They want to:
+
+| Need | Surface | Solution |
+|------|---------|----------|
+| "Sign up and get a brief without installing anything" | Web | Hosted Cloudflare Worker deployment; user lands on a URL, signs in, runs the onboarding wizard. Vault is created in R2 under `vault/<identity.slug>/` — no local daemon, no Obsidian. See [§ Deployment Modes](#deployment-modes). |
+| "Connect Telegram from my phone" | Web | Wizard step links the Telegram bot via deep link / QR; tokens land in the Worker's secret store (or kernel `driver-telegram` if a daemon is later attached). User confirms by replying `/start`. See [delivery.md § Channel Onboarding](vault/specs/delivery.md#channel-onboarding-web). |
+| "Connect Discord from my phone" | Web | Wizard step uses Discord's OAuth2 + bot-invite flow; the resulting webhook + interactions endpoint are stored in the Worker; user confirms with `/ping`. |
+| "Read today's brief on my phone with no editor" | Web | The Worker reads the brief markdown from R2 and renders sanitized HTML; same `[[slug]]` resolution as the desktop app. |
+| "Edit my topics or theses without an editor" | Web | The wizard's profile editor produces atomic markdown rewrites of `directives/profile.md`, `directives/topics.md`, and `directives/theses/<slug>.md` — same atomic-rename + content-hash protocol as the CLI / Obsidian path. |
+| "Later, pull everything down to a laptop" | CLI | `gctrl uber vault pull --from r2 --identity-slug <slug>` reconstructs the vault locally; from then on the local daemon and the cloud Worker share the same R2 bucket as the byte store. |
 
 ## Use Cases
 
@@ -202,18 +219,51 @@ Uebermensch is profile-parameterised. An ML researcher, policy wonk, or clinicia
 
 **Success metric:** Scrape failures surface within 24 h, not "user notices two weeks later."
 
+### UC-7: Cloud-Only Onboarding (no editor, no daemon)
+
+**Problem:** A first-time user opens the hosted Uebermensch URL on their phone. They have no Obsidian, no laptop with a daemon running, and no patience for a CLI. They want a working brief delivered to Telegram tomorrow morning.
+
+**Solution:**
+1. User visits `https://<host>/onboard` and signs in with the configured identity provider.
+2. **Wizard step 1 — identity:** asks for `identity.name` (display name); the Worker derives a slug-safe `identity.slug`. The Worker creates the R2 prefix `vault/<identity.slug>/` and atomic-writes a scaffold (the same template emitted by `gctrl uber vault init` — `directives/profile.md`, `directives/topics.md`, `directives/sources.md`, empty `directives/theses/`, `directives/prompts/`, `input/`, `output/`, `action/`).
+3. **Wizard step 2 — topics:** form fields collect 3–10 topics; on submit the Worker rewrites `directives/topics.md` (frontmatter `topics:` array) atomically — same content-hash + `vault.updated` event the local daemon emits. No raw markdown shown.
+4. **Wizard step 3 — channels:** the user clicks "Connect Telegram" → deep-link / QR opens `t.me/<bot>?start=<onboarding_token>`; the user replies `/start`; Worker captures `tg:chat:<id>` and writes the channel block into `directives/profile.md`. Same UX for Discord (OAuth2 + bot invite). Tokens go into the Worker's secret store, never the vault.
+5. **Wizard step 4 — schedule:** time-of-day picker → Worker rewrites `delivery.schedule` in `directives/profile.md`.
+6. Wizard exits to a feed view: "First brief tomorrow at 08:00 local. Latest brief will appear here, on Telegram, and on Discord."
+7. The next morning the kernel scheduler (or the Worker's Cron Triggers in cloud-only mode) fires the brief pipeline; the rendered markdown is written to `vault/<identity.slug>/input/briefs/<date>.md` in R2; the Worker reads it back and serves sanitized HTML at `/briefs/<date>` and the deliverer fans out to Telegram + Discord through `driver-telegram` / `driver-discord`.
+8. Later, the user installs the CLI on a laptop and runs `gctrl uber vault pull --from r2 --identity-slug <slug>` — every authored and generated file from the wizard appears as plain markdown in `~/uebermensch-vault`. Zero migration.
+
+**Success metric:** A first-time user lands on the onboarding URL, completes the wizard in ≤5 minutes on a phone, never opens a markdown editor, and receives a brief in their chosen channel the next morning. The vault produced by the wizard is byte-for-byte indistinguishable from one produced by `gctrl uber vault init` followed by hand-edits in Obsidian.
+
 ## What We're Building
 
-### Vault (external, Obsidian-mountable)
+### Deployment Modes
 
-A single directory at `$UBER_VAULT_DIR` (default `~/uebermensch-vault`) holding:
+Three supported topologies, all sharing the same data model (markdown + YAML in a `vault/<identity.slug>/` tree). The vault has one byte-store at any moment — local FS or R2 — and exactly one writer pattern; no two daemons writing to the same identity slug simultaneously.
 
-- **`directives/`** (git-tracked, authored tier): `profile.md`, `topics.md`, `sources.md`, `me.md`, `avoid.md`, `projects.md`, `theses/<slug>.md`, `personas/<persona>.md` (per-persona prompt overrides), `prompts/<slug>.md` (user-authored research queries) — edited by the user in Obsidian or any editor.
-- **`input/`** (gitignored, R2-synced): `input/raw/<slug>.md` (driver-fetched + manually-pulled URL summaries); `input/wiki/` (entities, topics, synthesis, questions, index, log — LLM-maintained knowledge graph); `input/briefs/<YYYY-MM-DD>.md` (daily briefs, CoS-written); `input/reports/<slug>.md` (deep-dives, prompt-driven research answers).
-- **`output/`** (git-tracked): the user's own writing — memos, notes, drafts — that CoS reviews and suggests.
-- **`action/`** (git-tracked + `action/events/generated/` gitignored): `action/events/<YYYY-MM-DD>--<slug>.md` (authored personal events); `action/events/generated/` (driver-pulled events); `action/strategies/`, `action/plans/`, `action/tasks/` — items awaiting the user's greenlight.
+| Mode | Vault byte-store | Authoritative writer | Channel secrets | Obsidian | Use when |
+|------|------------------|----------------------|-----------------|----------|----------|
+| **Local** (default) | Local filesystem at `$UBER_VAULT_DIR` | Local kernel daemon + Uebermensch daemon (single writer per process pair) | Kernel driver LKMs (`driver-telegram`, `driver-discord`) | Optional mount | User has a workstation; wants offline + git history |
+| **Cloud-only** | R2 bucket at `vault/<identity.slug>/` | Hosted Cloudflare Worker (single writer per slug) | Worker secret store (`wrangler secret`) — same shape as kernel driver tokens | Not installed | First-time user, mobile-first, no laptop; or multi-tenant SaaS deployments |
+| **Hybrid** | R2 bucket is the canonical byte-store; local FS is a live mirror pulled from R2 | Local daemon, with R2 as the synchronisation transport | Kernel driver LKMs (preferred) or Worker secret store (when the Worker is the active sender) | Optional mount | User has a workstation **and** wants the Worker to deliver while the laptop is asleep |
 
-Every file is CommonMark + YAML frontmatter. Wikilinks use plain `[[slug]]` — Obsidian and `gctrl-kb` share one resolver. A `VaultWatcher` fiber watches `fs.watch` events so user edits are reindexed without a restart. Full format in [vault/specs/profile.md](vault/specs/profile.md).
+In **all three modes**, the four invariants of the file model hold:
+
+1. Markdown + YAML frontmatter is the source of truth for everything a human reads or edits — there is no separate "cloud schema."
+2. The authored tier (`directives/`, `output/`, most of `action/`) is only ever modified by the user (or by the user-confirmed wizard steps in UC-7). The generated tier (`input/`, `action/events/generated/`) is owned by the curator / drivers.
+3. Channel tokens are NEVER written to the vault — they live in the kernel's secret store (local mode) or the Worker's secret store (cloud-only mode).
+4. Switching modes is a copy operation, not a migration: `gctrl uber vault pull --from r2` (cloud → local) and `gctrl uber vault push --to r2` (local → cloud) move bytes 1:1.
+
+### Vault (markdown directory; backed by FS or R2)
+
+A single directory tree (`$UBER_VAULT_DIR` on local, `vault/<identity.slug>/` on R2) holding:
+
+- **`directives/`** (authored tier — git-tracked locally; tracked-by-content-hash on R2): `profile.md`, `topics.md`, `sources.md`, `me.md`, `avoid.md`, `projects.md`, `theses/<slug>.md`, `personas/<persona>.md` (per-persona prompt overrides), `prompts/<slug>.md` (user-authored research queries) — edited by the user via the **Web UI onboarding wizard, the Web UI editor, the CLI, Obsidian, or any text editor**. All five surfaces produce the same atomic markdown rewrites.
+- **`input/`** (generated tier — gitignored locally; R2-synced): `input/raw/<slug>.md` (driver-fetched + manually-pulled URL summaries); `input/wiki/` (entities, topics, synthesis, questions, index, log — LLM-maintained knowledge graph); `input/briefs/<YYYY-MM-DD>.md` (daily briefs, CoS-written); `input/reports/<slug>.md` (deep-dives, prompt-driven research answers).
+- **`output/`** (authored tier — git-tracked locally): the user's own writing — memos, notes, drafts — that CoS reviews and suggests.
+- **`action/`** (mixed — `action/events/generated/` is generated; the rest is authored): `action/events/<YYYY-MM-DD>--<slug>.md` (authored personal events); `action/events/generated/` (driver-pulled events); `action/strategies/`, `action/plans/`, `action/tasks/` — items awaiting the user's greenlight.
+
+Every file is CommonMark + YAML frontmatter. Wikilinks use plain `[[slug]]` — Obsidian, the Web UI renderer, and `gctrl-kb` all share one resolver. In **local mode**, a `VaultWatcher` fiber watches `fs.watch` events so user edits are reindexed without a restart; in **cloud-only mode**, the Worker's authored-tier write routes emit the equivalent `vault.updated` event before returning success, so the index update path is identical. Full format in [vault/specs/profile.md](vault/specs/profile.md).
 
 ### Knowledge Base (investment-scoped)
 
@@ -234,11 +284,11 @@ Time-bound events live alongside the wiki. Personal commitments (`source: user`)
 
 ### Delivery Channels
 
-- **App** — web UI served by Uebermensch on a distinct port (mirrors gctrl-board pattern). Brief feed, wiki explorer, thesis tracker, prompt/eval dashboards.
-- **Telegram** — via `driver-telegram` kernel LKM. Bot commands: `/brief`, `/ingest`, `/deepdive <thesis>`, `/score`.
-- **Discord** — via `driver-discord` kernel LKM. Webhook posts + slash commands in configured channels.
+- **Web** — first-class user surface, served by the Uebermensch daemon (local mode) or by the hosted Cloudflare Worker (cloud-only mode). Brief feed, wiki explorer, thesis tracker, prompt/eval dashboards, **and the onboarding wizard** (UC-7) — including channel-connect flows for Telegram and Discord. Surfaces the rendered markdown as sanitized HTML; no editor required to read or score.
+- **Telegram** — via `driver-telegram` kernel LKM (local mode) or the Worker's Telegram client (cloud-only mode). Bot commands: `/brief`, `/ingest`, `/deepdive <thesis>`, `/score`. Token connection happens during the web onboarding wizard via deep-link / QR; secrets land in the kernel secret store (local) or `wrangler secret`s (cloud).
+- **Discord** — via `driver-discord` kernel LKM (local mode) or the Worker's Discord client (cloud-only mode). Webhook posts + slash commands in configured channels. OAuth2 + bot-invite flow is part of the web onboarding wizard.
 
-Full spec in [vault/specs/delivery.md](vault/specs/delivery.md).
+Full spec in [vault/specs/delivery.md](vault/specs/delivery.md), including the [§ Channel Onboarding (Web)](vault/specs/delivery.md#channel-onboarding-web) flow for first-time users.
 
 ### Eval & Monitoring
 
@@ -285,9 +335,10 @@ See [ROADMAP.md](ROADMAP.md) for the milestone → task breakdown.
 5. **Prompt regressions caught.** A deliberate prompt regression (e.g., strip citations) is detected by the evaluator within the next brief cycle. Eval results are pinned to the `content_hash` of the brief markdown file and survive later vault edits.
 6. **Vault portability.** Switching `UBER_VAULT_DIR` to a second vault produces different topics/brief without touching app code or data. Opening either vault directly in Obsidian MUST show the same content the app sees.
 7. **Multi-device via R2.** A fresh device running `gctrl uber vault pull --from r2` for the same `identity.name` mounts an identical vault and can render today's brief from the same inputs.
-8. **Three channels live.** App, Telegram, Discord each deliver the same brief idempotently. A user acts on an action item in any channel; other channels reflect the updated state within one brief cycle.
+8. **Three channels live.** Web, Telegram, Discord each deliver the same brief idempotently. A user acts on an action item in any channel; other channels reflect the updated state within one brief cycle.
 9. **Deep-dive utility.** At least one thesis deep-dive per month produces a `input/wiki/synthesis/thesis-*-update-<date>.md` vault file with ≥3 new evidence citations.
 10. **Scrape health visible.** The app shows per-domain scrape success over 7/30-day windows; any domain below 60% surfaces in the inbox.
+11. **Cloud-only onboarding works.** A first-time user lands on the hosted onboarding URL on a phone, completes the wizard in ≤5 minutes without an editor, has Telegram + Discord connected, and receives the next morning's brief in both channels. Running `gctrl uber vault pull --from r2 --identity-slug <slug>` later produces a vault byte-for-byte identical to one built locally.
 
 ## Open Questions
 

@@ -1,8 +1,56 @@
 # Uebermensch — Architecture
 
-> One-sentence summary: Uebermensch is a native gctrl application that turns a portable user profile + gctrl-kb into a daily Chief-of-Staff brief delivered across App, Telegram, and Discord, with end-to-end LLM and scrape observability.
+> One-sentence summary: Uebermensch is a native gctrl application that turns a portable user profile + gctrl-kb into a daily Chief-of-Staff brief delivered across Web, Telegram, and Discord, with end-to-end LLM and scrape observability — runnable as a local daemon, a hosted Cloudflare Worker, or both.
 
-See [PRD.md](../PRD.md) for the problem and goals. This document defines **how** the pieces fit together.
+See [PRD.md](../PRD.md) for the problem and goals. See [§ Deployment Modes](#0-deployment-modes) for the three supported topologies (local / cloud-only / hybrid). This document defines **how** the pieces fit together.
+
+## 0. Deployment Modes
+
+Uebermensch supports three deployment topologies. They share the same data model (markdown + YAML in a `vault/<identity.slug>/` tree), the same layered position, and the same hexagonal services. They differ in **where the vault bytes live, who writes to them, and where channel secrets are stored**.
+
+| Mode | Vault byte-store | Single writer | Channel secrets | Web UI host | Obsidian | Daemon required |
+|------|------------------|----------------|-----------------|-------------|----------|------------------|
+| **Local** (default) | Local FS at `$UBER_VAULT_DIR` | Uebermensch daemon (`:4319`) — single writer per process pair (kernel + uber daemon) | Kernel driver LKMs (`driver-telegram`, `driver-discord`) | Uebermensch daemon | Optional mount | Yes |
+| **Cloud-only** | R2 at `vault/<identity.slug>/` | Hosted Cloudflare Worker — single writer per slug | Worker secret store (`wrangler secret`); same shape as kernel driver tokens | Worker | Not installed | No |
+| **Hybrid** | R2 (canonical) + local FS (live mirror) | Local Uebermensch daemon (writes go FS-first then `gctrl-sync` pushes to R2 within 30s); the Worker, when present, is read-mostly and may **only** mutate the **generated tier** during scheduled jobs | Kernel driver LKMs preferred; Worker secret store when the Worker is the active sender | Either | Optional mount | Yes (and a Worker if you want it) |
+
+### Cross-mode invariants
+
+1. **One byte-store wins per identity slug at any moment.** Two daemons MUST NOT write to the same `vault/<identity.slug>/` concurrently. In hybrid mode the local daemon is authoritative for authored-tier writes; cloud-only and local modes are mutually exclusive at the *active-writer* level. Mode handoff is by `gctrl uber vault pull --from r2` / `gctrl uber vault push --to r2` — file copies, not migrations.
+2. **Same write protocol everywhere.** Authored-tier writes are atomic markdown rewrites (`<path>.tmp` → fsync → rename in local mode; `R2.put` with `If-Match: <etag>` in cloud-only mode), each followed by a `vault.updated` event that triggers index re-read. The Web UI, the CLI, and Obsidian all funnel into this single write path; none of them edits markdown out-of-band.
+3. **Channel tokens NEVER live in the vault.** They live in the kernel secret store (local mode) or the Worker secret store (cloud-only mode). The vault stores only `target_ref` (e.g. `tg:chat:<id>`) — the binding that lets a driver look up a token in its own secret namespace.
+4. **The web UI is mode-symmetric.** The same React build is served by the Uebermensch daemon (local) or the Cloudflare Worker (cloud-only). Routes diverge only at the `Vault*` ports — `FsVault` adapter on the daemon, `R2Vault` adapter in the Worker. The onboarding wizard, brief feed, channel-config, and scoring UI are byte-identical across modes.
+
+```mermaid
+flowchart LR
+  subgraph local["Local mode"]
+    L_FS[("FS vault")]:::store
+    L_D["uber daemon :4319\n+ kernel daemon :4318"]
+    L_W["Web UI"]
+    L_W --> L_D --> L_FS
+    L_FS -. R2 sync (optional) .-> R2[("R2\nvault/&lt;slug&gt;/")]
+  end
+  subgraph cloud["Cloud-only mode"]
+    C_W["Cloudflare Worker"]
+    C_R[("R2 (authoritative)\nvault/&lt;slug&gt;/")]:::store
+    C_UI["Web UI"]
+    C_UI --> C_W --> C_R
+  end
+  subgraph hybrid["Hybrid mode"]
+    H_FS[("FS vault\n(live mirror)")]:::store
+    H_D["uber daemon :4319"]
+    H_W["Cloudflare Worker\n(read-mostly)"]
+    H_R[("R2 (canonical)\nvault/&lt;slug&gt;/")]:::store
+    H_UI["Web UI"]
+    H_D --> H_FS
+    H_FS <-. bidirectional sync .-> H_R
+    H_W --> H_R
+    H_UI --> H_D
+  end
+  classDef store fill:#eef,stroke:#669
+```
+
+The remainder of this document describes the **local mode** by default (it is the richest topology); cloud-only differences are called out in each section under a *Cloud-only:* note.
 
 ## 1. Layered Position
 
@@ -44,7 +92,7 @@ flowchart TB
     Mkt["driver-markets"]
   end
   subgraph L0["L0 — External"]
-    Prof2["$UBER_VAULT_DIR\n(Obsidian vault, git + R2)"]
+    Prof2["Vault byte-store\n(local FS at $UBER_VAULT_DIR\nor R2 at vault/&lt;slug&gt;/)\nObsidian-compatible (optional)"]
     A["Cloudflare AI Gateway\n(→ Workers AI / Anthropic / OpenAI)"]
     TgX["Telegram"]
     DcX["Discord"]
@@ -88,7 +136,11 @@ Dependencies MUST flow inward only (see [principles.md § Architectural Invarian
 
 ## 3. Process Model
 
-Uebermensch runs as a **single daemon** alongside the gctrl kernel daemon. It exposes its own HTTP server (web UI + API) on a port separate from the kernel's `:4318`. All state-mutating operations travel kernel-ward via the kernel HTTP API. The daemon also runs a `VaultWatcher` fiber on `$UBER_VAULT_DIR` to detect authored-tier edits (including edits made in Obsidian) and trigger profile reloads / cache invalidations.
+Two process shapes, one per supported mode (hybrid combines them):
+
+**Local mode** — Uebermensch runs as a **single daemon** alongside the gctrl kernel daemon. It exposes its own HTTP server (web UI + API) on a port separate from the kernel's `:4318`. All state-mutating operations travel kernel-ward via the kernel HTTP API. The daemon also runs a `VaultWatcher` fiber on `$UBER_VAULT_DIR` to detect authored-tier edits (including edits made in Obsidian, the Web UI's onboarding wizard, or any text editor) and trigger profile reloads / cache invalidations.
+
+**Cloud-only mode** — Uebermensch runs as a **single Cloudflare Worker** with R2 as the byte-store, D1 for the index, Durable Objects for the per-slug write coordinator (the equivalent of "single writer per identity slug"), and Worker Cron Triggers for the schedule. The same `VaultWatcher`-equivalent — `R2VaultWatcher` — fires after every successful R2 write, derived from the write path itself rather than from filesystem events. Channel secrets live in `wrangler secret`s scoped per-slug; outbound calls to `driver-llm` / `driver-telegram` / `driver-discord` are made directly by the Worker's HTTP clients, replicating the kernel-driver invariant inside a single process.
 
 ```mermaid
 flowchart LR
@@ -120,12 +172,13 @@ flowchart LR
   ui -->|"HTTP :4319"| ud
 ```
 
-Enforced invariants:
+Enforced invariants (apply to whichever process is the active writer for a slug):
 
-1. Uebermensch daemon MUST NOT open `gctrl.duckdb`. Only the kernel daemon holds the DuckDB write lock (see [principles.md § Architectural Invariants #2](../../../../vault/specs/principles.md#architectural-invariants)).
-2. Uebermensch daemon MAY read `$UBER_VAULT_DIR` (authored + generated tiers) directly for rendering performance, but MUST route every mutation through kernel HTTP routes (`KbPort` → wiki, `BriefingService` → briefs). Direct vault writes from the Uebermensch process are forbidden except for the `.gctrl-uber/` metadata dir.
-3. Uebermensch daemon MUST NOT hold any external API key. All external calls go through kernel drivers.
-4. Obsidian edits are first-class — the `VaultWatcher` cannot distinguish `$EDITOR`, `git checkout`, and Obsidian writes, and all three follow the same reload path.
+1. **Local mode:** Uebermensch daemon MUST NOT open `gctrl.duckdb`. Only the kernel daemon holds the DuckDB write lock (see [principles.md § Architectural Invariants #2](../../../../vault/specs/principles.md#architectural-invariants)).  **Cloud-only mode:** the Worker's index is D1, not DuckDB; D1 is held by the Worker per binding.
+2. **Local mode:** Uebermensch daemon MAY read `$UBER_VAULT_DIR` (authored + generated tiers) directly for rendering performance, but MUST route every mutation through kernel HTTP routes (`KbPort` → wiki, `BriefingService` → briefs). Direct vault writes from the Uebermensch process are forbidden except for the `.gctrl-uber/` metadata dir.  **Cloud-only mode:** the Worker MAY read R2 directly via the bound `R2Bucket`, but every mutation goes through the per-slug Durable Object that serialises writes and emits the `vault.updated` event.
+3. Uebermensch daemon MUST NOT hold any external API key in **local mode** — all external calls go through kernel drivers. In **cloud-only mode** the Worker holds tokens scoped per slug in `wrangler secret`s; the same allowlist + correlation-id discipline as the LKM driver applies.
+4. Obsidian edits are first-class — the `VaultWatcher` cannot distinguish `$EDITOR`, `git checkout`, **the Web UI onboarding wizard**, and Obsidian writes, and all of them follow the same reload path. In cloud-only mode the equivalent "Web UI wizard / API call" path is the *only* entry, so this invariant collapses to "every mutation triggers exactly one `vault.updated`."
+5. **Mode mutual exclusion.** No more than one writer (local daemon OR Worker) holds the active-writer role for a given `identity.slug` at the same time. Mode handoff is explicit: `gctrl uber vault pull --from r2` (cloud → local) or `gctrl uber vault push --to r2` (local → cloud) flips the writer atomically by transferring the `.gctrl-uber/lock.json` (FS) or the per-slug Durable Object lease (R2).
 
 ## 4. Data Flow — Morning Brief
 
@@ -208,32 +261,45 @@ Service ports follow the [`arch-taste.md` Effect-TS pattern](../../../../debuggi
 
 ## 6. External Vault Integration
 
-The **authored tier** of the vault (`directives/**`, `output/**`, `action/**` excl. `action/events/generated/**`) is **read-only to the app**. The app watches the directory via `ProfileService`/`VaultWatcher`, which exposes a `Stream<ProfileChange>` to consumers. The **generated tier** (`input/**`, `action/events/generated/**`) is writable by the kernel + Uebermensch services.
+The **authored tier** of the vault (`directives/**`, `output/**`, `action/**` excl. `action/events/generated/**`) is **only writable through user-confirmed surfaces**: the CLI, an editor (Obsidian or `$EDITOR`), or the Web UI's onboarding wizard / profile editor (which produces atomic markdown rewrites confirmed by the user, not by an LLM). The app watches the byte-store via `ProfileService`/`VaultWatcher`, which exposes a `Stream<ProfileChange>` to consumers. The **generated tier** (`input/**`, `action/events/generated/**`) is writable by the kernel + Uebermensch services.
 
 ```ts
 class ProfilePort extends Context.Tag("uber/ProfilePort")<ProfilePort, {
   readonly current: Effect.Effect<Profile, ProfileInvalid>
   readonly changes: Stream.Stream<ProfileChange, ProfileInvalid>
 }>() {}
+
+// New port — emits the same kind of write whether the source is FS or R2.
+class VaultWriterPort extends Context.Tag("uber/VaultWriterPort")<VaultWriterPort, {
+  readonly writeAuthored: (path: VaultPath, body: string, expected: ContentHash | "new") => Effect.Effect<ContentHash, VaultWriteError>
+  readonly writeGenerated: (path: VaultPath, body: string) => Effect.Effect<ContentHash, VaultWriteError>
+}>() {}
 ```
 
-- `$UBER_VAULT_DIR` resolves to `~/uebermensch-vault` by default but is overridable (legacy alias: `UBER_PROFILE_DIR`).
-- The vault is Obsidian-mountable — every file is CommonMark + YAML frontmatter; wikilinks are bare `[[slug]]`.
-- The app MUST fail-closed on a missing / invalid authored tier: no brief is produced, a clear error is surfaced to CLI + HTTP.
-- Authored-tier writes happen only via `gctrl uber profile migrate` (idempotent, with preview diff) or by the user in Obsidian / their editor / git. No service MAY write to the authored tier in response to LLM output.
+Two adapters:
+
+- `FsVaultWriter` (local mode) — atomic-rename writer; emits `vault.updated` after fsync.
+- `R2VaultWriter` (cloud-only mode) — `R2.put` with conditional `If-Match: <etag>` for optimistic concurrency; emits `vault.updated` after a successful PUT.
+
+The Web UI talks only to `VaultWriterPort`, so the onboarding wizard's "Save topics" button has the same semantics as a CLI write or an Obsidian save: atomic, hashed, idempotent, and instrumented.
+
+- `$UBER_VAULT_DIR` resolves to `~/uebermensch-vault` by default in local mode (overridable; legacy alias `UBER_PROFILE_DIR`). In cloud-only mode the equivalent is the R2 prefix `vault/<identity.slug>/`, set per-slug at provisioning time.
+- The vault is Obsidian-compatible — every file is CommonMark + YAML frontmatter; wikilinks are bare `[[slug]]` — but Obsidian is **never on the critical path**.
+- The app MUST fail-closed on a missing / invalid authored tier: no brief is produced, a clear error is surfaced to CLI + HTTP, and (in cloud-only mode) the Web UI shows the onboarding wizard instead of a feed.
+- Authored-tier writes happen via `gctrl uber profile migrate` (idempotent, with preview diff), the Web UI onboarding wizard (idempotent, with preview diff), the user in Obsidian / `$EDITOR` / git. **No service MAY write to the authored tier in response to LLM output.**
 
 See [profile.md](profile.md) for the full format and [specs/knowledge-base.md](knowledge-base.md) for the vault layout.
 
 ## 7. Persistence
 
-Two stores, with clear ownership:
+Two stores, with clear ownership. The **byte-store** for the vault is filesystem (local) or R2 (cloud-only); the **index** is DuckDB (local) or D1 (cloud-only). Both byte-stores hold identical bytes per vault path, and both indexes hold identical rows per `(brief_id, channel)`, so a vault produced in one mode is perfectly usable in the other after a `pull` / `push`.
 
 | Store | Holds | Authoritative for | Sync target |
 |-------|-------|-------------------|-------------|
-| **Vault** (`$UBER_VAULT_DIR`) | Markdown + YAML — profile, theses, wiki pages, brief bodies, synthesis | Any content a human reads or edits | R2 (`gctrl-uber-vault`) |
-| **SQLite / DuckDB** | Index + event log — `uber_*` rows, kernel `sessions`/`spans`/`scores` | Metadata, timings, deliveries, scores | D1 (row-level) |
+| **Vault byte-store** — local FS at `$UBER_VAULT_DIR` (local mode) **or** R2 at `vault/<identity.slug>/` (cloud-only mode) | Markdown + YAML — profile, theses, wiki pages, brief bodies, synthesis | Any content a human reads or edits | R2 (`gctrl-uber-vault`) — push from local, native in cloud-only |
+| **Index** — kernel DuckDB (local mode) **or** Cloudflare D1 (cloud-only mode) | Index + event log — `uber_*` rows, kernel `sessions`/`spans`/`scores` | Metadata, timings, deliveries, scores | D1 (row-level) — native in cloud-only, sync target from local |
 
-Rebuilding SQLite from vault + kernel sessions MUST produce an equivalent index (see [domain-model.md § 10](domain-model.md#10-invariants) invariant #2). The reverse is not true — SQLite cannot reconstruct the vault.
+Rebuilding the index from vault + kernel sessions MUST produce an equivalent set of rows (see [domain-model.md § 10](domain-model.md#10-invariants) invariant #2) regardless of mode. The reverse is not true — the index cannot reconstruct the vault.
 
 ### Kernel-owned tables (see [kernel sync.md § 6](../../../../vault/specs/architecture/kernel/sync.md#6-syncable-tables))
 
@@ -282,12 +348,19 @@ $UBER_VAULT_DIR/
 
 The kernel `gctrl-kb` crate is configured with `context_root = $UBER_VAULT_DIR, wiki_subpath = "input/wiki"`, plus a secondary `raw_subpath = "input/raw"` mount for ingested source pages — there is no separate `~/.local/share/gctrl/context/wiki/` path when running under an Uebermensch workspace.
 
-### Filesystem artifacts
+### Filesystem artifacts (local + hybrid modes)
 
 - `$UBER_VAULT_DIR/` — the one true mount. Authoritative for every readable artifact.
 - `$UBER_VAULT_DIR/.gctrl-uber/` — daemon-local metadata (lock, vault index, tombstones). Gitignored; R2-synced except for `lock.json`.
-- `~/.local/share/gctrl/uber/briefs/<id>.html` — optional rendered HTML cache for App web UI. Derived from the vault markdown; safe to delete.
+- `~/.local/share/gctrl/uber/briefs/<id>.html` — optional rendered HTML cache for the Web UI. Derived from the vault markdown; safe to delete.
 - `~/.local/share/gctrl/gctrl.duckdb` — kernel index + event log. Held by the kernel daemon.
+
+### Cloud-only artifacts (Worker)
+
+- `vault/<identity.slug>/**` (R2) — authoritative bytes. Object metadata: `content-sha256`, `device-id` (always `worker-<region>` here), `updated-at`. Same key layout as [profile.md § Sync (R2)](profile.md#sync-r2) so a `pull` produces an identical FS layout.
+- `vault/<identity.slug>/.gctrl-uber/` (R2) — `lock.json` is replaced by a per-slug **Durable Object lease** (no lock object in R2); `tombstones.jsonl` and `index.jsonl` live in R2 the same as in local mode.
+- D1 database — `uber_*` rows + the kernel `sessions` / `spans` / `scores` rows that would otherwise be in DuckDB. Schema is the same; the kernel `sync` crate emits the migrations to D1 from a single source.
+- KV / Cache for HTML rendered briefs (bounded TTL) — derivative, safe to evict.
 
 ## 8. Cross-App Interaction
 
@@ -314,11 +387,14 @@ Uebermensch exchanges state with gctrl-board via kernel IPC events + HTTP API, N
 
 ## 10. Security
 
-1. **Secrets** — kernel drivers hold all external tokens (LLM, Telegram, Discord, EDGAR, Kalshi). Uebermensch daemon env has no external secrets.
-2. **Auth** — app HTTP port secured by a bearer token configured in profile (`delivery.app.bearer_token_env`). CORS locked to localhost by default.
-3. **Prompt injection** — ingest pipeline wraps source text in `<source>...</source>` sentinels before templating into prompts; curator prompts refuse to follow instructions inside source tags.
-4. **Outbound exfiltration** — guardrails allowlist outbound domains via `gctrl-net` proxy; drivers restricted to their declared endpoints.
-5. **Vault sharing** — vaults may contain watchlists and theses the user considers sensitive. `$UBER_VAULT_DIR` is user-owned; Uebermensch MUST NOT log authored-tier content at INFO level. R2 sync MUST use a per-user scoped bucket prefix `vault/<identity.slug>/` (see [profile.md § Sync (R2)](profile.md#sync-r2) for the full key layout) to prevent cross-user reads.
+1. **Secrets** —
+   - **Local mode:** kernel drivers hold all external tokens (LLM, Telegram, Discord, EDGAR, Kalshi). Uebermensch daemon env has no external secrets.
+   - **Cloud-only mode:** the Worker holds external tokens in `wrangler secret`s, scoped per `identity.slug` (one secret namespace per tenant). Token rotation is via `wrangler secret put` + a slug-scoped invalidation event. The Worker MUST NOT echo tokens into vault writes, response bodies, or logs.
+2. **Auth** — Web UI is secured by a bearer token configured in profile (`delivery.app.bearer_token_env`) for local mode, or by the Worker's identity-provider session (signed cookie + `identity.slug` claim) for cloud-only mode. CORS locked to the configured host (localhost or the Worker's hostname); never `*`.
+3. **Prompt injection** — ingest pipeline wraps source text in `<source>...</source>` sentinels before templating into prompts; curator prompts refuse to follow instructions inside source tags. Equally enforced in both modes.
+4. **Outbound exfiltration** — guardrails allowlist outbound domains via `gctrl-net` proxy (local mode) or via the Worker's `fetch` allowlist binding (cloud-only mode); drivers / Worker clients are restricted to their declared endpoints.
+5. **Vault sharing** — vaults may contain watchlists and theses the user considers sensitive. R2 storage MUST use a per-user scoped bucket prefix `vault/<identity.slug>/` (see [profile.md § Sync (R2)](profile.md#sync-r2) for the full key layout) to prevent cross-user reads. Uebermensch MUST NOT log authored-tier content at INFO level. In cloud-only mode the Worker MUST verify the session's `identity.slug` claim matches the slug of every vault key it reads or writes — multi-tenancy is enforced at the request boundary, not at the bucket boundary.
+6. **Channel onboarding (web)** — the Telegram and Discord onboarding flows MUST issue short-lived (≤10 min) one-time tokens encoded into the bot deep-link / OAuth `state` parameter, redeemable exactly once against the Worker's `/api/uber/onboard/{channel}/callback` endpoint. The tokens are scoped to the user's `identity.slug` so a leaked link cannot bind a stranger's account to a different slug.
 
 ## 11. Open Interfaces (new kernel ports)
 

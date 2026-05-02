@@ -1,19 +1,23 @@
 # Uebermensch — Profile & Vault
 
-> The profile directory is also the **Obsidian vault** — a single markdown-first root with exactly four top-level folders organised around the user's relationship with their Chief of Staff:
+> The profile directory is the **vault** — a single markdown-first root with exactly four top-level folders organised around the user's relationship with their Chief of Staff:
 >
 > - `directives/` — standing orders **for CoS** (config, theses, research interests, prompts)
 > - `input/` — material **for me to read**; CoS digests and surfaces it (raw fetches, wiki, briefs, reports)
 > - `output/` — **my own writing**; CoS reviews and suggests (drafts, memos, position papers)
 > - `action/` — things awaiting **my greenlight** (strategies, plans, calendar events, executive tasks)
 >
-> The user opens this directory in Obsidian; the app reads it; R2 syncs it.
+> The vault is **Obsidian-compatible** — open it in Obsidian for graph view if you want — but Obsidian is **never required**. The vault has equal-peer authoring surfaces: the **Web UI** (onboarding wizard + profile editor + channel-config), the CLI, Obsidian, and any text editor. All of them produce the same atomic markdown rewrites.
+>
+> The vault byte-store is either the local filesystem (`$UBER_VAULT_DIR`) or an R2 prefix (`vault/<identity.slug>/`); see [architecture.md § 0 Deployment Modes](architecture.md#0-deployment-modes). The same layout, same file contents, same sync protocol applies in both — switching is a `pull` / `push`, not a migration.
 
 ## Location & Identity
 
-- Default path: `~/uebermensch-vault` — overridable via `UBER_VAULT_DIR` (alias `UBER_PROFILE_DIR` retained for continuity).
-- The directory is a **git repository** the user owns *and* an **Obsidian vault** the user opens — one location, two hats.
+- **Local mode default path:** `~/uebermensch-vault` — overridable via `UBER_VAULT_DIR` (alias `UBER_PROFILE_DIR` retained for continuity).
+- **Cloud-only mode:** R2 prefix `vault/<identity.slug>/` in the `gctrl-uber-vault` bucket. The Worker resolves it from the session's `identity.slug` claim.
+- In local mode the directory is a **git repository** the user owns *and* (optionally) an **Obsidian vault** the user opens — one location, multiple hats.
 - `gctrl uber vault init` scaffolds an empty vault at `$UBER_VAULT_DIR` from the template (`directives/`, `input/`, `output/`, `action/`, `.gitignore`, `README.md`).
+- The Web UI's onboarding wizard scaffolds the same template under `vault/<identity.slug>/` in R2 (cloud-only mode) or under `$UBER_VAULT_DIR` via the daemon (local mode). The bytes produced are identical.
 
 The identity (`identity.slug` × machine fingerprint) gates sync: each vault is keyed to one user identity; vault content MUST NOT leak between identities in shared storage. `identity.slug` is the canonical machine id — lowercase, `[a-z0-9-]+`, derived from `identity.name` at vault-init time (user may override). `identity.name` is the display name used in UI + generated markdown; it MAY contain spaces, mixed case, and non-ASCII.
 
@@ -167,9 +171,22 @@ The four roots correspond to four directions of attention:
 
 Rule of thumb: if it renders as a page in Obsidian, it lives in the vault. If it's a row of metadata, it lives in SQLite.
 
+## Authoring Surfaces
+
+Four equal-peer ways to read and edit the vault. All of them produce the same atomic markdown rewrites with the same content-hash + `vault.updated` event protocol.
+
+| Surface | Best for | Notes |
+|---------|----------|-------|
+| **Web UI** | First-time onboarding, mobile, channel configuration, day-to-day reading | Served by the Uebermensch daemon (local) or Cloudflare Worker (cloud-only). Includes the onboarding wizard (UC-7 in PRD), profile editor, topic editor, channel-connect flow, brief feed, scoring. **Required path** for cloud-only users. |
+| **CLI** | Scripting, batch edits, vault init, vault pull/push | `gctrl uber vault init`, `gctrl uber profile validate`, `gctrl uber profile migrate`, `gctrl uber vault pull --from r2`, `gctrl uber vault push --to r2`. |
+| **Obsidian** | Graph view, backlink browsing, hand-curating wiki pages | Optional. See [§ Obsidian Integration](#obsidian-integration). |
+| **Any text editor** | Power users, `git diff`-driven workflows | The vault is plain markdown — `vim`, VS Code, `nano`, all work. The local daemon's `VaultWatcher` picks up edits automatically. |
+
+The Web UI's authoring routes (e.g. `POST /api/uber/vault/topics`, `POST /api/uber/vault/theses/{slug}`) take **structured form payloads**, render them to canonical markdown server-side, and then call `VaultWriterPort.writeAuthored(path, body, expected_hash)` — exactly the same call a CLI command would make. There is no separate "cloud schema": the form fields exist only at the request boundary; on disk and on R2 the bytes are CommonMark + YAML.
+
 ## Obsidian Integration
 
-- **Opening:** point Obsidian at `$UBER_VAULT_DIR`. The vault works out of the box with zero plugins.
+- **Opening:** point Obsidian at `$UBER_VAULT_DIR` (local mode only — Obsidian does not read R2 directly; cloud-only users either run `gctrl uber vault pull --from r2` or rely on the Web UI). The vault works out of the box with zero plugins.
 - **Graph view:** frontmatter + `[[wikilinks]]` light up Obsidian's native graph. Thesis pages act as hubs.
 - **Shipped `.obsidian/` defaults** (emitted by `gctrl uber vault init`):
   - `graph.json` — groups coloured by page_type (thesis=gold, source=grey, synthesis=blue, entity=green, topic=purple)
@@ -188,6 +205,14 @@ Rule of thumb: if it renders as a page in Obsidian, it lives in the vault. If it
 5. Generated content is self-contained — deleting `input/` and `action/events/generated/` does not corrupt the authored tier (`directives/`, `output/`, the rest of `action/`).
 
 ## Sync (R2)
+
+R2 plays one of two roles depending on deployment mode:
+
+- **Local mode:** R2 is a **sync target** behind the local FS. The kernel `gctrl-sync` crate replicates `$UBER_VAULT_DIR` to `vault/<identity.slug>/` with the push/pull protocol below.
+- **Cloud-only mode:** R2 **is** the vault byte-store. The Worker reads and writes R2 directly; there is no FS to sync from. The push/pull protocol below collapses to a single conditional `R2.put` per write (with `If-Match: <etag>` for optimistic concurrency) and a single `R2.get` per read. Writes still go through a per-slug Durable Object so two concurrent requests cannot clobber each other.
+- **Hybrid mode:** R2 is canonical; the local FS is a live mirror; the local daemon runs the local-mode push/pull protocol with the bidirectional flag set.
+
+The protocol below describes the **local mode** path; cloud-only differences are called out where they matter.
 
 The whole vault syncs to R2 — not just the wiki. Configured via kernel `SyncConfig` pointing at `$UBER_VAULT_DIR`:
 

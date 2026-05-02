@@ -1,6 +1,6 @@
 # Uebermensch
 
-> Chief-of-Staff app for investors. Vault-first, Obsidian-mountable, R2-synced.
+> Chief-of-Staff app for investors. Vault-first (markdown + YAML), R2-synced, Obsidian-compatible — but Obsidian is **never required**. First-time users can onboard, configure Telegram/Discord, and read briefs entirely from a web browser; see [PRD § Deployment Modes](PRD.md#deployment-modes).
 
 See [PRD.md](PRD.md) for vision, [ROADMAP.md](ROADMAP.md) for milestones, [WORKFLOW.md](WORKFLOW.md) for lifecycle, and `vault/specs/` for architecture details.
 
@@ -44,7 +44,8 @@ Env vars are loaded from the repo-root `.env` (plaintext, gitignored) or
 ## Vault layout
 
 The vault is markdown-first — every authored config file is CommonMark with YAML
-frontmatter so Obsidian reads it natively. Four canonical root folders:
+frontmatter so the Web UI, the CLI, and Obsidian all read it the same way.
+Four canonical root folders:
 
 | Path | Contents |
 |------|----------|

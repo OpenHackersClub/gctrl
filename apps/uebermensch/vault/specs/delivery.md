@@ -195,6 +195,86 @@ Supported inbound shapes:
 
 All inbound responses are written through the same `MessagingPort.send` — so they become `uber_deliveries` rows with `kind: reply` (new enum variant). This keeps the audit trail unified.
 
+## Channel Onboarding (Web)
+
+Both Telegram and Discord can be **bound to a user without leaving the browser**, so a first-time cloud-only user (UC-7 in PRD) never has to copy a token by hand. The wizard runs entirely on the Uebermensch daemon (local mode) or the hosted Worker (cloud-only mode); the steps are mode-symmetric.
+
+### Pre-conditions
+
+1. The user has completed the identity step of the onboarding wizard — i.e. the Worker / daemon knows the active `identity.slug`.
+2. The Telegram bot username (e.g. `@uebermensch_bot`) and Discord application id are static configuration on the Uebermensch deployment, not per-user secrets.
+3. A short-lived (≤10 min) one-time onboarding token (`onboarding_token`) is minted by the wizard, scoped to `(identity.slug, channel)`, redeemable exactly once.
+
+### Telegram flow
+
+```mermaid
+sequenceDiagram
+  participant User
+  participant Web as Web UI
+  participant Uber as Uebermensch (daemon or Worker)
+  participant TG as Telegram
+  participant Drv as driver-telegram (LKM or Worker client)
+
+  Web->>Uber: POST /api/uber/onboard/telegram/start (identity.slug)
+  Uber-->>Web: { onboarding_token, deep_link: "https://t.me/uebermensch_bot?start=<token>" }
+  Web->>User: render QR + "Open Telegram" button
+  User->>TG: open deep link / scan QR
+  TG->>Drv: webhook update with /start <token>, from chat_id
+  Drv->>Uber: POST /api/uber/onboard/telegram/callback { token, chat_id, from }
+  Uber->>Uber: verify token, bind tg:chat:<chat_id> to identity.slug
+  Uber->>Uber: rewrite directives/profile.md → delivery.channels.telegram_primary.target_ref
+  Uber->>Drv: POST /api/telegram/send (welcome + first-brief preview)
+  Drv->>TG: deliver welcome
+  Uber-->>Web: SSE channel.bound { channel: telegram_primary, target_ref }
+  Web->>User: green check; "Connected as @<from.username>"
+```
+
+After the callback, the wizard's `directives/profile.md` rewrite adds:
+
+```yaml
+delivery:
+  channels:
+    telegram_primary:
+      driver: telegram
+      enabled: true
+      target_ref: "tg:chat:<chat_id>"
+      window: { start_local: "07:30", end_local: "22:30", tz: "Asia/Tokyo" }
+      silent: false
+```
+
+The bot **token** is not in the vault — it is in the kernel secret store (local mode) or `wrangler secret`s scoped to the deployment (cloud-only). The vault stores only `target_ref`.
+
+### Discord flow
+
+Discord uses OAuth2 + bot-invite + interactions endpoint:
+
+1. The wizard generates an OAuth2 URL with `scope=bot+applications.commands`, the application's `client_id`, the wizard's `onboarding_token` as `state`, and a per-deployment `permissions=` mask. The user clicks "Connect Discord" → standard Discord consent screen → returns to `/api/uber/onboard/discord/callback?code=...&state=...`.
+2. The Worker / daemon exchanges `code` for a guild-scoped bot token, verifies `state` against the `onboarding_token`, and persists the `(guild_id, channel_id, webhook_url)` tuple plus the bot token in the secret store.
+3. The wizard rewrites `directives/profile.md` → `delivery.channels.discord_feed`:
+
+   ```yaml
+   discord_feed:
+     driver: discord
+     enabled: true
+     target_ref: "dc:webhook:<webhook_id>"
+     interactions_target: "dc:interactions:<application_id>"
+   ```
+
+4. The driver posts a `/ping` confirmation and the wizard surfaces success via the same `channel.bound` SSE event.
+
+### Idempotency + reuse
+
+If the wizard is re-run (or the user later visits `/api/uber/channels` to add a second Discord server), the same flow produces an additional `delivery.channels.<name_2>` entry instead of clobbering the first — channel `name` is wizard-assigned (`telegram_primary`, `telegram_secondary`, `discord_feed`, `discord_team`, …) and surfaces in the UI for renaming. The `(brief_id, channel)` idempotency key in `uber_deliveries` continues to hold.
+
+### Failure modes
+
+| Failure | Recovery |
+|---------|----------|
+| User never opens the deep link / completes OAuth | Token expires after 10 min; wizard shows "didn't work — try again" with a fresh token. |
+| Token redeemed twice (replay) | Second redemption fails with `409 onboarding_token_already_used`. |
+| Discord bot lacks channel permissions | Driver `/ping` fails; wizard surfaces the specific missing scope and offers a "re-invite" link with the corrected permission mask. |
+| User declines Telegram start (closes Telegram) | Token sits unredeemed; wizard times out after 10 min and offers retry. |
+
 ## Authentication & Authorization
 
 Profile binds channels to targets; the user is the only authorized caller.
@@ -249,9 +329,14 @@ Served by the Uebermensch daemon on its own port (`:4319`).
 | GET | `/api/uber/briefs/{id}/deliveries` | List deliveries for a brief |
 | POST | `/api/uber/briefs/{id}/deliver` | Trigger fan-out (idempotent unless `force=true` body) |
 | POST | `/api/uber/briefs/{id}/deliver/{channel}` | Single-channel deliver |
-| GET | `/api/uber/sse` | SSE stream (new-brief, new-alert) |
+| GET | `/api/uber/sse` | SSE stream (new-brief, new-alert, channel.bound) |
 | POST | `/api/uber/webhooks/telegram` | Driver-authenticated inbound forwarder |
 | POST | `/api/uber/webhooks/discord` | Driver-authenticated inbound forwarder |
+| POST | `/api/uber/onboard/telegram/start` | Mint onboarding token + deep-link/QR |
+| POST | `/api/uber/onboard/telegram/callback` | Driver-forwarded `/start <token>` redemption |
+| GET | `/api/uber/onboard/discord/start` | Generate Discord OAuth2 URL with `state=<onboarding_token>` |
+| GET | `/api/uber/onboard/discord/callback` | OAuth2 redirect; binds bot to identity.slug |
+| GET | `/api/uber/channels` | List bound channels (for the wizard's "manage" view) |
 
 Kernel-owned driver routes used (via kernel `:4318`):
 

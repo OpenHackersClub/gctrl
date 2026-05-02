@@ -43,9 +43,9 @@
 
 **Done when:** An investor with a populated vault can run Uebermensch against real RSS feeds + manual URL ingests; `gctrl uber brief` produces a brief grounded in today's wiki updates with ≥90% citation coverage; the vault pushes to R2 within 60s of a change; a fresh device pulls the vault and opens it in Obsidian without edits.
 
-## M2: Delivery & App UI — Planned
+## M2: Delivery & Web UI — Planned
 
-**Goal:** Briefs reach the user via App, Telegram, and Discord. The App is the primary surface.
+**Goal:** Briefs reach the user via Web, Telegram, and Discord. The Web UI is a first-class user surface — first-time users can complete onboarding (identity → topics → channels → schedule) without ever opening Obsidian or the CLI.
 
 | Task | Description | Priority | Depends On | Issue |
 |------|-------------|----------|------------|-------|
@@ -54,15 +54,19 @@
 | Deliverer service | Idempotent per (brief_id, channel) write to `uber_deliveries`; retry with backoff | P0 | drivers | TBD |
 | Channel router | Profile-driven: `delivery.channels.<name>.enabled`, time windows, silent mode | P0 | Deliverer | TBD |
 | Inbound ingest flow | User forwards URL to Telegram/Discord → ingest pipeline → reply with wiki citation | P0 | drivers | TBD |
-| App web UI: brief feed | SPA with brief list, detail view, citation chips, human score form | P0 | Renderer | TBD |
-| App web UI: wiki explorer | Browse wiki pages, follow `[[links]]`, view backlinks | P1 | M1 | TBD |
-| App web UI: thesis tracker | List theses, last-update, open deep-dive button | P1 | M1 | TBD |
-| App web UI: eval dashboard | Citation-coverage, hype-ratio, cost/day, per-brief scores | P1 | M1 | TBD |
-| App SSE | Live updates for new briefs + new ingest events | P1 | App UI | TBD |
-| App auth | Single-user bearer token from profile | P1 | App UI | TBD |
+| `VaultWriterPort` + adapters | Single port for authored-tier writes with `FsVaultWriter` adapter; emits `vault.updated` after fsync. Web UI + CLI + future Worker all use it. | P0 | M1 | TBD |
+| Web UI: onboarding wizard | Identity → topics → channels → schedule wizard producing atomic markdown rewrites of `directives/profile.md`, `directives/topics.md`, etc. via `VaultWriterPort` | P0 | `VaultWriterPort`, channel onboarding routes | TBD |
+| Web UI: channel onboarding routes | `/api/uber/onboard/{telegram,discord}/{start,callback}` per [delivery.md § Channel Onboarding (Web)](vault/specs/delivery.md#channel-onboarding-web) — tokens never written to vault | P0 | drivers | TBD |
+| Web UI: brief feed | SPA with brief list, detail view, citation chips, human score form — reads brief markdown from vault | P0 | Renderer | TBD |
+| Web UI: profile editor | Form-driven editor for `directives/profile.md` + `directives/topics.md` + `directives/theses/<slug>.md`; round-trips through `VaultWriterPort` | P0 | `VaultWriterPort` | TBD |
+| Web UI: wiki explorer | Browse wiki pages, follow `[[links]]`, view backlinks | P1 | M1 | TBD |
+| Web UI: thesis tracker | List theses, last-update, open deep-dive button | P1 | M1 | TBD |
+| Web UI: eval dashboard | Citation-coverage, hype-ratio, cost/day, per-brief scores | P1 | M1 | TBD |
+| Web UI: SSE | Live updates for new briefs, new ingest events, channel.bound | P1 | Web UI | TBD |
+| Web UI: auth | Single-user bearer token from profile (local mode) | P1 | Web UI | TBD |
 | Profile migration command | `gctrl uber profile migrate` with preview diff | P1 | — | TBD |
 
-**Done when:** The user receives the 08:00 brief on all three channels, can forward a URL from Telegram and see it filed within 30 s, and views the full brief in the App with working citations.
+**Done when:** A first-time user lands on the local Web UI, runs the onboarding wizard end-to-end (no Obsidian, no markdown editor, no CLI), connects Telegram + Discord via the in-browser flow, and receives the next morning's brief on all three channels. Forwarding a URL from Telegram files it within 30 s. The full brief renders in the Web UI with working citations.
 
 ## M3: Long-Horizon + Market Data — Planned
 
@@ -80,9 +84,9 @@
 
 **Done when:** A monthly thesis deep-dive produces a `input/wiki/synthesis/thesis-*-update-<date>.md` with ≥3 new citations since last update, and a Kalshi market move on a watched topic produces an inbox alert within 10 min.
 
-## M4: Eval Rigor + Index Sync — Planned
+## M4: Eval Rigor + Cloud-Only Mode — Planned
 
-**Goal:** Prompt regressions are automatically caught; the `uber_*` SQLite index syncs to D1 so the Cloudflare Worker deployment can read briefs by reading D1 + R2 (vault content already syncs via R2 from M1).
+**Goal:** Prompt regressions are automatically caught; Uebermensch runs as a hosted Cloudflare Worker so a first-time user with no laptop can onboard, configure channels, and read briefs entirely from a browser — see [PRD § Deployment Modes](PRD.md#deployment-modes) and [architecture.md § 0](vault/specs/architecture.md#0-deployment-modes).
 
 | Task | Description | Priority | Depends On | Issue |
 |------|-------------|----------|------------|-------|
@@ -92,10 +96,15 @@
 | LLM-as-judge evaluator | `uber-evaluator` persona scores briefs against rubric | P1 | M1 | TBD |
 | Prompt A/B harness | Run two prompt versions against same candidate set; compare scores | P2 | eval pipeline | TBD |
 | Scrape-health promotion | Graduate `gctrl uber scrape-health` CLI + dashboard (CLI shipped in M1 behind feature flag; M4 enables alerting) | P1 | M1 | TBD |
-| Sync: `uber_*` SQLite → D1 | Wire `uber_briefs`, `uber_brief_items`, `uber_deliveries` into kernel row-level sync | P1 | gctrl sync | TBD |
-| Cloudflare Worker deploy | Uebermensch web UI + API as Cloudflare Worker backed by D1 (for the index) + R2 (for the vault markdown bytes) | P2 | D1 index sync | TBD |
+| Sync: `uber_*` SQLite → D1 | Wire `uber_briefs`, `uber_brief_items`, `uber_deliveries` into kernel row-level sync | P0 | gctrl sync | TBD |
+| `R2VaultWriter` adapter | Implement `VaultWriterPort` against R2 with `If-Match: <etag>` optimistic concurrency; emit `vault.updated` after PUT | P0 | M2 `VaultWriterPort` | TBD |
+| Per-slug Durable Object lease | Replace `lock.json` with a Durable Object that serialises writes for a given `identity.slug` | P0 | `R2VaultWriter` | TBD |
+| Cloudflare Worker deploy | Uebermensch Web UI + API as Cloudflare Worker backed by D1 (index) + R2 (vault byte-store) + DO (per-slug write coordinator) | P0 | D1 sync, `R2VaultWriter` | TBD |
+| Worker secret store binding | Per-slug `wrangler secret`s for Telegram bot tokens, Discord bot tokens, LLM keys; enforce slug-scoped read on every fetch | P0 | Worker deploy | TBD |
+| Worker Cron Triggers for `uber.brief.daily` | Replace local kernel scheduler entry with a Cron Trigger; reuse the same job DSL | P0 | Worker deploy | TBD |
+| `gctrl uber vault pull --from r2` | Bootstrap a local mirror of an R2-resident vault; flips writer authority from Worker (DO lease) to local FS (lock.json). Already shipped in M1; M4 verifies it round-trips a vault first authored entirely on the Worker. | P0 | M1 vault pull, Worker deploy | TBD |
 
-**Done when:** An intentional prompt regression is flagged in the next brief's eval alert; a second device running the Worker reads the index from D1 and renders the brief markdown from R2 identically to the local daemon.
+**Done when:** An intentional prompt regression is flagged in the next brief's eval alert; a brand-new user with no laptop completes the wizard on a phone, receives a brief in Telegram + Discord the next morning, and a later `gctrl uber vault pull --from r2 --identity-slug <slug>` reproduces a byte-identical local vault.
 
 ## M5: SinkIn — Planned
 
