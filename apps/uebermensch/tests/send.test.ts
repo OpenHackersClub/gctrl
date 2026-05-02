@@ -1,9 +1,12 @@
-import { Effect, Exit } from "effect"
+import { Effect, Exit, Layer } from "effect"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { EnvSecretsLive } from "../src/adapters/EnvSecrets.js"
 import { HttpDelivererLive, _internal } from "../src/adapters/HttpDeliverer.js"
 import { DelivererService } from "../src/services/DelivererService.js"
 
 const { splitChunks, splitBrief, stripFrontmatter, resolveEnvRef, kernelBase } = _internal
+
+const HttpDelivererWithEnv = HttpDelivererLive.pipe(Layer.provide(EnvSecretsLive))
 
 describe("HttpDeliverer pure helpers", () => {
   it("splits long content on line boundaries", () => {
@@ -27,12 +30,19 @@ describe("HttpDeliverer pure helpers", () => {
     expect(stripFrontmatter("# Title\n\nBody")).toBe("# Title\n\nBody")
   })
 
-  it("resolves env-backed target refs", () => {
-    process.env.TEST_CHAT_ID = "42"
-    expect(resolveEnvRef("tg:chat:env:TEST_CHAT_ID", "tg:chat:")).toBe("42")
-    expect(resolveEnvRef("tg:chat:123", "tg:chat:")).toBe("123")
-    expect(resolveEnvRef("dc:webhook:https://x", "tg:chat:")).toBe(null)
-    delete process.env.TEST_CHAT_ID
+  it("parses env-backed target ref into { kind: 'env', key }", () => {
+    expect(resolveEnvRef("tg:chat:env:TEST_CHAT_ID", "tg:chat:")).toEqual({
+      kind: "env",
+      key: "TEST_CHAT_ID",
+    })
+  })
+
+  it("parses literal target ref into { kind: 'literal', value }", () => {
+    expect(resolveEnvRef("tg:chat:123", "tg:chat:")).toEqual({ kind: "literal", value: "123" })
+  })
+
+  it("returns null when prefix does not match", () => {
+    expect(resolveEnvRef("dc:webhook:https://x", "tg:chat:")).toBeNull()
   })
 
   it("strips trailing slash from GCTRL_KERNEL_URL", () => {
@@ -130,7 +140,7 @@ describe("HttpDeliverer send (kernel-routed)", () => {
           content: "---\nx: 1\n---\n\n# Brief\n\nhi",
           briefDate: "2026-04-22",
         })
-      }).pipe(Effect.provide(HttpDelivererLive)),
+      }).pipe(Effect.provide(HttpDelivererWithEnv)),
     )
 
     expect(result.externalIds).toEqual(["777"])
@@ -164,7 +174,7 @@ describe("HttpDeliverer send (kernel-routed)", () => {
           content: "hello",
           briefDate: "2026-04-22",
         })
-      }).pipe(Effect.provide(HttpDelivererLive)),
+      }).pipe(Effect.provide(HttpDelivererWithEnv)),
     )
 
     expect(result.parts).toBe(1)
@@ -194,7 +204,7 @@ describe("HttpDeliverer send (kernel-routed)", () => {
           content: "hi",
           briefDate: "2026-04-22",
         })
-      }).pipe(Effect.provide(HttpDelivererLive)),
+      }).pipe(Effect.provide(HttpDelivererWithEnv)),
     )
     expect(Exit.isFailure(exit)).toBe(true)
   })
@@ -212,7 +222,7 @@ describe("HttpDeliverer send (kernel-routed)", () => {
           content: "hi",
           briefDate: "2026-04-22",
         })
-      }).pipe(Effect.provide(HttpDelivererLive)),
+      }).pipe(Effect.provide(HttpDelivererWithEnv)),
     )
     expect(Exit.isFailure(exit)).toBe(true)
   })

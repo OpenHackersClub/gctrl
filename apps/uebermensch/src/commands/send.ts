@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { Command, Options } from "@effect/cli"
 import { Console, Effect, Layer, Option } from "effect"
+import { EnvSecretsLive } from "../adapters/EnvSecrets.js"
 import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js"
 import { HttpDelivererLive } from "../adapters/HttpDeliverer.js"
 import { R2SyncConfigFromEnv, R2SyncLive } from "../adapters/R2Sync.js"
@@ -155,6 +156,7 @@ export const send = Command.make(
       yield* program.pipe(
         Effect.provide(FileSystemProfileLive(vaultDir)),
         Effect.provide(HttpDelivererLive),
+        Effect.provide(EnvSecretsLive),
         Effect.provide(syncLayer),
       )
     }),

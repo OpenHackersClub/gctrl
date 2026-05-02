@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { Command } from "@effect/cli"
 import { Console, Effect, Either, Layer } from "effect"
+import { EnvSecretsLive } from "../adapters/EnvSecrets.js"
 import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js"
 import { FileSystemVaultLive } from "../adapters/FileSystemVault.js"
 import { HttpDelivererLive } from "../adapters/HttpDeliverer.js"
@@ -273,6 +274,7 @@ export const runDaily = Command.make("run-daily", {}, () =>
           syncLayer,
         ),
       ),
+      Effect.provide(EnvSecretsLive),
     )
 
     yield* Console.log(`delivery: ${successes} ok, ${failures} failed`)

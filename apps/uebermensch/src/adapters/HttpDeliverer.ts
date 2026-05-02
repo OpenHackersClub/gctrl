@@ -1,10 +1,11 @@
-import { Effect, Layer } from "effect"
-import { DeliveryError } from "../errors.js"
+import { Effect, Layer, Option } from "effect"
+import { DeliveryError, SecretsError } from "../errors.js"
 import {
   DelivererService,
   type DeliverInput,
   type DeliveryResult,
 } from "../services/DelivererService.js"
+import { SecretsService } from "../services/SecretsService.js"
 
 const TG_MAX = 3800
 const DC_MAX = 1900
@@ -55,12 +56,71 @@ const splitBrief = (content: string, max: number): ReadonlyArray<string> => {
   return out
 }
 
-const resolveEnvRef = (targetRef: string, prefix: string): string | null => {
+// Parse a `prefix`-scoped target ref into either a literal value or an env
+// key name. Returns `null` when the prefix does not match. Env-backed refs
+// have the form `<prefix>env:<ENV_VAR_NAME>`; literal refs are
+// `<prefix><value>` — the value is returned as-is without any env lookup.
+// `resolveEnvRef` itself never touches `process.env`; that read is the
+// exclusive responsibility of the `SecretsService` adapter (EnvSecretsLive).
+const resolveEnvRef = (
+  targetRef: string,
+  prefix: string,
+): { kind: "env"; key: string } | { kind: "literal"; value: string } | null => {
   if (!targetRef.startsWith(prefix)) return null
   const rest = targetRef.slice(prefix.length)
-  if (rest.startsWith("env:")) return process.env[rest.slice(4)] ?? null
-  return rest
+  if (rest.startsWith("env:")) return { kind: "env", key: rest.slice(4) }
+  return { kind: "literal", value: rest }
 }
+
+// Resolve a prefixed target ref to its concrete string value. Literal refs
+// are returned synchronously; env-backed refs (`env:<KEY>`) are resolved via
+// `SecretsService.get` so the actual `process.env` read is isolated to the
+// `EnvSecretsLive` adapter — future adapters (kernel secrets, keychain) can
+// swap in without touching this file.
+const resolveRef = (
+  targetRef: string,
+  prefix: string,
+  channel: string,
+  driver: string,
+): Effect.Effect<string, DeliveryError, SecretsService> =>
+  Effect.gen(function* () {
+    const parsed = resolveEnvRef(targetRef, prefix)
+    if (parsed === null) {
+      return yield* Effect.fail(
+        new DeliveryError({
+          message: `unresolved target_ref for ${driver}: ${targetRef}`,
+          channel,
+          driver,
+          kind: "config",
+        }),
+      )
+    }
+    if (parsed.kind === "literal") return parsed.value
+    const secrets = yield* SecretsService
+    const val = yield* secrets.get(parsed.key).pipe(
+      Effect.catchAll((e: SecretsError) =>
+        Effect.fail(
+          new DeliveryError({
+            message: `secret lookup failed for ${driver} (key=${parsed.key}): ${e.message}`,
+            channel,
+            driver,
+            kind: "config",
+          }),
+        ),
+      ),
+    )
+    if (Option.isNone(val)) {
+      return yield* Effect.fail(
+        new DeliveryError({
+          message: `unresolved target_ref for ${driver}: ${targetRef}`,
+          channel,
+          driver,
+          kind: "config",
+        }),
+      )
+    }
+    return val.value
+  })
 
 const classifyKernelStatus = (
   status: number,
@@ -113,19 +173,9 @@ const postToKernel = (
           }),
   })
 
-const sendTelegram = (input: DeliverInput): Effect.Effect<DeliveryResult, DeliveryError> =>
+const sendTelegram = (input: DeliverInput): Effect.Effect<DeliveryResult, DeliveryError, SecretsService> =>
   Effect.gen(function* () {
-    const chatId = resolveEnvRef(input.targetRef, "tg:chat:")
-    if (!chatId) {
-      return yield* Effect.fail(
-        new DeliveryError({
-          message: `unresolved target_ref for telegram: ${input.targetRef}`,
-          channel: input.channel,
-          driver: input.driver,
-          kind: "config",
-        }),
-      )
-    }
+    const chatId = yield* resolveRef(input.targetRef, "tg:chat:", input.channel, input.driver)
     const chunks = splitBrief(input.content, TG_MAX)
     const externalIds: Array<string> = []
     for (let i = 0; i < chunks.length; i++) {
@@ -150,19 +200,9 @@ const sendTelegram = (input: DeliverInput): Effect.Effect<DeliveryResult, Delive
     }
   })
 
-const sendDiscord = (input: DeliverInput): Effect.Effect<DeliveryResult, DeliveryError> =>
+const sendDiscord = (input: DeliverInput): Effect.Effect<DeliveryResult, DeliveryError, SecretsService> =>
   Effect.gen(function* () {
-    const webhook = resolveEnvRef(input.targetRef, "dc:webhook:")
-    if (!webhook) {
-      return yield* Effect.fail(
-        new DeliveryError({
-          message: `unresolved target_ref for discord: ${input.targetRef}`,
-          channel: input.channel,
-          driver: input.driver,
-          kind: "config",
-        }),
-      )
-    }
+    const webhook = yield* resolveRef(input.targetRef, "dc:webhook:", input.channel, input.driver)
     const chunks = splitBrief(input.content, DC_MAX)
     for (let i = 0; i < chunks.length; i++) {
       const prefix = chunks.length > 1 ? `(${i + 1}/${chunks.length})\n` : ""
@@ -190,26 +230,35 @@ const sendApp = (input: DeliverInput): Effect.Effect<DeliveryResult, DeliveryErr
     parts: 1,
   })
 
-export const HttpDelivererLive = Layer.succeed(DelivererService, {
-  send: (input) => {
-    switch (input.driver) {
-      case "telegram":
-        return sendTelegram(input)
-      case "discord":
-        return sendDiscord(input)
-      case "app":
-        return sendApp(input)
-      default:
-        return Effect.fail(
-          new DeliveryError({
-            message: `unknown driver: ${input.driver}`,
-            channel: input.channel,
-            driver: input.driver,
-            kind: "config",
-          }),
-        )
+// HttpDelivererLive requires SecretsService to resolve env-backed target refs
+// (e.g. `tg:chat:env:TELEGRAM_CHAT_ID`). Callers compose with EnvSecretsLive
+// (transitional) or a future KernelSecretsLive/LocalKeychainLive adapter.
+export const HttpDelivererLive = Layer.effect(
+  DelivererService,
+  Effect.gen(function* () {
+    const secrets = yield* SecretsService
+    return {
+      send: (input: DeliverInput): Effect.Effect<DeliveryResult, DeliveryError> => {
+        switch (input.driver) {
+          case "telegram":
+            return sendTelegram(input).pipe(Effect.provideService(SecretsService, secrets))
+          case "discord":
+            return sendDiscord(input).pipe(Effect.provideService(SecretsService, secrets))
+          case "app":
+            return sendApp(input)
+          default:
+            return Effect.fail(
+              new DeliveryError({
+                message: `unknown driver: ${input.driver}`,
+                channel: input.channel,
+                driver: input.driver,
+                kind: "config",
+              }),
+            )
+        }
+      },
     }
-  },
-})
+  }),
+)
 
-export const _internal = { splitChunks, splitBrief, stripFrontmatter, resolveEnvRef, kernelBase }
+export const _internal = { splitChunks, splitBrief, stripFrontmatter, resolveEnvRef, kernelBase, resolveRef }

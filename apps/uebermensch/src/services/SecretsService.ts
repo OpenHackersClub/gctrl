@@ -1,9 +1,10 @@
 // SecretsService — read-only port for resolving channel tokens, API keys,
-// signing secrets. Implementing adapters (KernelSecrets, LocalKeychain,
-// WranglerSecrets) MUST NOT expose write operations; provisioning lives on a
-// distinct port (SecretsProvisionService) so that runtime-immutable backends
-// like Cloudflare Workers env bindings can faithfully implement read without
-// pretending to support writes they cannot honor.
+// signing secrets. Implementing adapters (EnvSecrets, KernelSecrets,
+// LocalKeychain, WranglerSecrets) MUST NOT expose write operations;
+// provisioning lives on a distinct port (SecretsProvisionService) so that
+// runtime-immutable backends like Cloudflare Workers env bindings can
+// faithfully implement read without pretending to support writes they cannot
+// honor.
 //
 // Resolves blocker B1 from the ejection-plan team review: WranglerSecrets is
 // physically read-only at runtime, so a unified read+write SecretsPort had an
