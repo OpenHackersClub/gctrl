@@ -3,7 +3,8 @@
 // the preload bridge.
 
 import { app, BrowserWindow, Menu, ipcMain, shell } from "electron"
-import { autoUpdater } from "electron-updater"
+import electronUpdater from "electron-updater"
+const { autoUpdater } = electronUpdater
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -22,9 +23,8 @@ let mainWindow: BrowserWindow | undefined
 
 const createSidecar = (): KernelSidecar | undefined => {
   // Only spawn the kernel sidecar in packaged mode. In dev, contributors run
-  // `gctrl serve` separately to avoid double-binding port 4318. The lifecycle
-  // module is still wired here so PR-3's packaging brings it online with no
-  // further changes to this file.
+  // `gctrld serve` (or the launchd agent) separately to avoid double-binding
+  // port 4318.
   if (!app.isPackaged) return undefined
 
   const ctx = {
@@ -66,9 +66,10 @@ const createWindow = (): BrowserWindow => {
   if (app.isPackaged) {
     void win.loadFile(path.join(__dirname, "../renderer/index.html"))
   } else {
-    // Dev mode: point at the gctrl-board Vite dev server (or whatever
-    // GCTRL_DESKTOP_DEV_URL specifies). PR-3 wires the bundled SPA path.
-    const devUrl = process.env.GCTRL_DESKTOP_DEV_URL ?? "http://localhost:5173"
+    // Dev mode: point at the gctrl-board Vite dev server. The default
+    // matches gctrl-board's `web/vite.config.ts` (port 4200); override
+    // via GCTRL_DESKTOP_DEV_URL when running an alternate renderer.
+    const devUrl = process.env.GCTRL_DESKTOP_DEV_URL ?? "http://localhost:4200"
     void win.loadURL(devUrl)
   }
 

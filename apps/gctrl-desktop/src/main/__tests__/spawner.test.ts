@@ -10,23 +10,30 @@ const baseConfig: SidecarConfig = {
 }
 
 describe("buildKernelArgs", () => {
-  it("emits the canonical serve command with port, data-dir, and loopback bind", () => {
+  it("emits the canonical serve command with port, db file, and loopback host", () => {
     expect(buildKernelArgs(baseConfig)).toEqual([
       "serve",
       "--port",
       "4318",
-      "--data-dir",
-      "/abs/data",
-      "--bind",
+      "--db",
+      "/abs/data/gctrl.duckdb",
+      "--host",
       "127.0.0.1",
     ])
   })
 
   it("always binds 127.0.0.1, never 0.0.0.0", () => {
     const args = buildKernelArgs({ ...baseConfig, port: 5555 })
-    const bindIdx = args.indexOf("--bind")
-    expect(bindIdx).toBeGreaterThanOrEqual(0)
-    expect(args[bindIdx + 1]).toBe("127.0.0.1")
+    const hostIdx = args.indexOf("--host")
+    expect(hostIdx).toBeGreaterThanOrEqual(0)
+    expect(args[hostIdx + 1]).toBe("127.0.0.1")
+  })
+
+  it("derives the DB file inside the data dir", () => {
+    const args = buildKernelArgs({ ...baseConfig, dataDir: "/tmp/gctrl" })
+    const dbIdx = args.indexOf("--db")
+    expect(dbIdx).toBeGreaterThanOrEqual(0)
+    expect(args[dbIdx + 1]).toBe("/tmp/gctrl/gctrl.duckdb")
   })
 
   it("stringifies the port", () => {

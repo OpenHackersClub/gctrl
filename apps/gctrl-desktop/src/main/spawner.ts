@@ -14,12 +14,12 @@ export const buildKernelArgs = (config: SidecarConfig): readonly string[] => [
   "serve",
   "--port",
   String(config.port),
-  "--data-dir",
-  config.dataDir,
+  "--db",
+  `${config.dataDir}/gctrl.duckdb`,
   // Always bind loopback. Never `0.0.0.0` — the desktop kernel must not be
   // reachable from the network, both for security and to avoid Apple App
   // Store review pushback on inbound connections.
-  "--bind",
+  "--host",
   "127.0.0.1",
 ]
 
@@ -32,8 +32,8 @@ const wrap = (child: ChildProcess): SpawnedProcess => {
   let exitFired = false
 
   // Stream sidecar logs to the Electron main process console. In a packaged
-  // app these end up in the unified log; fine for v1. PR-3 may pipe to a
-  // file under userData/ for support diagnostics.
+  // app these end up in the unified log; piping to a file under userData/
+  // for support diagnostics is a future enhancement.
   child.stdout?.on("data", (chunk) => process.stdout.write(`[kernel] ${chunk}`))
   child.stderr?.on("data", (chunk) => process.stderr.write(`[kernel] ${chunk}`))
 
