@@ -152,3 +152,32 @@ body {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
+
+/* Electron desktop shell — leave room for macOS traffic-light buttons and
+ * make the chrome draggable. The .is-electron class is set by main.tsx
+ * when the preload bridge exposes a kernel apiBase. No effect on web. */
+.is-electron nav {
+  /* Push sidebar icons below the traffic-light cluster (24px lights at
+   * y=8 in `hiddenInset`, plus breathing room). `!important` because the
+   * sidebar already sets `py-4` (Tailwind `padding-block`) and we need
+   * to override the start edge specifically. */
+  padding-top: 40px !important;
+}
+.is-electron header {
+  -webkit-app-region: drag;
+}
+.is-electron header button,
+.is-electron header a,
+.is-electron header input,
+.is-electron header [role="button"],
+.is-electron header select {
+  -webkit-app-region: no-drag;
+}
+.is-electron nav {
+  -webkit-app-region: drag;
+}
+.is-electron nav button,
+.is-electron nav a,
+.is-electron nav [role="button"] {
+  -webkit-app-region: no-drag;
+}
