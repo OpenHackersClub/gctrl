@@ -10,7 +10,7 @@ import { R2SyncConfigFromEnv, R2SyncLive } from "../adapters/R2Sync.js"
 import { StrictRendererLive } from "../adapters/StrictRenderer.js"
 import { selectCandidates } from "../lib/candidates.js"
 import { isChatChannel, resolveChannels } from "../lib/channels.js"
-import { publicBriefUrl, resolveVaultDir } from "../lib/env.js"
+import { publicBaseUrl, publicBriefUrl, requiresR2Sync, resolveVaultDir } from "../lib/env.js"
 import {
   INPUT_BRIEFS_DIR,
   INPUT_RAW_DIR,
@@ -113,10 +113,12 @@ const runBriefGeneration = (
 // Fans out the brief content to all configured channels.
 // Returns { successes, failures } counts; never fails — errors are counted.
 //
-// Hosted-Pages invariant (specs/delivery.md): chat channels (telegram /
-// discord) must link to a deployed Pages URL. If any chat channel is enabled,
-// require UBER_PUBLIC_BASE_URL and sync the vault to R2 first. The app driver
-// is exempt and is delivered to even if the chat path is short-circuited.
+// Hosted-link invariant (specs/delivery.md): chat channels (telegram /
+// discord) must link to a hosted URL (Cloudflare Pages, Tailscale Serve, or
+// any HTTPS host). If any chat channel is enabled, require UBER_PUBLIC_BASE_URL.
+// R2 sync runs only for the Cloudflare Pages backend; Tailscale / localhost /
+// self-hosted setups serve the vault directly. The app driver is exempt and is
+// delivered to even if the chat path is short-circuited.
 const runSend = (
   date: string,
   vaultDir: string,
@@ -158,12 +160,12 @@ const runSend = (
     let chatAllowed = true
     if (chatChannels.length > 0 && briefUrl === null) {
       yield* Console.error(
-        "  UBER_PUBLIC_BASE_URL is not set — refusing to send brief to chat channels (telegram/discord) without a hosted Pages link. Configure UBER_PUBLIC_BASE_URL or remove chat channels from profile.",
+        "  UBER_PUBLIC_BASE_URL is not set — refusing to send brief to chat channels (telegram/discord) without a hosted link. Configure UBER_PUBLIC_BASE_URL=https://<host> (Cloudflare Pages, Tailscale Serve `https://<device>.<tailnet>.ts.net`, or any HTTPS host serving the vault) or remove chat channels from profile.",
       )
       chatAllowed = false
     }
 
-    if (chatAllowed && chatChannels.length > 0) {
+    if (chatAllowed && chatChannels.length > 0 && requiresR2Sync(publicBaseUrl())) {
       yield* Console.log(`  syncing vault → R2 (briefs/reports/raw/wiki) ...`)
       const sync = yield* SyncService
       const syncResult = yield* sync
