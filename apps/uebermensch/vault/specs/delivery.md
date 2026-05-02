@@ -16,6 +16,19 @@ Three entry points, all converging on `DelivererService`:
 
 Recurring delivery is fired by the **kernel scheduler** (`gctrl-scheduler`) using `target_kind: exec` rows registered via `uber schedule sync` from `directives/schedules.md`. There is no uebermensch HTTP daemon listening for scheduler callbacks — the kernel scheduler exec's the `uber` CLI directly. See [scheduling.md](scheduling.md) for the wiring.
 
+## Hosted-Pages requirement (Telegram / Discord)
+
+Briefs and reports delivered to **chat channels** (Telegram, Discord, future email) MUST link to a deployed Cloudflare Pages URL. Raw markdown without a hosted link is not an acceptable fallback for these channels — chat-rendered content loses headings, citations, callouts, and visualizations that the hosted page renders correctly.
+
+Invariant:
+
+1. The vault content MUST be live on `${UBER_PUBLIC_BASE_URL}` before the chat send fires. The pipeline (`uber report --send`, `uber send`, `uber run-daily`) MUST run an R2 sync of `input/{briefs,reports,raw,wiki}` before invoking `DelivererService` for any chat channel. The Astro Worker at [`apps/uebermensch-pages`](../../uebermensch-pages) reads R2 at request time, so a successful sync makes the content live without a separate `wrangler deploy`. The Worker itself is deployed out-of-band (CI / `pnpm -F uebermensch-pages run deploy`) and is a one-time-per-version concern.
+2. The chat message body MUST include the deployed Pages URL (`${UBER_PUBLIC_BASE_URL}/briefs/<date>` or `${UBER_PUBLIC_BASE_URL}/reports/<slug>`) above the content. The link is the canonical artifact; the chat body is a preview.
+3. If `UBER_PUBLIC_BASE_URL` is unset, the pipeline MUST fail loudly **before** any Telegram/Discord call. Sending raw content to chat is a hard error, not a fallback.
+4. If the R2 sync fails, the chat send for that run MUST be skipped and surfaced (`uber_alerts` row with `kind: delivery_stalled`). Better to miss a brief than ship a chat message whose link 404s.
+
+The `app` driver (in-app SSE feed) is **exempt** — the user is already inside the app, so the SSE payload + `/api/uber/briefs/{id}/body` route serve the content directly from the vault. App delivery does not require `UBER_PUBLIC_BASE_URL`.
+
 ## Responsibilities
 
 `DelivererService` (Effect-TS, `apps/uebermensch/src/services/deliverer.ts`):
@@ -81,6 +94,7 @@ Each driver gets a `Message` matching [domain-model.md § 7.2](domain-model.md#7
 - Driver: `driver-telegram` (`gctrl-driver-telegram` LKM).
 - Source: vault markdown at `uber_briefs.vault_path`.
 - Rendering target: **MarkdownV2** — Telegram's native format with forced escaping of special chars.
+- **Hosted link header** (required, see [Hosted-Pages requirement](#hosted-pages-requirement-telegram--discord)): the first line of the first chunk is `🌐 ${UBER_PUBLIC_BASE_URL}/briefs/<date>` (or `/reports/<slug>` for weekly reports), followed by a blank line, then the content. The link is what recipients are expected to click — the inline body is a preview.
 - Long briefs: split across messages at natural boundaries (item boundaries), with continuation markers `(1/3)` etc.
 - `[[slug]]` → bare URL `https://<app-host>/wiki/<slug>` (or app deep link `uber://wiki/<slug>` if custom scheme configured). Citations resolve by the target's frontmatter `page_type` — theses get bolded labels, sources get domain chips (see Link Rendering below).
 - Quick-replies (inline keyboard):
@@ -106,6 +120,7 @@ Example rendered Telegram message (MarkdownV2-escaped):
 - Driver: `driver-discord` (`gctrl-driver-discord` LKM).
 - Source: vault markdown at `uber_briefs.vault_path`, parsed into Discord's markdown subset.
 - Rendering target: **Discord embeds** — richer cards, color-coded by `kind`.
+- **Hosted link header** (required, see [Hosted-Pages requirement](#hosted-pages-requirement-telegram--discord)): the message `content` field carries `🌐 ${UBER_PUBLIC_BASE_URL}/briefs/<date>` (or `/reports/<slug>`); the embed `url` field also points to the same hosted page so the embed title is clickable. The embed body is a preview; the hosted page is the canonical artifact.
 - Brief = 1 embed per item (up to 10 per message; overflow splits across messages).
 - Embed fields:
   - Title: item title
@@ -221,6 +236,8 @@ Stages 2–5 run in parallel across channels (Effect fiber per channel), then jo
 
 | Error | Brief status | Alert? | Next action |
 |-------|--------------|--------|-------------|
+| `UBER_PUBLIC_BASE_URL` unset, but a chat channel (telegram/discord) is enabled | `rendered` (no `delivered` transition for chat) | `kind=delivery_stalled, urgency=warn` | User configures hosted Pages URL; no chat send is attempted |
+| R2 sync failed before chat send | `rendered` for chat channels (app-driver still delivers) | `kind=delivery_stalled, urgency=warn` | Inspect wrangler/R2 creds; next run retries |
 | All channels `MessagingError::Invalid` | `rendered` (no `delivered` transition) | `kind=delivery_stalled, urgency=warn` | User inspects profile config |
 | One channel fails, others succeed | `delivered` | none (row error_message captured) | Next brief retries failed channel; if 3 briefs in a row fail → alert |
 | Target unreachable for > 6h | `delivered` (earlier) | `kind=delivery_stalled, urgency=warn` | Check driver connectivity |

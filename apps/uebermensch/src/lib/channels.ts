@@ -10,6 +10,14 @@ export type ResolvedChannel = {
   readonly silent: boolean
 }
 
+// Chat channels (telegram, discord, future email) deliver to external surfaces
+// where the rendered markdown is a poor preview — they MUST link back to a
+// hosted Cloudflare Pages URL. The `app` driver renders the brief inside the
+// uebermensch app itself and is exempt. See specs/delivery.md § Hosted-Pages
+// requirement.
+export const isChatChannel = (ch: ResolvedChannel): boolean =>
+  ch.driver !== "app"
+
 export const resolveChannels = (
   channelsRaw: Record<string, unknown>,
   only: string | null,

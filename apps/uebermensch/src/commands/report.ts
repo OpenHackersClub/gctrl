@@ -7,8 +7,9 @@ import { KernelLlmLive } from "../adapters/KernelLlm.js"
 import { R2SyncConfigFromEnv, R2SyncLive } from "../adapters/R2Sync.js"
 import { StrictRendererLive } from "../adapters/StrictRenderer.js"
 import { StubLlmLive } from "../adapters/StubLlm.js"
+import { DeliveryError } from "../errors.js"
 import { selectCandidates, type CandidateRef } from "../lib/candidates.js"
-import { resolveChannels } from "../lib/channels.js"
+import { isChatChannel, resolveChannels } from "../lib/channels.js"
 import { publicReportUrl, resolveVaultDir } from "../lib/env.js"
 import {
   DIRECTIVES_RESEARCH_DIR,
@@ -530,7 +531,14 @@ export const report = Command.make(
         )
 
         const indexUrl = publicReportUrl(periodLabel)
-        const doSync = doSyncOpt || (doSend && indexUrl !== null)
+
+        // Hosted-Pages invariant (specs/delivery.md): if --send is requested
+        // and any chat channel is enabled, UBER_PUBLIC_BASE_URL must be set
+        // so chat messages can link to the deployed Pages report. We can't
+        // inspect channels here without resolving them, so the strict check
+        // happens just before the fan-out below; the sync is still scheduled
+        // up-front so chat content is live before delivery.
+        const doSync = doSyncOpt || doSend
         if (doSync) {
           yield* Console.log(`syncing vault → R2 ...`)
           const syncResult = yield* Effect.serviceOption(SyncService).pipe(
@@ -581,17 +589,32 @@ export const report = Command.make(
           return
         }
 
-        const deliveryContent = indexUrl
-          ? `🌐 ${indexUrl}\n\n${indexRendered.markdown}`
-          : indexRendered.markdown
-
         const deliverer = yield* DelivererService
         const channels = yield* resolveChannels(
           profile.profile.delivery.channels as Record<string, unknown>,
           null,
         )
         yield* Console.log(`  ${channels.length} channel(s) to deliver`)
+
+        // Hosted-Pages invariant: chat channels MUST link to a deployed
+        // Pages URL. If any chat channel is enabled and UBER_PUBLIC_BASE_URL
+        // is unset, fail rather than ship a chat message without a hosted
+        // link. App-driver channels are exempt.
+        const chatChannels = channels.filter(isChatChannel)
+        if (chatChannels.length > 0 && indexUrl === null) {
+          return yield* Effect.fail(
+            new DeliveryError({
+              message:
+                "UBER_PUBLIC_BASE_URL is not set; refusing to send weekly report to chat channels (telegram/discord) without a hosted Pages link. Set UBER_PUBLIC_BASE_URL=https://<your-pages-domain> or drop --send.",
+              kind: "config",
+            }),
+          )
+        }
+
         for (const ch of channels) {
+          const deliveryContent = isChatChannel(ch)
+            ? `🌐 ${indexUrl}\n\n${indexRendered.markdown}`
+            : indexRendered.markdown
           const result = yield* deliverer
             .send({
               channel: ch.name,
