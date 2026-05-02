@@ -62,25 +62,31 @@ export function parseGctrlUrl(raw: string): ParsedGctrlUrl | null {
   // this scheme and would only widen the parser's job.
   if (raw.includes("?") || raw.includes("#")) return null
   // Disallow embedded NUL / CR / LF — defense against terminal smuggling.
-  if (/[\x00\r\n]/.test(raw)) return null
+  if (raw.includes("\x00") || raw.includes("\r") || raw.includes("\n")) return null
 
-  let m: RegExpExecArray | null
-
-  if ((m = RE_FOCUS_ITERM2.exec(raw))) {
-    return { kind: "focus-iterm2", sessionId: m[1]! }
+  const iterm2 = RE_FOCUS_ITERM2.exec(raw)
+  if (iterm2 && iterm2[1] !== undefined) {
+    return { kind: "focus-iterm2", sessionId: iterm2[1] }
   }
-  if ((m = RE_FOCUS_TERMINAL.exec(raw))) {
-    return { kind: "focus-terminal", windowId: m[1]!, tabId: m[2]! }
+  const term = RE_FOCUS_TERMINAL.exec(raw)
+  if (term && term[1] !== undefined && term[2] !== undefined) {
+    return { kind: "focus-terminal", windowId: term[1], tabId: term[2] }
   }
-  if ((m = RE_FOCUS_GENERIC.exec(raw))) {
-    const target = m[1] as GenericFocusTarget
-    return { kind: "focus-generic", target, token: m[2]! }
+  const generic = RE_FOCUS_GENERIC.exec(raw)
+  if (generic && generic[1] !== undefined && generic[2] !== undefined) {
+    return {
+      kind: "focus-generic",
+      target: generic[1] as GenericFocusTarget,
+      token: generic[2],
+    }
   }
-  if ((m = RE_INBOX_MSG.exec(raw))) {
-    return { kind: "inbox-message", id: m[1]! }
+  const msg = RE_INBOX_MSG.exec(raw)
+  if (msg && msg[1] !== undefined) {
+    return { kind: "inbox-message", id: msg[1] }
   }
-  if ((m = RE_INBOX_THREAD.exec(raw))) {
-    return { kind: "inbox-thread", id: m[1]! }
+  const thread = RE_INBOX_THREAD.exec(raw)
+  if (thread && thread[1] !== undefined) {
+    return { kind: "inbox-thread", id: thread[1] }
   }
 
   return null

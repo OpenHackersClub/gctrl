@@ -161,7 +161,7 @@ app.on("open-url", (event, url) => {
   event.preventDefault()
   // If the BrowserWindow isn't ready yet, buffer the URL — the cold-launch
   // path fires `open-url` before any window exists.
-  if (!mainWindow || !mainWindow.webContents || mainWindow.webContents.isLoading()) {
+  if (!mainWindow?.webContents || mainWindow.webContents.isLoading()) {
     pendingUrls.push(url)
     return
   }
