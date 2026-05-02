@@ -1,4 +1,6 @@
 pub mod acceptance;
+pub mod app_manifest;
+pub mod capabilities;
 pub mod config;
 pub mod context;
 pub mod error;
