@@ -72,6 +72,81 @@ score_prior(page) =
 
 Top 40 by `score_prior` advance to the curator. The prior is intentionally simple — the real ranking happens in the LLM pass. The prior exists to keep prompt tokens bounded.
 
+## 2.5 Freshness Probe (research-mode reports only)
+
+Runs **only for `gctrl uber report`** (per-interest research reports), NOT for `gctrl uber brief` (24h daily). Mounts between Candidate Selection (§2) and Curator (§3). Disabled by default for `kind=daily` because daily windows are too narrow for probe ROI.
+
+### Why
+
+Candidate selection picks pages already in the vault. If a watchlist entity has a major development that nobody ingested (a new model release, a leaderboard update, an acquisition), the report will silently omit it. The Freshness Probe is the mechanism that prevents that omission.
+
+**Invariant (`report-watchlist-coverage`):** A `report` MUST mention any watchlist entity with a major development in the report's period. The probe is what makes this checkable.
+
+### Stages
+
+```
+┌────────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+│ Gap detection  │─▶│ Probe queries │─▶│ Driver fetch │─▶│ Digest + ingest │
+│ (LLM)          │  │ (≤ N queries) │  │ (driver-net) │  │ (Source pages)  │
+└────────────────┘  └──────────────┘  └──────────────┘  └──────────────┘
+```
+
+1. **Gap detection (LLM, single call).** Inputs: the directive markdown (`directives/research/<slug>.md`), the candidate set from §2, and the report period (`period_start`, `period_end`). Persona: `uber-freshness-probe`. Output is a typed JSON array of probes:
+
+   ```json
+   {
+     "probes": [
+       {
+         "query": "Gemma 4 release MMLU",
+         "watchlist_entity": "gemma-4",
+         "rationale": "Watchlist family Gemma 2/3 covered; Gemma 4 not in candidates, recent release likely.",
+         "confidence": "high"
+       }
+     ]
+   }
+   ```
+
+   The persona MUST NOT speculate — it asks "for each watchlist entity in the directive's tables/lists, is there a 2025–present development I would expect to find but don't see in the candidates?" Empty `probes[]` is a valid answer.
+
+2. **Probe queries — bounded.** Cap at `report.freshness.max_probes` (default **6**) per report run. Confidence ranking: `high → medium → low`; drop tail beyond cap. Per-probe budget `report.freshness.per_probe_usd` (default $0.05). Total probe budget `report.freshness.total_probe_usd` (default $0.20).
+
+3. **Driver fetch.** Each query routes through `driver-net` (kernel HTTP `POST /api/net/search`). The driver returns up to 5 result URLs per query. URL-level cache key: `(query, normalized_url, day_bucket)`; same probe is not re-issued for 24h.
+
+4. **Digest + ingest.** Each fetched URL becomes a candidate Source page. Apply the same Citation Mode v1 digest pass (Gist / Key numbers / Essential quotes / Insights / Questions / Access metadata) — see [knowledge-base.md § Source body template](knowledge-base.md#source). Probe-sourced pages carry frontmatter `provenance: freshness_probe` and `probed_for: <watchlist_entity>` so they can be audited.
+
+5. **Re-include in candidate set.** Probe-sourced pages join the §2 candidate output before §3. They are NOT subject to the §2 spam-score gate during the same run (the probe persona's confidence-ranking is the gate); but they ARE subject to all post-§2 gates and the standard quality lint.
+
+### Skip conditions
+
+- Directive has no `## Frontier <…> families` table or watchlist-style list → skip (nothing to probe against).
+- `report.freshness.enabled: false` in profile → skip; emit `freshness_probe_skipped` span attribute.
+- Total candidate set size already ≥ `report.freshness.no_probe_threshold` (default **30**) AND covers ≥ 80% of watchlist entities → skip; emit `freshness_probe_skipped: coverage_ok`.
+
+### Failure handling
+
+| Failure | Handling |
+|---|---|
+| Gap-detection LLM error | Skip probe; report renders against §2 candidates only. Span tagged `freshness_probe_failed`. |
+| `driver-net` 5xx / timeout per query | Drop that probe; continue with the others. |
+| All probes return zero usable URLs | Skip ingest; report renders against §2 only. |
+| Probe budget exceeded mid-run | Stop launching new probes; ingest whatever has already returned. |
+
+### Observability
+
+- Span `uber.report.freshness_probe` with attributes: `probes_proposed`, `probes_executed`, `urls_fetched`, `pages_ingested`, `cost_usd`, `skipped` reason if any.
+- Per-probe span `uber.report.freshness_probe.query` with `query`, `watchlist_entity`, `urls_fetched`, `cost_usd`.
+- The report's frontmatter records `freshness_probe: { probes_executed: int, pages_ingested: int, watchlist_entities_covered: [<slug>...] }` so a reviewer can see exactly what was added at probe time.
+
+### Eval surface
+
+A new lint rule lands alongside this stage:
+
+| Rule | FAIL condition | Severity |
+|---|---|---|
+| `report-watchlist-coverage` | A `report` whose period contains a documented major release for a directive watchlist entity that the report does NOT mention. Detected by post-render audit pass. | warn |
+
+`report-watchlist-coverage` is best-effort (the audit pass uses an LLM judge); it is `warn` severity, not `error`, to avoid blocking renders on judge false-positives.
+
 ## 3. Curator (LLM)
 
 Implementation: `CuratorService` (Effect-TS) → `LlmPort.generate`.
