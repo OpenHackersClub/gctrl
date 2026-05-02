@@ -1,11 +1,11 @@
-import { Effect, Layer, Option } from "effect"
-import { DeliveryError, SecretsError } from "../errors.js"
+import { Effect, Layer, Match, Option } from "effect"
+import { DeliveryError } from "../errors.js"
 import {
   DelivererService,
   type DeliverInput,
   type DeliveryResult,
 } from "../services/DelivererService.js"
-import { SecretsService } from "../services/SecretsService.js"
+import { SecretsService, type SecretsServiceImpl } from "../services/SecretsService.js"
 
 const TG_MAX = 3800
 const DC_MAX = 1900
@@ -59,9 +59,8 @@ const splitBrief = (content: string, max: number): ReadonlyArray<string> => {
 // Parse a `prefix`-scoped target ref into either a literal value or an env
 // key name. Returns `null` when the prefix does not match. Env-backed refs
 // have the form `<prefix>env:<ENV_VAR_NAME>`; literal refs are
-// `<prefix><value>` — the value is returned as-is without any env lookup.
-// `resolveEnvRef` itself never touches `process.env`; that read is the
-// exclusive responsibility of the `SecretsService` adapter (EnvSecretsLive).
+// `<prefix><value>`. Pure parser — never touches `process.env`; that read is
+// the exclusive responsibility of the `SecretsService` adapter.
 const resolveEnvRef = (
   targetRef: string,
   prefix: string,
@@ -72,61 +71,58 @@ const resolveEnvRef = (
   return { kind: "literal", value: rest }
 }
 
+const configErr = (channel: string, driver: string, message: string): DeliveryError =>
+  new DeliveryError({ message, channel, driver, kind: "config" })
+
 // Resolve a prefixed target ref to its concrete string value. Literal refs
 // are returned synchronously; env-backed refs (`env:<KEY>`) are resolved via
 // `SecretsService.get` so the actual `process.env` read is isolated to the
-// `EnvSecretsLive` adapter — future adapters (kernel secrets, keychain) can
-// swap in without touching this file.
+// EnvSecretsLive adapter — future adapters (kernel secrets, keychain) swap in
+// without touching this file. `secrets` is captured at Layer-build time, not
+// requested as a Service requirement, so the returned Effect's R channel is
+// `never`.
 const resolveRef = (
+  secrets: SecretsServiceImpl,
   targetRef: string,
   prefix: string,
   channel: string,
   driver: string,
-): Effect.Effect<string, DeliveryError, SecretsService> =>
+): Effect.Effect<string, DeliveryError> =>
   Effect.gen(function* () {
     const parsed = resolveEnvRef(targetRef, prefix)
     if (parsed === null) {
       return yield* Effect.fail(
-        new DeliveryError({
-          message: `unresolved target_ref for ${driver}: ${targetRef}`,
-          channel,
-          driver,
-          kind: "config",
-        }),
+        configErr(channel, driver, `unresolved target_ref for ${driver}: ${targetRef}`),
       )
     }
     if (parsed.kind === "literal") return parsed.value
-    const secrets = yield* SecretsService
     const val = yield* secrets.get(parsed.key).pipe(
-      Effect.catchAll((e: SecretsError) =>
+      Effect.catchTag("SecretsError", (e) =>
         Effect.fail(
-          new DeliveryError({
-            message: `secret lookup failed for ${driver} (key=${parsed.key}): ${e.message}`,
+          configErr(
             channel,
             driver,
-            kind: "config",
-          }),
+            `secret lookup failed for ${driver} (key=${parsed.key}): ${e.message}`,
+          ),
         ),
       ),
     )
-    if (Option.isNone(val)) {
-      return yield* Effect.fail(
-        new DeliveryError({
-          message: `unresolved target_ref for ${driver}: ${targetRef}`,
-          channel,
-          driver,
-          kind: "config",
-        }),
-      )
-    }
-    return val.value
+    return yield* Option.match(val, {
+      onNone: () =>
+        Effect.fail(
+          configErr(channel, driver, `unresolved target_ref for ${driver}: ${targetRef}`),
+        ),
+      onSome: Effect.succeed,
+    })
   })
 
+// 503 means the kernel is up but its driver is misconfigured (e.g. no bot
+// token). Other 5xx are network/health failures — caller should retry.
 const classifyKernelStatus = (
   status: number,
 ): "config" | "unreachable" | "rate_limited" | "invalid" | "io_failure" => {
-  if (status === 503) return "config"
   if (status === 429) return "rate_limited"
+  if (status === 503) return "unreachable"
   if (status === 502 || status === 504) return "unreachable"
   if (status >= 500) return "unreachable"
   if (status === 400 || status === 401 || status === 403 || status === 404) return "invalid"
@@ -136,62 +132,95 @@ const classifyKernelStatus = (
 const kernelBase = () =>
   (process.env.GCTRL_KERNEL_URL ?? "http://127.0.0.1:4318").replace(/\/+$/, "")
 
+const unreachableErr = (
+  path: string,
+  channel: string,
+  driver: string,
+  reason: string,
+): DeliveryError =>
+  new DeliveryError({
+    message: `kernel ${path} ${reason}`,
+    channel,
+    driver,
+    kind: "unreachable",
+  })
+
 const postToKernel = (
   path: string,
   body: unknown,
   channel: string,
   driver: string,
 ): Effect.Effect<unknown, DeliveryError> =>
-  Effect.tryPromise({
-    try: async () => {
-      const res = await fetch(`${kernelBase()}${path}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      })
-      const text = await res.text()
-      if (!res.ok) {
-        const err: DeliveryError = new DeliveryError({
-          message: `kernel ${path} HTTP ${res.status}: ${text.slice(0, 500)}`,
+  Effect.gen(function* () {
+    const response = yield* Effect.tryPromise({
+      try: () =>
+        fetch(`${kernelBase()}${path}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      catch: (e) => unreachableErr(path, channel, driver, `fetch failed: ${String(e)}`),
+    })
+    const text = yield* Effect.tryPromise({
+      try: () => response.text(),
+      catch: (e) => unreachableErr(path, channel, driver, `body read failed: ${String(e)}`),
+    })
+    if (!response.ok) {
+      return yield* Effect.fail(
+        new DeliveryError({
+          message: `kernel ${path} HTTP ${response.status}: ${text.slice(0, 500)}`,
           channel,
           driver,
-          kind: classifyKernelStatus(res.status),
-          status: res.status,
-        })
-        throw err
-      }
-      return text.length > 0 ? JSON.parse(text) : {}
-    },
-    catch: (e) =>
-      e instanceof DeliveryError
-        ? e
-        : new DeliveryError({
-            message: `kernel ${path} fetch failed: ${String(e)}`,
-            channel,
-            driver,
-            kind: "unreachable",
-          }),
+          kind: classifyKernelStatus(response.status),
+          status: response.status,
+        }),
+      )
+    }
+    if (text.length === 0) return {}
+    return yield* Effect.try({
+      try: () => JSON.parse(text) as unknown,
+      catch: (e) =>
+        new DeliveryError({
+          message: `kernel ${path} JSON parse failed: ${String(e)}`,
+          channel,
+          driver,
+          kind: "invalid",
+        }),
+    })
   })
 
-const sendTelegram = (input: DeliverInput): Effect.Effect<DeliveryResult, DeliveryError, SecretsService> =>
+const chunkPrefix = (i: number, total: number): string =>
+  total > 1 ? `(${i + 1}/${total})\n` : ""
+
+const sendTelegram = (
+  secrets: SecretsServiceImpl,
+  input: DeliverInput,
+): Effect.Effect<DeliveryResult, DeliveryError> =>
   Effect.gen(function* () {
-    const chatId = yield* resolveRef(input.targetRef, "tg:chat:", input.channel, input.driver)
+    const chatId = yield* resolveRef(
+      secrets,
+      input.targetRef,
+      "tg:chat:",
+      input.channel,
+      input.driver,
+    )
     const chunks = splitBrief(input.content, TG_MAX)
-    const externalIds: Array<string> = []
-    for (let i = 0; i < chunks.length; i++) {
-      const prefix = chunks.length > 1 ? `(${i + 1}/${chunks.length})\n` : ""
-      const json = (yield* postToKernel(
+    const responses = yield* Effect.forEach(chunks, (chunk, i) =>
+      postToKernel(
         "/api/telegram/send",
         {
           chat_id: chatId,
-          text: `${prefix}${chunks[i]}`,
+          text: `${chunkPrefix(i, chunks.length)}${chunk}`,
           disable_notification: input.silent,
         },
         input.channel,
         input.driver,
-      )) as { message_id?: number | null }
-      if (typeof json.message_id === "number") externalIds.push(String(json.message_id))
-    }
+      ).pipe(Effect.map((json) => json as { message_id?: number | null })),
+    )
+    const externalIds = responses
+      .map((r) => r.message_id)
+      .filter((id): id is number => typeof id === "number")
+      .map(String)
     return {
       channel: input.channel,
       driver: input.driver,
@@ -200,20 +229,29 @@ const sendTelegram = (input: DeliverInput): Effect.Effect<DeliveryResult, Delive
     }
   })
 
-const sendDiscord = (input: DeliverInput): Effect.Effect<DeliveryResult, DeliveryError, SecretsService> =>
+const sendDiscord = (
+  secrets: SecretsServiceImpl,
+  input: DeliverInput,
+): Effect.Effect<DeliveryResult, DeliveryError> =>
   Effect.gen(function* () {
-    const webhook = yield* resolveRef(input.targetRef, "dc:webhook:", input.channel, input.driver)
+    const webhook = yield* resolveRef(
+      secrets,
+      input.targetRef,
+      "dc:webhook:",
+      input.channel,
+      input.driver,
+    )
     const chunks = splitBrief(input.content, DC_MAX)
-    for (let i = 0; i < chunks.length; i++) {
-      const prefix = chunks.length > 1 ? `(${i + 1}/${chunks.length})\n` : ""
-      const content = input.silent ? `@silent ${prefix}${chunks[i]}` : `${prefix}${chunks[i]}`
-      yield* postToKernel(
+    yield* Effect.forEach(chunks, (chunk, i) => {
+      const prefix = chunkPrefix(i, chunks.length)
+      const content = input.silent ? `@silent ${prefix}${chunk}` : `${prefix}${chunk}`
+      return postToKernel(
         "/api/discord/send",
         { webhook_url: webhook, content },
         input.channel,
         input.driver,
       )
-    }
+    })
     return {
       channel: input.channel,
       driver: input.driver,
@@ -233,32 +271,34 @@ const sendApp = (input: DeliverInput): Effect.Effect<DeliveryResult, DeliveryErr
 // HttpDelivererLive requires SecretsService to resolve env-backed target refs
 // (e.g. `tg:chat:env:TELEGRAM_CHAT_ID`). Callers compose with EnvSecretsLive
 // (transitional) or a future KernelSecretsLive/LocalKeychainLive adapter.
+// Secrets are captured once at Layer-build time and closed over — keeps the
+// per-call Effects free of `SecretsService` in their R channel.
 export const HttpDelivererLive = Layer.effect(
   DelivererService,
   Effect.gen(function* () {
     const secrets = yield* SecretsService
     return {
-      send: (input: DeliverInput): Effect.Effect<DeliveryResult, DeliveryError> => {
-        switch (input.driver) {
-          case "telegram":
-            return sendTelegram(input).pipe(Effect.provideService(SecretsService, secrets))
-          case "discord":
-            return sendDiscord(input).pipe(Effect.provideService(SecretsService, secrets))
-          case "app":
-            return sendApp(input)
-          default:
-            return Effect.fail(
-              new DeliveryError({
-                message: `unknown driver: ${input.driver}`,
-                channel: input.channel,
-                driver: input.driver,
-                kind: "config",
-              }),
-            )
-        }
-      },
+      send: (input: DeliverInput): Effect.Effect<DeliveryResult, DeliveryError> =>
+        Match.value(input.driver).pipe(
+          Match.when("telegram", () => sendTelegram(secrets, input)),
+          Match.when("discord", () => sendDiscord(secrets, input)),
+          Match.when("app", () => sendApp(input)),
+          Match.orElse(() =>
+            Effect.fail(
+              configErr(input.channel, input.driver, `unknown driver: ${input.driver}`),
+            ),
+          ),
+        ),
     }
   }),
 )
 
-export const _internal = { splitChunks, splitBrief, stripFrontmatter, resolveEnvRef, kernelBase, resolveRef }
+export const _internal = {
+  splitChunks,
+  splitBrief,
+  stripFrontmatter,
+  resolveEnvRef,
+  kernelBase,
+  resolveRef,
+  classifyKernelStatus,
+}
