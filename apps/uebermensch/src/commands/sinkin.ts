@@ -1,12 +1,17 @@
 /**
- * `uber sinkin` — open and close SinkIn sessions through the kernel.
+ * `uber sinkin` — open and close SinkIn sessions, vault-only.
  *
- * M0 scope: scaffolding only — registers a session row at start, scans the
- * vault to count pages, and closes the session with `pages_scanned`. The
- * actual gap-pass + answer-pass LLM stages (per
- * apps/uebermensch/vault/specs/sinkin.md) land in a follow-up that wires
- * the prompt templates in directives/personas/sinkin-{gap,answer}.md
- * through the existing `LlmService`.
+ * M0 scope: scaffolding only — generates a session id, scans the vault to
+ * count pages, logs the result. The actual gap-pass + answer-pass LLM stages
+ * (per apps/uebermensch/vault/specs/sinkin.md) land in a follow-up that wires
+ * the prompt templates in directives/personas/sinkin-{gap,answer}.md through
+ * the existing `LlmService`.
+ *
+ * Pre-eject this command upserted a row into the kernel's
+ * `uber_sinkin_sessions` table via `/api/uber/sinkin/sessions`. That table +
+ * route are gone in the eject (vault is the source of truth across all uber
+ * data); session metadata will land in `apps/uebermensch/vault/data/sinkin/`
+ * when the real LLM passes are wired up.
  */
 import { Command, Options } from "@effect/cli"
 import { Console, Effect, Option } from "effect"
@@ -25,7 +30,7 @@ const scopeThesisOpt = Options.text("thesis").pipe(
 )
 
 const dryRunOpt = Options.boolean("dry-run").pipe(
-  Options.withDescription("Scan + report only — do not POST to the kernel"),
+  Options.withDescription("Scan + report only — do not record the session"),
   Options.withDefault(false),
 )
 
@@ -38,54 +43,6 @@ const newSessionId = (): string => {
   const rand = Math.random().toString(36).slice(2, 8)
   return `sinkin-${ts}-${rand}`
 }
-
-const kernelBase = (): string =>
-  (process.env.GCTRL_KERNEL_URL ?? "http://127.0.0.1:4318").replace(/\/+$/, "")
-
-type UpsertArgs = {
-  readonly id: string
-  readonly status: "running" | "completed" | "failed"
-  readonly mode: "manual"
-  readonly scopeKind?: string
-  readonly scopeValue?: string
-  readonly pagesScanned?: number
-  readonly gapsFound?: number
-  readonly gapsAnswered?: number
-  readonly connectionsFound?: number
-  readonly costUsd?: number
-  readonly model?: string
-  readonly promptHash?: string
-  readonly failedReason?: string
-  readonly completedAt?: string
-}
-
-const upsertKernelSession = (args: UpsertArgs) =>
-  Effect.tryPromise({
-    try: async () => {
-      const resp = await fetch(`${kernelBase()}/api/uber/sinkin/sessions`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          id: args.id,
-          status: args.status,
-          mode: args.mode,
-          scope_kind: args.scopeKind,
-          scope_value: args.scopeValue,
-          pages_scanned: args.pagesScanned,
-          gaps_found: args.gapsFound,
-          gaps_answered: args.gapsAnswered,
-          connections_found: args.connectionsFound,
-          cost_usd: args.costUsd,
-          model: args.model,
-          prompt_hash: args.promptHash,
-          failed_reason: args.failedReason,
-          completed_at: args.completedAt,
-        }),
-      })
-      return resp.ok
-    },
-    catch: (e) => new Error(String(e)),
-  }).pipe(Effect.catchAll(() => Effect.succeed(false)))
 
 export const sinkin = Command.make(
   "sinkin",
@@ -108,21 +65,7 @@ export const sinkin = Command.make(
         }, dry-run=${dryRun})`,
       )
 
-      // Open the session in the kernel index.
-      if (!dryRun) {
-        const opened = yield* upsertKernelSession({
-          id: sessionId,
-          status: "running",
-          mode: "manual",
-          scopeKind,
-          scopeValue,
-        })
-        if (!opened) {
-          yield* Console.log("(kernel offline — proceeding without index)")
-        }
-      }
-
-      // M0 scaffold: count vault pages so the closed row carries real signal.
+      // M0 scaffold: count vault pages so the closing log carries real signal.
       // Real gap/answer LLM pipeline lands in a follow-up.
       const program = Effect.gen(function* () {
         const vaultSvc = yield* VaultService
@@ -137,31 +80,14 @@ export const sinkin = Command.make(
       yield* Console.log("  (M0 scaffold: gap/answer passes deferred to follow-up)")
 
       if (dryRun) {
-        yield* Console.log("(dry-run — not closing session)")
+        yield* Console.log("(dry-run — not recording session)")
         return
       }
 
-      const closed = yield* upsertKernelSession({
-        id: sessionId,
-        status: "completed",
-        mode: "manual",
-        scopeKind,
-        scopeValue,
-        pagesScanned,
-        gapsFound: 0,
-        gapsAnswered: 0,
-        connectionsFound: 0,
-        costUsd: 0,
-        completedAt: new Date().toISOString(),
-      })
-      if (closed) {
-        yield* Console.log(`✓ session ${sessionId} closed`)
-      } else {
-        yield* Console.log(`(kernel offline — session ${sessionId} not indexed)`)
-      }
+      yield* Console.log(`✓ session ${sessionId} closed`)
     }),
 ).pipe(
   Command.withDescription(
-    "Open + close a SinkIn session in the kernel index (M0 scaffold; LLM passes TBD)",
+    "Scan vault + scaffold a SinkIn session (M0; gap/answer LLM passes TBD)",
   ),
 )
