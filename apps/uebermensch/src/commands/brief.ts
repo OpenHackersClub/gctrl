@@ -52,6 +52,88 @@ const itemsForFormat = (format: "long" | "short" | "digest"): number => {
   }
 }
 
+type BriefProgramArgs = {
+  readonly date: string
+  readonly sinceHours: number
+  readonly maxItemsOpt: Option.Option<number>
+  readonly dryRun: boolean
+}
+
+/** Core brief-generation Effect — requires ProfileService, VaultService,
+ *  LlmService, RendererService. Exported so tests can exercise it directly
+ *  without spawning a CLI process. */
+export const makeBriefProgram = ({ date, sinceHours, maxItemsOpt: maxItemsOptVal, dryRun }: BriefProgramArgs) =>
+  Effect.gen(function* () {
+    const profileSvc = yield* ProfileService
+    const vaultSvc = yield* VaultService
+    const llm = yield* LlmService
+    const renderer = yield* RendererService
+    const profile = yield* profileSvc.load()
+
+    const pages = yield* vaultSvc.recentlyChanged(sinceHours)
+    yield* Console.log(`  ${pages.length} page(s) changed in last ${sinceHours}h`)
+
+    const topicWeights = profile.topics.topics.map((t) => ({
+      slug: t.slug,
+      weight: t.weight,
+    }))
+    const now = new Date()
+    const candidates = selectCandidates({
+      pages,
+      topics: topicWeights,
+      thesesSlugs: [],
+      now,
+      windowHours: sinceHours,
+      maxCandidates: 40,
+    })
+    yield* Console.log(`  ${candidates.length} candidate(s) after ranking`)
+
+    const maxItems = Option.getOrElse(maxItemsOptVal, () =>
+      itemsForFormat(profile.profile.delivery.brief.format),
+    )
+
+    const response = yield* llm.generateBrief({
+      date,
+      profileName: profile.profile.identity.name,
+      topics: topicWeights.map((t) => t.slug),
+      thesesSlugs: [],
+      candidates,
+      maxItems,
+    })
+
+    const vaultSlugs = yield* vaultSvc.listSlugs()
+    const rendered = yield* renderer.render({
+      date,
+      generator: llm.name(),
+      model: response.model,
+      promptHash: response.promptHash,
+      costUsd: response.costUsd,
+      profileName: profile.profile.identity.name,
+      topicsCovered: response.topicsCovered,
+      thesesCovered: response.thesesCovered,
+      candidates,
+      items: response.items,
+      vaultSlugs,
+    })
+
+    if (dryRun) {
+      yield* Console.log("(dry-run — not writing)")
+      yield* Console.log("")
+      yield* Console.log(rendered.markdown)
+      return
+    }
+
+    const written = yield* vaultSvc.writeBrief(date, rendered.markdown)
+    yield* Console.log(
+      `✓ wrote ${written.relPath} (${written.contentHash}) — ${rendered.citedClaims}/${rendered.totalClaims} claims cited`,
+    )
+
+    yield* Console.log("")
+    yield* Console.log(rendered.markdown)
+
+    return written
+  })
+
 export const brief = Command.make(
   "brief",
   { sinceHoursOpt, dateOpt, maxItemsOpt, dryRunOpt, llmOpt },
@@ -66,88 +148,7 @@ export const brief = Command.make(
       const vaultDir = yield* resolveVaultDir()
       const date = Option.getOrElse(dateOptVal, today)
       yield* Console.log(`generating brief for ${date} from ${vaultDir} (llm=${llmKind})`)
-      const program = Effect.gen(function* () {
-        const profileSvc = yield* ProfileService
-        const vaultSvc = yield* VaultService
-        const llm = yield* LlmService
-        const renderer = yield* RendererService
-        const profile = yield* profileSvc.load()
-
-        const pages = yield* vaultSvc.recentlyChanged(sinceHours)
-        yield* Console.log(`  ${pages.length} page(s) changed in last ${sinceHours}h`)
-
-        const topicWeights = profile.topics.topics.map((t) => ({
-          slug: t.slug,
-          weight: t.weight,
-        }))
-        const now = new Date()
-        const candidates = selectCandidates({
-          pages,
-          topics: topicWeights,
-          thesesSlugs: [],
-          now,
-          windowHours: sinceHours,
-          maxCandidates: 40,
-        })
-        yield* Console.log(`  ${candidates.length} candidate(s) after ranking`)
-
-        const maxItems = Option.getOrElse(maxItemsOptVal, () =>
-          itemsForFormat(profile.profile.delivery.brief.format),
-        )
-
-        const response = yield* llm.generateBrief({
-          date,
-          profileName: profile.profile.identity.name,
-          topics: topicWeights.map((t) => t.slug),
-          thesesSlugs: [],
-          candidates,
-          maxItems,
-        })
-
-        const vaultSlugs = yield* vaultSvc.listSlugs()
-        const rendered = yield* renderer.render({
-          date,
-          generator: llm.name(),
-          model: response.model,
-          promptHash: response.promptHash,
-          costUsd: response.costUsd,
-          profileName: profile.profile.identity.name,
-          topicsCovered: response.topicsCovered,
-          thesesCovered: response.thesesCovered,
-          candidates,
-          items: response.items,
-          vaultSlugs,
-        })
-
-        if (dryRun) {
-          yield* Console.log("(dry-run — not writing)")
-          yield* Console.log("")
-          yield* Console.log(rendered.markdown)
-          return
-        }
-
-        const written = yield* vaultSvc.writeBrief(date, rendered.markdown)
-        yield* Console.log(
-          `✓ wrote ${written.relPath} (${written.contentHash}) — ${rendered.citedClaims}/${rendered.totalClaims} claims cited`,
-        )
-
-        yield* registerBriefInKernel({
-          date,
-          vaultPath: written.relPath,
-          contentHash: written.contentHash,
-          profileName: profile.profile.identity.name,
-          generator: llm.name(),
-          model: response.model,
-          promptHash: response.promptHash,
-          costUsd: response.costUsd,
-          itemCount: rendered.itemCount,
-          citedClaims: rendered.citedClaims,
-          totalClaims: rendered.totalClaims,
-        })
-
-        yield* Console.log("")
-        yield* Console.log(rendered.markdown)
-      })
+      const program = makeBriefProgram({ date, sinceHours, maxItemsOpt: maxItemsOptVal, dryRun })
       const llmLayer = llmKind === "stub" ? StubLlmLive : KernelLlmLive
       yield* program.pipe(
         Effect.provide(FileSystemProfileLive(vaultDir)),
@@ -157,52 +158,3 @@ export const brief = Command.make(
       )
     }),
 ).pipe(Command.withDescription("Generate a daily brief from wiki pages + stub LLM"))
-
-// Best-effort POST to the kernel index. The brief is already written to the
-// vault (which is the source of truth); a kernel-down condition shouldn't
-// fail the command. We log a warning instead.
-type RegisterArgs = {
-  readonly date: string
-  readonly vaultPath: string
-  readonly contentHash: string
-  readonly profileName: string
-  readonly generator: string
-  readonly model: string
-  readonly promptHash: string
-  readonly costUsd: number
-  readonly itemCount: number
-  readonly citedClaims: number
-  readonly totalClaims: number
-}
-
-const registerBriefInKernel = (args: RegisterArgs) =>
-  Effect.gen(function* () {
-    const base = (process.env.GCTRL_KERNEL_URL ?? "http://127.0.0.1:4318").replace(/\/+$/, "")
-    const result = yield* Effect.tryPromise({
-      try: async () => {
-        const resp = await fetch(`${base}/api/uber/briefs`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            date: args.date,
-            kind: "daily",
-            vault_path: args.vaultPath,
-            content_hash: args.contentHash,
-            profile_name: args.profileName,
-            generator: args.generator,
-            model: args.model,
-            prompt_hash: args.promptHash,
-            cost_usd: args.costUsd,
-            item_count: args.itemCount,
-            cited_claims: args.citedClaims,
-            total_claims: args.totalClaims,
-          }),
-        })
-        return resp.ok
-      },
-      catch: (e) => new Error(String(e)),
-    }).pipe(Effect.catchAll(() => Effect.succeed(false)))
-    if (!result) {
-      yield* Console.log("(kernel offline — brief written to vault but not indexed)")
-    }
-  })

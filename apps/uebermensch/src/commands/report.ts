@@ -1,5 +1,6 @@
 import { Command, Options } from "@effect/cli"
 import { Console, Effect, Either, Layer, Option } from "effect"
+import { EnvSecretsLive } from "../adapters/EnvSecrets.js"
 import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js"
 import { FileSystemVaultLive } from "../adapters/FileSystemVault.js"
 import { HttpDelivererLive } from "../adapters/HttpDeliverer.js"
@@ -650,6 +651,7 @@ export const report = Command.make(
         Effect.provide(llmLayer),
         Effect.provide(StrictRendererLive),
         Effect.provide(HttpDelivererLive),
+        Effect.provide(EnvSecretsLive),
         Effect.provide(syncLayer),
       )
     }),
