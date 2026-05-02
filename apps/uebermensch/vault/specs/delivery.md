@@ -107,23 +107,27 @@ Each driver gets a `Message` matching [domain-model.md § 7.2](domain-model.md#7
 - Rendering target: **MarkdownV2** — Telegram's native format with forced escaping of special chars.
 - **Hosted link header** (required, see [Hosted-link requirement](#hosted-link-requirement-telegram--discord)): the first line of the first chunk is `🌐 ${UBER_PUBLIC_BASE_URL}/briefs/<date>` (or `/reports/<slug>` for weekly reports), followed by a blank line, then the content. The link is what recipients are expected to click — the inline body is a preview. The URL may resolve to Cloudflare Pages, Tailscale Serve, or any HTTPS host; the renderer treats them identically.
 - Long briefs: split across messages at natural boundaries (item boundaries), with continuation markers `(1/3)` etc.
-- `[[slug]]` → bare URL `https://<app-host>/wiki/<slug>` (or app deep link `uber://wiki/<slug>` if custom scheme configured). Citations resolve by the target's frontmatter `page_type` — theses get bolded labels, sources get domain chips (see Link Rendering below).
+- `[[slug]]` → bare URL `https://<app-host>/wiki/<slug>` (or app deep link `uber://wiki/<slug>` if custom scheme configured). `[[slug]]` is internal wiki only — theses, entities, topics, synthesis, questions. External sources MUST appear as `[n]` numeric markers + a trailing `## References` block (see Link Rendering below).
 - Quick-replies (inline keyboard):
   - `/ack <brief_id>` — mark read
   - `/score <brief_id> good|meh|bad` — human score (see [eval.md](eval.md))
   - `/open <brief_id>` — deep-link back to app
 - Attachments: none in M2. M4+ may add voice/TTS as an attachment.
 
-Example rendered Telegram message (MarkdownV2-escaped):
+Example rendered Telegram message (MarkdownV2-escaped, Citation Mode v1):
 
 ```
 *Morning Brief — 2026\-04\-18*
 
 1\. *Anthropic ships Claude Opus 4\.7*
 
-   Major model release with improved tool\-use and 15% faster output\. Aligns with *Thesis:* [LLM tooling consolidation](https://uber/wiki/llm-tooling-consolidation)\. Source: [anthropic\.com](https://uber/wiki/2026-04-18--anthropic-opus-47)
+   Major model release with improved tool\-use and 15% faster output \[1\]\. Aligns with *Thesis:* [LLM tooling consolidation](https://uber/wiki/llm-tooling-consolidation)\.
 
    \[Score ▸\] \[Open in App ▸\]
+
+*References*
+
+\[1\] Anthropic — Introducing Claude Opus 4\.7 — anthropic\.com · 2026\-04\-18 · [↗](https://www.anthropic.com/news/claude-opus-4-7)
 ```
 
 ### Discord
@@ -143,15 +147,34 @@ Example rendered Telegram message (MarkdownV2-escaped):
 
 ### Link Rendering (all channels)
 
-Wikilinks in the vault markdown are bare `[[slug]]` (see [knowledge-base.md § Wikilink Conventions](knowledge-base.md#wikilink-conventions)). Renderers MUST resolve them by reading the target page's frontmatter and applying per-page-type styling:
+Citation Mode v1 has **two link surfaces**: internal `[[slug]]` wikilinks for our synthesised wiki, and `[n]` numeric markers for external sources (rendered into a trailing `## References` block). The vault markdown stays canonical and Obsidian-readable.
 
-| `page_type` | Rendered as |
-|-------------|-------------|
-| `thesis` | `*Thesis:* [<title>](<url>)` (Telegram / App) or bold label + link (Discord) |
-| `source` | `[<domain>](<url>)` |
-| `entity` / `topic` / `synthesis` / `question` | `[<title>](<url>)` |
+#### `[[slug]]` wikilinks (internal wiki only)
 
-The display transformation happens at channel-send time; the vault markdown stays canonical bare-slug form and stays Obsidian-readable.
+Wikilinks resolve to the target page's frontmatter `page_type`:
+
+| `page_type` | Rendered as | Notes |
+|-------------|-------------|-------|
+| `thesis` | `*Thesis:* [<title>](<url>)` (Telegram / App) or bold label + link (Discord) | url = `/wiki/<slug>` |
+| `entity` / `topic` / `synthesis` / `question` | `[<title>](<url>)` | url = `/wiki/<slug>` |
+| `source` | **REJECTED** in brief/report/synthesis bodies — verifier error `SourceCitedInline` (R3). | Cite via `[n]` + `references[]` instead. |
+
+The display transformation happens at channel-send time; the vault markdown stays canonical bare-slug form.
+
+#### `[n]` numeric citation markers (external sources)
+
+Brief, report, and synthesis bodies embed numeric citations as `[1]`, `[2]`, ... inline. Each `[n]` MUST have one matching entry in the page's `references[]` array (curator JSON output) — see [briefing-pipeline.md § Citation verification is strict](briefing-pipeline.md#citation-verification-is-strict).
+
+Channel-specific rendering of the `## References` footer:
+
+| Channel | `[n]` marker | References block |
+|---|---|---|
+| **Web / Pages (HTML)** | `<sup><a id="cite-n" href="#ref-n" class="cite-marker">[n]</a></sup>` — clickable anchor scrolls to footer. | `<ol class="references">`; each entry: backlink to `#cite-n`, `<strong>title</strong>`, `<span class="domain-chip">domain</span>`, accessed date, external `↗` to `canonical_url`, "view digest" link to `/wiki/<source-slug>`. |
+| **Telegram (MarkdownV2)** | Literal escaped `\[n\]` (no superscript in MarkdownV2). | Plain numbered list before the quick-reply keyboard: `\[n\] Title — domain · YYYY-MM-DD · [↗](url)`. |
+| **Discord (embeds)** | Literal `[n]` in embed description. | Trailing embed with title `References`; description is a numbered list with masked hyperlinks `[Title](url)`. |
+| **Plain-md export** | Unchanged `[n]` token. | Unchanged `## References` heading + ordered list — readable as-is in any markdown viewer. |
+
+Domain chips (previously inline next to `Source: [domain](…)`) move to the References footer entries.
 
 ### Email (future — M4+)
 

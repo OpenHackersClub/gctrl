@@ -27,7 +27,7 @@ Extends `WikiPageType` from [kernel domain-model § 2](../../../../vault/specs/a
 | **Sector** | `Topic` (role=sector) | `input/wiki/topics/sectors/<slug>.md` | One sector (AI infra, fintech, ...) | `uber-ingest` |
 | **Macro-theme** | `Topic` (role=macro) | `input/wiki/topics/macro/<slug>.md` | One macro theme (rates, election cycle, ...) | `uber-ingest` |
 | **Market** | `Topic` (role=market) | `input/wiki/topics/markets/<slug>.md` | One tradable instrument or prediction market | `driver-markets` ingest |
-| **Source** | `Source` | `input/raw/<yyyy-mm-dd>--<slug>.md` | One external URL summary (raw input — unfiltered content of interest) | `uber-ingest` |
+| **Source** | `Source` | `input/raw/<yyyy-mm-dd>--<slug>.md` | One external URL — LLM-digested: gist, key numbers, ≤3 essential quotes, our insights, open questions, access metadata. No raw text. See § Source body template below. | `uber-ingest` |
 | **Synthesis** | `Synthesis` | `input/wiki/synthesis/<slug>.md` | Cross-cutting analysis | `uber-deepdive` |
 | **Question** | `Question` | `input/wiki/questions/<slug>.md` | Filed query result worth keeping | `uber-curator` / user |
 
@@ -186,12 +186,29 @@ authors: ["Anthropic"]
 topics: [ai-dev-workflows]
 entities: [anthropic]
 content_hash: sha256:...           # hash of the fetched markdown; change-detection
+digest_version: 1                  # Citation Mode v1; absent = pre-migration raw page
+digested_at: 2026-04-18T12:09:00Z  # when the digest pass ran; absent if pending_digest
+prompt_hash: sha256:...            # digest prompt version (separate from curator prompt_hash)
+access: open                       # open | paywall | metered
 quality:
   word_count: 842
   readability_used: true
   spam_score: 0.02
 ---
 ```
+
+**Body** (Citation Mode v1 — replaces the pre-v1 raw markdown dump). Sections appear in this exact order; any may be empty (omit the heading) but none may be reordered:
+
+- `## Gist` — 3–8 bullets; each one complete, citable claim **made by the source itself**. No hedging prose, no raw HTML. This is *what the source says*, not what we make of it.
+- `## Key numbers` — bare numeric facts, verbatim or minimally paraphrased. Omit if none.
+- `## Essential quotes` — ≤ 3 quotes, ≤ 30 words each, with attribution.
+- `## Insights` — 2–6 bullets. **Our** synthesis: what's non-obvious, what tension does this source create with other sources or with active theses ([[<thesis-slug>]] wikilinks allowed here for internal cross-refs), what second-order implication does it have for current research interests. Distinct from Gist — Gist is the source's claims; Insights is what we read into them. Empty (`## Insights` heading + `_None._`) is acceptable when nothing rises above restatement.
+- `## Questions` — 2–6 bullets. Open questions the source raises but does not answer: follow-up papers to ingest, hand-waves to verify, dependencies on data/code/scale we don't have, downstream things to track. Each question should be specific enough to drive a search query or a re-read. Empty (`## Questions` heading + `_None._`) is acceptable for purely-confirmatory sources.
+- `## Access metadata` — fetched timestamp, extraction method, paywall flag, raw/post-extraction word counts. Written by the ingest pipeline; LLM does not invent these.
+
+The Insights and Questions sections are **uebermensch-authored** at digest time and may be re-curated on subsequent ingestion passes (their content is not part of `content_hash`; see [briefing-pipeline.md § Render + Verify](briefing-pipeline.md#render--verify)). Gist / Key numbers / Essential quotes / Access metadata are stable across re-curations and contribute to `content_hash`.
+
+Pre-v1 source pages (no `digest_version` key) are migrated by `gctrl uber vault migrate-citations` (see [briefing-pipeline.md § Migration: Citation Mode v1](briefing-pipeline.md)). Until migrated, they continue to render as raw text, with a one-line banner.
 
 ### Synthesis
 
@@ -235,7 +252,9 @@ Rules:
 1. **Every link is `[[slug]]` or `[[slug|display text]]`** — the pipe form supplies a rendered label without changing the target.
 2. **Slugs are globally unique across all four roots** — `anthropic` is one page, `anthropic.md`, regardless of whether the file lives under `directives/`, `input/`, `output/`, or `action/`. The ingest pipeline rejects a new page whose slug collides.
 3. **Page type is derived from the target's frontmatter `page_type`**, not from the link syntax. The renderer knows a link points at a thesis because the target file's frontmatter says so.
-4. **Brief items MUST cite via `[[slug]]`** — not via raw URL. The renderer converts to app deep links / bare URLs at channel-send time.
+4. **Brief/Report/Synthesis bodies use two citation surfaces** (Citation Mode v1):
+   - **Internal wiki** (theses, entities, topics, synthesis, questions) — cite inline with bare `[[slug]]`. The renderer converts to app deep links / bare URLs at channel-send time.
+   - **External sources** (`page_type: source` under `input/raw/`) — cite with numeric `[n]` markers and list each in the page's `references[]` array, rendered as a `## References` footer. NEVER use `[[slug]]` for an external source from inside a brief/report/synthesis body — see [briefing-pipeline.md § Citation verification is strict](briefing-pipeline.md#citation-verification-is-strict).
 5. **Cross-folder links resolve by stem** — `[[anthropic]]` resolves to `input/wiki/entities/companies/anthropic.md` regardless of where the linking file lives; Obsidian's resolver does the same.
 6. **No relative paths in links** — `[[../wiki/entities/companies/anthropic]]` breaks as soon as a file moves. Use bare stems.
 
@@ -296,7 +315,7 @@ Runs as `gctrl kb lint --persona uber`. Surfaces via app eval dashboard + inbox 
 
 | Rule | FAIL condition | Severity |
 |------|----------------|----------|
-| `brief-citation-coverage` | Last brief has < 90% of claims citing a wiki page | warn |
+| `brief-citation-coverage` | Last brief has < 90% of claims citing either a `[[slug]]` (internal wiki) or a `[n]` numeric reference (external source) | warn |
 | `brief-same-source-reuse` | > 40% of a brief's items cite the same source | warn |
 | `brief-thesis-dominance` | > 60% of a brief's items link one thesis (echo chamber) | info |
 
