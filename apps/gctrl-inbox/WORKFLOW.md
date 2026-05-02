@@ -348,3 +348,24 @@ CREATE INDEX IF NOT EXISTS idx_inbox_subscriptions_user ON inbox_subscriptions(u
 ## Project Key
 
 `INBOX` — for tracking gctrl-inbox's own development issues on gctrl-board.
+
+## Markdown Directory Convention
+
+Inbox messages are authored as plain markdown files in the same **external vault directory** as gctrl-board (Obsidian-mountable, decoupled from git). The kernel daemon's file watcher imports new/modified `*.md` files into the local SQLite store on the standard board pipeline (each subdirectory becomes a project key; `INBOX-*.md` lands as the `INBOX` project).
+
+Vault path resolution (kernel daemon):
+1. `--board-dir <path>` CLI flag
+2. `GCTRL_BOARD_DIR` env var (preferred; the launchd plist sets this)
+3. `./gctrl/` in cwd (legacy fallback)
+
+Reference layout:
+
+```
+~/workspaces/ohc/vault-gctrl/   # External vault — Obsidian opens this folder
+├── BOARD/
+│   └── BOARD-*.md
+└── INBOX/
+    └── INBOX-*.md
+```
+
+The in-repo `apps/gctrl-inbox/vault/INBOX/` is gitignored — operational inbox data is not tracked in source control.
