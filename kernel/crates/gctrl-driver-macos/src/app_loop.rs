@@ -2,7 +2,6 @@
 // main thread before any tokio work runs (the tokio runtime moves to
 // a worker thread when this path is taken). Blocks until terminate.
 
-use objc2::msg_send;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use objc2_foundation::MainThreadMarker;
 
@@ -17,10 +16,8 @@ pub fn run() {
     let app = NSApplication::sharedApplication(mtm);
     // Accessory: kernel daemon doesn't put a Dock icon up. The overlay
     // windows are screen-saver-level and join all Spaces, so the Dock
-    // entry would be misleading.
-    let _: () = unsafe {
-        msg_send![&*app, setActivationPolicy: NSApplicationActivationPolicy::Accessory]
-    };
+    // entry would be misleading. Returns BOOL (success); ignore.
+    let _ = app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
     // Run the loop. Returns when `[NSApp terminate:]` is sent.
     unsafe { app.run() };
 }
