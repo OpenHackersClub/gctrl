@@ -23,6 +23,7 @@ import { teamCommand } from "./commands/team"
 import { inboxCommand } from "./commands/inbox"
 import { vaultCommand } from "./commands/vault"
 import { wranglerCommand } from "./commands/wrangler"
+import { appCommand } from "./commands/app"
 import { HttpKernelClientLive } from "./adapters/HttpKernelClient"
 
 const command = Command.make("gctrl").pipe(
@@ -41,6 +42,7 @@ const command = Command.make("gctrl").pipe(
     inboxCommand,
     vaultCommand,
     wranglerCommand,
+    appCommand,
   ])
 )
 
