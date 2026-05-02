@@ -74,3 +74,17 @@ export class SecretsError extends Schema.TaggedError<SecretsError>()("SecretsErr
   kind: Schema.Literal("unavailable", "permission_denied", "io_failure", "invalid_key"),
   key: Schema.optional(Schema.String),
 }) {}
+
+// Raised by VaultSecretGuard when a write would persist a recognized secret
+// pattern to the vault. The `leaks` field carries one entry per matched
+// pattern — multiple secrets in a single write each produce a separate entry.
+export class VaultSecretLeakError extends Schema.TaggedError<VaultSecretLeakError>()(
+  "VaultSecretLeakError",
+  {
+    message: Schema.String,
+    path: Schema.optional(Schema.String),
+    leaks: Schema.Array(
+      Schema.Struct({ name: Schema.String, matchedAt: Schema.Number }),
+    ),
+  },
+) {}
