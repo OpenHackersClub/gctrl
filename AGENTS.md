@@ -32,6 +32,7 @@ The `vault/specs/` directory is the single source of truth for cross-cutting des
 | `vault/specs/principles.md` | Design invariants | Design principles, architectural invariants, crate ownership rules, Effect-TS invariants, testing invariants, git workflow. The "constitution" — rules that MUST NOT be violated. |
 | `vault/specs/architecture/domain-model.md` | Types & schemas | Domain types, traits, storage schema (all SQL DDL), Effect-TS schemas, entity relationships. The "data dictionary." |
 | `vault/specs/architecture/app-decoupling.md` | App ↔ kernel contract | Zero-duplication rule, port-based capability declarations, ejection (rebinding, not rewriting), worked uebermensch example, reviewer boundary tests. |
+| `vault/specs/architecture/app-install-protocol.md` | `gctrl-app.toml` manifest | Schema (capabilities / vault-mounts / schedules / secrets), capability registry, install / override / reload flow, `gctrl_app_installs` + `gctrl_app_bindings` storage tables. The operational counterpart to `app-decoupling.md`. |
 | `vault/specs/gctrl/` | gctrl's own workflow | gctrl's PRD and WORKFLOW files. See "gctrl Kernel Workflow" section below. |
 
 ### Kernel Architecture — Orchestration & Dispatch
