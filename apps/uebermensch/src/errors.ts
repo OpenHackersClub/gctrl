@@ -41,6 +41,10 @@ export class LlmError extends Schema.TaggedError<LlmError>()("LlmError", {
   kind: Schema.optional(
     Schema.Literal("unavailable", "rate_limited", "budget_exceeded", "invalid"),
   ),
+  // Hint from the upstream `Retry-After` header (or Anthropic's
+  // `anthropic-ratelimit-*-reset`) for `rate_limited` failures. Schedule
+  // wrappers honor this before falling back to exponential backoff.
+  retryAfterMs: Schema.optional(Schema.Number),
 }) {}
 
 export class CitationError extends Schema.TaggedError<CitationError>()("CitationError", {

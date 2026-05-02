@@ -1,11 +1,25 @@
-import { Effect, Exit } from "effect"
+import { Cause, Effect, Exit, Option } from "effect"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { KernelLlmLive, _internal } from "../src/adapters/KernelLlm.js"
 import type { CandidateRef } from "../src/lib/candidates.js"
 import { LlmService } from "../src/services/LlmService.js"
 import type { WikiPage } from "../src/services/VaultService.js"
 
-const { extractJson, buildUserPrompt, kernelBase, normalizeInsights, effortFromEnv, effortConfigFor } = _internal
+const {
+  extractJson,
+  buildUserPrompt,
+  kernelBase,
+  normalizeInsights,
+  effortFromEnv,
+  effortConfigFor,
+  effortBody,
+  isOpus47Family,
+  is1MContextRequested,
+  stripContextSuffix,
+  parseRetryAfter,
+  defaultConcurrencyForModel,
+  CONTEXT_1M_BETA,
+} = _internal
 
 // The Anthropic-routed tests in this file pin UBER_LLM_MODEL /
 // UBER_LLM_SUMMARY_MODEL to claude-* via beforeEach so they keep exercising
@@ -152,6 +166,200 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
     expect(body.system).toContain("uebermensch-curator")
     expect(body.messages[0].role).toBe("user")
     expect(body.messages[0].content).toContain("cand-0000")
+  })
+
+  it("opus-4.7 high effort wires adaptive thinking + output_config.effort instead of enabled+budget", async () => {
+    const prevEffort = process.env.UBER_LLM_EFFORT
+    process.env.UBER_LLM_EFFORT = "high"
+    try {
+      const payload = anthropicJson({
+        items: [],
+        topicsCovered: [],
+        thesesCovered: [],
+      })
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(payload),
+      })
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const llm = yield* LlmService
+          return yield* llm.generateBrief({
+            date: "2026-04-22",
+            profileName: "Test",
+            topics: ["alpha"],
+            thesesSlugs: [],
+            candidates: [],
+            maxItems: 1,
+          })
+        }).pipe(Effect.provide(KernelLlmLive)),
+      )
+
+      const [, init] = fetchMock.mock.calls[0]!
+      const body = JSON.parse((init as { body: string }).body)
+      expect(body.thinking).toEqual({ type: "adaptive" })
+      expect(body.output_config).toEqual({ effort: "high" })
+      // Opus 4.7 rejected `thinking.type=enabled` → make sure we don't send it.
+      expect(body.thinking?.type).not.toBe("enabled")
+    } finally {
+      if (prevEffort === undefined) delete process.env.UBER_LLM_EFFORT
+      else process.env.UBER_LLM_EFFORT = prevEffort
+    }
+  })
+
+  it("model id with [1m] suffix strips the suffix on the wire and sets anthropic-beta", async () => {
+    const prevModel = process.env.UBER_LLM_MODEL
+    process.env.UBER_LLM_MODEL = "claude-opus-4-7[1m]"
+    try {
+      const payload = anthropicJson(
+        { items: [], topicsCovered: [], thesesCovered: [] },
+        { input_tokens: 0, output_tokens: 0 },
+      )
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(payload),
+      })
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const llm = yield* LlmService
+          return yield* llm.generateBrief({
+            date: "2026-04-22",
+            profileName: "Test",
+            topics: [],
+            thesesSlugs: [],
+            candidates: [],
+            maxItems: 1,
+          })
+        }).pipe(Effect.provide(KernelLlmLive)),
+      )
+
+      const [, init] = fetchMock.mock.calls[0]!
+      const body = JSON.parse((init as { body: string }).body)
+      expect(body.model).toBe("claude-opus-4-7") // suffix stripped
+      const headers = (init as { headers: Record<string, string> }).headers
+      expect(headers["anthropic-beta"]).toBe("context-1m-2025-08-07")
+    } finally {
+      if (prevModel === undefined) delete process.env.UBER_LLM_MODEL
+      else process.env.UBER_LLM_MODEL = prevModel
+    }
+  })
+
+  it("rate_limited 429 retries with small delay then succeeds", async () => {
+    const prevRetries = process.env.UBER_LLM_RATE_LIMIT_RETRIES
+    const prevBase = process.env.UBER_LLM_RATE_LIMIT_BASE_MS
+    process.env.UBER_LLM_RATE_LIMIT_RETRIES = "3"
+    process.env.UBER_LLM_RATE_LIMIT_BASE_MS = "1"
+    try {
+      const headerMap = new Map<string, string>([["retry-after", "0"]])
+      const failResponse = {
+        ok: false,
+        status: 429,
+        text: async () =>
+          JSON.stringify({
+            type: "error",
+            error: { type: "rate_limit_error", message: "tokens per minute exceeded" },
+          }),
+        headers: { get: (k: string) => headerMap.get(k.toLowerCase()) ?? null },
+      }
+      const okResponse = {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify(anthropicJson({
+            items: [],
+            topicsCovered: [],
+            thesesCovered: [],
+          })),
+      }
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(failResponse)
+        .mockResolvedValueOnce(failResponse)
+        .mockResolvedValue(okResponse)
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+
+      const res = await Effect.runPromise(
+        Effect.gen(function* () {
+          const llm = yield* LlmService
+          return yield* llm.generateBrief({
+            date: "2026-04-22",
+            profileName: "Test",
+            topics: [],
+            thesesSlugs: [],
+            candidates: [],
+            maxItems: 1,
+          })
+        }).pipe(Effect.provide(KernelLlmLive)),
+      )
+      expect(res.items).toEqual([])
+      // Two failures + one success.
+      expect(fetchMock.mock.calls.length).toBe(3)
+    } finally {
+      if (prevRetries === undefined) delete process.env.UBER_LLM_RATE_LIMIT_RETRIES
+      else process.env.UBER_LLM_RATE_LIMIT_RETRIES = prevRetries
+      if (prevBase === undefined) delete process.env.UBER_LLM_RATE_LIMIT_BASE_MS
+      else process.env.UBER_LLM_RATE_LIMIT_BASE_MS = prevBase
+    }
+  })
+
+  it("429 with Retry-After produces a typed rate_limited LlmError carrying retryAfterMs", async () => {
+    const prevRetries = process.env.UBER_LLM_RATE_LIMIT_RETRIES
+    // Disable retries so we observe the first failure directly. The retry
+    // path is exercised separately via Schedule.recurs unit tests.
+    process.env.UBER_LLM_RATE_LIMIT_RETRIES = "0"
+    try {
+      const headerMap = new Map<string, string>([["retry-after", "7"]])
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 429,
+        text: async () =>
+          JSON.stringify({
+            type: "error",
+            error: { type: "rate_limit_error", message: "tokens per minute exceeded" },
+          }),
+        headers: { get: (k: string) => headerMap.get(k.toLowerCase()) ?? null },
+      })
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+
+      const exit = await Effect.runPromiseExit(
+        Effect.gen(function* () {
+          const llm = yield* LlmService
+          return yield* llm.generateBrief({
+            date: "2026-04-22",
+            profileName: "Test",
+            topics: [],
+            thesesSlugs: [],
+            candidates: [],
+            maxItems: 1,
+          })
+        }).pipe(Effect.provide(KernelLlmLive)),
+      )
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(fetchMock).toHaveBeenCalledOnce()
+      if (Exit.isFailure(exit)) {
+        const failure = exit.cause
+        const text = String(failure)
+        expect(text).toContain("HTTP 429")
+        // The LlmError should carry kind=rate_limited and retryAfterMs=7000.
+        // We pull it out via Cause to assert the typed payload.
+        const failOpt = Cause.failureOption(failure)
+        expect(Option.isSome(failOpt)).toBe(true)
+        if (Option.isSome(failOpt)) {
+          const e = failOpt.value
+          expect(e.kind).toBe("rate_limited")
+          expect(e.retryAfterMs).toBe(7_000)
+        }
+      }
+    } finally {
+      if (prevRetries === undefined) delete process.env.UBER_LLM_RATE_LIMIT_RETRIES
+      else process.env.UBER_LLM_RATE_LIMIT_RETRIES = prevRetries
+    }
   })
 
   it("fails with unavailable when kernel returns 503", async () => {
@@ -585,6 +793,117 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
     it("invalid UBER_LLM_EFFORT falls back to medium", () => {
       process.env.UBER_LLM_EFFORT = "ludicrous"
       expect(effortFromEnv()).toBe("medium")
+    })
+
+    it("opus-4.7 high effort uses adaptive thinking + output_config.effort=high (not enabled+budget)", () => {
+      process.env.UBER_LLM_EFFORT = "high"
+      const cfg = effortConfigFor(effortFromEnv(), "claude-opus-4-7")
+      expect(cfg.maxTokens).toBe(32000)
+      expect(cfg.thinking).toBe("adaptive")
+      expect(cfg.outputEffort).toBe("high")
+      const body = effortBody(cfg)
+      expect(body.thinking).toEqual({ type: "adaptive" })
+      expect(body.output_config).toEqual({ effort: "high" })
+    })
+
+    it("opus-4.7 medium effort still emits output_config.effort", () => {
+      delete process.env.UBER_LLM_EFFORT
+      const cfg = effortConfigFor(effortFromEnv(), "claude-opus-4-7")
+      expect(cfg.thinking).toBe("adaptive")
+      expect(cfg.outputEffort).toBe("medium")
+    })
+
+    it("opus-4.6 high effort keeps the legacy enabled+budget shape", () => {
+      process.env.UBER_LLM_EFFORT = "high"
+      const cfg = effortConfigFor(effortFromEnv(), "claude-opus-4-6")
+      expect(cfg.thinking).toBe("extended")
+      expect(cfg.thinkingBudgetTokens).toBeGreaterThan(0)
+      expect(cfg.outputEffort).toBeUndefined()
+      const body = effortBody(cfg)
+      expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 16000 })
+      expect(body.output_config).toBeUndefined()
+    })
+
+    it("opus-4.7 with [1m] suffix is still routed through the 4.7 effort path", () => {
+      process.env.UBER_LLM_EFFORT = "high"
+      const cfg = effortConfigFor(effortFromEnv(), "claude-opus-4-7[1m]")
+      expect(cfg.thinking).toBe("adaptive")
+      expect(cfg.outputEffort).toBe("high")
+    })
+  })
+
+  describe("model id helpers", () => {
+    it("isOpus47Family matches 4.7 with or without context suffix and rejects older opus", () => {
+      expect(isOpus47Family("claude-opus-4-7")).toBe(true)
+      expect(isOpus47Family("claude-opus-4-7-20260101")).toBe(true)
+      expect(isOpus47Family("claude-opus-4-7[1m]")).toBe(true)
+      expect(isOpus47Family("claude-opus-4-6")).toBe(false)
+      expect(isOpus47Family("claude-sonnet-4-6")).toBe(false)
+    })
+
+    it("stripContextSuffix removes the [1m] suffix only", () => {
+      expect(stripContextSuffix("claude-opus-4-7[1m]")).toBe("claude-opus-4-7")
+      expect(stripContextSuffix("claude-opus-4-7")).toBe("claude-opus-4-7")
+      expect(stripContextSuffix("@cf/google/gemma-4-31b")).toBe("@cf/google/gemma-4-31b")
+    })
+
+    it("is1MContextRequested honors the [1m] suffix and UBER_LLM_CONTEXT_1M env", () => {
+      const prev = process.env.UBER_LLM_CONTEXT_1M
+      try {
+        delete process.env.UBER_LLM_CONTEXT_1M
+        expect(is1MContextRequested("claude-opus-4-7")).toBe(false)
+        expect(is1MContextRequested("claude-opus-4-7[1m]")).toBe(true)
+        process.env.UBER_LLM_CONTEXT_1M = "1"
+        expect(is1MContextRequested("claude-opus-4-7")).toBe(true)
+        process.env.UBER_LLM_CONTEXT_1M = "yes"
+        expect(is1MContextRequested("claude-opus-4-7")).toBe(true)
+        process.env.UBER_LLM_CONTEXT_1M = "0"
+        expect(is1MContextRequested("claude-opus-4-7")).toBe(false)
+      } finally {
+        if (prev === undefined) delete process.env.UBER_LLM_CONTEXT_1M
+        else process.env.UBER_LLM_CONTEXT_1M = prev
+      }
+    })
+
+    it("CONTEXT_1M_BETA matches the documented beta slug", () => {
+      expect(CONTEXT_1M_BETA).toBe("context-1m-2025-08-07")
+    })
+
+    it("defaultConcurrencyForModel picks tight values for opus-4.7 and looser for sonnet/haiku", () => {
+      expect(defaultConcurrencyForModel(undefined)).toBe(2)
+      expect(defaultConcurrencyForModel("claude-opus-4-7")).toBe(1)
+      expect(defaultConcurrencyForModel("claude-opus-4-7[1m]")).toBe(1)
+      expect(defaultConcurrencyForModel("claude-opus-4-6")).toBe(2)
+      expect(defaultConcurrencyForModel("claude-sonnet-4-6")).toBe(4)
+      expect(defaultConcurrencyForModel("claude-haiku-4-5")).toBe(6)
+      expect(defaultConcurrencyForModel("@cf/google/gemma-4-31b")).toBe(2)
+    })
+  })
+
+  describe("parseRetryAfter", () => {
+    it("parses delta-seconds and clamps absurd values", () => {
+      expect(parseRetryAfter("5")).toBe(5000)
+      expect(parseRetryAfter("0.5")).toBe(500)
+      expect(parseRetryAfter("3600")).toBe(120_000) // clamped
+      expect(parseRetryAfter("0")).toBe(0)
+    })
+
+    it("parses HTTP-date and returns positive ms-from-now", () => {
+      const future = new Date(Date.now() + 7000).toUTCString()
+      const ms = parseRetryAfter(future)
+      expect(ms).not.toBeNull()
+      // Allow generous slop for execution time between Date.now() reads.
+      expect(ms!).toBeGreaterThan(2000)
+      expect(ms!).toBeLessThanOrEqual(120_000)
+    })
+
+    it("returns 0 for past HTTP-date and null for garbage", () => {
+      const past = new Date(Date.now() - 5000).toUTCString()
+      expect(parseRetryAfter(past)).toBe(0)
+      expect(parseRetryAfter("nope")).toBeNull()
+      expect(parseRetryAfter(null)).toBeNull()
+      expect(parseRetryAfter(undefined)).toBeNull()
+      expect(parseRetryAfter("")).toBeNull()
     })
   })
 })

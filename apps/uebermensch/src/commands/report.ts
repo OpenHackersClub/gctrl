@@ -4,7 +4,7 @@ import { EnvSecretsLive } from "../adapters/EnvSecrets.js"
 import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js"
 import { FileSystemVaultLive } from "../adapters/FileSystemVault.js"
 import { HttpDelivererLive } from "../adapters/HttpDeliverer.js"
-import { KernelLlmLive } from "../adapters/KernelLlm.js"
+import { _internal as KernelLlmInternal, KernelLlmLive } from "../adapters/KernelLlm.js"
 import { R2SyncConfigFromEnv, R2SyncLive } from "../adapters/R2Sync.js"
 import { StrictRendererLive } from "../adapters/StrictRenderer.js"
 import { StubLlmLive } from "../adapters/StubLlm.js"
@@ -56,21 +56,37 @@ const maxItemsOpt = Options.integer("max-items-per-interest").pipe(
   Options.withDefault(5),
 )
 
-// Default to 2: hosted gateways tolerate 3+, but local OpenAI-compat backends
-// (LM Studio, Ollama) often serialize requests and drop in-flight forwards
-// when more than ~2 land at once. Bump via UBER_REPORT_CONCURRENCY for cloud.
-const envConcurrency = (): number => {
+// Sentinel for "operator did not pass --concurrency"; the model-aware
+// default kicks in once we know which model is active. Negative because
+// `Options.integer` allows 0 and any positive int as legitimate values.
+const CONCURRENCY_UNSET = -1
+
+const envConcurrency = (): number | null => {
   const raw = process.env.UBER_REPORT_CONCURRENCY
-  if (!raw) return 2
+  if (!raw) return null
   const n = Number.parseInt(raw, 10)
-  return Number.isFinite(n) && n > 0 ? n : 2
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+// Resolve the concurrency to use given the operator's flags + active model.
+// Precedence: explicit `--concurrency` > `UBER_REPORT_CONCURRENCY` > per-model
+// default (opus-4.7 → 1 to live within Anthropic tier-1 30k input TPM;
+// opus-4.x → 2; sonnet → 4; haiku/local → 6/2).
+const resolveConcurrency = (
+  cliValue: number,
+  activeModel: string | undefined,
+): number => {
+  if (cliValue !== CONCURRENCY_UNSET) return cliValue
+  const fromEnv = envConcurrency()
+  if (fromEnv !== null) return fromEnv
+  return KernelLlmInternal.defaultConcurrencyForModel(activeModel)
 }
 
 const concurrencyOpt = Options.integer("concurrency").pipe(
   Options.withDescription(
-    "Concurrent LLM calls across interests (default 2, overridable via UBER_REPORT_CONCURRENCY)",
+    "Concurrent LLM calls across interests. Defaults to a model-aware value (opus-4.7 → 1, opus-4.x → 2, sonnet → 4, haiku/local → 6/2). Override with UBER_REPORT_CONCURRENCY or this flag.",
   ),
-  Options.withDefault(envConcurrency()),
+  Options.withDefault(CONCURRENCY_UNSET),
 )
 
 const dryRunOpt = Options.boolean("dry-run").pipe(
@@ -194,7 +210,7 @@ export const report = Command.make(
     sinceDaysOpt: sinceDays,
     dateOpt: dateOptVal,
     maxItemsOpt: maxItems,
-    concurrencyOpt: concurrency,
+    concurrencyOpt: concurrencyCli,
     dryRunOpt: dryRun,
     sendOpt: doSend,
     syncOpt: doSyncOpt,
@@ -219,14 +235,14 @@ export const report = Command.make(
           process.env.UBER_LLM_EFFORT = e
         },
       })
-      const activeModel =
-        Option.getOrUndefined(modelOverride) ??
-        process.env.UBER_LLM_MODEL ??
-        "(default)"
+      const activeModelRaw =
+        Option.getOrUndefined(modelOverride) ?? process.env.UBER_LLM_MODEL
+      const activeModel = activeModelRaw ?? "(default)"
       const activeEffort =
         Option.getOrUndefined(effortOverride) ??
         process.env.UBER_LLM_EFFORT ??
         "medium"
+      const concurrency = resolveConcurrency(concurrencyCli, activeModelRaw)
       const anchor = Option.getOrElse(dateOptVal, today)
       const anchorDate = new Date(`${anchor}T00:00:00Z`)
       const { label: periodLabel } = isoWeekLabel(anchorDate)
