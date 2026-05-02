@@ -178,6 +178,6 @@ If `SyncConfig` is `None`, the routes return `503 sync_not_configured` so the ap
 
 ## Why this completes the eject path for vault sync
 
-Per [App ↔ Kernel Decoupling § Worked Example](../../architecture/app-decoupling.md#worked-example--uebermensch), the "vault filesystem write" capability has both a kernel default (`FileSystemVault` + watcher index) and an ejection seam (`VaultWriterPort` for user-supplied alternatives). Vault *sync* (push to remote object store) is exactly the same shape: kernel default lives in `gctrl-sync`, ejection is "user wires a different `SyncService` Layer that talks to whatever blob store the host provides."
+Per [App ↔ Kernel Decoupling § Worked Example](../../architecture/app-decoupling.md#worked-example--uebermensch), the "vault filesystem write" capability has both a kernel default (`FileSystemVault` + watcher index) and a port (`VaultWriterPort`) that a fork can rewire if the app is ejected to another host. Vault *sync* is the same shape: kernel default lives in `gctrl-sync`; ejection means a fork edits the app's `SyncService` Layer to talk to whatever blob store the host provides.
 
 The app keeps its `SyncService` port. The default Layer binds it to the kernel's HTTP `/api/sync/vault/*` routes. Done.
