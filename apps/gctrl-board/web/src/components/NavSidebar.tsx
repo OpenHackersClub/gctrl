@@ -54,6 +54,24 @@ function AnalyticsIcon({ active }: { active: boolean }) {
   )
 }
 
+function SettingsIcon({ active }: { active: boolean }) {
+  const color = active ? "text-emerald-400" : "text-zinc-500"
+  return (
+    <svg
+      className={`w-5 h-5 ${color} transition-colors duration-150`}
+      viewBox="0 0 20 20"
+      fill="currentColor"
+    >
+      {/* Cog icon */}
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M10 1a1 1 0 011 1v1.07a7 7 0 012.34 1.35l.93-.54a1 1 0 011.37.37l1 1.73a1 1 0 01-.37 1.37l-.93.54a7 7 0 010 2.7l.93.54a1 1 0 01.37 1.37l-1 1.73a1 1 0 01-1.37.37l-.93-.54A7 7 0 0111 16.93V18a1 1 0 11-2 0v-1.07a7 7 0 01-2.34-1.35l-.93.54a1 1 0 01-1.37-.37l-1-1.73a1 1 0 01.37-1.37l.93-.54a7 7 0 010-2.7l-.93-.54a1 1 0 01-.37-1.37l1-1.73a1 1 0 011.37-.37l.93.54A7 7 0 019 3.07V2a1 1 0 011-1zm0 6a3 3 0 100 6 3 3 0 000-6z"
+      />
+    </svg>
+  )
+}
+
 function GctlMark() {
   return (
     <div className="flex items-center justify-center">
@@ -70,6 +88,7 @@ export function NavSidebar({ route, navigate, unreadCount }: NavSidebarProps) {
   const isBoardActive = route.page === "board"
   const isInboxActive = route.page === "inbox"
   const isAnalyticsActive = route.page === "analytics"
+  const isSettingsActive = route.page === "settings"
 
   return (
     <nav className="w-14 min-h-screen bg-zinc-950 border-r border-zinc-800 flex flex-col items-center py-4 gap-1 shrink-0">
@@ -110,6 +129,17 @@ export function NavSidebar({ route, navigate, unreadCount }: NavSidebarProps) {
 
       {/* Spacer */}
       <div className="flex-1" />
+
+      {/* Settings nav item — pinned to bottom */}
+      <button
+        onClick={() => navigate("/settings/macos-spaces")}
+        data-testid="nav-settings"
+        className={`w-10 h-10 flex items-center justify-center rounded-md transition-all duration-150 cursor-pointer
+          ${isSettingsActive ? "bg-emerald-500/10" : "hover:bg-zinc-800/60"}`}
+        title="Settings"
+      >
+        <SettingsIcon active={isSettingsActive} />
+      </button>
 
       {/* Logo mark at bottom */}
       <GctlMark />

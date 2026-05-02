@@ -366,6 +366,56 @@ export const api = {
       return request<NetTrafficRecord[]>(`/api/net/logs${q ? `?${q}` : ""}`)
     },
   },
+
+  // macOS platform driver (driver-macos LKM). Routes mounted at
+  // /api/macos/* by the kernel; capabilities + permissions are
+  // surfaced through /health so the renderer can show the AX prompt
+  // CTA. See vault/specs/architecture/kernel/driver-macos.md.
+  macos: {
+    health: () => request<MacosHealth>(`/api/macos/health`),
+    spaces: () => request<MacosSpace[]>(`/api/macos/spaces`),
+    name: (spaceId: number, name: string) =>
+      request<null>(`/api/macos/spaces/${spaceId}/name`, {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      }),
+    unname: (spaceId: number) =>
+      request<null>(`/api/macos/spaces/${spaceId}/name`, { method: "DELETE" }),
+    promptAccessibility: () =>
+      request<{ accessibility: MacosPermissionStatus }>(
+        `/api/macos/permissions/accessibility/prompt`,
+        { method: "POST" },
+      ),
+  },
+}
+
+export type MacosPermissionStatus =
+  | "granted"
+  | "denied"
+  | "not_requested"
+  | "not_promptable"
+
+export interface MacosHealth {
+  os: "macos" | "linux" | "windows" | "unknown"
+  version: string | null
+  capabilities: string[]
+  permissions: {
+    accessibility?: MacosPermissionStatus
+    notifications?: MacosPermissionStatus
+    screen_recording?: MacosPermissionStatus
+  }
+  version_skew: boolean
+}
+
+export interface MacosSpace {
+  id: number
+  display_id: number
+  display_uuid: string
+  index: number
+  kind: "user" | "fullscreen" | "tiled"
+  name: string | null
+  system_label: string
+  is_current: boolean
 }
 
 export interface AnalyticsSyncResource {
