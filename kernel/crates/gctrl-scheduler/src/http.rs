@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cron::next_after;
 use crate::exec::{run_exec_schedule, ExecOutcome};
+use crate::redact::redact_and_truncate;
 use crate::runner::read_capped_body;
 use crate::runner::ERROR_PREVIEW_BYTES;
 
@@ -40,16 +41,36 @@ pub fn router(sqlite: Arc<SqliteStore>, cfg: Arc<SchedulerConfig>) -> Router {
     };
     Router::new()
         .route("/api/schedules", get(list).post(create))
-        // Cross-schedule run feed — must be registered BEFORE
-        // `/api/schedules/{id}` so axum's longest-match routing doesn't
-        // shadow this with the dynamic-id route.
-        .route("/api/schedules/runs", get(list_runs_global))
+        // Cross-schedule run feed + prune route — must be registered
+        // BEFORE `/api/schedules/{id}` so axum's longest-match routing
+        // doesn't shadow them with the dynamic-id route.
+        .route(
+            "/api/schedules/runs",
+            get(list_runs_global).delete(delete_runs_before),
+        )
         .route("/api/schedules/{id}", get(get_one).delete(delete_one))
         .route("/api/schedules/{id}/runs", get(list_runs_for_schedule))
         .route("/api/schedules/{id}/run", post(run_now))
         .route("/api/schedules/{id}/enable", post(enable))
         .route("/api/schedules/{id}/disable", post(disable))
         .with_state(state)
+}
+
+/// Reserved prefix for daemon-managed schedules (e.g.
+/// `_internal.scheduler_runs_gc`). Rejected at `POST /api/schedules`
+/// from any caller — the daemon registers internal rows via the private
+/// `SqliteStore::create_schedule_internal` helper, NOT through HTTP.
+///
+/// Spec: vault/specs/architecture/apps/gctrl-schedule.md § 5.4.
+const INTERNAL_NAME_PREFIX: &str = "_internal.";
+
+/// Format a 403 response body matching the existing 400 error shape.
+fn forbidden(msg: impl Into<String>) -> axum::response::Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(serde_json::json!({ "error": msg.into() })),
+    )
+        .into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -117,6 +138,15 @@ async fn create(
     State(state): State<RouterState>,
     Json(body): Json<CreateBody>,
 ) -> impl IntoResponse {
+    // Reject `_internal.*` names early — the prefix is reserved for
+    // daemon-managed bootstrap rows. An agent with vault write access
+    // could otherwise mint a forever-running `_internal.exfil` schedule
+    // and have it look like a built-in.
+    if body.name.starts_with(INTERNAL_NAME_PREFIX) {
+        return forbidden(format!(
+            "schedule name {INTERNAL_NAME_PREFIX:?} prefix is reserved for daemon-managed rows"
+        ));
+    }
     // Validate cron up-front; reject 400 rather than persist a row that will
     // never fire and confuse the operator.
     let next = match next_after(&body.cron, Utc::now()) {
@@ -324,7 +354,10 @@ async fn run_now(
                 false,
                 None,
                 None,
-                Some(truncate(&format!("refused: {reason}"), ERROR_PREVIEW_BYTES)),
+                Some(redact_and_truncate(
+                    &format!("refused: {reason}"),
+                    ERROR_PREVIEW_BYTES,
+                )),
                 false,
                 true,
             ),
@@ -335,13 +368,23 @@ async fn run_now(
                 timed_out,
             } => {
                 let success = !timed_out && exit_code == Some(0);
-                let resp = if stdout.is_empty() { None } else { Some(stdout) };
+                // Apply redaction to stdout for parity with the cron path.
+                // Empty stdout stays None; non-empty goes through the same
+                // redact-then-truncate pipeline.
+                let resp = if stdout.is_empty() {
+                    None
+                } else {
+                    Some(redact_and_truncate(
+                        &stdout,
+                        crate::runner::ERROR_PREVIEW_BYTES.max(4_096),
+                    ))
+                };
                 let err = if success {
                     None
                 } else if timed_out {
                     Some(format!("timed out after {timeout_secs}s"))
                 } else {
-                    Some(truncate(&stderr, ERROR_PREVIEW_BYTES))
+                    Some(redact_and_truncate(&stderr, ERROR_PREVIEW_BYTES))
                 };
                 (success, exit_code.map(|c| c as i64), resp, err, timed_out, false)
             }
@@ -394,11 +437,8 @@ async fn run_now(
         last_error: error.clone(),
         success,
     };
-    if let Err(e) = state.store.record_schedule_run(&sched.id, &update) {
-        return err500(e);
-    }
-    // Append durable history alongside the row UPDATE. Same staging order as
-    // the cron path; PR-2 collapses both into a single SQLite tx.
+    // Same single-tx write the cron path uses. Manual fires share the
+    // crash-safety guarantee; only the `fire_kind = manual` tag differs.
     let outcome = crate::runner::FireOutcome {
         success,
         status,
@@ -414,7 +454,7 @@ async fn run_now(
         now,
         gctrl_core::FIRE_KIND_MANUAL,
     );
-    if let Err(e) = state.store.insert_schedule_run(&run_row) {
+    if let Err(e) = state.store.record_schedule_run_v2(&sched.id, &run_row, &update) {
         return err500(e);
     }
 
@@ -493,6 +533,45 @@ async fn list_runs_global(
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PruneQuery {
+    /// RFC3339 timestamp; rows whose `started_at < before` are deleted.
+    /// Required — without it we'd have to define an implicit "what does
+    /// "all" mean" semantic, which is exactly the kind of footgun the
+    /// route is supposed to avoid.
+    pub before: String,
+}
+
+/// `DELETE /api/schedules/runs?before=<RFC3339>` — idempotent prune.
+///
+/// Powers the `_internal.scheduler_runs_gc` routine that the daemon
+/// self-bootstraps on startup. Same `before` argument twice deletes
+/// nothing the second call. Auth lives at the layer above: the existing
+/// `host_allowlist_middleware` restricts the kernel HTTP API to
+/// `localhost`, so this route is only reachable from the operator's
+/// own machine.
+async fn delete_runs_before(
+    State(state): State<RouterState>,
+    Query(q): Query<PruneQuery>,
+) -> impl IntoResponse {
+    // Validate `before` parses as RFC3339 — the SQLite comparison is
+    // string-lexical, so a malformed value would silently match nothing
+    // (or worse, match unexpectedly). Reject up-front.
+    if chrono::DateTime::parse_from_rfc3339(&q.before).is_err() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!("`before` must be RFC3339, got {:?}", q.before),
+            })),
+        )
+            .into_response();
+    }
+    match state.store.delete_schedule_runs_before(&q.before) {
+        Ok(deleted) => Json(serde_json::json!({ "deleted": deleted })).into_response(),
+        Err(e) => err500(e),
+    }
+}
+
 async fn enable(
     State(state): State<RouterState>,
     Path(id): Path<String>,
@@ -505,17 +584,6 @@ async fn disable(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     set_enabled(&state.store, &id, false).await
-}
-
-fn truncate(s: &str, max_bytes: usize) -> String {
-    if s.len() <= max_bytes {
-        return s.to_string();
-    }
-    let mut end = max_bytes;
-    while !s.is_char_boundary(end) && end > 0 {
-        end -= 1;
-    }
-    format!("{}…[truncated {} bytes]", &s[..end], s.len() - end)
 }
 
 async fn set_enabled(store: &SqliteStore, id: &str, enabled: bool) -> axum::response::Response {

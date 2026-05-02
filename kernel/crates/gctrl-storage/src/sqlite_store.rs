@@ -2954,6 +2954,96 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Transactional fire write: UPDATE schedules cache + INSERT
+    /// scheduler_runs in a single SQLite transaction. This is the
+    /// path the runner SHOULD use post-PR-2; a daemon crash mid-fire
+    /// will leave the row UPDATE and the history INSERT both rolled
+    /// back rather than leaving an incremented `failure_count` with
+    /// no run record.
+    ///
+    /// Inbox emit on streak boundary lands as a third operation in
+    /// the same transaction in M3 (see § 5.3 of the spec); this
+    /// helper signature accepts the run row + the cache update only,
+    /// so the M3 caller pattern is `record_schedule_run_v2(...)?;
+    /// maybe_emit_inbox(...)?` against a single-tx wrapper.
+    pub fn record_schedule_run_v2(
+        &self,
+        schedule_id: &str,
+        run: &ScheduleRun,
+        update: &ScheduleRunUpdate,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        let failure_inc: i64 = if update.success { 0 } else { 1 };
+        let tx = conn
+            .transaction()
+            .map_err(|e| GctlError::Storage(format!("begin tx: {e}")))?;
+        tx.execute(
+            "UPDATE schedules
+             SET last_run_at = ?1,
+                 next_run_at = ?2,
+                 last_status = ?3,
+                 last_response = ?4,
+                 last_error = ?5,
+                 run_count = run_count + 1,
+                 failure_count = failure_count + ?6,
+                 updated_at = ?7
+             WHERE id = ?8",
+            params![
+                update.last_run_at,
+                update.next_run_at,
+                update.last_status,
+                update.last_response,
+                update.last_error,
+                failure_inc,
+                now,
+                schedule_id,
+            ],
+        )
+        .map_err(|e| GctlError::Storage(format!("update schedules: {e}")))?;
+        tx.execute(
+            "INSERT INTO scheduler_runs (id, schedule_id, started_at, finished_at, status, fire_kind, exit_code, http_status, response_preview, error_preview, duration_ms, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                run.id,
+                run.schedule_id,
+                run.started_at,
+                run.finished_at,
+                run.status,
+                run.fire_kind,
+                run.exit_code,
+                run.http_status,
+                run.response_preview,
+                run.error_preview,
+                run.duration_ms,
+                run.created_at,
+            ],
+        )
+        .map_err(|e| GctlError::Storage(format!("insert scheduler_runs: {e}")))?;
+        tx.commit()
+            .map_err(|e| GctlError::Storage(format!("commit tx: {e}")))?;
+        Ok(())
+    }
+
+    /// Reaper: mark every `scheduler_runs` row with `finished_at IS NULL`
+    /// as `interrupted`, stamping `finished_at = now`. Called on daemon
+    /// startup so a manual `run-now` interrupted by a crash is reapable
+    /// instead of dangling forever.
+    ///
+    /// Returns the number of rows touched.
+    pub fn reap_interrupted_schedule_runs(&self, now_rfc3339: &str) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn
+            .execute(
+                "UPDATE scheduler_runs
+                 SET status = 'interrupted', finished_at = ?1
+                 WHERE finished_at IS NULL",
+                [now_rfc3339],
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(n)
+    }
+
     /// History for a single schedule, latest first. Filters compose with AND.
     /// Default cap: 50 rows; hard cap: 500 (silently clamped) to bound memory.
     pub fn list_schedule_runs(

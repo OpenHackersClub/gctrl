@@ -15,9 +15,12 @@
 //! polling-loop shape but nothing else; conflating them would tangle agent
 //! orchestration with periodic ingest/cleanup/health jobs.
 
+pub mod bootstrap;
 pub mod cron;
 pub mod exec;
 pub mod http;
+pub mod redact;
 pub mod runner;
 
+pub use bootstrap::ensure_gc_schedule;
 pub use runner::ScheduleRunner;

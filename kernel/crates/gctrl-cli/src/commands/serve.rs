@@ -99,6 +99,19 @@ pub async fn run(
     }
     let scheduler_config_arc = Arc::new(scheduler_config.clone());
     if scheduler_config.enabled {
+        // Plant `_internal.scheduler_runs_gc` if missing / replace if
+        // corrupt. This keeps `scheduler_runs` retention working without
+        // operator action; the GC routine fires the prune route via the
+        // same scheduler that owns it. Failure is non-fatal — the daemon
+        // can still serve everything else; retention just stops accruing.
+        if let Err(e) =
+            gctrl_scheduler::ensure_gc_schedule(&sqlite, &scheduler_config)
+        {
+            tracing::warn!(
+                error = %e,
+                "scheduler: failed to bootstrap _internal.scheduler_runs_gc — retention pruning will not run"
+            );
+        }
         let runner_store = Arc::clone(&sqlite);
         let runner_cfg = scheduler_config.clone();
         tokio::spawn(async move {
