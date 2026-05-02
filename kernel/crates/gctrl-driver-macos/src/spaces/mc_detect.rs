@@ -18,6 +18,7 @@
 // stays single-shape.
 
 use std::sync::Arc;
+#[cfg(all(feature = "ffi", target_os = "macos"))]
 use std::time::Duration;
 
 use crate::spaces::overlay::Overlay;
