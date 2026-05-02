@@ -540,8 +540,7 @@ fn resolve_db_path(db_override: &Option<String>) -> String {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -550,6 +549,48 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+
+    // On macOS with the platform driver enabled, the `Serve` command's
+    // overlay needs an NSApp run loop on the OS main thread (AppKit
+    // is `MainThreadOnly`). Bridge by spawning the tokio runtime on a
+    // worker thread and surrendering the main thread to NSApp.run().
+    // Every other command keeps the simple "tokio on main" shape.
+    #[cfg(all(feature = "macos-platform", target_os = "macos"))]
+    if matches!(cli.command, Commands::Serve { .. }) {
+        return run_serve_with_main_thread_appkit(cli);
+    }
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(run_dispatch(cli))
+}
+
+#[cfg(all(feature = "macos-platform", target_os = "macos"))]
+fn run_serve_with_main_thread_appkit(cli: Cli) -> Result<()> {
+    use std::sync::mpsc;
+    let (tx, rx) = mpsc::channel::<Result<()>>();
+    std::thread::Builder::new()
+        .name("gctrld-tokio".into())
+        .spawn(move || {
+            let result = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt.block_on(run_dispatch(cli)),
+                Err(e) => Err(anyhow::anyhow!("tokio runtime: {}", e)),
+            };
+            let _ = tx.send(result);
+        })?;
+    // Hand the main thread to AppKit. Returns when NSApp.terminate is
+    // posted (or the process is killed via SIGINT, which short-circuits
+    // both threads).
+    gctrl_driver_macos::run_main_app_loop();
+    rx.recv()
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("tokio worker disappeared")))
+}
+
+async fn run_dispatch(cli: Cli) -> Result<()> {
     let db_path = resolve_db_path(&cli.db);
 
     match cli.command {

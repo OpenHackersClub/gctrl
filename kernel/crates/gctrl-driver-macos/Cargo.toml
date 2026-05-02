@@ -1,0 +1,69 @@
+[package]
+name = "gctrl-driver-macos"
+version.workspace = true
+edition.workspace = true
+
+# Default build is a no-op stub. The kernel binary on macOS turns on
+# `ffi` via gctrl-cli's `macos-platform` feature; Linux/Windows builds
+# never enable it, keeping the workspace cross-OS-portable.
+[features]
+default = []
+# `ffi` only gates Rust code paths; the macOS framework deps below
+# are unconditionally activated when the target *is* macOS, and never
+# present otherwise. This keeps Linux/Windows CI builds working with
+# the workspace default `macos-platform` feature on `gctrl-cli`,
+# which transitively turns `ffi` on regardless of host OS.
+ffi = []
+integration-macos = ["ffi"]
+
+[dependencies]
+gctrl-core = { path = "../gctrl-core" }
+gctrl-storage = { path = "../gctrl-storage" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
+async-stream = { workspace = true }
+futures-core = { workspace = true }
+
+# FFI deps are macOS-only and feature-gated. core-foundation supplies the
+# CFDictionary type the AX prompt API expects; raw extern declarations
+# bind AXIsProcessTrustedWithOptions itself (linked from the
+# ApplicationServices framework via build.rs). objc2-app-kit/-foundation
+# are used by the NSWindow overlay; core-graphics for CGDisplay UUIDs;
+# libloading for the SkyLight private-symbol probe.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-graphics = "0.24"
+objc2 = "0.5"
+objc2-app-kit = { version = "0.2", features = [
+    "NSWindow",
+    "NSScreen",
+    "NSView",
+    "NSColor",
+    "NSText",
+    "NSTextField",
+    "NSControl",
+    "NSResponder",
+    "NSGraphics",
+    "NSApplication",
+    "NSRunningApplication",
+] }
+objc2-foundation = { version = "0.2", features = [
+    "NSString",
+    "NSGeometry",
+    "NSDictionary",
+    "NSArray",
+    "NSAttributedString",
+    "NSValue",
+    "NSThread",
+] }
+libloading = "0.8"
+dispatch2 = "0.2"
+
+[dev-dependencies]
+tower = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }

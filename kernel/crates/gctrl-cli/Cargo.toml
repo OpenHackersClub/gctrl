@@ -7,6 +7,14 @@ edition.workspace = true
 name = "gctrld"
 path = "src/main.rs"
 
+# `macos-platform` flips on real FFI in driver-macos. The default-on
+# default is fine because the underlying `ffi` feature in driver-macos is
+# itself a no-op until the Apple framework deps land — toggling here is
+# how the desktop release pipeline opts in once they do.
+[features]
+default = ["macos-platform"]
+macos-platform = ["gctrl-driver-macos/ffi"]
+
 [dependencies]
 gctrl-core = { path = "../gctrl-core" }
 gctrl-storage = { path = "../gctrl-storage" }
@@ -18,6 +26,7 @@ gctrl-context = { path = "../gctrl-context" }
 gctrl-orch = { path = "../gctrl-orch" }
 gctrl-proxy = { path = "../gctrl-proxy" }
 gctrl-scheduler = { path = "../gctrl-scheduler" }
+gctrl-driver-macos = { path = "../gctrl-driver-macos" }
 reqwest = { workspace = true }
 
 clap = { workspace = true }

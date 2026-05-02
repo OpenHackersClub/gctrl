@@ -2325,6 +2325,133 @@ impl DuckDbStore {
             "by_kind": by_kind,
         }))
     }
+
+    // ─────────────────────────────────────────────────────────────────
+    // driver-macos: persisted Space labels.
+    // Spec: vault/specs/architecture/kernel/driver-macos.md § Storage
+    // ─────────────────────────────────────────────────────────────────
+
+    /// Upsert a label keyed on `(machine_id, display_uuid, space_index,
+    /// space_kind)`. The CGS id hint is informational — last-known live id,
+    /// rebound on each session.
+    pub fn upsert_macos_label(&self, label: &gctrl_core::MacosSpaceLabel) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO macos_space_labels (machine_id, display_uuid, space_index, space_kind, label, cgs_id_hint, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (machine_id, display_uuid, space_index, space_kind) DO UPDATE
+             SET label = excluded.label,
+                 cgs_id_hint = excluded.cgs_id_hint,
+                 updated_at = excluded.updated_at",
+            params![
+                label.machine_id,
+                label.display_uuid,
+                label.space_index,
+                label.space_kind,
+                label.label,
+                label.cgs_id_hint,
+                now.clone(),
+                now,
+            ],
+        )
+        .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn delete_macos_label(
+        &self,
+        machine_id: &str,
+        display_uuid: &str,
+        space_index: i32,
+        space_kind: &str,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn
+            .execute(
+                "DELETE FROM macos_space_labels
+                 WHERE machine_id = ? AND display_uuid = ? AND space_index = ? AND space_kind = ?",
+                params![machine_id, display_uuid, space_index, space_kind],
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(n > 0)
+    }
+
+    pub fn list_macos_labels(
+        &self,
+        machine_id: &str,
+        display_uuid: Option<&str>,
+    ) -> Result<Vec<gctrl_core::MacosSpaceLabel>> {
+        let conn = self.conn.lock().unwrap();
+        let (sql, bound): (&str, Vec<String>) = match display_uuid {
+            Some(u) => (
+                "SELECT machine_id, display_uuid, space_index, space_kind, label, cgs_id_hint, created_at, updated_at
+                 FROM macos_space_labels WHERE machine_id = ? AND display_uuid = ?
+                 ORDER BY display_uuid, space_index",
+                vec![machine_id.to_string(), u.to_string()],
+            ),
+            None => (
+                "SELECT machine_id, display_uuid, space_index, space_kind, label, cgs_id_hint, created_at, updated_at
+                 FROM macos_space_labels WHERE machine_id = ?
+                 ORDER BY display_uuid, space_index",
+                vec![machine_id.to_string()],
+            ),
+        };
+        let mut stmt = conn
+            .prepare(sql)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query(duckdb::params_from_iter(bound.iter()))
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            out.push(gctrl_core::MacosSpaceLabel {
+                machine_id: row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?,
+                display_uuid: row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?,
+                space_index: row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?,
+                space_kind: row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?,
+                label: row.get(4).map_err(|e| GctlError::Storage(e.to_string()))?,
+                cgs_id_hint: row.get(5).map_err(|e| GctlError::Storage(e.to_string()))?,
+                created_at: row.get(6).map_err(|e| GctlError::Storage(e.to_string()))?,
+                updated_at: row.get(7).map_err(|e| GctlError::Storage(e.to_string()))?,
+            });
+        }
+        Ok(out)
+    }
+
+    pub fn get_macos_label(
+        &self,
+        machine_id: &str,
+        display_uuid: &str,
+        space_index: i32,
+        space_kind: &str,
+    ) -> Result<Option<gctrl_core::MacosSpaceLabel>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT machine_id, display_uuid, space_index, space_kind, label, cgs_id_hint, created_at, updated_at
+                 FROM macos_space_labels
+                 WHERE machine_id = ? AND display_uuid = ? AND space_index = ? AND space_kind = ?",
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query(params![machine_id, display_uuid, space_index, space_kind])
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        if let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            Ok(Some(gctrl_core::MacosSpaceLabel {
+                machine_id: row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?,
+                display_uuid: row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?,
+                space_index: row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?,
+                space_kind: row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?,
+                label: row.get(4).map_err(|e| GctlError::Storage(e.to_string()))?,
+                cgs_id_hint: row.get(5).map_err(|e| GctlError::Storage(e.to_string()))?,
+                created_at: row.get(6).map_err(|e| GctlError::Storage(e.to_string()))?,
+                updated_at: row.get(7).map_err(|e| GctlError::Storage(e.to_string()))?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 fn row_to_board_issue(row: &duckdb::Row<'_>) -> duckdb::Result<gctrl_core::BoardIssue> {
@@ -4075,6 +4202,65 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cnt, 1, "scores must join eval_runs via eval_run_id");
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // driver-macos label CRUD round-trip.
+    // ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn macos_label_upsert_get_list_delete_round_trip() {
+        let store = test_store();
+
+        let label = gctrl_core::MacosSpaceLabel {
+            machine_id: "machine-A".into(),
+            display_uuid: "DISPLAY-1".into(),
+            space_index: 1,
+            space_kind: "user".into(),
+            label: "inbox".into(),
+            cgs_id_hint: Some(42),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        store.upsert_macos_label(&label).unwrap();
+
+        let got = store
+            .get_macos_label("machine-A", "DISPLAY-1", 1, "user")
+            .unwrap()
+            .expect("row present");
+        assert_eq!(got.label, "inbox");
+        assert_eq!(got.cgs_id_hint, Some(42));
+
+        // Update — same key, new label.
+        let mut label2 = label.clone();
+        label2.label = "code".into();
+        store.upsert_macos_label(&label2).unwrap();
+        let updated = store
+            .get_macos_label("machine-A", "DISPLAY-1", 1, "user")
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.label, "code");
+
+        // Second display.
+        let mut other = label.clone();
+        other.display_uuid = "DISPLAY-2".into();
+        other.label = "slack".into();
+        store.upsert_macos_label(&other).unwrap();
+
+        let all = store.list_macos_labels("machine-A", None).unwrap();
+        assert_eq!(all.len(), 2);
+        let just_d1 = store
+            .list_macos_labels("machine-A", Some("DISPLAY-1"))
+            .unwrap();
+        assert_eq!(just_d1.len(), 1);
+
+        let removed = store
+            .delete_macos_label("machine-A", "DISPLAY-1", 1, "user")
+            .unwrap();
+        assert!(removed);
+        let after = store.list_macos_labels("machine-A", None).unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].display_uuid, "DISPLAY-2");
     }
 
     #[test]

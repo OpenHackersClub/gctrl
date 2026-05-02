@@ -167,6 +167,10 @@ fn build_llm_capture(store: Arc<DuckDbStore>) -> Arc<gctrl_proxy::Capture> {
 }
 
 fn build_router(state: Arc<AppState>) -> Router {
+    // driver-macos persists Space labels into the same DuckDB the kernel
+    // already owns. Cloned out before `.with_state(state)` consumes the
+    // Arc so the macOS router can hold its own Arc independently.
+    let macos_store = Arc::clone(&state.store);
     Router::new()
         // OTel ingestion
         .route("/v1/traces", post(ingest_traces))
@@ -345,6 +349,21 @@ fn build_router(state: Arc<AppState>) -> Router {
         // Google Calendar driver (LKM — read-by-default; writes gated by
         // GCAL_ALLOWED_SCOPES; no DELETE handler is mounted at all).
         .merge(crate::gcal_routes::router::<()>())
+        // macOS platform driver (LKM). FfiDriver is always defined; under
+        // default features the overlay/CGS internals are stubs and
+        // `capabilities.spaces` stays false. The same construction path on
+        // macOS+ffi wires the live renderer.
+        .merge({
+            let ffi = gctrl_driver_macos::FfiDriver::new(macos_store.clone());
+            let spaces_state = Some(ffi.state().clone());
+            let driver: std::sync::Arc<dyn gctrl_core::platform::PlatformPort> =
+                std::sync::Arc::new(ffi);
+            gctrl_driver_macos::routes::router(gctrl_driver_macos::routes::DriverState {
+                driver,
+                store: Some(macos_store.clone()),
+                spaces_state,
+            })
+        })
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {

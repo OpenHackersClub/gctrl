@@ -461,6 +461,24 @@ pub const ADD_SCORES_EVAL_RUN_ID: &str = r#"
 ALTER TABLE scores ADD COLUMN IF NOT EXISTS eval_run_id VARCHAR
 "#;
 
+// driver-macos: persisted Mission Control Space labels. Keyed on the
+// cold-index tuple so labels survive reboot / display reconfiguration even
+// though the CGS Space ID isn't stable across logins.
+// See vault/specs/architecture/kernel/driver-macos.md § Storage Schema.
+pub const CREATE_MACOS_SPACE_LABELS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS macos_space_labels (
+    machine_id   VARCHAR NOT NULL,
+    display_uuid VARCHAR NOT NULL,
+    space_index  INTEGER NOT NULL,
+    space_kind   VARCHAR NOT NULL,
+    label        VARCHAR NOT NULL,
+    cgs_id_hint  BIGINT,
+    created_at   VARCHAR NOT NULL DEFAULT CAST(now() AS VARCHAR),
+    updated_at   VARCHAR NOT NULL DEFAULT CAST(now() AS VARCHAR),
+    PRIMARY KEY (machine_id, display_uuid, space_index, space_kind)
+)
+"#;
+
 pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_spans_session ON spans(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(trace_id)",
@@ -509,6 +527,8 @@ pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_eval_runs_status ON eval_runs(status)",
     "CREATE INDEX IF NOT EXISTS idx_scores_eval_run ON scores(eval_run_id)",
     "CREATE INDEX IF NOT EXISTS idx_eval_metrics_kind ON eval_metrics(kind)",
+    // driver-macos
+    "CREATE INDEX IF NOT EXISTS idx_macos_space_labels_label ON macos_space_labels(label)",
 ];
 
 pub fn all_migrations() -> Vec<&'static str> {
@@ -548,6 +568,8 @@ pub fn all_migrations() -> Vec<&'static str> {
         CREATE_EVAL_CASES_TABLE,
         CREATE_EVAL_RUNS_TABLE,
         ADD_SCORES_EVAL_RUN_ID,
+        // driver-macos
+        CREATE_MACOS_SPACE_LABELS_TABLE,
     ];
     stmts.extend(CREATE_INDEXES.iter());
     stmts
