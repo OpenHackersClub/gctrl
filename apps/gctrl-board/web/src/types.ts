@@ -463,3 +463,101 @@ export interface AcceptanceRollup {
   running: number
   checks: AcceptanceCheckRow[]
 }
+
+/* ── Schedule (M1a kernel substrate) ── */
+
+/** Lowercase-serialised on the wire (kernel `ScheduleHealth` enum). */
+export type ScheduleHealth = "green" | "amber" | "red" | "pending" | "paused"
+
+export type ScheduleTargetKind = "http" | "exec"
+
+/** Per-row schedule shape from `GET /api/schedules`. The `health`
+ *  field is a kernel-computed derived column (spec § 5.6) — never
+ *  recompute on the client. */
+export interface Schedule {
+  id: string
+  name: string
+  cron: string
+  target_kind: ScheduleTargetKind
+  target_url: string
+  target_method: string
+  body_json: unknown | null
+  headers_json: Record<string, string> | null
+  command: string[] | null
+  cwd: string | null
+  env_keys: string[] | null
+  timeout_secs: number
+  enabled: boolean
+  next_run_at: string | null
+  last_run_at: string | null
+  last_status: number | null
+  last_response: string | null
+  last_error: string | null
+  run_count: number
+  failure_count: number
+  created_at: string
+  updated_at: string
+  /** Optional — populated by the storage read path; absent on rows
+   *  freshly built in tests. SPA assumes presence on real responses. */
+  health?: ScheduleHealth
+}
+
+/** Kernel-side aggregate from `GET /api/schedules/summary` (spec § 5.6). */
+export interface SchedulesSummary {
+  total: number
+  by_health: {
+    green: number
+    amber: number
+    red: number
+    pending: number
+    paused: number
+  }
+  runs_last_24h: {
+    success: number
+    failure: number
+  }
+}
+
+export type ScheduleRunStatus =
+  | "success"
+  | "failure"
+  | "timed_out"
+  | "refused"
+  | "interrupted"
+
+export type ScheduleFireKind = "cron" | "manual"
+
+/** One fire of a schedule. From `GET /api/schedules/{id}/runs` and
+ *  `GET /api/schedules/runs`. Spec § 5.1. */
+export interface ScheduleRun {
+  id: string
+  schedule_id: string
+  started_at: string
+  finished_at: string | null
+  status: ScheduleRunStatus
+  fire_kind: ScheduleFireKind
+  exit_code: number | null
+  http_status: number | null
+  response_preview: string | null
+  error_preview: string | null
+  duration_ms: number | null
+  created_at: string
+}
+
+export interface ScheduleRunsResponse {
+  schedule_id: string
+  schedule_name: string
+  runs: ScheduleRun[]
+}
+
+export interface ScheduleRunsGlobalResponse {
+  runs: ScheduleRun[]
+}
+
+export interface ScheduleRunNowResult {
+  id: string
+  name: string
+  fired: boolean
+  status: number | null
+  error: string | null
+}

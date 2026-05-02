@@ -116,4 +116,90 @@ describe("api client base URL resolution", () => {
     expect(init?.method).toBe("POST")
     expect(res.accessibility).toBe("denied")
   })
+
+  // ── Schedules (M1a kernel substrate) ──
+
+  it("schedules.list hits /api/schedules at the kernel root", async () => {
+    fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ schedules: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    )
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
+    setDesktop(undefined)
+    await api.schedules.list()
+    const [url] = fetchMock.mock.calls[0]
+    expect(url).toBe("/api/schedules")
+  })
+
+  it("schedules.summary hits /api/schedules/summary", async () => {
+    fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            total: 0,
+            by_health: { green: 0, amber: 0, red: 0, pending: 0, paused: 0 },
+            runs_last_24h: { success: 0, failure: 0 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    )
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
+    setDesktop(undefined)
+    const summary = await api.schedules.summary()
+    const [url] = fetchMock.mock.calls[0]
+    expect(url).toBe("/api/schedules/summary")
+    expect(summary.total).toBe(0)
+  })
+
+  it("schedules.runs encodes the schedule name + applies filters", async () => {
+    fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ schedule_id: "x", schedule_name: "audit.codebase", runs: [] }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    )
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
+    setDesktop(undefined)
+    await api.schedules.runs("audit.codebase", {
+      since: "2026-05-01T00:00:00Z",
+      status: "failure",
+      limit: 50,
+    })
+    const [url] = fetchMock.mock.calls[0]
+    expect(String(url)).toBe(
+      "/api/schedules/audit.codebase/runs?since=2026-05-01T00%3A00%3A00Z&status=failure&limit=50",
+    )
+  })
+
+  it("schedules.runNow POSTs to the kernel manual-fire endpoint", async () => {
+    fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ id: "x", name: "audit.codebase", fired: true, status: 200, error: null }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    )
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
+    setDesktop(undefined)
+    await api.schedules.runNow("audit.codebase")
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe("/api/schedules/audit.codebase/run")
+    expect(init?.method).toBe("POST")
+  })
+
+  it("schedules.enable / disable POST to toggle endpoints", async () => {
+    fetchMock = vi.fn(async () => new Response(null, { status: 204 }))
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
+    setDesktop(undefined)
+    await api.schedules.enable("audit.codebase")
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/schedules/audit.codebase/enable")
+    expect(fetchMock.mock.calls[0][1]?.method).toBe("POST")
+    await api.schedules.disable("audit.codebase")
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/schedules/audit.codebase/disable")
+    expect(fetchMock.mock.calls[1][1]?.method).toBe("POST")
+  })
 })

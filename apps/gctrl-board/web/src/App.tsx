@@ -11,6 +11,7 @@ import { ProjectSelector } from "./components/ProjectSelector"
 import { NavSidebar } from "./components/NavSidebar"
 import { InboxPage } from "./pages/InboxPage"
 import { AnalyticsPage } from "./pages/AnalyticsPage"
+import { SchedulePage } from "./pages/SchedulePage"
 import { MacosSpacesPage } from "./pages/MacosSpacesPage"
 import { api } from "./api/client"
 import type { Issue, InboxStats } from "./types"
@@ -233,9 +234,11 @@ export function App() {
       ? "inbox"
       : route.page === "analytics"
         ? "analytics"
-        : route.page === "settings"
-          ? "settings"
-          : "board"
+        : route.page === "schedule"
+          ? "schedule"
+          : route.page === "settings"
+            ? "settings"
+            : "board"
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-200 font-body grid-bg flex">
@@ -366,6 +369,8 @@ export function App() {
           </>
         ) : route.page === "inbox" ? (
           <InboxPage />
+        ) : route.page === "schedule" ? (
+          <SchedulePage route={route} navigate={navigate} />
         ) : route.page === "settings" ? (
           <MacosSpacesPage />
         ) : (
