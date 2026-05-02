@@ -150,8 +150,10 @@ mod tests {
     #[tokio::test]
     async fn acquire_rejects_zero_ttl() {
         let pool = Pool::new(cfg());
-        let mut opts = SessionOptions::default();
-        opts.ttl_seconds = 0;
+        let opts = SessionOptions {
+            ttl_seconds: 0,
+            ..Default::default()
+        };
         let err = pool.acquire(opts).await.unwrap_err();
         assert_eq!(err.kind(), "invalid_request");
     }
@@ -159,8 +161,10 @@ mod tests {
     #[tokio::test]
     async fn acquire_rejects_oversized_ttl() {
         let pool = Pool::new(cfg());
-        let mut opts = SessionOptions::default();
-        opts.ttl_seconds = 4000;
+        let opts = SessionOptions {
+            ttl_seconds: 4000,
+            ..Default::default()
+        };
         let err = pool.acquire(opts).await.unwrap_err();
         assert_eq!(err.kind(), "invalid_request");
     }
@@ -168,8 +172,10 @@ mod tests {
     #[tokio::test]
     async fn acquire_rejects_headed_when_disabled() {
         let pool = Pool::new(cfg());
-        let mut opts = SessionOptions::default();
-        opts.headed = true;
+        let opts = SessionOptions {
+            headed: true,
+            ..Default::default()
+        };
         let err = pool.acquire(opts).await.unwrap_err();
         assert_eq!(err.kind(), "invalid_request");
     }

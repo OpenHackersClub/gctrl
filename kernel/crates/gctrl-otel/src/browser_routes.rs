@@ -19,7 +19,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, State},
+    extract::Path,
     http::StatusCode,
     response::IntoResponse,
     routing::get,
@@ -138,6 +138,11 @@ fn status_for(e: &BrowserError) -> StatusCode {
     }
 }
 
+/// Build the `/api/browser/*` router. State is held in an internal
+/// `OnceCell` so the same `Pool` is reused across requests within the
+/// daemon. The router is parameterized over an arbitrary state type `S`
+/// so it composes with `Router<()>` in `build_router` and any other
+/// state type used by tests.
 pub fn router<S: Clone + Send + Sync + 'static>() -> Router<S> {
     Router::new()
         .route("/api/browser/health", get(health))
@@ -151,11 +156,6 @@ pub fn router<S: Clone + Send + Sync + 'static>() -> Router<S> {
         )
         .route("/api/browser/sessions/{id}/cdp", get(cdp_attach_stub))
 }
-
-// State is consumed via the OnceCell above; the parameter exists so route
-// composition stays uniform with neighbouring routers.
-#[allow(dead_code)]
-fn _state_param_marker(_: State<()>) {}
 
 #[cfg(test)]
 mod tests {
