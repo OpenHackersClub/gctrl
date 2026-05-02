@@ -64,7 +64,7 @@ export const FsVaultWriterLive = (vaultDir: string): Layer.Layer<VaultWriterPort
         async () => {
           const start = join(vaultDir, prefix)
           const entries: Array<VaultEntry> = []
-          let dirents
+          let dirents: Array<import("node:fs").Dirent>
           try {
             dirents = await readdir(start, { recursive: true, withFileTypes: true })
           } catch (e) {
