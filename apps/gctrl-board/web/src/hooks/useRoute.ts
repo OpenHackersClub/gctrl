@@ -13,6 +13,7 @@ export type Route =
   | { page: "board"; projectKey: string | null; view: BoardView }
   | { page: "inbox"; threadId: string | null }
   | { page: "analytics"; tab: AnalyticsTab; sessionId: string | null }
+  | { page: "settings"; section: "macos-spaces" }
 
 function parseRoute(pathname: string): Route {
   // /analytics/sessions/:sessionId
@@ -32,6 +33,11 @@ function parseRoute(pathname: string): Route {
   // /analytics
   if (pathname === "/analytics" || pathname === "/analytics/") {
     return { page: "analytics", tab: "overview", sessionId: null }
+  }
+
+  // /settings/macos-spaces
+  if (pathname === "/settings/macos-spaces" || pathname === "/settings/macos-spaces/") {
+    return { page: "settings", section: "macos-spaces" }
   }
 
   // /inbox/:threadId
