@@ -86,6 +86,17 @@ Context entries have hybrid storage: DuckDB metadata + filesystem markdown conte
 - **Pull**: download new/changed files by comparing remote manifest hashes against local `content_hash` values. Write to local filesystem + upsert DuckDB metadata.
 - **Dedup**: content-addressable by SHA-256 hash — identical content is never re-uploaded.
 
+### 2.4 App Vault Sync (Filesystem)
+
+The kernel owns the **vault root** (resolved from `--board-dir` → `GCTRL_BOARD_DIR` → `./gctrl/`, per [#163](https://github.com/OpenHackersClub/gctrl/pull/163)). Each top-level subdirectory under the root is a **project key** owned by exactly one installed app. Apps register their project keys in `gctrl_vault_mounts` at install time (see [`app-install-protocol.md`](../app-install-protocol.md) and [domain-model.md](../domain-model.md)). The kernel exposes `/api/sync/vault/{push,pull}` so any app can sync its project-key subtree to R2 without re-implementing the R2 transport — this is a **kernel capability**, not a per-app concern. See [App ↔ Kernel Decoupling](../app-decoupling.md) for why.
+
+- **Push**: walk the project-key subtree under the kernel vault root, hash each file (SHA-256), upload changed files to R2 `vaults/{project-key}/{relative-path}` with the content_hash as `If-None-Match` for dedup. Update the per-project manifest.
+- **Pull**: list R2 objects under `vaults/{project-key}/`, compare against local hashes via the manifest, download changed files atomically (tmp+rename).
+- **Project-keyed isolation**: each `gctrl_vault_mounts.name` (the project key) maps to its own R2 prefix; only the owning app may push to it. Two apps' subtrees never collide.
+- **Hosted-link integration**: with R2 public access (or a Worker fronting the bucket), pushed vault paths resolve to HTTPS URLs that chat-channel deliveries can link to (see uebermensch's `UBER_PUBLIC_BASE_URL`).
+
+**Replaces:** prior in-app `R2Sync` adapters (e.g. `apps/uebermensch/src/adapters/R2Sync.ts`, ~247 LOC of duplicated R2 transport that shelled out to `wrangler r2 object put`). Apps now use the kernel's typed HTTP client to call `/api/sync/vault/push` and the kernel's existing `R2Client` + manifest infrastructure does the work. See [implementation/kernel/sync-vault.md](../../implementation/kernel/sync-vault.md) for the implementation contract.
+
 ## 3. Cloud Layout
 
 ### 3.1 R2 Path Layout (DuckDB + Filesystem data)
@@ -105,10 +116,15 @@ Context entries have hybrid storage: DuckDB metadata + filesystem markdown conte
           {push_id}.parquet
     knowledge/
       context/
-        {content_hash}.md           # content-addressable markdown
+        {content_hash}.md           # content-addressable markdown (gctrl-context module)
       crawls/
         {domain}/
-          {page_hash}.md
+          {page_hash}.md             # gctrl-net spider output
+    vaults/
+      {project-key}/                 # one prefix per gctrl_vault_mounts row
+        {relative-path}              # mirrors path under the project-key subtree
+                                     # e.g. vaults/UBER/input/briefs/2026-05-03.md
+                                     #      vaults/BOARD/BOARD-1.md
     manifest.json                   # workspace-level sync manifest
 ```
 
