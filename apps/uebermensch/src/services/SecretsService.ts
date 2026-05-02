@@ -1,14 +1,10 @@
 // SecretsService — read-only port for resolving channel tokens, API keys,
-// signing secrets. Implementing adapters (EnvSecrets, KernelSecrets,
-// LocalKeychain, WranglerSecrets) MUST NOT expose write operations;
-// provisioning lives on a distinct port (SecretsProvisionService) so that
-// runtime-immutable backends like Cloudflare Workers env bindings can
-// faithfully implement read without pretending to support writes they cannot
-// honor.
-//
-// Resolves blocker B1 from the ejection-plan team review: WranglerSecrets is
-// physically read-only at runtime, so a unified read+write SecretsPort had an
-// interface contract one of its own adapters could not satisfy.
+// signing secrets. Implementing adapters (EnvSecrets today; future
+// KernelSecrets, LocalKeychain, WranglerSecrets) MUST NOT expose write
+// operations — runtime-immutable backends like Cloudflare Workers env
+// bindings cannot honor writes, and a unified read+write port would force
+// them to lie about that. The matching write port lands alongside the first
+// concrete provisioning adapter (kernel onboarding routes, next PR).
 //
 // Absence is modeled as `Option.none`, not an error — a missing onboarding
 // token is normal during the wizard's pending-confirmation window.
@@ -21,8 +17,7 @@ import type { SecretsError } from "../errors.js";
 export type SecretsServiceImpl = {
   /**
    * Read a secret by key. Returns `Option.none` if the key is unset or
-   * expired (TTL semantics live in the storage adapter — see
-   * `SecretsProvisionService` for how TTL is recorded). Fails with
+   * expired (TTL semantics live in the storage adapter). Fails with
    * `SecretsError` on backend errors only.
    */
   readonly get: (key: string) => Effect.Effect<Option.Option<string>, SecretsError>;
