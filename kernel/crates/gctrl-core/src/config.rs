@@ -260,6 +260,29 @@ pub struct SchedulerConfig {
     /// `exec_enabled` is true. The create handler and runner both enforce.
     #[serde(default)]
     pub exec_allowed_programs: Vec<PathBuf>,
+    /// Retention window for `scheduler_runs` rows. The
+    /// `_internal.scheduler_runs_gc` routine (lands in PR-2 of M1a)
+    /// prunes rows older than this. Per-schedule overrides land alongside
+    /// the `schedules.retention_days` column in PR-2; null falls back to
+    /// this global.
+    ///
+    /// Spec: vault/specs/architecture/apps/gctrl-schedule.md § 5.1.
+    #[serde(default = "default_run_retention_days")]
+    pub run_retention_days: u32,
+    /// Soft warning threshold for `scheduler_runs` row count. The runner
+    /// emits a `tracing::warn!` once the table exceeds this value so
+    /// operators see the signal before disk pressure becomes an issue.
+    /// Set very high to disable.
+    #[serde(default = "default_run_warn_row_count")]
+    pub run_warn_row_count: u32,
+}
+
+fn default_run_retention_days() -> u32 {
+    90
+}
+
+fn default_run_warn_row_count() -> u32 {
+    100_000
 }
 
 impl Default for SchedulerConfig {
@@ -271,6 +294,8 @@ impl Default for SchedulerConfig {
             default_timeout_secs: 60,
             exec_enabled: false,
             exec_allowed_programs: Vec::new(),
+            run_retention_days: default_run_retention_days(),
+            run_warn_row_count: default_run_warn_row_count(),
         }
     }
 }
@@ -330,5 +355,37 @@ mod tests {
         assert_eq!(cfg.poll_interval_secs, 30);
         assert_eq!(cfg.max_per_tick, 16);
         assert_eq!(cfg.default_timeout_secs, 60);
+        assert_eq!(cfg.run_retention_days, 90);
+        assert_eq!(cfg.run_warn_row_count, 100_000);
+    }
+
+    #[test]
+    fn scheduler_config_serde_round_trips_retention_fields() {
+        let cfg = SchedulerConfig {
+            run_retention_days: 30,
+            run_warn_row_count: 250_000,
+            ..SchedulerConfig::default()
+        };
+        let s = serde_json::to_string(&cfg).unwrap();
+        let parsed: SchedulerConfig = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed.run_retention_days, 30);
+        assert_eq!(parsed.run_warn_row_count, 250_000);
+    }
+
+    /// New retention fields MUST stay back-compat: configs written before
+    /// they existed (no `run_retention_days` / `run_warn_row_count` keys)
+    /// MUST round-trip via the serde defaults.
+    #[test]
+    fn scheduler_config_back_compat_missing_retention_fields() {
+        // Config from a pre-M1a installation — keys were never written.
+        let legacy = r#"{
+            "enabled": true,
+            "poll_interval_secs": 30,
+            "max_per_tick": 16,
+            "default_timeout_secs": 60
+        }"#;
+        let parsed: SchedulerConfig = serde_json::from_str(legacy).unwrap();
+        assert_eq!(parsed.run_retention_days, 90);
+        assert_eq!(parsed.run_warn_row_count, 100_000);
     }
 }

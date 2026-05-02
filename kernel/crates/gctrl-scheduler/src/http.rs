@@ -16,8 +16,8 @@ use axum::{
 };
 use chrono::Utc;
 use gctrl_core::{
-    Schedule, ScheduleFilter, ScheduleRunUpdate, SchedulerConfig, TARGET_KIND_EXEC,
-    TARGET_KIND_HTTP,
+    Schedule, ScheduleFilter, ScheduleRunFilter, ScheduleRunUpdate, SchedulerConfig,
+    TARGET_KIND_EXEC, TARGET_KIND_HTTP,
 };
 use gctrl_storage::SqliteStore;
 use serde::{Deserialize, Serialize};
@@ -40,7 +40,12 @@ pub fn router(sqlite: Arc<SqliteStore>, cfg: Arc<SchedulerConfig>) -> Router {
     };
     Router::new()
         .route("/api/schedules", get(list).post(create))
+        // Cross-schedule run feed — must be registered BEFORE
+        // `/api/schedules/{id}` so axum's longest-match routing doesn't
+        // shadow this with the dynamic-id route.
+        .route("/api/schedules/runs", get(list_runs_global))
         .route("/api/schedules/{id}", get(get_one).delete(delete_one))
+        .route("/api/schedules/{id}/runs", get(list_runs_for_schedule))
         .route("/api/schedules/{id}/run", post(run_now))
         .route("/api/schedules/{id}/enable", post(enable))
         .route("/api/schedules/{id}/disable", post(disable))
@@ -312,13 +317,16 @@ async fn run_now(
     };
 
     let timeout_secs = sched.timeout_secs.max(1) as u64;
-    let (success, status, response, error) = if sched.is_exec() {
+    let started_wall = Utc::now();
+    let (success, status, response, error, timed_out, refused) = if sched.is_exec() {
         match run_exec_schedule(&sched, timeout_secs, &state.cfg).await {
             ExecOutcome::Refused { reason } => (
                 false,
                 None,
                 None,
                 Some(truncate(&format!("refused: {reason}"), ERROR_PREVIEW_BYTES)),
+                false,
+                true,
             ),
             ExecOutcome::Spawned {
                 exit_code,
@@ -335,7 +343,7 @@ async fn run_now(
                 } else {
                     Some(truncate(&stderr, ERROR_PREVIEW_BYTES))
                 };
-                (success, exit_code.map(|c| c as i64), resp, err)
+                (success, exit_code.map(|c| c as i64), resp, err, timed_out, false)
             }
         }
     } else {
@@ -357,9 +365,19 @@ async fn run_now(
             Ok(mut r) => {
                 let st = r.status().as_u16() as i64;
                 let body = read_capped_body(&mut r).await;
-                ((200..400).contains(&st), Some(st), Some(body), None)
+                (
+                    (200..400).contains(&st),
+                    Some(st),
+                    Some(body),
+                    None,
+                    false,
+                    false,
+                )
             }
-            Err(e) => (false, None, None, Some(e.to_string())),
+            Err(e) => {
+                let timed_out = e.is_timeout();
+                (false, None, None, Some(e.to_string()), timed_out, false)
+            }
         }
     };
 
@@ -379,6 +397,26 @@ async fn run_now(
     if let Err(e) = state.store.record_schedule_run(&sched.id, &update) {
         return err500(e);
     }
+    // Append durable history alongside the row UPDATE. Same staging order as
+    // the cron path; PR-2 collapses both into a single SQLite tx.
+    let outcome = crate::runner::FireOutcome {
+        success,
+        status,
+        response: response.clone(),
+        error: error.clone(),
+        timed_out,
+        refused,
+    };
+    let run_row = crate::runner::build_run_row(
+        &sched,
+        &outcome,
+        started_wall,
+        now,
+        gctrl_core::FIRE_KIND_MANUAL,
+    );
+    if let Err(e) = state.store.insert_schedule_run(&run_row) {
+        return err500(e);
+    }
 
     Json(RunResult {
         id: sched.id,
@@ -388,6 +426,71 @@ async fn run_now(
         error,
     })
     .into_response()
+}
+
+/// Query params shared by both run-listing endpoints.
+///
+/// `since` is matched literally as an RFC3339 string against
+/// `scheduler_runs.started_at` in the storage layer — it doesn't accept the
+/// `?since=24h` shorthand the analytics routes use because the storage filter
+/// composes with prepared-statement parameters, not server-side parsing.
+/// Resolve the shorthand at the caller (the SPA / shell) and pass an absolute
+/// timestamp.
+#[derive(Debug, Deserialize)]
+pub struct RunsQuery {
+    #[serde(default)]
+    pub since: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// `GET /api/schedules/{id_or_name}/runs` — history for one schedule.
+///
+/// Resolves `id` or `name` to a row before querying so the SPA can use the
+/// human-readable name in the URL just like the existing GET-by-id handler.
+async fn list_runs_for_schedule(
+    State(state): State<RouterState>,
+    Path(id): Path<String>,
+    Query(q): Query<RunsQuery>,
+) -> impl IntoResponse {
+    let sched = match state.store.get_schedule(&id) {
+        Ok(Some(s)) => s,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => return err500(e),
+    };
+    let filter = ScheduleRunFilter {
+        since: q.since,
+        status: q.status,
+        limit: q.limit,
+    };
+    match state.store.list_schedule_runs(&sched.id, &filter) {
+        Ok(runs) => Json(serde_json::json!({
+            "schedule_id": sched.id,
+            "schedule_name": sched.name,
+            "runs": runs,
+        }))
+        .into_response(),
+        Err(e) => err500(e),
+    }
+}
+
+/// `GET /api/schedules/runs` — cross-schedule run feed for the top-of-page
+/// failure strip on the Schedule page.
+async fn list_runs_global(
+    State(state): State<RouterState>,
+    Query(q): Query<RunsQuery>,
+) -> impl IntoResponse {
+    let filter = ScheduleRunFilter {
+        since: q.since,
+        status: q.status,
+        limit: q.limit,
+    };
+    match state.store.list_schedule_runs_global(&filter) {
+        Ok(runs) => Json(serde_json::json!({ "runs": runs })).into_response(),
+        Err(e) => err500(e),
+    }
 }
 
 async fn enable(

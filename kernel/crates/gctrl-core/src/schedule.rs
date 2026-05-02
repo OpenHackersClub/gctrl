@@ -83,3 +83,54 @@ pub struct ScheduleRunUpdate {
     pub last_error: Option<String>,
     pub success: bool,
 }
+
+pub const FIRE_KIND_CRON: &str = "cron";
+pub const FIRE_KIND_MANUAL: &str = "manual";
+
+pub const RUN_STATUS_SUCCESS: &str = "success";
+pub const RUN_STATUS_FAILURE: &str = "failure";
+pub const RUN_STATUS_TIMED_OUT: &str = "timed_out";
+pub const RUN_STATUS_REFUSED: &str = "refused";
+pub const RUN_STATUS_INTERRUPTED: &str = "interrupted";
+
+/// One historical fire of a `Schedule`. Persisted in `scheduler_runs`.
+///
+/// Spec: vault/specs/architecture/apps/gctrl-schedule.md § 5.1.
+///
+/// `finished_at` is `None` only while a manual `run-now` is in flight (we
+/// reserve a row up-front so a daemon crash mid-fire is reapable on next
+/// startup). The runner fiber writes finished rows in one shot — no `None`
+/// transient there.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScheduleRun {
+    pub id: String,
+    pub schedule_id: String,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    /// One of `success | failure | timed_out | refused | interrupted`.
+    pub status: String,
+    /// `cron` | `manual`.
+    pub fire_kind: String,
+    /// Child exit code for `target_kind=exec`. `None` for `http` rows.
+    pub exit_code: Option<i64>,
+    /// HTTP response status for `target_kind=http`. `None` for `exec` rows.
+    pub http_status: Option<i64>,
+    /// Capped + redacted preview (matches `Schedule::last_response` posture).
+    pub response_preview: Option<String>,
+    /// Capped + redacted preview (matches `Schedule::last_error` posture).
+    pub error_preview: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub created_at: String,
+}
+
+/// Optional filter for `list_schedule_runs` and `list_schedule_runs_global`.
+/// `None` fields = no filter applied.
+#[derive(Debug, Default, Clone)]
+pub struct ScheduleRunFilter {
+    /// RFC3339 lower bound on `started_at` (inclusive).
+    pub since: Option<String>,
+    /// Restrict to a particular status (`success` / `failure` / …).
+    pub status: Option<String>,
+    /// Cap on rows returned. `None` means apply the implementation default.
+    pub limit: Option<usize>,
+}

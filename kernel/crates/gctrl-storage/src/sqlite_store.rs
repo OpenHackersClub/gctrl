@@ -13,8 +13,9 @@ use gctrl_core::{
     memory::{MemoryEntry, MemoryEntryId, MemoryFilter, MemoryStats, MemoryType},
     AcceptanceCheck, AcceptanceCheckRow, AcceptanceKind, AcceptanceRollup, AcceptanceStatus,
     GctlError, InboxAction, InboxActionFilter, InboxMessage, InboxMessageFilter, InboxThread,
-    PersonaDefinition, PersonaReviewRule, Result, Schedule, ScheduleFilter, ScheduleRunUpdate,
-    OrchTask, UberBrief, UberSinkinSession, VaultMount, VaultMountKind,
+    PersonaDefinition, PersonaReviewRule, Result, Schedule, ScheduleFilter, ScheduleRun,
+    ScheduleRunFilter, ScheduleRunUpdate, OrchTask, UberBrief, UberSinkinSession,
+    VaultMount, VaultMountKind,
 };
 use rusqlite::{params, Connection};
 
@@ -367,6 +368,30 @@ CREATE TABLE IF NOT EXISTS schedules (
 )
 "#;
 
+// Per-fire history of a schedule. The `schedules` row keeps a `last_*` cache;
+// `scheduler_runs` is the durable log queried by `/api/schedules/{id}/runs`
+// and the CI-style sparkline. ON DELETE CASCADE so deleting a schedule
+// cleans its history without a second query.
+//
+// Spec: vault/specs/architecture/apps/gctrl-schedule.md § 5.1.
+const CREATE_SCHEDULER_RUNS: &str = r#"
+CREATE TABLE IF NOT EXISTS scheduler_runs (
+    id               TEXT PRIMARY KEY,
+    schedule_id      TEXT NOT NULL,
+    started_at       TEXT NOT NULL,
+    finished_at      TEXT,
+    status           TEXT NOT NULL,
+    fire_kind        TEXT NOT NULL,
+    exit_code        INTEGER,
+    http_status      INTEGER,
+    response_preview TEXT,
+    error_preview    TEXT,
+    duration_ms      INTEGER,
+    created_at       TEXT NOT NULL,
+    FOREIGN KEY (schedule_id) REFERENCES schedules(id) ON DELETE CASCADE
+)
+"#;
+
 const CREATE_INDEXES: &[&str] = &[
     // Board indexes
     "CREATE INDEX IF NOT EXISTS idx_board_issues_project ON board_issues(project_id)",
@@ -417,6 +442,10 @@ const CREATE_INDEXES: &[&str] = &[
     // Schedule indexes — `due` is the hot path for the runner poll loop
     "CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules(enabled, next_run_at)",
     "CREATE INDEX IF NOT EXISTS idx_schedules_name ON schedules(name)",
+    // Scheduler run history — hot paths are per-schedule reverse-chrono and
+    // status-filtered cross-schedule listing for the failure feed.
+    "CREATE INDEX IF NOT EXISTS idx_scheduler_runs_schedule_started ON scheduler_runs(schedule_id, started_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_scheduler_runs_status_started ON scheduler_runs(status, started_at DESC)",
     // Uebermensch briefs index — date lookup + reverse-chrono listing
     "CREATE INDEX IF NOT EXISTS idx_uber_briefs_date ON uber_briefs(date DESC)",
     "CREATE INDEX IF NOT EXISTS idx_uber_briefs_kind_date ON uber_briefs(kind, date DESC)",
@@ -488,6 +517,7 @@ impl SqliteStore {
             CREATE_UBER_BRIEFS,
             CREATE_UBER_SINKIN_SESSIONS,
             CREATE_SCHEDULES,
+            CREATE_SCHEDULER_RUNS,
         ];
         for stmt in &tables {
             conn.execute_batch(stmt)
@@ -2819,6 +2849,15 @@ impl SqliteStore {
 
     pub fn delete_schedule(&self, id_or_name: &str) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
+        // SQLite does not enforce FKs unless `PRAGMA foreign_keys = ON` is
+        // set per-connection; honour the declared `ON DELETE CASCADE` on
+        // `scheduler_runs.schedule_id` explicitly so run history goes
+        // away with its parent.
+        conn.execute(
+            "DELETE FROM scheduler_runs
+             WHERE schedule_id IN (SELECT id FROM schedules WHERE id = ?1 OR name = ?1)",
+            [id_or_name],
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
         let n = conn.execute(
             "DELETE FROM schedules WHERE id = ?1 OR name = ?1",
             [id_or_name],
@@ -2879,6 +2918,116 @@ impl SqliteStore {
             params![next_run_at, now, id],
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
+    }
+
+    // ───────────────────────── Scheduler Runs ─────────────────────────
+    //
+    // Per-fire history of a schedule. The `schedules` row keeps a `last_*`
+    // cache; `scheduler_runs` is the durable log queried by the Schedule
+    // page's CI-style sparkline and run-history drawer. The transactional
+    // batch helper (`record_schedule_run_v2`) lands in PR-2 of M1a along
+    // with the inbox emit; this PR ships the bare INSERT so the runner
+    // can start populating history.
+    //
+    // Spec: vault/specs/architecture/apps/gctrl-schedule.md § 5.1.
+
+    pub fn insert_schedule_run(&self, run: &ScheduleRun) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO scheduler_runs (id, schedule_id, started_at, finished_at, status, fire_kind, exit_code, http_status, response_preview, error_preview, duration_ms, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                run.id,
+                run.schedule_id,
+                run.started_at,
+                run.finished_at,
+                run.status,
+                run.fire_kind,
+                run.exit_code,
+                run.http_status,
+                run.response_preview,
+                run.error_preview,
+                run.duration_ms,
+                run.created_at,
+            ],
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// History for a single schedule, latest first. Filters compose with AND.
+    /// Default cap: 50 rows; hard cap: 500 (silently clamped) to bound memory.
+    pub fn list_schedule_runs(
+        &self,
+        schedule_id: &str,
+        filter: &ScheduleRunFilter,
+    ) -> Result<Vec<ScheduleRun>> {
+        let conn = self.conn.lock().unwrap();
+        let limit = filter.limit.unwrap_or(50).min(500) as i64;
+        let mut sql = "SELECT id, schedule_id, started_at, finished_at, status, fire_kind, exit_code, http_status, response_preview, error_preview, duration_ms, created_at FROM scheduler_runs WHERE schedule_id = ?1".to_string();
+        let mut p: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(schedule_id.to_string())];
+        let mut idx = 2;
+        if let Some(ref since) = filter.since {
+            sql.push_str(&format!(" AND started_at >= ?{}", idx));
+            p.push(Box::new(since.clone()));
+            idx += 1;
+        }
+        if let Some(ref status) = filter.status {
+            sql.push_str(&format!(" AND status = ?{}", idx));
+            p.push(Box::new(status.clone()));
+            idx += 1;
+        }
+        sql.push_str(&format!(" ORDER BY started_at DESC LIMIT ?{}", idx));
+        p.push(Box::new(limit));
+        let mut stmt = conn.prepare(&sql).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let params_iter: Vec<&dyn rusqlite::types::ToSql> = p.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(params_iter), row_to_schedule_run)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// Cross-schedule run feed, latest first. Powers the top-of-page failure
+    /// strip: typical call is `since=24h ago, status=failure, limit=200`.
+    pub fn list_schedule_runs_global(
+        &self,
+        filter: &ScheduleRunFilter,
+    ) -> Result<Vec<ScheduleRun>> {
+        let conn = self.conn.lock().unwrap();
+        let limit = filter.limit.unwrap_or(200).min(500) as i64;
+        let mut sql = "SELECT id, schedule_id, started_at, finished_at, status, fire_kind, exit_code, http_status, response_preview, error_preview, duration_ms, created_at FROM scheduler_runs WHERE 1=1".to_string();
+        let mut p: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        let mut idx = 1;
+        if let Some(ref since) = filter.since {
+            sql.push_str(&format!(" AND started_at >= ?{}", idx));
+            p.push(Box::new(since.clone()));
+            idx += 1;
+        }
+        if let Some(ref status) = filter.status {
+            sql.push_str(&format!(" AND status = ?{}", idx));
+            p.push(Box::new(status.clone()));
+            idx += 1;
+        }
+        sql.push_str(&format!(" ORDER BY started_at DESC LIMIT ?{}", idx));
+        p.push(Box::new(limit));
+        let mut stmt = conn.prepare(&sql).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let params_iter: Vec<&dyn rusqlite::types::ToSql> = p.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(params_iter), row_to_schedule_run)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// Idempotent prune. Returns the number of rows deleted. Powers the
+    /// `_internal.scheduler_runs_gc` routine landing in PR-2 of M1a.
+    pub fn delete_schedule_runs_before(&self, before_rfc3339: &str) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn
+            .execute(
+                "DELETE FROM scheduler_runs WHERE started_at < ?1",
+                [before_rfc3339],
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(n)
     }
 }
 
@@ -2943,6 +3092,29 @@ fn row_to_schedule(row: &rusqlite::Row<'_>) -> rusqlite::Result<Schedule> {
         failure_count: row.get(19)?,
         created_at: row.get(20)?,
         updated_at: row.get(21)?,
+    })
+}
+
+fn row_to_schedule_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScheduleRun> {
+    // Column order — must match insert/select queries:
+    //   0 id               1 schedule_id      2 started_at
+    //   3 finished_at      4 status           5 fire_kind
+    //   6 exit_code        7 http_status
+    //   8 response_preview 9 error_preview
+    //  10 duration_ms     11 created_at
+    Ok(ScheduleRun {
+        id: row.get(0)?,
+        schedule_id: row.get(1)?,
+        started_at: row.get(2)?,
+        finished_at: row.get(3)?,
+        status: row.get(4)?,
+        fire_kind: row.get(5)?,
+        exit_code: row.get(6)?,
+        http_status: row.get(7)?,
+        response_preview: row.get(8)?,
+        error_preview: row.get(9)?,
+        duration_ms: row.get(10)?,
+        created_at: row.get(11)?,
     })
 }
 
