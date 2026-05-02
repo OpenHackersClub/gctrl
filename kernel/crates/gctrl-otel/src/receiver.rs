@@ -4171,6 +4171,7 @@ async fn discord_send(
 
 async fn llm_messages(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let Ok(account_id) = std::env::var("CLOUDFLARE_ACCOUNT_ID") else {
@@ -4210,9 +4211,34 @@ async fn llm_messages(
     if let Some(t) = gateway_token {
         req = req.header("cf-aig-authorization", format!("Bearer {t}"));
     }
+    // Forward request-shaping Anthropic headers from the client. `anthropic-beta`
+    // is the opt-in switch for features like the 1M context window
+    // (`context-1m-2025-08-07`); without forwarding, callers cannot control
+    // them through the kernel and would have to bypass driver-llm.
+    if let Some(beta) = headers.get("anthropic-beta").and_then(|v| v.to_str().ok()) {
+        req = req.header("anthropic-beta", beta);
+    }
     match req.json(&body).send().await {
         Ok(resp) => {
             let status = resp.status();
+            // Capture rate-limit headers before consuming the body so the
+            // client can pace retries against the upstream's hint instead of
+            // blind exponential backoff.
+            let rl_headers: Vec<(String, String)> = [
+                "retry-after",
+                "anthropic-ratelimit-input-tokens-reset",
+                "anthropic-ratelimit-output-tokens-reset",
+                "anthropic-ratelimit-tokens-reset",
+                "anthropic-ratelimit-requests-reset",
+            ]
+            .iter()
+            .filter_map(|name| {
+                resp.headers()
+                    .get(*name)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| ((*name).to_string(), s.to_string()))
+            })
+            .collect();
             let text = resp.text().await.unwrap_or_default();
             if status.is_success() {
                 match serde_json::from_str::<serde_json::Value>(&text) {
@@ -4220,7 +4246,16 @@ async fn llm_messages(
                     Err(_) => (StatusCode::BAD_GATEWAY, text).into_response(),
                 }
             } else {
-                (messaging_upstream_status(status), text).into_response()
+                let mut out_headers = HeaderMap::new();
+                for (name, value) in &rl_headers {
+                    if let (Ok(hn), Ok(hv)) = (
+                        axum::http::HeaderName::from_bytes(name.as_bytes()),
+                        axum::http::HeaderValue::from_str(value),
+                    ) {
+                        out_headers.insert(hn, hv);
+                    }
+                }
+                (messaging_upstream_status(status), out_headers, text).into_response()
             }
         }
         Err(e) => (

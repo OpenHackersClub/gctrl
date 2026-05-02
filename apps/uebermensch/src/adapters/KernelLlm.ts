@@ -1,5 +1,5 @@
 import { Agent } from "undici";
-import { Effect, Layer } from "effect";
+import { Duration, Effect, Layer } from "effect";
 import { LlmError } from "../errors.js";
 
 // Constrained decoding under `response_format: json_schema` can run for many
@@ -93,13 +93,51 @@ const effortFromEnv = (): Effort => {
 // - "extended" → `{ type: "enabled", budget_tokens: N }` — explicit budget
 type ThinkingMode = "off" | "adaptive" | "extended";
 
+type OutputEffort = "low" | "medium" | "high";
+
 type EffortConfig = {
   readonly maxTokens: number;
   readonly thinking: ThinkingMode;
   readonly thinkingBudgetTokens: number;
+  // Opus 4.7 rejects `thinking.type: "enabled"` and instead controls effort
+  // via top-level `output_config.effort`. When set, callers emit it in the
+  // request body alongside `thinking: { type: "adaptive" }`.
+  readonly outputEffort?: OutputEffort;
 };
 
-const effortConfigFor = (effort: Effort): EffortConfig => {
+// Models in the 4.7+ family use the new effort-control semantics:
+// `thinking.type: "adaptive"` + `output_config.effort`. Older 4.x families
+// (4.5/4.6) still accept `thinking.type: "enabled"` with a budget. Bump
+// the regex when 4.8 lands.
+const isOpus47Family = (model: string): boolean =>
+  /^claude-opus-4-(7|8|9)\b/.test(stripContextSuffix(model));
+
+const effortConfigFor = (effort: Effort, model?: string): EffortConfig => {
+  if (model && isOpus47Family(model)) {
+    switch (effort) {
+      case "low":
+        return {
+          maxTokens: 4000,
+          thinking: "adaptive",
+          thinkingBudgetTokens: 0,
+          outputEffort: "low",
+        };
+      case "high":
+        return {
+          maxTokens: 32000,
+          thinking: "adaptive",
+          thinkingBudgetTokens: 0,
+          outputEffort: "high",
+        };
+      default:
+        return {
+          maxTokens: DEFAULT_MAX_TOKENS,
+          thinking: "adaptive",
+          thinkingBudgetTokens: 0,
+          outputEffort: "medium",
+        };
+    }
+  }
   switch (effort) {
     case "low":
       // Tight cap, no thinking. Single-pass, fast, cheap.
@@ -130,9 +168,60 @@ const summaryModelFor = (): string =>
 // Anthropic-shaped models go through /api/llm/messages. Everything else
 // (`@cf/...` Workers AI, locally-served OpenAI-compat backends like
 // LM Studio / Ollama) goes through /api/llm/completions.
-const isAnthropicModel = (model: string): boolean => model.startsWith("claude-");
+const isAnthropicModel = (model: string): boolean =>
+  stripContextSuffix(model).startsWith("claude-");
 // Back-compat alias — older callers/tests still import this name.
 const isWorkersAiModel = (model: string): boolean => !isAnthropicModel(model);
+
+// Anthropic's 1M context window is enabled per-request via the
+// `anthropic-beta: context-1m-2025-08-07` header. Operators opt in by
+// suffixing the model id (e.g. `claude-opus-4-7[1m]`) or by setting
+// `UBER_LLM_CONTEXT_1M=1`. Any non-Anthropic model ignores the suffix.
+const CONTEXT_1M_BETA = "context-1m-2025-08-07";
+
+const stripContextSuffix = (model: string): string =>
+  model.replace(/\[1m\]$/i, "");
+
+const is1MContextRequested = (model: string): boolean => {
+  if (/\[1m\]$/i.test(model)) return true;
+  const env = process.env.UBER_LLM_CONTEXT_1M?.toLowerCase().trim();
+  return env === "1" || env === "true" || env === "yes";
+};
+
+// Per-model concurrency defaults for the report pipeline. Anthropic
+// rate-limits by tokens/minute per (org, model). Tier 1 opus-4.7 is the
+// tightest at 30k input TPM, so a single ~30k-token deep-dive prompt
+// already saturates a minute — concurrency=1 + paced retries is the only
+// way to make a clean run. Higher tiers can override with
+// UBER_REPORT_CONCURRENCY.
+const defaultConcurrencyForModel = (model: string | undefined): number => {
+  if (!model) return 2;
+  const m = stripContextSuffix(model);
+  if (isOpus47Family(m)) return 1;
+  if (/^claude-opus-4-/.test(m)) return 2;
+  if (/^claude-sonnet-4-/.test(m)) return 4;
+  if (/^claude-haiku-4-/.test(m)) return 6;
+  return 2;
+};
+
+// Parse `Retry-After` header (RFC 7231: delta-seconds OR HTTP-date).
+// Anthropic sends seconds; bare numbers are clamped to a sane ceiling so
+// a buggy upstream can't stall a run for an hour. Returns ms or null.
+const parseRetryAfter = (raw: string | null | undefined): number | null => {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  const asNum = Number.parseFloat(trimmed);
+  if (Number.isFinite(asNum) && asNum >= 0) {
+    return Math.min(asNum, 120) * 1000;
+  }
+  const t = Date.parse(trimmed);
+  if (Number.isFinite(t)) {
+    const delta = t - Date.now();
+    return delta > 0 ? Math.min(delta, 120_000) : 0;
+  }
+  return null;
+};
 
 const kernelBase = (): string =>
   (process.env.GCTRL_KERNEL_URL ?? "http://127.0.0.1:4318").replace(/\/+$/, "");
@@ -179,8 +268,11 @@ type NormalizedResponse = {
   readonly model: string;
 };
 
-const llmErr = (kind: LlmError["kind"], message: string): LlmError =>
-  new LlmError({ kind, message });
+const llmErr = (
+  kind: LlmError["kind"],
+  message: string,
+  retryAfterMs?: number,
+): LlmError => new LlmError({ kind, message, retryAfterMs });
 
 const classifyKernelStatus = (status: number): LlmError["kind"] => {
   if (status === 503) return "unavailable";
@@ -229,9 +321,12 @@ const tokensCost = (
 // POST a JSON body to `${kernelBase()}${path}` and return the raw response
 // text. Connection-level failures (ECONNREFUSED etc.) become a "kernel daemon
 // not reachable" hint; non-2xx responses become a classified LlmError.
+// `extraHeaders` lets callers forward request-shaping headers like
+// `anthropic-beta` (the kernel's /api/llm/messages re-emits them upstream).
 const fetchKernel = (
   path: string,
   body: unknown,
+  extraHeaders: Record<string, string> = {},
 ): Effect.Effect<string, LlmError> =>
   Effect.gen(function* () {
     const res = yield* Effect.tryPromise({
@@ -242,6 +337,7 @@ const fetchKernel = (
             "content-type": "application/json",
             "x-session-id": sessionIdFor(),
             "x-service-name": SERVICE_NAME,
+            ...extraHeaders,
           },
           body: JSON.stringify(body),
           // Non-standard undici option — silently ignored if a test replaces
@@ -262,44 +358,132 @@ const fetchKernel = (
         llmErr("unavailable", `kernel ${path} body read failed: ${String(e)}`),
     });
     if (!res.ok) {
+      const kind = classifyKernelStatus(res.status);
+      let retryAfterMs: number | undefined;
+      if (kind === "rate_limited") {
+        // Headers may be unavailable on test mocks — guard the lookup.
+        const headerGet = (k: string): string | null => {
+          try {
+            return res.headers?.get?.(k) ?? null;
+          } catch {
+            return null;
+          }
+        };
+        const ra =
+          parseRetryAfter(headerGet("retry-after")) ??
+          // Anthropic also sends `anthropic-ratelimit-input-tokens-reset`
+          // as an ISO-8601 timestamp. Honor it as a fallback so paced
+          // retries don't hammer the upstream early.
+          parseRetryAfter(headerGet("anthropic-ratelimit-input-tokens-reset")) ??
+          parseRetryAfter(headerGet("anthropic-ratelimit-tokens-reset"));
+        if (ra !== null) retryAfterMs = ra;
+      }
       return yield* Effect.fail(
         llmErr(
-          classifyKernelStatus(res.status),
+          kind,
           `kernel ${path} HTTP ${res.status}: ${raw.slice(0, 500)}`,
+          retryAfterMs,
         ),
       );
     }
     return raw;
   });
 
-const thinkingBody = (
-  thinking: ThinkingMode,
-  budgetTokens: number,
-): Record<string, unknown> => {
-  if (thinking === "off") return {};
-  if (thinking === "extended") {
-    return { thinking: { type: "enabled", budget_tokens: budgetTokens } };
+// Bounded retry loop for transient LlmErrors. Two kinds qualify:
+//   - `rate_limited` (HTTP 429): honors `retryAfterMs` when present,
+//     otherwise exponential backoff capped at MAX_MS.
+//   - `unavailable`  (HTTP 502/503 + connection failures): exponential
+//     backoff only — upstream doesn't supply a hint.
+// `invalid` (4xx other than 429) propagates immediately so a malformed
+// request surfaces fast.
+//
+// Knobs (env, all optional):
+//   UBER_LLM_RATE_LIMIT_RETRIES  attempts after the first failure (default 4)
+//   UBER_LLM_RATE_LIMIT_BASE_MS  base delay for exponential backoff (default 2000)
+//   UBER_LLM_RATE_LIMIT_MAX_MS   ceiling delay (default 60000)
+// Setting RETRIES=0 disables retry entirely — the typed `LlmError`
+// surfaces directly to the caller (used by tests).
+const envInt = (key: string, fallback: number, min = 0): number => {
+  const raw = process.env[key];
+  if (raw === undefined || raw === null) return fallback;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n >= min ? n : fallback;
+};
+
+type RateLimitConfig = {
+  readonly maxRetries: number;
+  readonly baseMs: number;
+  readonly maxMs: number;
+};
+
+const rateLimitConfig = (): RateLimitConfig => ({
+  maxRetries: envInt("UBER_LLM_RATE_LIMIT_RETRIES", 4),
+  baseMs: envInt("UBER_LLM_RATE_LIMIT_BASE_MS", 2_000, 1),
+  maxMs: envInt("UBER_LLM_RATE_LIMIT_MAX_MS", 60_000, 1),
+});
+
+const isTransientKind = (kind: LlmError["kind"]): boolean =>
+  kind === "rate_limited" || kind === "unavailable";
+
+const withRateLimitRetry = <A>(
+  eff: Effect.Effect<A, LlmError>,
+): Effect.Effect<A, LlmError> => {
+  const cfg = rateLimitConfig();
+  const loop = (attempt: number): Effect.Effect<A, LlmError> =>
+    eff.pipe(
+      Effect.catchTag("LlmError", (e) => {
+        if (!isTransientKind(e.kind) || attempt >= cfg.maxRetries) {
+          return Effect.fail(e);
+        }
+        const expBackoff = Math.min(cfg.baseMs * 2 ** attempt, cfg.maxMs);
+        // 429 supplies retryAfterMs; 5xx does not — fall back to
+        // exponential. Cap the hint at MAX_MS too so a buggy upstream
+        // can't stall a run.
+        const hint = e.retryAfterMs;
+        const delayMs =
+          hint !== undefined ? Math.min(hint, cfg.maxMs) : expBackoff;
+        return Effect.sleep(Duration.millis(delayMs)).pipe(
+          Effect.andThen(loop(attempt + 1)),
+        );
+      }),
+    );
+  return loop(0);
+};
+
+const effortBody = (cfg: EffortConfig): Record<string, unknown> => {
+  const out: Record<string, unknown> = {};
+  if (cfg.thinking === "extended") {
+    out.thinking = { type: "enabled", budget_tokens: cfg.thinkingBudgetTokens };
+  } else if (cfg.thinking === "adaptive") {
+    out.thinking = { type: "adaptive" };
   }
-  return { thinking: { type: "adaptive" } };
+  // `output_config.effort` is opus-4.7+ only; older models 400 on it,
+  // which is why we gate it through `EffortConfig.outputEffort` (set
+  // exclusively by the opus-4.7 branch of `effortConfigFor`).
+  if (cfg.outputEffort) {
+    out.output_config = { effort: cfg.outputEffort };
+  }
+  return out;
 };
 
 const postAnthropic = (
   model: string,
   system: string,
   userPrompt: string,
-  maxTokens: number,
-  thinking: ThinkingMode,
-  thinkingBudgetTokens: number,
+  cfg: EffortConfig,
 ): Effect.Effect<NormalizedResponse, LlmError> =>
   Effect.gen(function* () {
+    const wireModel = stripContextSuffix(model);
     const body: Record<string, unknown> = {
-      model,
-      max_tokens: maxTokens,
+      model: wireModel,
+      max_tokens: cfg.maxTokens,
       system,
       messages: [{ role: "user", content: userPrompt }],
-      ...thinkingBody(thinking, thinkingBudgetTokens),
+      ...effortBody(cfg),
     };
-    const raw = yield* fetchKernel("/api/llm/messages", body);
+    const headers: Record<string, string> = {};
+    if (is1MContextRequested(model)) headers["anthropic-beta"] = CONTEXT_1M_BETA;
+    const raw = yield* fetchKernel("/api/llm/messages", body, headers);
     const parsed = yield* Effect.try({
       try: () =>
         (raw.length > 0 ? (JSON.parse(raw) as AnthropicResponse) : ({} as AnthropicResponse)),
@@ -319,7 +503,7 @@ const postAnthropic = (
       text: textBlock.text,
       inputTokens: parsed.usage?.input_tokens ?? 0,
       outputTokens: parsed.usage?.output_tokens ?? 0,
-      model: parsed.model ?? model,
+      model: parsed.model ?? wireModel,
     };
   });
 
@@ -376,14 +560,14 @@ const postLlm = (
   model: string,
   system: string,
   userPrompt: string,
-  maxTokens: number,
-  thinking: ThinkingMode,
-  thinkingBudgetTokens: number,
+  cfg: EffortConfig,
   jsonFormat: JsonResponseFormat | null,
 ): Effect.Effect<NormalizedResponse, LlmError> =>
-  isWorkersAiModel(model)
-    ? postWorkersAi(model, system, userPrompt, maxTokens, jsonFormat)
-    : postAnthropic(model, system, userPrompt, maxTokens, thinking, thinkingBudgetTokens);
+  withRateLimitRetry(
+    isWorkersAiModel(model)
+      ? postWorkersAi(model, system, userPrompt, cfg.maxTokens, jsonFormat)
+      : postAnthropic(model, system, userPrompt, cfg),
+  );
 
 // USD cost for a normalized LLM response. Workers AI / local models
 // always cost $0. Anthropic models look up rates by model id so Opus 4.7
@@ -410,14 +594,12 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
       const model = modelFor();
       const userPrompt = buildUserPrompt(req);
       const promptHash = sha256(`${SYSTEM_PROMPT}\n---\n${userPrompt}`);
-      const eff = effortConfigFor(effortFromEnv());
+      const eff = effortConfigFor(effortFromEnv(), model);
       const res = yield* postLlm(
         model,
         SYSTEM_PROMPT,
         userPrompt,
-        eff.maxTokens,
-        eff.thinking,
-        eff.thinkingBudgetTokens,
+        eff,
         briefJsonFormat(),
       );
       const decoded = yield* decodeLlmJson(res.text, LlmOutputSchema, "kernel /api/llm/messages");
@@ -445,14 +627,12 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
       const model = modelFor();
       const userPrompt = buildSubtopicUserPrompt(req);
       const promptHash = sha256(`${SUBTOPIC_SYSTEM_PROMPT}\n---\n${userPrompt}`);
-      const eff = effortConfigFor(effortFromEnv());
+      const eff = effortConfigFor(effortFromEnv(), model);
       const res = yield* postLlm(
         model,
         SUBTOPIC_SYSTEM_PROMPT,
         userPrompt,
-        eff.maxTokens,
-        eff.thinking,
-        eff.thinkingBudgetTokens,
+        eff,
         subtopicJsonFormat(),
       );
       const decoded = yield* decodeLlmJson(
@@ -487,14 +667,12 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
       const model = modelFor();
       const userPrompt = buildInterestReportUserPrompt(req);
       const promptHash = sha256(`${REPORT_SYSTEM_PROMPT}\n---\n${userPrompt}`);
-      const eff = effortConfigFor(effortFromEnv());
+      const eff = effortConfigFor(effortFromEnv(), model);
       const res = yield* postLlm(
         model,
         REPORT_SYSTEM_PROMPT,
         userPrompt,
-        eff.maxTokens,
-        eff.thinking,
-        eff.thinkingBudgetTokens,
+        eff,
         interestReportJsonFormat(),
       );
       const decoded = yield* decodeLlmJson(
@@ -528,14 +706,12 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
       const model = modelFor();
       const userPrompt = buildResearchQueryUserPrompt(req);
       const promptHash = sha256(`${RESEARCH_SYSTEM_PROMPT}\n---\n${userPrompt}`);
-      const eff = effortConfigFor(effortFromEnv());
+      const eff = effortConfigFor(effortFromEnv(), model);
       const res = yield* postLlm(
         model,
         RESEARCH_SYSTEM_PROMPT,
         userPrompt,
-        eff.maxTokens,
-        eff.thinking,
-        eff.thinkingBudgetTokens,
+        eff,
         null,
       );
       const answerMd = res.text.trim();
@@ -556,13 +732,16 @@ export const KernelLlmLive = Layer.succeed(LlmService, {
       // Summary lane is always low-effort: short, cheap, no thinking. Not
       // operator-tunable — bumping summarization to "high" would 10x the
       // ingest spend with negligible quality lift.
+      const summaryCfg: EffortConfig = {
+        maxTokens: SUMMARY_MAX_TOKENS,
+        thinking: "off",
+        thinkingBudgetTokens: 0,
+      };
       const res = yield* postLlm(
         summaryModelFor(),
         SUMMARY_SYSTEM_PROMPT,
         userPrompt,
-        SUMMARY_MAX_TOKENS,
-        "off",
-        0,
+        summaryCfg,
         null,
       );
       const insightsMd = normalizeInsights(res.text);
@@ -616,4 +795,11 @@ export const _internal = {
   isWorkersAiModel,
   effortFromEnv,
   effortConfigFor,
+  effortBody,
+  isOpus47Family,
+  is1MContextRequested,
+  stripContextSuffix,
+  parseRetryAfter,
+  defaultConcurrencyForModel,
+  CONTEXT_1M_BETA,
 };
