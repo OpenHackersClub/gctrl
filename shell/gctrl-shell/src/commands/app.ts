@@ -8,9 +8,10 @@
  * `apps/<name>/`. Default model is claude-opus-4-7.
  */
 import { Command, Options, Args } from "@effect/cli"
-import { Console, Effect, Option } from "effect"
+import { Console, Effect, Option, Schema } from "effect"
 import { mkdir, readFile, writeFile, access } from "node:fs/promises"
 import { join, resolve } from "node:path"
+import { KernelClient } from "../services/KernelClient"
 
 const DEFAULT_LLM_URL = "http://127.0.0.1:4319/v1/chat/completions"
 const DEFAULT_MODEL = "claude-opus-4-7"
@@ -284,8 +285,244 @@ const bootstrapCommand = Command.make(
     ),
 )
 
+// =============================================================================
+// install / list / status / reload / uninstall — gctrl-app.toml workflow.
+//
+// The kernel handles parsing + validation + persistence. The shell just
+// reads the manifest from disk and POSTs it through KernelClient. See
+// vault/specs/architecture/app-install-protocol.md for the contract.
+// =============================================================================
+
+// --- schemas (mirror kernel/crates/gctrl-core::AppInstall + AppBinding + VaultMount) ---
+
+const AppInstallSchema = Schema.Struct({
+  name: Schema.String,
+  version: Schema.String,
+  source_ref: Schema.String,
+  manifest_sha: Schema.String,
+  installed_at: Schema.String,
+  reloaded_at: Schema.NullOr(Schema.String),
+})
+
+const AppBindingSchema = Schema.Struct({
+  install_name: Schema.String,
+  capability: Schema.String,
+  driver_id: Schema.String,
+  required: Schema.Boolean,
+  resolved_at: Schema.String,
+})
+
+const VaultMountSchema = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  root_path: Schema.String,
+  kind: Schema.String,
+  app_id: Schema.NullOr(Schema.String),
+})
+
+const AppInstallViewSchema = Schema.Struct({
+  install: AppInstallSchema,
+  bindings: Schema.Array(AppBindingSchema),
+  vault_mounts: Schema.Array(VaultMountSchema),
+})
+
+const AppInstallListSchema = Schema.Array(AppInstallSchema)
+
+const CapabilitySchema = Schema.Struct({
+  id: Schema.String,
+  default_driver: Schema.String,
+  route_prefix: Schema.String,
+  description: Schema.String,
+})
+const CapabilityListSchema = Schema.Array(CapabilitySchema)
+
+const VoidSchema = Schema.Struct({})
+
+// --- shared helpers ---
+
+const readManifest = (path: string) =>
+  Effect.tryPromise({
+    try: () => readFile(resolve(path), "utf8"),
+    catch: (e) => new BootstrapError(`Cannot read manifest at ${path}: ${e}`),
+  })
+
+const printInstallView = (view: typeof AppInstallViewSchema.Type) =>
+  Effect.gen(function* () {
+    yield* Console.log(`✓ ${view.install.name}@${view.install.version}`)
+    yield* Console.log(`  source_ref:   ${view.install.source_ref}`)
+    yield* Console.log(`  manifest_sha: ${view.install.manifest_sha.slice(0, 12)}…`)
+    yield* Console.log(`  installed_at: ${view.install.installed_at}`)
+    if (view.install.reloaded_at !== null) {
+      yield* Console.log(`  reloaded_at:  ${view.install.reloaded_at}`)
+    }
+    if (view.bindings.length > 0) {
+      yield* Console.log(`\n  capabilities (${view.bindings.length}):`)
+      for (const b of view.bindings) {
+        const tag = b.required ? "required" : "optional"
+        yield* Console.log(
+          `    ${b.capability.padEnd(24)} → ${b.driver_id.padEnd(20)} (${tag})`,
+        )
+      }
+    }
+    if (view.vault_mounts.length > 0) {
+      yield* Console.log(`\n  vault project keys:`)
+      for (const m of view.vault_mounts) {
+        yield* Console.log(`    ${m.name} (kind=${m.kind})`)
+      }
+    }
+  })
+
+// --- install ---
+
+const manifestPathArg = Args.text({ name: "manifest-path" }).pipe(
+  Args.withDescription(
+    "Path to the app's gctrl-app.toml (typically apps/<name>/gctrl-app.toml).",
+  ),
+)
+
+const sourceRefOpt = Options.text("source-ref").pipe(
+  Options.optional,
+  Options.withDescription(
+    "Override the source_ref recorded with the install (default: absolute manifest path).",
+  ),
+)
+
+const installCommand = Command.make(
+  "install",
+  { manifestPath: manifestPathArg, sourceRef: sourceRefOpt },
+  ({ manifestPath, sourceRef }) =>
+    Effect.gen(function* () {
+      const text = yield* readManifest(manifestPath)
+      const ref = Option.getOrElse(sourceRef, () => resolve(manifestPath))
+      const kernel = yield* KernelClient
+      const view = yield* kernel.post(
+        "/api/app/installs",
+        { source_ref: ref, manifest_text: text },
+        AppInstallViewSchema,
+      )
+      yield* printInstallView(view)
+    }).pipe(
+      Effect.catchTag("BootstrapError", (e) =>
+        Effect.gen(function* () {
+          yield* Console.error(`✗ ${e.message}`)
+          yield* Effect.sync(() => process.exit(1))
+        }),
+      ),
+    ),
+).pipe(Command.withDescription("Install a gctrl app from its gctrl-app.toml manifest."))
+
+// --- list ---
+
+const listCommand = Command.make("list", {}, () =>
+  Effect.gen(function* () {
+    const kernel = yield* KernelClient
+    const installs = yield* kernel.get("/api/app/installs", AppInstallListSchema)
+    if (installs.length === 0) {
+      yield* Console.log("No apps installed.")
+      return
+    }
+    yield* Console.log(
+      `${"NAME".padEnd(24)} ${"VERSION".padEnd(12)} ${"INSTALLED".padEnd(20)} SOURCE`,
+    )
+    yield* Console.log("-".repeat(80))
+    for (const i of installs) {
+      yield* Console.log(
+        `${i.name.padEnd(24)} ${i.version.padEnd(12)} ${i.installed_at.slice(0, 19).padEnd(20)} ${i.source_ref}`,
+      )
+    }
+  }),
+).pipe(Command.withDescription("List installed apps."))
+
+// --- status ---
+
+const nameArgGeneric = Args.text({ name: "name" }).pipe(
+  Args.withDescription("App name (matches the manifest's [app] name)."),
+)
+
+const statusCommand = Command.make("status", { name: nameArgGeneric }, ({ name }) =>
+  Effect.gen(function* () {
+    const kernel = yield* KernelClient
+    const view = yield* kernel.get(`/api/app/installs/${name}`, AppInstallViewSchema)
+    yield* printInstallView(view)
+  }),
+).pipe(Command.withDescription("Show install record + bindings + vault project keys for an app."))
+
+// --- reload ---
+
+const reloadCommand = Command.make(
+  "reload",
+  { name: nameArgGeneric, manifestPath: manifestPathArg, sourceRef: sourceRefOpt },
+  ({ name, manifestPath, sourceRef }) =>
+    Effect.gen(function* () {
+      const text = yield* readManifest(manifestPath)
+      const ref = Option.getOrElse(sourceRef, () => resolve(manifestPath))
+      const kernel = yield* KernelClient
+      const view = yield* kernel.post(
+        `/api/app/installs/${name}/reload`,
+        { source_ref: ref, manifest_text: text },
+        AppInstallViewSchema,
+      )
+      yield* printInstallView(view)
+    }).pipe(
+      Effect.catchTag("BootstrapError", (e) =>
+        Effect.gen(function* () {
+          yield* Console.error(`✗ ${e.message}`)
+          yield* Effect.sync(() => process.exit(1))
+        }),
+      ),
+    ),
+).pipe(Command.withDescription("Re-apply a manifest after editing it (e.g. on version bump)."))
+
+// --- uninstall ---
+
+const uninstallCommand = Command.make("uninstall", { name: nameArgGeneric }, ({ name }) =>
+  Effect.gen(function* () {
+    const kernel = yield* KernelClient
+    yield* kernel.delete(`/api/app/installs/${name}`)
+    yield* Console.log(`✓ Uninstalled ${name}`)
+    yield* Console.log(
+      `  Vault project-key registrations dropped; files in the kernel vault root were NOT touched.`,
+    )
+  }),
+).pipe(
+  Command.withDescription(
+    "Uninstall an app — drops install record, bindings, and project-key registrations (files preserved).",
+  ),
+)
+
+// --- capabilities ---
+
+const capabilitiesCommand = Command.make("capabilities", {}, () =>
+  Effect.gen(function* () {
+    const kernel = yield* KernelClient
+    const caps = yield* kernel.get("/api/app/capabilities", CapabilityListSchema)
+    yield* Console.log(`${"ID".padEnd(24)} ${"DEFAULT DRIVER".padEnd(24)} ROUTE PREFIX`)
+    yield* Console.log("-".repeat(80))
+    for (const c of caps) {
+      yield* Console.log(
+        `${c.id.padEnd(24)} ${c.default_driver.padEnd(24)} ${c.route_prefix}`,
+      )
+    }
+  }),
+).pipe(
+  Command.withDescription(
+    "List the capabilities this kernel knows how to fulfill (the registry).",
+  ),
+)
+
+// Suppress unused-warning for VoidSchema (kept for future delete/reload responses).
+void VoidSchema
+
 // --- app (parent) ---
 
 export const appCommand = Command.make("app").pipe(
-  Command.withSubcommands([bootstrapCommand]),
+  Command.withSubcommands([
+    bootstrapCommand,
+    installCommand,
+    listCommand,
+    statusCommand,
+    reloadCommand,
+    uninstallCommand,
+    capabilitiesCommand,
+  ]),
 )
