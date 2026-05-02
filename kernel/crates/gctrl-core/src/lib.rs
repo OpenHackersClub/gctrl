@@ -1,4 +1,5 @@
 pub mod acceptance;
+pub mod app_install;
 pub mod app_manifest;
 pub mod capabilities;
 pub mod config;
@@ -10,6 +11,7 @@ pub mod schedule;
 pub mod types;
 
 pub use acceptance::*;
+pub use app_install::*;
 pub use config::*;
 pub use context::*;
 pub use error::*;
