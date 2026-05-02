@@ -39,8 +39,17 @@ function kindQuery(kind?: SessionKind): string {
   return kind && kind !== "all" ? `?kind=${kind}` : ""
 }
 
+// In Electron the preload bridge exposes `desktop.apiBase` so the renderer
+// loaded from `file://` can reach the kernel sidecar on `http://127.0.0.1:4318`.
+// On the web (no bridge) requests stay relative to the document origin.
+function resolveUrl(path: string): string {
+  const desktop = (globalThis as { desktop?: { apiBase?: string } }).desktop
+  const base = desktop?.apiBase?.replace(/\/$/, "") ?? ""
+  return `${base}${path}`
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetch(resolveUrl(path), {
     ...init,
     headers: {
       "Content-Type": "application/json",

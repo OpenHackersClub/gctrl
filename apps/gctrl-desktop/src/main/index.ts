@@ -54,12 +54,19 @@ const createWindow = (): BrowserWindow => {
     width: 1280,
     height: 800,
     titleBarStyle: "hiddenInset",
+    // Pin traffic lights to a known offset so the SPA's CSS reservation
+    // (`.is-electron nav { padding-top: 40px }`) reliably clears them.
+    trafficLightPosition: { x: 12, y: 14 },
     backgroundColor: "#0b0b0e",
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
       preload: path.join(__dirname, "../preload/index.js"),
+      // Pass the kernel sidecar's base URL into preload's argv so the SPA
+      // (loaded from `file://` in packaged mode) can reach the loopback API
+      // instead of resolving relative `/api/...` paths against `file:///`.
+      additionalArguments: [`--gctrl-api-base=http://127.0.0.1:${KERNEL_PORT}`],
     },
   })
 
@@ -72,6 +79,20 @@ const createWindow = (): BrowserWindow => {
     const devUrl = process.env.GCTRL_DESKTOP_DEV_URL ?? "http://localhost:4200"
     void win.loadURL(devUrl)
   }
+
+  // Reserve space for macOS traffic-light buttons. Injected from main so it
+  // applies regardless of what classes the renderer toggles — the prior
+  // attempt to do this from `main.tsx` via a `.is-electron` class kept
+  // losing to Tailwind's utilities.
+  win.webContents.on("did-finish-load", () => {
+    void win.webContents.insertCSS(
+      `nav.flex.flex-col { padding-top: 44px !important; }
+       header { -webkit-app-region: drag; }
+       header button, header a, header input, header [role="button"], header select { -webkit-app-region: no-drag; }
+       nav { -webkit-app-region: drag; }
+       nav button, nav a, nav [role="button"] { -webkit-app-region: no-drag; }`,
+    )
+  })
 
   // Open external links in the system browser, never inside the app shell.
   win.webContents.setWindowOpenHandler(({ url }) => {
