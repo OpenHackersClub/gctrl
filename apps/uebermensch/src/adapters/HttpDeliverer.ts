@@ -87,47 +87,48 @@ const resolveRef = (
   prefix: string,
   channel: string,
   driver: string,
-): Effect.Effect<string, DeliveryError> =>
-  Effect.gen(function* () {
-    const parsed = resolveEnvRef(targetRef, prefix)
-    if (parsed === null) {
-      return yield* Effect.fail(
-        configErr(channel, driver, `unresolved target_ref for ${driver}: ${targetRef}`),
-      )
-    }
-    if (parsed.kind === "literal") return parsed.value
-    const val = yield* secrets.get(parsed.key).pipe(
-      Effect.catchTag("SecretsError", (e) =>
-        Effect.fail(
-          configErr(
-            channel,
-            driver,
-            `secret lookup failed for ${driver} (key=${parsed.key}): ${e.message}`,
+): Effect.Effect<string, DeliveryError> => {
+  const unresolved = () =>
+    configErr(channel, driver, `unresolved target_ref for ${driver}: ${targetRef}`)
+  const parsed = resolveEnvRef(targetRef, prefix)
+  if (parsed === null) return Effect.fail(unresolved())
+  return Match.value(parsed).pipe(
+    Match.discriminator("kind")("literal", ({ value }) => Effect.succeed(value)),
+    Match.discriminator("kind")("env", ({ key }) =>
+      secrets.get(key).pipe(
+        Effect.catchTag("SecretsError", (e) =>
+          Effect.fail(
+            configErr(
+              channel,
+              driver,
+              `secret lookup failed for ${driver} (key=${key}): ${e.message}`,
+            ),
           ),
         ),
-      ),
-    )
-    return yield* Option.match(val, {
-      onNone: () =>
-        Effect.fail(
-          configErr(channel, driver, `unresolved target_ref for ${driver}: ${targetRef}`),
+        Effect.flatMap(
+          Option.match({
+            onNone: () => Effect.fail(unresolved()),
+            onSome: Effect.succeed,
+          }),
         ),
-      onSome: Effect.succeed,
-    })
-  })
+      ),
+    ),
+    Match.exhaustive,
+  )
+}
 
-// 503 means the kernel is up but its driver is misconfigured (e.g. no bot
-// token). Other 5xx are network/health failures — caller should retry.
+// HTTP status → DeliveryError kind. 5xx is network/health (retry); 4xx is a
+// client/config problem (don't retry).
 const classifyKernelStatus = (
   status: number,
-): "config" | "unreachable" | "rate_limited" | "invalid" | "io_failure" => {
-  if (status === 429) return "rate_limited"
-  if (status === 503) return "unreachable"
-  if (status === 502 || status === 504) return "unreachable"
-  if (status >= 500) return "unreachable"
-  if (status === 400 || status === 401 || status === 403 || status === 404) return "invalid"
-  return "io_failure"
-}
+): "config" | "unreachable" | "rate_limited" | "invalid" | "io_failure" =>
+  Match.value(status).pipe(
+    Match.when(429, () => "rate_limited" as const),
+    Match.whenOr(502, 503, 504, () => "unreachable" as const),
+    Match.when((n) => n >= 500, () => "unreachable" as const),
+    Match.whenOr(400, 401, 403, 404, () => "invalid" as const),
+    Match.orElse(() => "io_failure" as const),
+  )
 
 const kernelBase = () =>
   (process.env.GCTRL_KERNEL_URL ?? "http://127.0.0.1:4318").replace(/\/+$/, "")
