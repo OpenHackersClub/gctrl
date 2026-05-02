@@ -4,11 +4,12 @@ import { Command, Options } from "@effect/cli"
 import { Console, Effect, Layer, Option } from "effect"
 import { EnvSecretsLive } from "../adapters/EnvSecrets.js"
 import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js"
-import { HttpDelivererLive } from "../adapters/HttpDeliverer.js"
 import { R2SyncConfigFromEnv, R2SyncLive } from "../adapters/R2Sync.js"
 import { DeliveryError, VaultError } from "../errors.js"
+import { buildDelivererLayer } from "../lib/build-mode-layer.js"
 import { isChatChannel, resolveChannels } from "../lib/channels.js"
 import { publicBaseUrl, publicBriefUrl, requiresR2Sync, resolveVaultDir } from "../lib/env.js"
+import { resolveMode } from "../lib/mode.js"
 import {
   INPUT_BRIEFS_DIR,
   INPUT_RAW_DIR,
@@ -155,7 +156,7 @@ export const send = Command.make(
       const syncLayer = R2SyncLive.pipe(Layer.provide(R2SyncConfigFromEnv))
       yield* program.pipe(
         Effect.provide(FileSystemProfileLive(vaultDir)),
-        Effect.provide(HttpDelivererLive),
+        Effect.provide(buildDelivererLayer(resolveMode())),
         Effect.provide(EnvSecretsLive),
         Effect.provide(syncLayer),
       )

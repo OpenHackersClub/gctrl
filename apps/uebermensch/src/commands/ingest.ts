@@ -1,12 +1,14 @@
 import { Command, Options } from "@effect/cli";
 import { Console, Effect, Either, Layer, Option } from "effect";
+import { EnvSecretsLive } from "../adapters/EnvSecrets.js";
 import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js";
 import { FileSystemVaultLive } from "../adapters/FileSystemVault.js";
 import { HttpFeedDefaultConfig, HttpFeedLive } from "../adapters/HttpFeed.js";
 import { HttpIngestDefaultConfig, HttpIngestLive } from "../adapters/HttpIngest.js";
-import { KernelLlmLive } from "../adapters/KernelLlm.js";
+import { buildLlmLayer } from "../lib/build-mode-layer.js";
 import { personFeedUrls } from "../lib/discovery.js";
 import { resolveVaultDir } from "../lib/env.js";
+import { resolveMode } from "../lib/mode.js";
 import { FeedService } from "../services/FeedService.js";
 import { IngestService } from "../services/IngestService.js";
 import { ProfileService } from "../services/ProfileService.js";
@@ -88,12 +90,18 @@ const url = Command.make(
       const ingestLayer = HttpIngestLive.pipe(
         Layer.provide(Layer.mergeAll(vaultLayer, HttpIngestDefaultConfig)),
       );
-      // KernelLlmLive is merged at the outer level (not consumed by Layer.provide)
+      // LlmService is merged at the outer level (not consumed by Layer.provide)
       // so HttpIngest's runtime Effect.serviceOption(LlmService) can see it.
       yield* program.pipe(
         Effect.provide(
-          Layer.mergeAll(FileSystemProfileLive(vaultDir), vaultLayer, ingestLayer, KernelLlmLive),
+          Layer.mergeAll(
+            FileSystemProfileLive(vaultDir),
+            vaultLayer,
+            ingestLayer,
+            buildLlmLayer(resolveMode()),
+          ),
         ),
+        Effect.provide(EnvSecretsLive),
       );
     }),
 ).pipe(Command.withDescription("Fetch a URL and write input/raw/<date>--<domain>.md"));
@@ -291,9 +299,10 @@ const sources = Command.make(
             vaultLayer,
             ingestLayer,
             feedLayer,
-            KernelLlmLive,
+            buildLlmLayer(resolveMode()),
           ),
         ),
+        Effect.provide(EnvSecretsLive),
       );
     }),
 ).pipe(
@@ -497,9 +506,10 @@ const person = Command.make(
             vaultLayer,
             ingestLayer,
             feedLayer,
-            KernelLlmLive,
+            buildLlmLayer(resolveMode()),
           ),
         ),
+        Effect.provide(EnvSecretsLive),
       );
     }),
 ).pipe(

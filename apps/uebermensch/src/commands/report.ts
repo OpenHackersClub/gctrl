@@ -3,15 +3,15 @@ import { Console, Effect, Either, Layer, Option } from "effect"
 import { EnvSecretsLive } from "../adapters/EnvSecrets.js"
 import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js"
 import { FileSystemVaultLive } from "../adapters/FileSystemVault.js"
-import { HttpDelivererLive } from "../adapters/HttpDeliverer.js"
-import { KernelLlmLive } from "../adapters/KernelLlm.js"
 import { R2SyncConfigFromEnv, R2SyncLive } from "../adapters/R2Sync.js"
 import { StrictRendererLive } from "../adapters/StrictRenderer.js"
 import { StubLlmLive } from "../adapters/StubLlm.js"
 import { DeliveryError } from "../errors.js"
+import { buildDelivererLayer, buildLlmLayer } from "../lib/build-mode-layer.js"
 import { selectCandidates, type CandidateRef } from "../lib/candidates.js"
 import { isChatChannel, resolveChannels } from "../lib/channels.js"
 import { publicBaseUrl, publicReportUrl, requiresR2Sync, resolveVaultDir } from "../lib/env.js"
+import { resolveMode } from "../lib/mode.js"
 import {
   DIRECTIVES_RESEARCH_DIR,
   DIRECTIVES_SOURCES_FILE,
@@ -643,14 +643,15 @@ export const report = Command.make(
         }
       })
 
-      const llmLayer = llmKind === "stub" ? StubLlmLive : KernelLlmLive
+      const mode = resolveMode()
+      const llmLayer = llmKind === "stub" ? StubLlmLive : buildLlmLayer(mode)
       const syncLayer = R2SyncLive.pipe(Layer.provide(R2SyncConfigFromEnv))
       yield* program.pipe(
         Effect.provide(FileSystemProfileLive(vaultDir)),
         Effect.provide(FileSystemVaultLive(vaultDir)),
         Effect.provide(llmLayer),
         Effect.provide(StrictRendererLive),
-        Effect.provide(HttpDelivererLive),
+        Effect.provide(buildDelivererLayer(mode)),
         Effect.provide(EnvSecretsLive),
         Effect.provide(syncLayer),
       )

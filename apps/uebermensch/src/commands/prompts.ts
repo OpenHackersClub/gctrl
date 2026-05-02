@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto"
 import { Args, Command, Options } from "@effect/cli"
 import { Console, Effect, Either, Option } from "effect"
+import { EnvSecretsLive } from "../adapters/EnvSecrets.js"
 import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js"
 import { FileSystemQueryLive } from "../adapters/FileSystemQuery.js"
 import { FileSystemVaultLive } from "../adapters/FileSystemVault.js"
-import { KernelLlmLive } from "../adapters/KernelLlm.js"
 import { StubLlmLive } from "../adapters/StubLlm.js"
+import { buildLlmLayer } from "../lib/build-mode-layer.js"
 import { resolveVaultDir } from "../lib/env.js"
+import { resolveMode } from "../lib/mode.js"
 import { DIRECTIVES_PROMPTS_DIR, INPUT_REPORTS_DIR } from "../lib/vault-paths.js"
 import {
   LlmService,
@@ -266,12 +268,13 @@ const process_ = Command.make(
         }
       })
 
-      const llmLayer = llmKind === "stub" ? StubLlmLive : KernelLlmLive
+      const llmLayer = llmKind === "stub" ? StubLlmLive : buildLlmLayer(resolveMode())
       yield* program.pipe(
         Effect.provide(FileSystemQueryLive(vaultDir)),
         Effect.provide(FileSystemVaultLive(vaultDir)),
         Effect.provide(FileSystemProfileLive(vaultDir)),
         Effect.provide(llmLayer),
+        Effect.provide(EnvSecretsLive),
       )
     }),
 ).pipe(

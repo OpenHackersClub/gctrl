@@ -1,12 +1,14 @@
 import { Command, Options } from "@effect/cli"
 import { Console, Effect, Option } from "effect"
+import { EnvSecretsLive } from "../adapters/EnvSecrets.js"
 import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js"
 import { FileSystemVaultLive } from "../adapters/FileSystemVault.js"
-import { KernelLlmLive } from "../adapters/KernelLlm.js"
 import { StrictRendererLive } from "../adapters/StrictRenderer.js"
 import { StubLlmLive } from "../adapters/StubLlm.js"
+import { buildLlmLayer } from "../lib/build-mode-layer.js"
 import { selectCandidates } from "../lib/candidates.js"
 import { resolveVaultDir } from "../lib/env.js"
+import { resolveMode } from "../lib/mode.js"
 import { LlmService } from "../services/LlmService.js"
 import { ProfileService } from "../services/ProfileService.js"
 import { RendererService } from "../services/RendererService.js"
@@ -149,12 +151,13 @@ export const brief = Command.make(
       const date = Option.getOrElse(dateOptVal, today)
       yield* Console.log(`generating brief for ${date} from ${vaultDir} (llm=${llmKind})`)
       const program = makeBriefProgram({ date, sinceHours, maxItemsOpt: maxItemsOptVal, dryRun })
-      const llmLayer = llmKind === "stub" ? StubLlmLive : KernelLlmLive
+      const llmLayer = llmKind === "stub" ? StubLlmLive : buildLlmLayer(resolveMode())
       yield* program.pipe(
         Effect.provide(FileSystemProfileLive(vaultDir)),
         Effect.provide(FileSystemVaultLive(vaultDir)),
         Effect.provide(llmLayer),
         Effect.provide(StrictRendererLive),
+        Effect.provide(EnvSecretsLive),
       )
     }),
 ).pipe(Command.withDescription("Generate a daily brief from wiki pages + stub LLM"))

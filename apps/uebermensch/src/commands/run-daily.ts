@@ -5,8 +5,8 @@ import { Console, Effect, Either, Layer } from "effect"
 import { EnvSecretsLive } from "../adapters/EnvSecrets.js"
 import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js"
 import { FileSystemVaultLive } from "../adapters/FileSystemVault.js"
-import { HttpDelivererLive } from "../adapters/HttpDeliverer.js"
-import { KernelLlmLive } from "../adapters/KernelLlm.js"
+import { buildDelivererLayer, buildLlmLayer } from "../lib/build-mode-layer.js"
+import { resolveMode } from "../lib/mode.js"
 import { R2SyncConfigFromEnv, R2SyncLive } from "../adapters/R2Sync.js"
 import { StrictRendererLive } from "../adapters/StrictRenderer.js"
 import { selectCandidates } from "../lib/candidates.js"
@@ -246,15 +246,17 @@ export const runDaily = Command.make("run-daily", {}, () =>
     const date = today()
     yield* Console.log(`uber run-daily ${date}`)
 
+    const mode = resolveMode()
     const briefLayer = Layer.mergeAll(
       FileSystemProfileLive(vaultDir),
       FileSystemVaultLive(vaultDir),
-      KernelLlmLive,
+      buildLlmLayer(mode),
       StrictRendererLive,
     )
 
     const briefResult = yield* runBriefGeneration(date, vaultDir).pipe(
       Effect.provide(briefLayer),
+      Effect.provide(EnvSecretsLive),
       Effect.either,
     )
 
@@ -270,7 +272,7 @@ export const runDaily = Command.make("run-daily", {}, () =>
       Effect.provide(
         Layer.mergeAll(
           FileSystemProfileLive(vaultDir),
-          HttpDelivererLive,
+          buildDelivererLayer(mode),
           syncLayer,
         ),
       ),
