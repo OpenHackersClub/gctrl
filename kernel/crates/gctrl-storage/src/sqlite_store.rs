@@ -12,10 +12,10 @@ use gctrl_core::{
     context::{ContextEntry, ContextEntryId, ContextFilter, ContextKind, ContextSource},
     memory::{MemoryEntry, MemoryEntryId, MemoryFilter, MemoryStats, MemoryType},
     AcceptanceCheck, AcceptanceCheckRow, AcceptanceKind, AcceptanceRollup, AcceptanceStatus,
-    GctlError, InboxAction, InboxActionFilter, InboxMessage, InboxMessageFilter, InboxThread,
-    PersonaDefinition, PersonaReviewRule, Result, Schedule, ScheduleFilter, ScheduleRun,
-    ScheduleRunFilter, ScheduleRunUpdate, OrchTask, UberBrief, UberSinkinSession,
-    VaultMount, VaultMountKind,
+    AppBinding, AppInstall, GctlError, InboxAction, InboxActionFilter, InboxMessage,
+    InboxMessageFilter, InboxThread, PersonaDefinition, PersonaReviewRule, Result, Schedule,
+    ScheduleFilter, ScheduleRun, ScheduleRunFilter, ScheduleRunUpdate, OrchTask, UberBrief,
+    UberSinkinSession, VaultMount, VaultMountKind,
 };
 use rusqlite::{params, Connection};
 
@@ -267,6 +267,36 @@ CREATE TABLE IF NOT EXISTS memory_entries (
 )
 "#;
 
+// App installs: per-device registry of apps installed via `gctrl app install`.
+// One row per installed app (manifest [app] name = unique key). Capability
+// bindings live in `gctrl_app_bindings`. NOT D1-synced — installs are local
+// (different machines may have different apps installed). Spec:
+// vault/specs/architecture/app-install-protocol.md § Storage.
+const CREATE_GCTRL_APP_INSTALLS: &str = r#"
+CREATE TABLE IF NOT EXISTS gctrl_app_installs (
+    name           TEXT PRIMARY KEY,
+    version        TEXT NOT NULL,
+    source_ref     TEXT NOT NULL,
+    manifest_sha   TEXT NOT NULL,
+    installed_at   TEXT NOT NULL,
+    reloaded_at    TEXT
+)
+"#;
+
+// One row per (install, capability) — denormalized join of install ×
+// capability registry. `driver_id` is captured at install time so registry
+// changes don't silently rewrite history; `gctrl app reload` re-resolves.
+const CREATE_GCTRL_APP_BINDINGS: &str = r#"
+CREATE TABLE IF NOT EXISTS gctrl_app_bindings (
+    install_name   TEXT NOT NULL REFERENCES gctrl_app_installs(name) ON DELETE CASCADE,
+    capability     TEXT NOT NULL,
+    driver_id      TEXT NOT NULL,
+    required       INTEGER NOT NULL,
+    resolved_at    TEXT NOT NULL,
+    PRIMARY KEY (install_name, capability)
+)
+"#;
+
 // Vault mounts: per-device registry of Obsidian-mountable vault directories
 // the kernel watches and indexes. Each mount maps `name` → filesystem `root_path`
 // with an associated `kind` (workspace, app, or external git repo). NOT D1-synced —
@@ -453,6 +483,8 @@ const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_uber_sinkin_started ON uber_sinkin_sessions(started_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_uber_sinkin_status ON uber_sinkin_sessions(status, started_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_uber_sinkin_scope ON uber_sinkin_sessions(scope_kind, scope_value)",
+    // App installs index — list bindings for an install (PR-α.3 status command)
+    "CREATE INDEX IF NOT EXISTS idx_gctrl_app_bindings_install ON gctrl_app_bindings(install_name)",
 ];
 
 // ═══════════════════════════════════════════════════════════════
@@ -514,6 +546,8 @@ impl SqliteStore {
             CREATE_CONTEXT_ENTRIES,
             CREATE_MEMORY_ENTRIES,
             CREATE_VAULT_MOUNTS,
+            CREATE_GCTRL_APP_INSTALLS,
+            CREATE_GCTRL_APP_BINDINGS,
             CREATE_UBER_BRIEFS,
             CREATE_UBER_SINKIN_SESSIONS,
             CREATE_SCHEDULES,
@@ -2552,6 +2586,138 @@ impl SqliteStore {
         Ok(())
     }
 
+    // ───────────────────────── App installs ─────────────────────────
+
+    /// Idempotent install record write. New apps insert; reload of an
+    /// existing app updates `version`, `source_ref`, `manifest_sha`, and
+    /// stamps `reloaded_at`. The PK conflict resolution preserves the
+    /// original `installed_at` so analytics see the true first-install time.
+    pub fn upsert_app_install(&self, install: &AppInstall) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO gctrl_app_installs
+                (name, version, source_ref, manifest_sha, installed_at, reloaded_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(name) DO UPDATE SET
+                version       = excluded.version,
+                source_ref    = excluded.source_ref,
+                manifest_sha  = excluded.manifest_sha,
+                reloaded_at   = excluded.reloaded_at",
+            params![
+                install.name,
+                install.version,
+                install.source_ref,
+                install.manifest_sha,
+                install.installed_at.to_rfc3339(),
+                install.reloaded_at.map(|dt| dt.to_rfc3339()),
+            ],
+        )
+        .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_app_install(&self, name: &str) -> Result<Option<AppInstall>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT name, version, source_ref, manifest_sha, installed_at, reloaded_at
+             FROM gctrl_app_installs WHERE name = ?1",
+            [name],
+            row_to_app_install,
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(GctlError::Storage(other.to_string())),
+        })
+    }
+
+    /// Alphabetical by `name` so listings are stable.
+    pub fn list_app_installs(&self) -> Result<Vec<AppInstall>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT name, version, source_ref, manifest_sha, installed_at, reloaded_at
+                 FROM gctrl_app_installs ORDER BY name",
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map([], row_to_app_install)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// Removes the install record + cascades to `gctrl_app_bindings`. Vault
+    /// mounts and schedules registered for the app are NOT touched here —
+    /// the install handler decides whether to prune them (per `--prune-projects`).
+    pub fn delete_app_install(&self, name: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        // Cascade is declared on the FK but SQLite requires PRAGMA
+        // foreign_keys = ON to honor it; defensively delete bindings first.
+        conn.execute(
+            "DELETE FROM gctrl_app_bindings WHERE install_name = ?1",
+            [name],
+        )
+        .map_err(|e| GctlError::Storage(e.to_string()))?;
+        conn.execute(
+            "DELETE FROM gctrl_app_installs WHERE name = ?1",
+            [name],
+        )
+        .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Replace the full set of bindings for an install. Called on install +
+    /// reload — the manifest's capability set is the source of truth, so we
+    /// drop existing bindings and insert the new ones in one transaction.
+    pub fn replace_app_bindings(
+        &self,
+        install_name: &str,
+        bindings: &[AppBinding],
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn
+            .transaction()
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        tx.execute(
+            "DELETE FROM gctrl_app_bindings WHERE install_name = ?1",
+            [install_name],
+        )
+        .map_err(|e| GctlError::Storage(e.to_string()))?;
+        for b in bindings {
+            tx.execute(
+                "INSERT INTO gctrl_app_bindings
+                    (install_name, capability, driver_id, required, resolved_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    b.install_name,
+                    b.capability,
+                    b.driver_id,
+                    if b.required { 1_i64 } else { 0_i64 },
+                    b.resolved_at.to_rfc3339(),
+                ],
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        }
+        tx.commit().map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Bindings for a single install, ordered required-first then alphabetical.
+    pub fn list_app_bindings(&self, install_name: &str) -> Result<Vec<AppBinding>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT install_name, capability, driver_id, required, resolved_at
+                 FROM gctrl_app_bindings WHERE install_name = ?1
+                 ORDER BY required DESC, capability",
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let rows = stmt
+            .query_map([install_name], row_to_app_binding)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
     // ───────────────────────── Uebermensch briefs ─────────────────────────
 
     /// Idempotent index write: replaces by `(date, kind)` so re-running a
@@ -3142,6 +3308,36 @@ fn row_to_vault_mount(row: &rusqlite::Row<'_>) -> rusqlite::Result<VaultMount> {
         updated_at: chrono::DateTime::parse_from_rfc3339(&updated_at_str)
             .map(|dt| dt.with_timezone(&chrono::Utc))
             .unwrap_or_else(|_| chrono::Utc::now()),
+    })
+}
+
+fn parse_dt(s: &str) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|_| chrono::Utc::now())
+}
+
+fn row_to_app_install(row: &rusqlite::Row<'_>) -> rusqlite::Result<AppInstall> {
+    let installed_at_str: String = row.get(4)?;
+    let reloaded_at_str: Option<String> = row.get(5)?;
+    Ok(AppInstall {
+        name: row.get(0)?,
+        version: row.get(1)?,
+        source_ref: row.get(2)?,
+        manifest_sha: row.get(3)?,
+        installed_at: parse_dt(&installed_at_str),
+        reloaded_at: reloaded_at_str.as_deref().map(parse_dt),
+    })
+}
+
+fn row_to_app_binding(row: &rusqlite::Row<'_>) -> rusqlite::Result<AppBinding> {
+    let resolved_at_str: String = row.get(4)?;
+    Ok(AppBinding {
+        install_name: row.get(0)?,
+        capability: row.get(1)?,
+        driver_id: row.get(2)?,
+        required: row.get::<_, i64>(3)? != 0,
+        resolved_at: parse_dt(&resolved_at_str),
     })
 }
 
@@ -4147,6 +4343,171 @@ mod tests {
         let m = store.get_vault_mount("ext").unwrap().unwrap();
         assert_eq!(m.last_commit_sha.as_deref(), Some("abc123def"));
         assert!(m.last_synced_at.is_some());
+    }
+
+    fn make_install(name: &str, version: &str) -> AppInstall {
+        AppInstall {
+            name: name.into(),
+            version: version.into(),
+            source_ref: format!("/path/to/{name}"),
+            manifest_sha: format!("sha-{name}"),
+            installed_at: chrono::Utc::now(),
+            reloaded_at: None,
+        }
+    }
+
+    fn make_binding(install: &str, capability: &str, driver: &str, required: bool) -> AppBinding {
+        AppBinding {
+            install_name: install.into(),
+            capability: capability.into(),
+            driver_id: driver.into(),
+            required,
+            resolved_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn app_install_upsert_and_get() {
+        let store = test_store();
+        store.upsert_app_install(&make_install("uebermensch", "0.2.0")).unwrap();
+        let got = store.get_app_install("uebermensch").unwrap().unwrap();
+        assert_eq!(got.name, "uebermensch");
+        assert_eq!(got.version, "0.2.0");
+        assert!(got.reloaded_at.is_none());
+        assert!(store.get_app_install("nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn app_install_upsert_preserves_installed_at_on_reload() {
+        let store = test_store();
+        let original = make_install("uebermensch", "0.1.0");
+        let original_installed_at = original.installed_at;
+        store.upsert_app_install(&original).unwrap();
+
+        // Sleep is overkill; just construct a "reload" with a fresh now.
+        let mut reload = make_install("uebermensch", "0.2.0");
+        reload.installed_at = chrono::Utc::now();
+        reload.reloaded_at = Some(chrono::Utc::now());
+        store.upsert_app_install(&reload).unwrap();
+
+        let got = store.get_app_install("uebermensch").unwrap().unwrap();
+        assert_eq!(got.version, "0.2.0");
+        // installed_at MUST be preserved across reload.
+        let drift_secs = (got.installed_at - original_installed_at).num_seconds().abs();
+        assert!(drift_secs < 2, "installed_at drifted: {drift_secs}s");
+        assert!(got.reloaded_at.is_some());
+    }
+
+    #[test]
+    fn app_install_list_alphabetical() {
+        let store = test_store();
+        store.upsert_app_install(&make_install("zebra", "1.0.0")).unwrap();
+        store.upsert_app_install(&make_install("apple", "1.0.0")).unwrap();
+        store.upsert_app_install(&make_install("middle", "1.0.0")).unwrap();
+        let listed = store.list_app_installs().unwrap();
+        assert_eq!(listed.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(),
+                   vec!["apple", "middle", "zebra"]);
+    }
+
+    #[test]
+    fn app_install_delete_cascades_bindings() {
+        let store = test_store();
+        store.upsert_app_install(&make_install("uebermensch", "0.2.0")).unwrap();
+        let bindings = vec![
+            make_binding("uebermensch", "llm", "driver-llm", true),
+            make_binding("uebermensch", "deliverer.telegram", "driver-telegram", true),
+        ];
+        store.replace_app_bindings("uebermensch", &bindings).unwrap();
+        assert_eq!(store.list_app_bindings("uebermensch").unwrap().len(), 2);
+
+        store.delete_app_install("uebermensch").unwrap();
+        assert!(store.get_app_install("uebermensch").unwrap().is_none());
+        assert!(store.list_app_bindings("uebermensch").unwrap().is_empty());
+    }
+
+    #[test]
+    fn app_bindings_replace_overwrites_full_set() {
+        let store = test_store();
+        store.upsert_app_install(&make_install("uebermensch", "0.2.0")).unwrap();
+
+        // First wave
+        store
+            .replace_app_bindings(
+                "uebermensch",
+                &[
+                    make_binding("uebermensch", "llm", "driver-llm", true),
+                    make_binding("uebermensch", "deliverer.telegram", "driver-telegram", true),
+                    make_binding("uebermensch", "gcal", "driver-gcal", false),
+                ],
+            )
+            .unwrap();
+        assert_eq!(store.list_app_bindings("uebermensch").unwrap().len(), 3);
+
+        // Second wave drops `gcal`, swaps `llm` driver.
+        store
+            .replace_app_bindings(
+                "uebermensch",
+                &[
+                    make_binding("uebermensch", "llm", "driver-llm-v2", true),
+                    make_binding("uebermensch", "deliverer.telegram", "driver-telegram", true),
+                ],
+            )
+            .unwrap();
+        let after = store.list_app_bindings("uebermensch").unwrap();
+        assert_eq!(after.len(), 2);
+        let llm = after.iter().find(|b| b.capability == "llm").unwrap();
+        assert_eq!(llm.driver_id, "driver-llm-v2");
+        assert!(after.iter().all(|b| b.capability != "gcal"));
+    }
+
+    #[test]
+    fn app_bindings_list_orders_required_then_alphabetical() {
+        let store = test_store();
+        store.upsert_app_install(&make_install("u", "1.0.0")).unwrap();
+        store
+            .replace_app_bindings(
+                "u",
+                &[
+                    make_binding("u", "browser.cdp", "driver-browser", false),
+                    make_binding("u", "vault.write", "kernel-vault-fs", true),
+                    make_binding("u", "llm", "driver-llm", true),
+                    make_binding("u", "gcal", "driver-gcal", false),
+                ],
+            )
+            .unwrap();
+        let listed = store.list_app_bindings("u").unwrap();
+        // Required first (alphabetical: llm, vault.write), then optional
+        // (alphabetical: browser.cdp, gcal).
+        assert_eq!(
+            listed.iter().map(|b| b.capability.as_str()).collect::<Vec<_>>(),
+            vec!["llm", "vault.write", "browser.cdp", "gcal"]
+        );
+    }
+
+    #[test]
+    fn app_bindings_required_flag_round_trips() {
+        let store = test_store();
+        store.upsert_app_install(&make_install("u", "1.0.0")).unwrap();
+        store
+            .replace_app_bindings(
+                "u",
+                &[
+                    make_binding("u", "llm", "driver-llm", true),
+                    make_binding("u", "gcal", "driver-gcal", false),
+                ],
+            )
+            .unwrap();
+        let listed = store.list_app_bindings("u").unwrap();
+        let llm = listed.iter().find(|b| b.capability == "llm").unwrap();
+        let gcal = listed.iter().find(|b| b.capability == "gcal").unwrap();
+        assert!(llm.required);
+        assert!(!gcal.required);
+    }
+
+    #[test]
+    fn app_bindings_for_unknown_install_is_empty() {
+        let store = test_store();
+        assert!(store.list_app_bindings("never-installed").unwrap().is_empty());
     }
 
     #[test]
