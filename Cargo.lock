@@ -1664,6 +1664,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "gctrl-gcal"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "gctrl-guardrails"
 version = "0.1.0"
 dependencies = [
@@ -1730,6 +1744,7 @@ dependencies = [
  "futures-core",
  "gctrl-context",
  "gctrl-core",
+ "gctrl-gcal",
  "gctrl-net",
  "gctrl-proxy",
  "gctrl-scheduler",

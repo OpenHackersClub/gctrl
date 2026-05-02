@@ -1,5 +1,6 @@
 pub mod contributions;
 pub mod event_bus;
+pub mod gcal_routes;
 pub mod receiver;
 pub mod rss;
 pub mod span_processor;
