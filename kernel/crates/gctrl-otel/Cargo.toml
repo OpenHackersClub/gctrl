@@ -15,6 +15,7 @@ gctrl-scheduler = { path = "../gctrl-scheduler" }
 # rows + OTLP spans the relay does.
 gctrl-proxy = { path = "../gctrl-proxy" }
 gctrl-gcal = { path = "../gctrl-gcal" }
+gctrl-driver-macos = { path = "../gctrl-driver-macos" }
 reqwest = { workspace = true }
 duckdb = { workspace = true }
 axum = { workspace = true }
