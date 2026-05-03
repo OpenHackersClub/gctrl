@@ -5109,6 +5109,7 @@ fn install_app_inner(
                 app_id: Some(manifest.app.name.clone()),
                 created_at: now_str.clone(),
                 updated_at: now_str,
+                health: None,
             },
             "http" => gctrl_core::Schedule {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -5138,6 +5139,7 @@ fn install_app_inner(
                 app_id: Some(manifest.app.name.clone()),
                 created_at: now_str.clone(),
                 updated_at: now_str,
+                health: None,
             },
             other => {
                 return Err((
