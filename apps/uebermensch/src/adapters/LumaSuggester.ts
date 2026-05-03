@@ -5,7 +5,7 @@ import {
   eventTokens,
   scoreMatch,
 } from "../lib/event-match.js"
-import { fetchLumaEvents, LumaError, lumaCityUrl, type FetchFn } from "../lib/luma.js"
+import { fetchLumaEvents, type LumaError, lumaCityUrl, type FetchFn } from "../lib/luma.js"
 import { CalendarService, type SuggestionInput } from "../services/CalendarService.js"
 import {
   EventSuggesterService,

@@ -1,5 +1,5 @@
 import { Context, type Effect } from "effect"
-import type { VaultError } from "../errors.js"
+import type { VaultError, VaultSecretLeakError } from "../errors.js"
 
 export type WikiPage = {
   readonly relPath: string
@@ -58,23 +58,28 @@ export interface VaultServiceShape {
     ReadonlyArray<ResearchInterest>,
     VaultError
   >
+  // Write methods may fail with VaultSecretLeakError when the underlying
+  // VaultWriterPort is wrapped by `vaultSecretGuard` — content matching a known
+  // credential pattern is rejected before persisting. Production layers
+  // (FileSystemVaultLive) bundle the guard, so callers must handle both error
+  // types in their error channel.
   readonly writeBrief: (
     date: string,
     content: string,
-  ) => Effect.Effect<WrittenBrief, VaultError>
+  ) => Effect.Effect<WrittenBrief, VaultError | VaultSecretLeakError>
   readonly writeSource: (
     slug: string,
     content: string,
     options?: { readonly overwrite?: boolean },
-  ) => Effect.Effect<WrittenSource, VaultError>
+  ) => Effect.Effect<WrittenSource, VaultError | VaultSecretLeakError>
   readonly writeReport: (
     slug: string,
     content: string,
-  ) => Effect.Effect<WrittenReport, VaultError>
+  ) => Effect.Effect<WrittenReport, VaultError | VaultSecretLeakError>
   readonly writeResearch: (
     slug: string,
     content: string,
-  ) => Effect.Effect<WrittenResearch, VaultError>
+  ) => Effect.Effect<WrittenResearch, VaultError | VaultSecretLeakError>
 }
 
 export class VaultService extends Context.Tag("uebermensch/VaultService")<

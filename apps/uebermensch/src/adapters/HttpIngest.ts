@@ -299,7 +299,22 @@ export const HttpIngestLive = Layer.effect(
 
           const written = yield* vault
             .writeSource(slug, full, { overwrite: req.overwrite })
-            .pipe(Effect.catchTag("VaultError", (e) => Effect.fail(vaultToIngest(req.url)(e))));
+            .pipe(
+              Effect.catchTags({
+                VaultError: (e) => Effect.fail(vaultToIngest(req.url)(e)),
+                // Ingested content matched a known credential pattern — refuse
+                // the page rather than persist it. Mapped to io_failure so the
+                // ingest queue treats it like any other rejected write.
+                VaultSecretLeakError: (e) =>
+                  Effect.fail(
+                    ingestErr(
+                      "io_failure",
+                      req.url,
+                      `secret-pattern leak blocked write: ${e.leaks.map((l) => l.name).join(", ")}`,
+                    ),
+                  ),
+              }),
+            );
 
           return {
             slug,

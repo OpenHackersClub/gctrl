@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto"
-import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises"
+import { readFile, readdir, stat } from "node:fs/promises"
 import { basename, extname, join, relative } from "node:path"
 import { Effect, Layer, Schema } from "effect"
 import matter from "gray-matter"
@@ -18,9 +17,9 @@ import {
   type ResearchInterest,
   type WikiPage,
 } from "../services/VaultService.js"
-
-const hashContent = (s: string) =>
-  `sha256:${createHash("sha256").update(s, "utf8").digest("hex")}`
+import { VaultWriterPort } from "../services/VaultWriterPort.js"
+import { FsVaultWriterLive } from "./FsVaultWriter.js"
+import { vaultSecretGuard } from "./VaultSecretGuard.js"
 
 type WalkEntry = { abs: string; rel: string; stat: Awaited<ReturnType<typeof stat>> }
 
@@ -77,188 +76,181 @@ const SLUG_DIRS = [
   INPUT_REPORTS_DIR,
 ] as const
 
-export const FileSystemVaultLive = (vaultDir: string) =>
-  Layer.succeed(VaultService, {
-    root: () => vaultDir,
-    listWikiPages: () =>
-      Effect.tryPromise({
-        try: async () => {
-          const files = await walkMarkdown(vaultDir, KB_DIRS)
-          return Promise.all(files.map(loadPage))
-        },
-        catch: (e) =>
-          new VaultError({ message: `list wiki failed: ${String(e)}`, path: vaultDir }),
-      }),
-    recentlyChanged: (sinceHours) =>
-      Effect.tryPromise({
-        try: async () => {
-          const cutoff = Date.now() - sinceHours * 3_600_000
-          const files = await walkMarkdown(vaultDir, KB_DIRS)
-          const recent = files.filter((f) => f.stat.mtime.getTime() >= cutoff)
-          return Promise.all(recent.map(loadPage))
-        },
-        catch: (e) =>
-          new VaultError({ message: `recent scan failed: ${String(e)}`, path: vaultDir }),
-      }),
-    listSlugs: () =>
-      Effect.tryPromise({
-        try: async () => {
-          const files = await walkMarkdown(vaultDir, SLUG_DIRS)
-          const slugs = new Set<string>()
-          for (const f of files) slugs.add(basename(f.abs, ".md"))
-          return slugs as ReadonlySet<string>
-        },
-        catch: (e) =>
-          new VaultError({ message: `list slugs failed: ${String(e)}`, path: vaultDir }),
-      }),
-    writeBrief: (date, content) =>
-      Effect.tryPromise({
-        try: async () => {
-          const relPath = `${INPUT_BRIEFS_DIR}/${date}.md`
-          const absPath = join(vaultDir, relPath)
-          const tmpPath = `${absPath}.tmp-${process.pid}-${Date.now()}`
-          await mkdir(join(vaultDir, INPUT_BRIEFS_DIR), { recursive: true })
-          await writeFile(tmpPath, content, "utf8")
-          await rename(tmpPath, absPath)
-          return { absPath, relPath, contentHash: hashContent(content) }
-        },
-        catch: (e) =>
-          new VaultError({ message: `write brief failed: ${String(e)}`, path: vaultDir }),
-      }),
-    listResearchInterests: () =>
-      Effect.gen(function* () {
-        const files = yield* Effect.tryPromise({
-          try: () => walkMarkdown(vaultDir, [DIRECTIVES_RESEARCH_DIR]),
-          catch: (e) =>
-            new VaultError({
-              message: `list research failed: ${String(e)}`,
-              path: vaultDir,
-              kind: "io_failure",
-            }),
-        })
-        const out: Array<ResearchInterest> = []
-        for (const f of files) {
-          const raw = yield* Effect.tryPromise({
-            try: () => readFile(f.abs, "utf8"),
+// VaultService implementation that depends on VaultWriterPort for all writes.
+// Read-side methods (listWikiPages, recentlyChanged, listSlugs,
+// listResearchInterests) walk the filesystem directly — they have a typed
+// shape that doesn't fit VaultWriterPort.list, and reads are not subject to
+// secret-leak scanning.
+const VaultServiceFromWriter = (vaultDir: string) =>
+  Layer.effect(
+    VaultService,
+    Effect.gen(function* () {
+      const writer = yield* VaultWriterPort
+
+      return {
+        root: () => vaultDir,
+        listWikiPages: () =>
+          Effect.tryPromise({
+            try: async () => {
+              const files = await walkMarkdown(vaultDir, KB_DIRS)
+              return Promise.all(files.map(loadPage))
+            },
             catch: (e) =>
-              new VaultError({
-                message: `read research file failed: ${String(e)}`,
-                path: f.abs,
-                kind: "io_failure",
-              }),
-          })
-          const parsed = matter(raw)
-          const data = (parsed.data ?? {}) as Record<string, unknown>
-          const decoded = yield* Schema.decodeUnknown(ResearchInterestFrontmatter)(data).pipe(
-            Effect.mapError(
-              (e) =>
-                new VaultError({
-                  message: `research interest ${f.rel} invalid: ${String(e)}`,
-                  path: f.abs,
-                  kind: "parse_failure",
-                }),
-            ),
-          )
-          out.push({
-            slug: decoded.slug,
-            title: decoded.title,
-            question: decoded.question ?? null,
-            topics: decoded.topics,
-            sources: decoded.sources ?? [],
-            horizon: decoded.horizon ?? null,
-            weight: decoded.weight ?? null,
-            fieldFamiliarity: decoded.field_familiarity ?? "expert",
-            notes: parsed.content.trim(),
-            relPath: f.rel,
-          })
-        }
-        return out
-      }),
-    writeReport: (slug, content) =>
-      Effect.tryPromise({
-        try: async () => {
-          const relPath = `${INPUT_REPORTS_DIR}/${slug}.md`
-          const absPath = join(vaultDir, relPath)
-          const tmpPath = `${absPath}.tmp-${process.pid}-${Date.now()}`
-          await mkdir(join(vaultDir, INPUT_REPORTS_DIR), { recursive: true })
-          await writeFile(tmpPath, content, "utf8")
-          await rename(tmpPath, absPath)
-          return { absPath, relPath, contentHash: hashContent(content) }
-        },
-        catch: (e) =>
-          new VaultError({
-            message: `write report failed: ${String(e)}`,
-            path: vaultDir,
-            kind: "io_failure",
+              new VaultError({ message: `list wiki failed: ${String(e)}`, path: vaultDir }),
           }),
-      }),
-    // Prompt-driven research answers also land in input/reports/ — they are
-    // CoS output the user reads. Kept as a distinct method so prompts.ts can
-    // stay readable; it just delegates.
-    writeResearch: (slug, content) =>
-      Effect.tryPromise({
-        try: async () => {
-          const relPath = `${INPUT_REPORTS_DIR}/${slug}.md`
-          const absPath = join(vaultDir, relPath)
-          const tmpPath = `${absPath}.tmp-${process.pid}-${Date.now()}`
-          await mkdir(join(vaultDir, INPUT_REPORTS_DIR), { recursive: true })
-          await writeFile(tmpPath, content, "utf8")
-          await rename(tmpPath, absPath)
-          return { absPath, relPath, contentHash: hashContent(content) }
-        },
-        catch: (e) =>
-          new VaultError({
-            message: `write research failed: ${String(e)}`,
-            path: vaultDir,
-            kind: "io_failure",
+        recentlyChanged: (sinceHours) =>
+          Effect.tryPromise({
+            try: async () => {
+              const cutoff = Date.now() - sinceHours * 3_600_000
+              const files = await walkMarkdown(vaultDir, KB_DIRS)
+              const recent = files.filter((f) => f.stat.mtime.getTime() >= cutoff)
+              return Promise.all(recent.map(loadPage))
+            },
+            catch: (e) =>
+              new VaultError({ message: `recent scan failed: ${String(e)}`, path: vaultDir }),
           }),
-      }),
-    writeSource: (slug, content, options) =>
-      Effect.gen(function* () {
-        const relPath = `${INPUT_RAW_DIR}/${slug}.md`
-        const absPath = join(vaultDir, relPath)
-
-        const existed = yield* Effect.tryPromise({
-          try: async () => {
-            try {
-              await stat(absPath)
-              return true
-            } catch {
-              return false
+        listSlugs: () =>
+          Effect.tryPromise({
+            try: async () => {
+              const files = await walkMarkdown(vaultDir, SLUG_DIRS)
+              const slugs = new Set<string>()
+              for (const f of files) slugs.add(basename(f.abs, ".md"))
+              return slugs as ReadonlySet<string>
+            },
+            catch: (e) =>
+              new VaultError({ message: `list slugs failed: ${String(e)}`, path: vaultDir }),
+          }),
+        writeBrief: (date, content) =>
+          Effect.gen(function* () {
+            const relPath = `${INPUT_BRIEFS_DIR}/${date}.md`
+            const written = yield* writer.write(relPath, content)
+            return {
+              absPath: join(vaultDir, relPath),
+              relPath,
+              contentHash: written.contentHash,
             }
-          },
-          catch: (e) =>
-            new VaultError({
-              message: `stat failed: ${String(e)}`,
-              path: absPath,
-              kind: "io_failure",
-            }),
-        })
+          }),
+        listResearchInterests: () =>
+          Effect.gen(function* () {
+            const files = yield* Effect.tryPromise({
+              try: () => walkMarkdown(vaultDir, [DIRECTIVES_RESEARCH_DIR]),
+              catch: (e) =>
+                new VaultError({
+                  message: `list research failed: ${String(e)}`,
+                  path: vaultDir,
+                  kind: "io_failure",
+                }),
+            })
+            const out: Array<ResearchInterest> = []
+            for (const f of files) {
+              const raw = yield* Effect.tryPromise({
+                try: () => readFile(f.abs, "utf8"),
+                catch: (e) =>
+                  new VaultError({
+                    message: `read research file failed: ${String(e)}`,
+                    path: f.abs,
+                    kind: "io_failure",
+                  }),
+              })
+              const parsed = matter(raw)
+              const data = (parsed.data ?? {}) as Record<string, unknown>
+              const decoded = yield* Schema.decodeUnknown(ResearchInterestFrontmatter)(data).pipe(
+                Effect.mapError(
+                  (e) =>
+                    new VaultError({
+                      message: `research interest ${f.rel} invalid: ${String(e)}`,
+                      path: f.abs,
+                      kind: "parse_failure",
+                    }),
+                ),
+              )
+              out.push({
+                slug: decoded.slug,
+                title: decoded.title,
+                question: decoded.question ?? null,
+                topics: decoded.topics,
+                sources: decoded.sources ?? [],
+                horizon: decoded.horizon ?? null,
+                weight: decoded.weight ?? null,
+                fieldFamiliarity: decoded.field_familiarity ?? "expert",
+                notes: parsed.content.trim(),
+                relPath: f.rel,
+              })
+            }
+            return out
+          }),
+        writeReport: (slug, content) =>
+          Effect.gen(function* () {
+            const relPath = `${INPUT_REPORTS_DIR}/${slug}.md`
+            const written = yield* writer.write(relPath, content)
+            return {
+              absPath: join(vaultDir, relPath),
+              relPath,
+              contentHash: written.contentHash,
+            }
+          }),
+        // Prompt-driven research answers also land in input/reports/ — they
+        // are CoS output the user reads. Kept as a distinct method so
+        // prompts.ts can stay readable; it just delegates.
+        writeResearch: (slug, content) =>
+          Effect.gen(function* () {
+            const relPath = `${INPUT_REPORTS_DIR}/${slug}.md`
+            const written = yield* writer.write(relPath, content)
+            return {
+              absPath: join(vaultDir, relPath),
+              relPath,
+              contentHash: written.contentHash,
+            }
+          }),
+        writeSource: (slug, content, options) =>
+          Effect.gen(function* () {
+            const relPath = `${INPUT_RAW_DIR}/${slug}.md`
+            const absPath = join(vaultDir, relPath)
 
-        if (existed && !options?.overwrite) {
-          return yield* Effect.fail(
-            new VaultError({
-              message: `source page already exists: ${relPath}`,
-              path: absPath,
-              kind: "collision",
-            }),
-          )
-        }
+            const existed = yield* Effect.tryPromise({
+              try: async () => {
+                try {
+                  await stat(absPath)
+                  return true
+                } catch {
+                  return false
+                }
+              },
+              catch: (e) =>
+                new VaultError({
+                  message: `stat failed: ${String(e)}`,
+                  path: absPath,
+                  kind: "io_failure",
+                }),
+            })
 
-        return yield* Effect.tryPromise({
-          try: async () => {
-            const tmpPath = `${absPath}.tmp-${process.pid}-${Date.now()}`
-            await mkdir(join(vaultDir, INPUT_RAW_DIR), { recursive: true })
-            await writeFile(tmpPath, content, "utf8")
-            await rename(tmpPath, absPath)
-            return { absPath, relPath, contentHash: hashContent(content), existed }
-          },
-          catch: (e) =>
-            new VaultError({
-              message: `write source failed: ${String(e)}`,
-              path: absPath,
-              kind: "io_failure",
-            }),
-        })
-      }),
-  })
+            if (existed && !options?.overwrite) {
+              return yield* Effect.fail(
+                new VaultError({
+                  message: `source page already exists: ${relPath}`,
+                  path: absPath,
+                  kind: "collision",
+                }),
+              )
+            }
+
+            const written = yield* writer.write(relPath, content)
+            return {
+              absPath,
+              relPath,
+              contentHash: written.contentHash,
+              existed,
+            }
+          }),
+      }
+    }),
+  )
+
+// FileSystemVaultLive bundles VaultService + VaultSecretGuard + FsVaultWriter
+// into a single Layer with no remaining requirements. Call sites continue to
+// `Effect.provide(FileSystemVaultLive(vaultDir))` and the secret-leak guard is
+// load-bearing on every write.
+export const FileSystemVaultLive = (vaultDir: string): Layer.Layer<VaultService> =>
+  VaultServiceFromWriter(vaultDir).pipe(
+    Layer.provide(vaultSecretGuard(FsVaultWriterLive(vaultDir))),
+  )
