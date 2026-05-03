@@ -36,6 +36,18 @@ const { title } = Astro.props
   footer.meta dl { display: grid; grid-template-columns: max-content 1fr; gap: .2rem .8rem; margin: 0; }
   footer.meta dt { color: var(--muted); }
   footer.meta dd { margin: 0; font-family: ui-monospace,Menlo,monospace; word-break: break-all; }
+  /* Citation Mode v1 */
+  sup a.cite-marker { font-size: .72em; line-height: 1; font-family: ui-monospace,Menlo,monospace; color: var(--accent); text-decoration: none; vertical-align: super; }
+  sup a.cite-marker:hover { text-decoration: underline; }
+  ol.references { list-style: none; padding: 0; margin: 1rem 0 0; counter-reset: refs; font-size: .85rem; }
+  ol.references li { display: flex; flex-wrap: wrap; gap: .25rem .5rem; align-items: baseline; padding: .35rem 0; border-bottom: 1px dotted var(--rule); line-height: 1.5; }
+  ol.references li a:first-child { font-family: ui-monospace,Menlo,monospace; font-size: .8em; color: var(--muted); flex: 0 0 auto; }
+  .domain-chip { font-size: .78em; font-family: ui-monospace,Menlo,monospace; background: var(--code-bg); color: var(--muted); padding: .1rem .4rem; border-radius: 3px; }
+  .digest-link { font-size: .8em; color: var(--muted); }
+  /* Source page digest layout */
+  .source-digest h2.source-section { font-size: 1.05rem; margin: 1.5rem 0 .4rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; border-bottom: none; font-weight: 600; }
+  .source-digest ul, .source-digest ol { padding-left: 1.4rem; }
+  .source-digest blockquote { border-left-color: var(--accent); }
 </style>
 </head>
 <body>

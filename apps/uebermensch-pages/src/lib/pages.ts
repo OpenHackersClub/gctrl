@@ -7,6 +7,35 @@ export type RenderedPage = Readonly<{
   bodyHtml: string
 }>
 
+const LEGACY_SOURCE_BANNER =
+  `<p><em>This source predates Citation Mode v1; raw text shown below.</em></p>`
+
+const SOURCE_SECTION_LABELS: ReadonlyArray<string> = [
+  "Gist",
+  "Key numbers",
+  "Essential quotes",
+  "Insights",
+  "Questions",
+  "Access metadata",
+]
+
+/**
+ * Wraps the body of a Citation Mode v1 source page with styled section scaffolding.
+ * Section order is preserved as authored; the function does not reorder or inject headings.
+ */
+const annotateSourceBody = (html: string): string => {
+  // Mark each known section heading with a data attribute for CSS targeting.
+  let out = html
+  for (const label of SOURCE_SECTION_LABELS) {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    out = out.replace(
+      new RegExp(`<h2([^>]*)>\\s*${escaped}\\s*<\\/h2>`, "gi"),
+      `<h2$1 class="source-section">${label}</h2>`,
+    )
+  }
+  return `<div class="source-digest">${out}</div>`
+}
+
 const renderIndexHtml = (
   title: string,
   linkBase: string,
@@ -66,6 +95,20 @@ export const renderKey = async (
   const raw = await obj.text()
   const rendered = renderMarkdown(raw)
   const title = rendered.title ?? slug
-  const bodyHtml = `${rendered.html}${renderMetaFooter(rendered.frontmatter)}`
+  const fm = rendered.frontmatter
+
+  let body = rendered.html
+
+  // Source page rendering: apply Citation Mode v1 or legacy banner.
+  if (fm["page_type"] === "source") {
+    const digestVersion = typeof fm["digest_version"] === "number" ? fm["digest_version"] : 0
+    if (digestVersion >= 1) {
+      body = annotateSourceBody(body)
+    } else {
+      body = `${LEGACY_SOURCE_BANNER}${body}`
+    }
+  }
+
+  const bodyHtml = `${body}${renderMetaFooter(fm)}`
   return { status: 200, title, bodyHtml }
 }

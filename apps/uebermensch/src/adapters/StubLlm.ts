@@ -1,9 +1,19 @@
 import { Effect, Layer } from "effect";
 import { sha256 } from "../lib/hash.js";
 import { LlmService } from "../services/LlmService.js";
-import type { CuratedItem } from "../services/RendererService.js";
+import type { CuratedItem, Reference } from "../services/RendererService.js";
 
 const STUB_MODEL = "stub-llm@0.1";
+
+// Build a minimal Citation Mode v1 reference entry for stub outputs.
+const stubReference = (candidateId: string, n: number): Reference => ({
+  n,
+  source_page_id: candidateId,
+  canonical_url: "https://example.com/" + candidateId,
+  accessed_at: "2026-05-03T00:00:00Z",
+  title: "stub",
+  domain: "example.com",
+});
 
 const renderPrompt = (
   date: string,
@@ -33,12 +43,14 @@ export const StubLlmLive = Layer.succeed(LlmService, {
         const title = (c.page.frontmatter.title as string | undefined) ?? c.page.stem;
         const pageTopics = (c.page.frontmatter.topics as ReadonlyArray<string> | undefined) ?? [];
         const topic = pageTopics[0] ?? null;
+        const references = [stubReference(c.id, 1)];
         return {
           kind: "news",
           title,
-          summary_md: `Stub summary for [[${c.page.stem}]].`,
+          summary_md: `Stub summary for [[${c.page.stem}]] [1].`,
           topic,
           thesis: null,
+          references,
           source_candidate_ids: [c.id],
           suggested_action: null,
         };
@@ -148,12 +160,14 @@ export const StubLlmLive = Layer.succeed(LlmService, {
         const title = (c.page.frontmatter.title as string | undefined) ?? c.page.stem;
         const pageTopics = (c.page.frontmatter.topics as ReadonlyArray<string> | undefined) ?? [];
         const topic = pageTopics[0] ?? null;
+        const references = [stubReference(c.id, 1)];
         return {
           kind: "news",
           title,
-          summary_md: `Stub summary for [[${c.page.stem}]].`,
+          summary_md: `Stub summary for [[${c.page.stem}]] [1].`,
           topic,
           thesis: null,
+          references,
           source_candidate_ids: [c.id],
           suggested_action: null,
         };

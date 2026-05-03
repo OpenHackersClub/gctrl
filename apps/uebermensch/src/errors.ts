@@ -92,3 +92,69 @@ export class VaultSecretLeakError extends Schema.TaggedError<VaultSecretLeakErro
     ),
   },
 ) {}
+
+// ---- Citation Mode v1 verifier errors (R3–R7) ----
+// These are all fail-closed from day one except R3 (warn-only for 14 days
+// after citation-mode v1 ships; the verifier wires the grace period externally).
+
+/** R3 — a [[slug]] inside a brief/report/synthesis resolved to a source page.
+ *  External sources must be cited via [n] + references[], not [[slug]]. */
+export class SourceCitedInline extends Schema.TaggedError<SourceCitedInline>()(
+  "SourceCitedInline",
+  {
+    message: Schema.String,
+    slug: Schema.String,
+    itemIndex: Schema.optional(Schema.Number),
+    charOffset: Schema.optional(Schema.Number),
+  },
+) {}
+
+/** R4 (missing variant) — a [n] marker in summary_md has no matching references[].n entry. */
+export class ReferenceMissing extends Schema.TaggedError<ReferenceMissing>()(
+  "ReferenceMissing",
+  {
+    message: Schema.String,
+    n: Schema.Number,
+    itemIndex: Schema.optional(Schema.Number),
+  },
+) {}
+
+/** R4 (duplicate variant) — two or more references[] entries share the same n. */
+export class ReferenceDuplicate extends Schema.TaggedError<ReferenceDuplicate>()(
+  "ReferenceDuplicate",
+  {
+    message: Schema.String,
+    n: Schema.Number,
+    itemIndex: Schema.optional(Schema.Number),
+  },
+) {}
+
+/** R5 — a references[] entry has no matching [n] marker in summary_md. */
+export class ReferenceOrphan extends Schema.TaggedError<ReferenceOrphan>()(
+  "ReferenceOrphan",
+  {
+    message: Schema.String,
+    n: Schema.Number,
+    itemIndex: Schema.optional(Schema.Number),
+  },
+) {}
+
+/** R6 — references[].source_page_id does not resolve to a source page under input/raw/**. */
+export class ReferenceSourceInvalid extends Schema.TaggedError<ReferenceSourceInvalid>()(
+  "ReferenceSourceInvalid",
+  {
+    message: Schema.String,
+    sourcePageId: Schema.String,
+    n: Schema.optional(Schema.Number),
+    itemIndex: Schema.optional(Schema.Number),
+  },
+) {}
+
+/** R7 — references[].n values are not a contiguous 1-based sequence {1..len}. */
+export class ReferenceSequenceInvalid extends Schema.TaggedError<ReferenceSequenceInvalid>()(
+  "ReferenceSequenceInvalid",
+  {
+    message: Schema.String,
+    itemIndex: Schema.optional(Schema.Number),
+  },
+) {}

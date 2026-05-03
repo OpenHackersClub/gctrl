@@ -25,6 +25,7 @@ import {
   decodeLlmJson,
   interestReportJsonFormat,
   InterestReportOutputSchema,
+  legacyIdToReference,
   LlmOutputSchema,
   normalizeInsights,
   REPORT_SYSTEM_PROMPT,
@@ -81,15 +82,26 @@ export const makeLlmServiceShape = (opts: LlmServiceFactoryOpts): LlmServiceShap
         briefJsonFormat(),
       )
       const decoded = yield* decodeLlmJson(res.text, LlmOutputSchema, "generateBrief")
-      const items: ReadonlyArray<CuratedItem> = decoded.items.map((i) => ({
-        kind: i.kind,
-        title: i.title,
-        summary_md: i.summary_md,
-        topic: i.topic,
-        thesis: i.thesis,
-        source_candidate_ids: i.source_candidate_ids,
-        suggested_action: i.suggested_action,
-      }))
+      const items: ReadonlyArray<CuratedItem> = decoded.items.map((i) => {
+        // Citation Mode v1: prefer typed references[]; fall back to legacy
+        // source_candidate_ids[] for pre-migration outputs (StubLlm + any
+        // older fixture). Both fields are tolerated by LlmOutputSchema.
+        // TODO(citation-mode-v1): remove alias branch after PR4 migration ships.
+        const references =
+          i.references.length > 0
+            ? i.references
+            : i.source_candidate_ids.map((id, idx) => legacyIdToReference(id, idx + 1))
+        return {
+          kind: i.kind,
+          title: i.title,
+          summary_md: i.summary_md,
+          topic: i.topic,
+          thesis: i.thesis,
+          references,
+          source_candidate_ids: references.map((r) => r.source_page_id),
+          suggested_action: i.suggested_action,
+        }
+      })
       return {
         items,
         topicsCovered: decoded.topicsCovered,
@@ -152,15 +164,23 @@ export const makeLlmServiceShape = (opts: LlmServiceFactoryOpts): LlmServiceShap
         InterestReportOutputSchema,
         "generateInterestReport",
       )
-      const items: ReadonlyArray<CuratedItem> = decoded.items.map((i) => ({
-        kind: i.kind,
-        title: i.title,
-        summary_md: i.summary_md,
-        topic: i.topic,
-        thesis: i.thesis,
-        source_candidate_ids: i.source_candidate_ids,
-        suggested_action: i.suggested_action,
-      }))
+      const items: ReadonlyArray<CuratedItem> = decoded.items.map((i) => {
+        // Citation Mode v1 — same alias as in generateBrief above.
+        const references =
+          i.references.length > 0
+            ? i.references
+            : i.source_candidate_ids.map((id, idx) => legacyIdToReference(id, idx + 1))
+        return {
+          kind: i.kind,
+          title: i.title,
+          summary_md: i.summary_md,
+          topic: i.topic,
+          thesis: i.thesis,
+          references,
+          source_candidate_ids: references.map((r) => r.source_page_id),
+          suggested_action: i.suggested_action,
+        }
+      })
       return {
         interestSlug: req.interest.slug,
         analysis_md: decoded.analysis_md,

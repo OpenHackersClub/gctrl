@@ -1,7 +1,9 @@
 import { Context, type Effect } from "effect";
 import type { LlmError } from "../errors.js";
 import type { CandidateRef } from "../lib/candidates.js";
-import type { CuratedItem } from "./RendererService.js";
+import type { CuratedItem, Reference } from "./RendererService.js";
+
+export type { Reference };
 
 export type BriefRequest = {
   readonly date: string;
