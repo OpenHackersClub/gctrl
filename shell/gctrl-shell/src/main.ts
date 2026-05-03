@@ -24,7 +24,9 @@ import { inboxCommand } from "./commands/inbox"
 import { vaultCommand } from "./commands/vault"
 import { wranglerCommand } from "./commands/wrangler"
 import { appCommand } from "./commands/app"
+import { browserCommand } from "./commands/browser"
 import { HttpKernelClientLive } from "./adapters/HttpKernelClient"
+import { HttpBrowserClientLive } from "./adapters/HttpBrowserClient"
 
 const command = Command.make("gctrl").pipe(
   Command.withSubcommands([
@@ -43,6 +45,7 @@ const command = Command.make("gctrl").pipe(
     vaultCommand,
     wranglerCommand,
     appCommand,
+    browserCommand,
   ])
 )
 
@@ -51,7 +54,9 @@ const cli = Command.run(command, {
   version: "0.1.0",
 })
 
-const ShellLive = HttpKernelClientLive().pipe(Layer.provide(FetchHttpClient.layer))
+const KernelLive = HttpKernelClientLive().pipe(Layer.provide(FetchHttpClient.layer))
+const BrowserLive = HttpBrowserClientLive.pipe(Layer.provide(KernelLive))
+const ShellLive = Layer.mergeAll(KernelLive, BrowserLive)
 
 cli(process.argv).pipe(
   Effect.provide(ShellLive),
