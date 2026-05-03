@@ -18,9 +18,13 @@ The `vault/specs/` directory is the single source of truth for cross-cutting des
 
 ### Product & Strategy
 
+> **PRD / ROADMAP / WORKFLOW always live in a vault.** For the kernel/repo: under `vault/specs/gctrl/`. For an app: under `apps/{app}/vault/`. Never at the top level of an app directory or anywhere outside a vault root. When recalling roadmap state, always look here first — and at the linked GitHub issues — never in agent memory.
+
 | Document | Scope | Content that belongs here |
 |----------|-------|--------------------------|
-| `vault/specs/gctrl/PRD.md` | Product requirements | Goals, non-goals, use cases, roadmap (→ issues), success criteria. Instantiates the [PRD template](apps/gctrl-board/vault/specs/workflows/prd-template.md). MUST NOT contain architecture or implementation details. |
+| `vault/specs/gctrl/PRD.md` | Product requirements | Problem, goals, non-goals, use cases, success criteria. Does NOT carry PR sequencing — that lives in `ROADMAP.md`. Instantiates the [PRD template](apps/gctrl-board/vault/specs/workflows/prd-template.md). MUST NOT contain architecture or implementation details. |
+| `vault/specs/gctrl/ROADMAP.md` | Slice plan | Milestone tables and slice rows — one row per slice with priority, dependencies, and an `Issue` column linking to GitHub. **PR sequencing lives here**, never in design-spec prose or agent memory. Instantiates the [roadmap template](apps/gctrl-board/vault/specs/workflows/roadmap-template.md). |
+| `vault/specs/gctrl/WORKFLOW.md` | How work flows | gctrl kernel's active workflow: project keys, agent config, PR conventions. How a slice flows from roadmap row → issue → branch → PR → merge → release. The live dogfooding doc for kernel development. |
 
 ### Architecture & Boundaries
 
@@ -58,40 +62,43 @@ Opinionated product workflows owned by gctrl-board. These define how work flows 
 
 ### Application Specs (`apps/{app-name}/`)
 
-Every application MUST have its own directory under `apps/` containing at minimum:
+Every application MUST have its own directory under `apps/`. Product/roadmap/workflow docs MUST live **inside the app's vault** (`apps/{app}/vault/`), not at the top level of the app directory — the vault is the Obsidian-mountable surface, and these are first-class vault docs:
 
 | File | Required | Content |
 |------|----------|---------|
-| `PRD.md` | MUST | Product requirements — problem, goals, use cases, roadmap. Instantiates the [PRD template](apps/gctrl-board/vault/specs/workflows/prd-template.md). |
-| `WORKFLOW.md` | MUST | How work flows through the app — agent dispatch, personas, review conventions. |
-| `vault/` | SHOULD | App vault — Obsidian-mountable. Contains `specs/` (architecture, domain model, implementation), and per-app operational data (e.g. `BOARD/`, `INBOX/`). Bare `[[slug]]` wikilinks allowed for issue/operational refs. |
+| `vault/PRD.md` | MUST | Product requirements — problem, goals, non-goals, use cases, success criteria. Does NOT contain PR sequencing. Instantiates the [PRD template](apps/gctrl-board/vault/specs/workflows/prd-template.md). |
+| `vault/ROADMAP.md` | MUST | Milestone tables and slice rows. **PR sequencing lives here** — one row per slice with priority, dependencies, and an `Issue` column linking to GitHub. Instantiates the [roadmap template](apps/gctrl-board/vault/specs/workflows/roadmap-template.md). |
+| `vault/WORKFLOW.md` | MUST | How a slice flows from roadmap row → issue → branch → PR → merge → release. Agent dispatch, personas, review conventions. |
+| `vault/specs/` | SHOULD | Architecture, domain model, implementation specs — design decisions and end state, not slice plans. |
+| `vault/{BOARD,INBOX,...}/` | MAY | Per-app operational data. Bare `[[slug]]` wikilinks allowed for issue/operational refs. |
 
 ```
 apps/
 ├── gctrl-board/                # First application
-│   ├── PRD.md                  # Board-specific product requirements
-│   ├── WORKFLOW.md             # Board-specific workflow (agent assignment, issue lifecycle)
-│   └── vault/
-│       ├── specs/              # Board-specific specs (tracker, kanban, dependencies)
+│   └── vault/                  # Obsidian-mountable
+│       ├── PRD.md              # Board product requirements (problem/goals)
+│       ├── ROADMAP.md          # Board slice plan (issue links)
+│       ├── WORKFLOW.md         # Board workflow (agent dispatch, review)
+│       ├── specs/              # Board-specific design specs
 │       └── BOARD/              # Board issues (BOARD-1.md, ...)
 ├── gctrl-inbox/
-│   ├── PRD.md
-│   ├── WORKFLOW.md
 │   └── vault/
+│       ├── PRD.md
+│       ├── ROADMAP.md
+│       ├── WORKFLOW.md
 │       └── INBOX/              # Inbox messages
 ├── utils/                      # Repo-shipped skills (utility app)
 │   └── skills/
 └── …                           # Future apps follow the same shape
 ```
 
-This separates each app's product context from the kernel specs. Agents working on a specific app load that app's `PRD.md` and `WORKFLOW.md` for context — not the entire `vault/specs/` tree.
+This separates each app's product context from the kernel specs and keeps everything under one Obsidian-mountable vault per app. Agents working on a specific app load that app's `vault/PRD.md`, `vault/ROADMAP.md`, and `vault/WORKFLOW.md` for context — not the entire `vault/specs/` tree.
+
+All existing apps (`gctrl-board`, `gctrl-inbox`, `uebermensch`) ship with the vault-internal layout. New apps MUST follow the same shape — `gctrl app bootstrap` writes the trio inside `apps/<name>/vault/` automatically.
 
 ### gctrl Kernel Workflow (Dogfooding)
 
-| Document | Scope | Content that belongs here |
-|----------|-------|--------------------------|
-| `vault/specs/gctrl/WORKFLOW.md` | gctrl kernel's active workflow | gctrl's instantiation of the templates above: project keys, agent config, PR conventions. This is the live dogfooding doc for kernel development. |
-| `vault/specs/gctrl/PRD.md` | gctrl kernel PRD | Product requirements for the kernel + shell (not applications). |
+The kernel's product/roadmap/workflow trio lives in `vault/specs/gctrl/{PRD,ROADMAP,WORKFLOW}.md` — see the [Product & Strategy](#product--strategy) table above. The kernel is an app for this purpose: same convention, same vault rule. Apps follow the same shape under `apps/{app}/vault/`.
 
 ### Implementation Details
 
@@ -132,7 +139,7 @@ Detailed programming patterns, code examples, and how-to guides live under `vaul
 8. **TDD is default** — failing test first, then implementation. Storage tests use `:memory:` DuckDB; HTTP tests use `axum::test::oneshot`; shell tests use mock `KernelClient`. (§ Testing Invariants #1–11)
 9. **Every new public function MUST have a test.** (§ Testing Invariants #4)
 10. **Git workflow** — feature branches only, no `--admin` merges, no force-push to main, no rebase of main. (§ Git Workflow #1–2; CLAUDE.md)
-11. **Apps live under `apps/{app-name}/`** with `PRD.md` and `WORKFLOW.md`. (§ Specs Table of Contents below)
+11. **Apps live under `apps/{app-name}/`** with `PRD.md`, `ROADMAP.md`, and `WORKFLOW.md` **inside the app's vault** (`apps/{app}/vault/`). The kernel/repo trio lives in `vault/specs/gctrl/`. PRD/ROADMAP/WORKFLOW are NEVER outside a vault root. (§ Specs Table of Contents below)
 
 ## Agent Conventions
 

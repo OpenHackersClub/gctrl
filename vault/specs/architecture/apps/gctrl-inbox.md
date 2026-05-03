@@ -159,8 +159,9 @@ Indexes on: thread_id, status, urgency, kind (messages); context_type+context_re
 
 ## Related Docs
 
-- `apps/gctrl-inbox/PRD.md` — Full product requirements, use cases, roadmap
-- `apps/gctrl-inbox/WORKFLOW.md` — Message lifecycle, triage flow, CLI reference, storage DDL
+- `apps/gctrl-inbox/vault/PRD.md` — Full product requirements, use cases, success criteria
+- `apps/gctrl-inbox/vault/ROADMAP.md` — Milestones, slice breakdown, issue links
+- `apps/gctrl-inbox/vault/WORKFLOW.md` — Message lifecycle, triage flow, CLI reference, storage DDL
 - `vault/specs/architecture/apps/gctrl-board.md` — Companion app for project management
 - `vault/specs/architecture/kernel/orchestrator.md` — Agent dispatch and permission gates
 - `vault/specs/architecture/domain-model.md` — Shared domain types

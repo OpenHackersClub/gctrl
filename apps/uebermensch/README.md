@@ -2,7 +2,7 @@
 
 > Chief-of-Staff app for investors. Vault-first, Obsidian-mountable, R2-synced.
 
-See [PRD.md](PRD.md) for vision, [ROADMAP.md](ROADMAP.md) for milestones, [WORKFLOW.md](WORKFLOW.md) for lifecycle, and `vault/specs/` for architecture details.
+See [vault/PRD.md](vault/PRD.md) for vision, [vault/ROADMAP.md](vault/ROADMAP.md) for milestones, [vault/WORKFLOW.md](vault/WORKFLOW.md) for lifecycle, and `vault/specs/` for architecture details.
 
 ## Status
 
@@ -13,7 +13,7 @@ drivers) remains for a follow-up PR.
 
 | Artifact | Status |
 |----------|--------|
-| `PRD.md`, `ROADMAP.md`, `WORKFLOW.md`, `vault/specs/` | Complete |
+| `vault/{PRD,ROADMAP,WORKFLOW}.md`, `vault/specs/` | Complete |
 | `src/` — profile reader, vault reader, stub LLM, CLI | Shipped (this PR) |
 | `uber profile validate` | Shipped |
 | `uber vault init` | Shipped (scaffolds from `tests/fixtures/vault/`) |
@@ -67,14 +67,17 @@ See [vault/specs/profile.md](vault/specs/profile.md) for the full schema and syn
 
 ```
 apps/uebermensch/
-├── PRD.md                  # Problem, goals, principles
-├── ROADMAP.md              # M0–M4 milestones
-├── WORKFLOW.md             # Brief lifecycle state machine
 ├── README.md               # (this file)
 ├── src/                    # Effect-TS CLI + services + adapters
 ├── tests/                  # vitest + fixtures/vault
-└── vault/specs/                  # Architecture, domain model, pipeline, KB, delivery, eval
+└── vault/                  # Obsidian-mountable app vault
+    ├── PRD.md              # Problem, goals, principles
+    ├── ROADMAP.md          # M0–M4 milestones, slice rows, issue links
+    ├── WORKFLOW.md         # Brief lifecycle state machine
+    └── specs/              # Architecture, domain model, pipeline, KB, delivery, eval
 ```
+
+> Per the workspace convention (see `AGENTS.md` § Application Specs), `PRD.md` / `ROADMAP.md` / `WORKFLOW.md` MUST live inside the app's vault — never at the app top level.
 
 ## Related specs
 

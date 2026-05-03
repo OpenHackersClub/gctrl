@@ -4,8 +4,9 @@
  * `gctrl app bootstrap <name> [--description ...]` reads the canonical PRD
  * template + the worked example PRD, asks the kernel LLM relay (or any
  * OpenAI-compatible endpoint at $GCTRL_LLM_URL) to draft PRD.md / WORKFLOW.md /
- * ROADMAP.md grounded in those files, and writes the result under
- * `apps/<name>/`. Default model is claude-opus-4-7.
+ * ROADMAP.md grounded in those files, and writes the result inside the app's
+ * vault at `apps/<name>/vault/` (per AGENTS.md § Application Specs).
+ * Default model is claude-opus-4-7.
  */
 import { Command, Options, Args } from "@effect/cli"
 import { Console, Effect, Option, Schema } from "effect"
@@ -339,27 +340,27 @@ const bootstrapCommand = Command.make(
         return
       }
 
-      yield* ensureDir(join(appDir, "vault", "specs"))
-      yield* writeUtf8(join(appDir, "PRD.md"), prd.endsWith("\n") ? prd : prd + "\n")
+      const vaultDir = join(appDir, "vault")
+      yield* ensureDir(join(vaultDir, "specs"))
+      yield* writeUtf8(join(vaultDir, "PRD.md"), prd.endsWith("\n") ? prd : prd + "\n")
       yield* writeUtf8(
-        join(appDir, "WORKFLOW.md"),
+        join(vaultDir, "WORKFLOW.md"),
         workflow.endsWith("\n") ? workflow : workflow + "\n",
       )
       yield* writeUtf8(
-        join(appDir, "ROADMAP.md"),
+        join(vaultDir, "ROADMAP.md"),
         roadmap.endsWith("\n") ? roadmap : roadmap + "\n",
       )
-      yield* writeUtf8(join(appDir, "vault", ".gitkeep"), "")
-      yield* writeUtf8(join(appDir, "vault", "specs", ".gitkeep"), "")
+      yield* writeUtf8(join(vaultDir, "specs", ".gitkeep"), "")
 
       yield* Console.log("")
       yield* Console.log(`✓ Bootstrapped ${appDir}`)
-      yield* Console.log(`  - ${join(appDir, "PRD.md")}`)
-      yield* Console.log(`  - ${join(appDir, "WORKFLOW.md")}`)
-      yield* Console.log(`  - ${join(appDir, "ROADMAP.md")}`)
-      yield* Console.log(`  - ${join(appDir, "vault")}/{,specs/}.gitkeep`)
+      yield* Console.log(`  - ${join(vaultDir, "PRD.md")}`)
+      yield* Console.log(`  - ${join(vaultDir, "WORKFLOW.md")}`)
+      yield* Console.log(`  - ${join(vaultDir, "ROADMAP.md")}`)
+      yield* Console.log(`  - ${join(vaultDir, "specs", ".gitkeep")}`)
       yield* Console.log("")
-      yield* Console.log("Next: review PRD.md, then commit on a feature branch.")
+      yield* Console.log("Next: review vault/PRD.md, then commit on a feature branch.")
     }).pipe(
       Effect.catchTag("BootstrapError", (e) =>
         Effect.gen(function* () {

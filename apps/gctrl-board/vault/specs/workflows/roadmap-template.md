@@ -8,7 +8,7 @@ The PRD answers "what and why." The roadmap answers "when and in what order."
 
 ## How to Use
 
-1. Copy this template into your project's directory (e.g., `vault/specs/gctrl/ROADMAP.md` or `apps/gctrl-board/ROADMAP.md`).
+1. Copy this template into your project's vault (e.g., `vault/specs/gctrl/ROADMAP.md` for the kernel/repo, or `apps/{app}/vault/ROADMAP.md` for an app — must live inside the app's vault).
 2. Fill in milestones from the PRD's high-level capabilities.
 3. Each milestone produces gctrl-board issues: one row per task, linked to an issue ID.
 4. Update the roadmap as work completes — move shipped items, reprioritize, add new milestones.

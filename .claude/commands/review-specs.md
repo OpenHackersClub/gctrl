@@ -17,7 +17,8 @@ Read these files to build your mental model of the system:
 - `vault/specs/architecture/domain-model.md` — Domain types, storage schema
 - `vault/specs/architecture/apps/tracker.md` — Issue & task graph, lifecycle state machines
 - `vault/specs/architecture/apps/gctrl-board.md` — Board application
-- `vault/specs/gctrl/PRD.md` — Product requirements (skim for feature scope)
+- `vault/specs/gctrl/{PRD,ROADMAP,WORKFLOW}.md` — Kernel/repo product requirements, slice plan, and workflow (skim for feature scope and what's slated)
+- `apps/{app}/vault/{PRD,ROADMAP,WORKFLOW}.md` — App-level equivalents (PRD/ROADMAP/WORKFLOW always live inside a vault, never at the app top level)
 - `vault/specs/implementation/kernel/components.md` — Kernel crate map
 - `vault/specs/implementation/repo.md` — Monorepo structure (Rust, Effect-TS, Lean 4)
 - `vault/specs/implementation/kernel/orchestrator.md` — Orchestration implementation
