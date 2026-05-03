@@ -1,4 +1,5 @@
 pub mod browser_routes;
+pub mod recorder_routes;
 pub mod contributions;
 pub mod event_bus;
 pub mod gcal_routes;

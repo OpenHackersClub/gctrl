@@ -479,6 +479,68 @@ CREATE TABLE IF NOT EXISTS macos_space_labels (
 )
 "#;
 
+// driver-browser recorder: one row per session that the daemon ever created,
+// plus per-session structured CDP-event tables. See
+// vault/specs/implementation/kernel/driver-browser.md §3.
+pub const CREATE_BROWSER_SESSIONS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS browser_sessions (
+    id              VARCHAR PRIMARY KEY,
+    created_at      VARCHAR NOT NULL,
+    released_at     VARCHAR,
+    browser_version VARCHAR NOT NULL,
+    options_json    VARCHAR NOT NULL,
+    status          VARCHAR NOT NULL,
+    recorded_bytes  BIGINT NOT NULL DEFAULT 0,
+    dropped_frames  BIGINT NOT NULL DEFAULT 0
+)
+"#;
+
+pub const CREATE_RECORDER_REQUESTS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS recorder_requests (
+    session_id    VARCHAR NOT NULL,
+    request_id    VARCHAR NOT NULL,
+    url           VARCHAR NOT NULL,
+    method        VARCHAR NOT NULL,
+    status        INTEGER,
+    headers_json  VARCHAR,
+    timings_json  VARCHAR,
+    ts            VARCHAR NOT NULL,
+    PRIMARY KEY (session_id, request_id)
+)
+"#;
+
+pub const CREATE_RECORDER_CONSOLE_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS recorder_console (
+    session_id  VARCHAR NOT NULL,
+    seq         BIGINT NOT NULL,
+    level       VARCHAR NOT NULL,
+    type        VARCHAR NOT NULL,
+    text        VARCHAR NOT NULL,
+    ts          VARCHAR NOT NULL,
+    PRIMARY KEY (session_id, seq)
+)
+"#;
+
+pub const CREATE_RECORDER_METRICS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS recorder_metrics (
+    session_id  VARCHAR NOT NULL,
+    name        VARCHAR NOT NULL,
+    value       DOUBLE NOT NULL,
+    ts          VARCHAR NOT NULL
+)
+"#;
+
+pub const CREATE_RECORDER_CDP_EVENTS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS recorder_cdp_events (
+    session_id  VARCHAR NOT NULL,
+    seq         BIGINT NOT NULL,
+    method      VARCHAR NOT NULL,
+    params_json VARCHAR NOT NULL,
+    ts          VARCHAR NOT NULL,
+    PRIMARY KEY (session_id, seq)
+)
+"#;
+
 pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_spans_session ON spans(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(trace_id)",
@@ -529,6 +591,11 @@ pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_eval_metrics_kind ON eval_metrics(kind)",
     // driver-macos
     "CREATE INDEX IF NOT EXISTS idx_macos_space_labels_label ON macos_space_labels(label)",
+    // driver-browser recorder
+    "CREATE INDEX IF NOT EXISTS idx_recorder_requests_session ON recorder_requests(session_id)",
+    "CREATE INDEX IF NOT EXISTS idx_recorder_console_session ON recorder_console(session_id)",
+    "CREATE INDEX IF NOT EXISTS idx_recorder_metrics_session ON recorder_metrics(session_id, name)",
+    "CREATE INDEX IF NOT EXISTS idx_recorder_cdp_events_session ON recorder_cdp_events(session_id)",
 ];
 
 pub fn all_migrations() -> Vec<&'static str> {
@@ -570,6 +637,12 @@ pub fn all_migrations() -> Vec<&'static str> {
         ADD_SCORES_EVAL_RUN_ID,
         // driver-macos
         CREATE_MACOS_SPACE_LABELS_TABLE,
+        // driver-browser recorder
+        CREATE_BROWSER_SESSIONS_TABLE,
+        CREATE_RECORDER_REQUESTS_TABLE,
+        CREATE_RECORDER_CONSOLE_TABLE,
+        CREATE_RECORDER_METRICS_TABLE,
+        CREATE_RECORDER_CDP_EVENTS_TABLE,
     ];
     stmts.extend(CREATE_INDEXES.iter());
     stmts

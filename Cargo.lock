@@ -1896,6 +1896,7 @@ dependencies = [
  "gctrl-gcal",
  "gctrl-net",
  "gctrl-proxy",
+ "gctrl-recorder",
  "gctrl-scheduler",
  "gctrl-storage",
  "gctrl-sync",
@@ -1946,6 +1947,19 @@ version = "0.1.0"
 dependencies = [
  "gctrl-core",
  "gctrl-storage",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "gctrl-recorder"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "gctrl-browser",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

@@ -32,7 +32,7 @@ use gctrl_browser::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use tokio::sync::OnceCell;
 
 #[derive(Clone)]
@@ -42,13 +42,18 @@ pub(crate) struct BrowserState {
 
 static STATE: OnceCell<BrowserState> = OnceCell::const_new();
 
-/// Test override — set to use a `MockLauncher` and skip Chromium. Wired
-/// by the route tests below.
-static TEST_OVERRIDE: OnceLock<BrowserState> = OnceLock::new();
+/// Test override — replaceable so different tests can install fresh
+/// pools. Production reads `STATE` (the global `OnceCell`) and ignores
+/// this slot entirely.
+static TEST_OVERRIDE: OnceLock<Mutex<Option<BrowserState>>> = OnceLock::new();
+
+fn test_override() -> &'static Mutex<Option<BrowserState>> {
+    TEST_OVERRIDE.get_or_init(|| Mutex::new(None))
+}
 
 pub(crate) async fn state() -> BrowserState {
-    if let Some(s) = TEST_OVERRIDE.get() {
-        return s.clone();
+    if let Some(s) = test_override().lock().unwrap().clone() {
+        return s;
     }
     STATE
         .get_or_init(|| async {
@@ -233,11 +238,25 @@ pub fn router<S: Clone + Send + Sync + 'static>() -> Router<S> {
 }
 
 /// Test helper: install a state with a mock launcher so route tests don't
-/// need Chromium. Idempotent — only the first install wins.
+/// need Chromium. Replaces any prior override so each test starts fresh.
 #[doc(hidden)]
 pub fn install_test_state(pool: Arc<Pool>) {
-    let _ = TEST_OVERRIDE.set(BrowserState { pool });
+    *test_override().lock().unwrap() = Some(BrowserState { pool });
 }
+
+/// Test helper: clear the override so subsequent calls fall through to
+/// the production `STATE` cell. Routes-tests should not call this; it's
+/// for higher-level integration suites that need a clean slate.
+#[doc(hidden)]
+pub fn clear_test_state() {
+    *test_override().lock().unwrap() = None;
+}
+
+/// Cross-module test lock — both browser_routes::tests and
+/// recorder_routes::tests install/replace the global pool override, so
+/// they need to serialize. Held for the duration of each test.
+#[cfg(test)]
+pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(test)]
 mod tests {
@@ -248,7 +267,13 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    fn install_mock_pool() {
+    fn install_mock_pool() -> std::sync::MutexGuard<'static, ()> {
+        let g = TEST_LOCK.lock().unwrap();
+        let _ = install_mock_pool_inner();
+        g
+    }
+
+    fn install_mock_pool_inner() {
         let cfg = Arc::new(BrowserConfig::default());
         let launcher = Arc::new(MockLauncher::new("ws://127.0.0.1:0/fake"));
         let pool = Arc::new(Pool::new(cfg, launcher, "ws://127.0.0.1:4318".into()));
@@ -261,7 +286,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_reports_pool_config() {
-        install_mock_pool();
+        let _g = install_mock_pool();
         let resp = app()
             .oneshot(
                 Request::builder()
@@ -280,7 +305,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_sessions_starts_empty() {
-        install_mock_pool();
+        let _g = install_mock_pool();
         let resp = app()
             .oneshot(
                 Request::builder()
@@ -298,7 +323,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_session_validates_ttl() {
-        install_mock_pool();
+        let _g = install_mock_pool();
         let resp = app()
             .oneshot(
                 Request::builder()
@@ -318,7 +343,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_unknown_session_404s() {
-        install_mock_pool();
+        let _g = install_mock_pool();
         let resp = app()
             .oneshot(
                 Request::builder()
@@ -333,7 +358,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_unknown_session_404s() {
-        install_mock_pool();
+        let _g = install_mock_pool();
         let resp = app()
             .oneshot(
                 Request::builder()
@@ -354,7 +379,7 @@ mod tests {
         // headers) yields 400. End-to-end token / session-lookup behavior
         // is exercised by the pool's `attach_validates_token` unit test;
         // a true WS handshake test belongs in an integration suite.
-        install_mock_pool();
+        let _g = install_mock_pool();
         let resp = app()
             .oneshot(
                 Request::builder()
