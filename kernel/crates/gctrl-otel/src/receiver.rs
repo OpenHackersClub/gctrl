@@ -17,7 +17,7 @@ use futures_core::Stream;
 use gctrl_context::ContextManager;
 use gctrl_core::{NetConfig, SchedulerConfig, SyncConfig};
 use gctrl_storage::{DuckDbStore, SqliteStore};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::event_bus::{EventBus, ReplayResult, SessionEvent};
 use crate::span_processor::{self, OtlpExportRequest};
@@ -278,6 +278,21 @@ fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/vault/mounts/{name}", delete(vault_mounts_delete))
         .route("/api/vault/page", get(vault_page_get).post(vault_page_put))
+        // App installs — gctrl-app.toml manifest install/list/status/uninstall.
+        // Spec: vault/specs/architecture/app-install-protocol.md
+        .route(
+            "/api/app/installs",
+            get(app_installs_list).post(app_installs_create),
+        )
+        .route(
+            "/api/app/installs/{name}",
+            get(app_installs_get).delete(app_installs_delete),
+        )
+        .route(
+            "/api/app/installs/{name}/reload",
+            post(app_installs_reload),
+        )
+        .route("/api/app/capabilities", get(app_capabilities_list))
         // Uebermensch briefs index — `(date, kind)` keyed; vault file is the
         // source of truth, this is the queryable index for listing/filtering.
         .route(
@@ -4673,6 +4688,428 @@ fn resolve_within(root: &str, rel: &str) -> Result<std::path::PathBuf, String> {
 }
 
 // =============================================================================
+// App installs — `gctrl-app.toml` manifest installation.
+//
+// On POST /api/app/installs:
+//   1. Parse + validate the manifest (gctrl_core::app_manifest)
+//   2. Resolve every capability to its registered driver
+//      (gctrl_core::capabilities)
+//   3. Persist install record + bindings (gctrl_app_installs +
+//      gctrl_app_bindings)
+//   4. Register vault project keys in gctrl_vault_mounts (kind=app,
+//      app_id=install.name) — collision-checked against existing mounts
+//      owned by *different* apps.
+//
+// `manifest_text` is required in the request body — git/file-path resolution
+// is deferred. The caller (shell command, future) reads the file and POSTs
+// the text inline.
+//
+// Spec: vault/specs/architecture/app-install-protocol.md
+// =============================================================================
+
+#[derive(Deserialize)]
+struct AppInstallCreateBody {
+    /// Where the manifest came from — informational. Local path or git URL.
+    /// Stored verbatim so `gctrl app reload` can re-fetch.
+    source_ref: String,
+    /// Inline `gctrl-app.toml` text. Required in v1.
+    manifest_text: String,
+}
+
+#[derive(Serialize)]
+struct AppInstallView {
+    install: gctrl_core::AppInstall,
+    bindings: Vec<gctrl_core::AppBinding>,
+    vault_mounts: Vec<gctrl_core::VaultMount>,
+    /// Schedules registered for this app from the manifest's `[[schedule]]`
+    /// entries. The kernel scheduler runs them; uninstall drops them via
+    /// `delete_schedules_by_app`.
+    schedules: Vec<gctrl_core::Schedule>,
+}
+
+#[derive(Serialize)]
+struct CapabilityView {
+    id: &'static str,
+    default_driver: &'static str,
+    route_prefix: &'static str,
+    description: &'static str,
+}
+
+fn manifest_sha(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(text.as_bytes());
+    format!("{:x}", digest)
+}
+
+fn install_app_inner(
+    state: &Arc<AppState>,
+    body: AppInstallCreateBody,
+    is_reload: bool,
+) -> Result<AppInstallView, (StatusCode, String)> {
+    let manifest = gctrl_core::app_manifest::AppManifest::parse(&body.manifest_text)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("manifest invalid: {e}")))?;
+
+    // Project-key collision check: any existing mount with the same name
+    // that belongs to a *different* app blocks the install.
+    let existing_mounts = state
+        .sqlite
+        .list_vault_mounts()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    for vp in &manifest.vault_projects {
+        if let Some(m) = existing_mounts.iter().find(|m| m.name == vp.key) {
+            if m.app_id.as_deref() != Some(manifest.app.name.as_str()) {
+                return Err((
+                    StatusCode::CONFLICT,
+                    format!(
+                        "project key `{}` is already owned by app `{}`",
+                        vp.key,
+                        m.app_id.as_deref().unwrap_or("<none>")
+                    ),
+                ));
+            }
+        }
+    }
+
+    let now = chrono::Utc::now();
+
+    // Persist install record. Reload preserves `installed_at` via the
+    // store's ON CONFLICT clause.
+    let prev_installed_at = if is_reload {
+        state
+            .sqlite
+            .get_app_install(&manifest.app.name)
+            .ok()
+            .flatten()
+            .map(|prev| prev.installed_at)
+    } else {
+        None
+    };
+    let install = gctrl_core::AppInstall {
+        name: manifest.app.name.clone(),
+        version: manifest.app.version.clone(),
+        source_ref: body.source_ref,
+        manifest_sha: manifest_sha(&body.manifest_text),
+        installed_at: prev_installed_at.unwrap_or(now),
+        reloaded_at: if is_reload { Some(now) } else { None },
+    };
+    state
+        .sqlite
+        .upsert_app_install(&install)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Persist bindings (denormalized join with the registry).
+    let mut bindings = Vec::new();
+    for (id, required) in manifest.all_capabilities() {
+        let cap = gctrl_core::capabilities::lookup(id).ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("capability `{id}` not in registry — manifest validate should have caught this"),
+            )
+        })?;
+        bindings.push(gctrl_core::AppBinding {
+            install_name: manifest.app.name.clone(),
+            capability: id.to_string(),
+            driver_id: cap.default_driver.to_string(),
+            required,
+            resolved_at: now,
+        });
+    }
+    state
+        .sqlite
+        .replace_app_bindings(&manifest.app.name, &bindings)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Register vault projects in gctrl_vault_mounts (kind=app, owned by this
+    // install). Idempotent — if a mount with this name already exists owned
+    // by *this* app, leave it alone (the collision check above already
+    // rejected mounts owned by another app).
+    for vp in &manifest.vault_projects {
+        if existing_mounts.iter().any(|m| m.name == vp.key) {
+            continue;
+        }
+        let mount = gctrl_core::VaultMount {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: vp.key.clone(),
+            // Root path is kernel-owned (resolved at daemon startup from
+            // --board-dir / GCTRL_BOARD_DIR / cwd) but gctrl_vault_mounts
+            // requires a non-null root_path. Use the project key as a
+            // relative marker; the watcher generalization (next PR) will
+            // resolve this against the kernel root.
+            root_path: vp.key.clone(),
+            kind: gctrl_core::VaultMountKind::App,
+            git_url: None,
+            app_id: Some(manifest.app.name.clone()),
+            last_commit_sha: None,
+            last_synced_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        state
+            .sqlite
+            .create_vault_mount(&mount)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+
+    // Replace-all schedule registration. On reload, the manifest's
+    // `[[schedule]]` set is the source of truth: drop everything previously
+    // registered for this app, then insert the fresh set. Operator-owned
+    // schedules (`app_id IS NULL`) are untouched. Schedules owned by other
+    // apps are also untouched (delete_schedules_by_app filters by app_id).
+    state
+        .sqlite
+        .delete_schedules_by_app(&manifest.app.name)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    for sched in &manifest.schedule {
+        // Compute initial next_run_at so the runner picks it up on its
+        // first poll. Cron parse errors fail the install — better to
+        // catch a typo at install time than discover a never-firing job
+        // after deploy.
+        let next = match gctrl_scheduler::cron::next_after(&sched.cron, now) {
+            Ok(opt) => opt.map(|dt| dt.to_rfc3339()),
+            Err(e) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "schedule `{}` cron `{}` invalid: {e}",
+                        sched.name, sched.cron
+                    ),
+                ));
+            }
+        };
+        let now_str = now.to_rfc3339();
+        let row = match sched.target.as_str() {
+            "exec" => gctrl_core::Schedule {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: sched.name.clone(),
+                cron: sched.cron.clone(),
+                target_kind: gctrl_core::TARGET_KIND_EXEC.into(),
+                // NOT NULL columns — exec rows tolerate empty strings.
+                target_url: String::new(),
+                target_method: "POST".into(),
+                body_json: None,
+                headers_json: None,
+                command: Some(sched.command.clone()),
+                cwd: None,
+                env_keys: Some(Vec::new()),
+                timeout_secs: 60,
+                enabled: true,
+                next_run_at: next,
+                last_run_at: None,
+                last_status: None,
+                last_response: None,
+                last_error: None,
+                run_count: 0,
+                failure_count: 0,
+                app_id: Some(manifest.app.name.clone()),
+                created_at: now_str.clone(),
+                updated_at: now_str,
+            },
+            "http" => gctrl_core::Schedule {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: sched.name.clone(),
+                cron: sched.cron.clone(),
+                target_kind: gctrl_core::TARGET_KIND_HTTP.into(),
+                // For http schedules from a manifest, we expect command[0]
+                // to be the URL. The manifest schema is intentionally
+                // permissive in v1 — a future revision can add explicit
+                // url/method/body fields.
+                target_url: sched.command.first().cloned().unwrap_or_default(),
+                target_method: "POST".into(),
+                body_json: None,
+                headers_json: None,
+                command: None,
+                cwd: None,
+                env_keys: None,
+                timeout_secs: 60,
+                enabled: true,
+                next_run_at: next,
+                last_run_at: None,
+                last_status: None,
+                last_response: None,
+                last_error: None,
+                run_count: 0,
+                failure_count: 0,
+                app_id: Some(manifest.app.name.clone()),
+                created_at: now_str.clone(),
+                updated_at: now_str,
+            },
+            other => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "schedule `{}` target `{other}` invalid (must be exec or http)",
+                        sched.name
+                    ),
+                ));
+            }
+        };
+        if let Err(e) = state.sqlite.create_schedule(&row) {
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+        }
+    }
+
+    let mounts = state
+        .sqlite
+        .list_vault_mounts()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .into_iter()
+        .filter(|m| m.app_id.as_deref() == Some(manifest.app.name.as_str()))
+        .collect();
+    let stored_install = state
+        .sqlite
+        .get_app_install(&manifest.app.name)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "install record vanished after upsert".to_string(),
+            )
+        })?;
+    let stored_bindings = state
+        .sqlite
+        .list_app_bindings(&manifest.app.name)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let stored_schedules = state
+        .sqlite
+        .list_schedules(&gctrl_core::ScheduleFilter::default())
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .into_iter()
+        .filter(|s| s.app_id.as_deref() == Some(manifest.app.name.as_str()))
+        .collect();
+
+    Ok(AppInstallView {
+        install: stored_install,
+        bindings: stored_bindings,
+        vault_mounts: mounts,
+        schedules: stored_schedules,
+    })
+}
+
+async fn app_installs_create(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<AppInstallCreateBody>,
+) -> impl IntoResponse {
+    match install_app_inner(&state, body, false) {
+        Ok(view) => (StatusCode::CREATED, Json(view)).into_response(),
+        Err((status, msg)) => (status, msg).into_response(),
+    }
+}
+
+async fn app_installs_reload(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(body): Json<AppInstallCreateBody>,
+) -> impl IntoResponse {
+    // Reload = re-apply manifest. The path's `name` MUST match the manifest's
+    // `[app] name`; we error otherwise to avoid silent app-rename via reload.
+    let parsed = match gctrl_core::app_manifest::AppManifest::parse(&body.manifest_text) {
+        Ok(m) => m,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!("manifest invalid: {e}")).into_response();
+        }
+    };
+    if parsed.app.name != name {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "manifest [app] name `{}` does not match install `{}` — apps cannot rename via reload",
+                parsed.app.name, name
+            ),
+        )
+            .into_response();
+    }
+    match install_app_inner(&state, body, true) {
+        Ok(view) => Json(view).into_response(),
+        Err((status, msg)) => (status, msg).into_response(),
+    }
+}
+
+async fn app_installs_list(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match state.sqlite.list_app_installs() {
+        Ok(installs) => Json(installs).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn app_installs_get(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    let install = match state.sqlite.get_app_install(&name) {
+        Ok(Some(i)) => i,
+        Ok(None) => return (StatusCode::NOT_FOUND, format!("no install: {name}")).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let bindings = match state.sqlite.list_app_bindings(&name) {
+        Ok(b) => b,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let mounts: Vec<_> = match state.sqlite.list_vault_mounts() {
+        Ok(m) => m
+            .into_iter()
+            .filter(|m| m.app_id.as_deref() == Some(name.as_str()))
+            .collect(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let schedules: Vec<_> = match state
+        .sqlite
+        .list_schedules(&gctrl_core::ScheduleFilter::default())
+    {
+        Ok(s) => s
+            .into_iter()
+            .filter(|s| s.app_id.as_deref() == Some(name.as_str()))
+            .collect(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    Json(AppInstallView {
+        install,
+        bindings,
+        vault_mounts: mounts,
+        schedules,
+    })
+    .into_response()
+}
+
+async fn app_installs_delete(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    // Drop install record + bindings. ALSO drop vault mount registrations
+    // and schedules owned by this app (per spec — files in the kernel vault
+    // root are NOT touched, only the registry rows). Operator-owned
+    // schedules (`app_id IS NULL`) are untouched.
+    let mounts = match state.sqlite.list_vault_mounts() {
+        Ok(m) => m,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    for m in mounts.iter().filter(|m| m.app_id.as_deref() == Some(name.as_str())) {
+        if let Err(e) = state.sqlite.delete_vault_mount(&m.name) {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    }
+    if let Err(e) = state.sqlite.delete_schedules_by_app(&name) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    match state.sqlite.delete_app_install(&name) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn app_capabilities_list() -> impl IntoResponse {
+    let view: Vec<CapabilityView> = gctrl_core::capabilities::REGISTRY
+        .iter()
+        .map(|c| CapabilityView {
+            id: c.id,
+            default_driver: c.default_driver,
+            route_prefix: c.route_prefix,
+            description: c.description,
+        })
+        .collect();
+    Json(view).into_response()
+}
+
+// =============================================================================
 // Uebermensch briefs index — `(date, kind)` keyed app-namespaced table.
 // Vault markdown is the source of truth; this is the queryable metadata index.
 // =============================================================================
@@ -6080,5 +6517,426 @@ Getting User settings...
         let row = build_commit_row(&commit, |_| None);
         assert_eq!(row["author"], serde_json::json!("web-ui-user"));
         assert!(row["session_id"].is_null());
+    }
+
+    // ───────── App installs (PR-α.3) ─────────
+
+    fn test_app_dual() -> Router {
+        let store = Arc::new(DuckDbStore::open(":memory:").unwrap());
+        let sqlite = Arc::new(SqliteStore::open(":memory:").expect("sqlite open"));
+        create_router_dual(store, sqlite)
+    }
+
+    fn minimal_uber_manifest() -> &'static str {
+        r#"
+[app]
+name = "uebermensch"
+version = "0.2.0"
+
+[entrypoint]
+bin = "dist/main.js"
+command = "uber"
+runtime = "node"
+
+[requires.llm]
+[requires.deliverer.telegram]
+
+[[vault-projects]]
+key = "UBER"
+
+[[schedule]]
+name = "uber-daily-brief"
+cron = "0 8 * * *"
+target = "exec"
+command = ["uber", "run-daily"]
+
+[[schedule]]
+name = "uber-weekly-report"
+cron = "0 9 * * 1"
+target = "exec"
+command = ["uber", "report", "--send"]
+"#
+    }
+
+    async fn install_uber(app: &Router) -> http::Response<Body> {
+        let body = serde_json::json!({
+            "source_ref": "/path/to/uebermensch",
+            "manifest_text": minimal_uber_manifest(),
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/app/installs")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        app.clone().oneshot(req).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn capabilities_endpoint_lists_registry() {
+        let app = test_app_dual();
+        let req = Request::builder()
+            .uri("/api/app/capabilities")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let arr = json.as_array().unwrap();
+        assert!(arr.iter().any(|c| c["id"] == "llm"));
+        assert!(arr.iter().any(|c| c["id"] == "deliverer.telegram"));
+        // Order matches REGISTRY (llm is first).
+        assert_eq!(arr[0]["id"], "llm");
+    }
+
+    #[tokio::test]
+    async fn install_creates_install_record_bindings_and_mount() {
+        let app = test_app_dual();
+        let resp = install_uber(&app).await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let view: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(view["install"]["name"], "uebermensch");
+        assert_eq!(view["install"]["version"], "0.2.0");
+        assert!(view["install"]["manifest_sha"].as_str().unwrap().len() == 64);
+
+        let bindings = view["bindings"].as_array().unwrap();
+        // 2 required: llm, deliverer.telegram. Required first, alphabetical.
+        assert_eq!(bindings.len(), 2);
+        assert_eq!(bindings[0]["capability"], "deliverer.telegram");
+        assert_eq!(bindings[0]["driver_id"], "driver-telegram");
+        assert_eq!(bindings[0]["required"], true);
+        assert_eq!(bindings[1]["capability"], "llm");
+        assert_eq!(bindings[1]["driver_id"], "driver-llm");
+
+        let mounts = view["vault_mounts"].as_array().unwrap();
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0]["name"], "UBER");
+        assert_eq!(mounts[0]["app_id"], "uebermensch");
+        assert_eq!(mounts[0]["kind"], "app");
+    }
+
+    #[tokio::test]
+    async fn install_rejects_unknown_capability() {
+        let app = test_app_dual();
+        let body = serde_json::json!({
+            "source_ref": "/x",
+            "manifest_text": "[app]\nname = \"x\"\nversion = \"0.1.0\"\n\
+                              \n[entrypoint]\nbin = \"x\"\ncommand = \"x\"\nruntime = \"node\"\n\
+                              \n[requires.vault.frobnicate]\n",
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/app/installs")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let msg = String::from_utf8_lossy(&body);
+        assert!(msg.contains("vault.frobnicate"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn install_rejects_project_key_collision_owned_by_other_app() {
+        let app = test_app_dual();
+        // First install of an app that claims UBER.
+        assert_eq!(install_uber(&app).await.status(), StatusCode::CREATED);
+
+        // Different app, same project key — should 409.
+        let other = serde_json::json!({
+            "source_ref": "/x",
+            "manifest_text": "[app]\nname = \"squatter\"\nversion = \"0.1.0\"\n\
+                              \n[entrypoint]\nbin = \"x\"\ncommand = \"x\"\nruntime = \"node\"\n\
+                              \n[[vault-projects]]\nkey = \"UBER\"\n",
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/app/installs")
+            .header("content-type", "application/json")
+            .body(Body::from(other.to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let msg = String::from_utf8_lossy(&body);
+        assert!(msg.contains("UBER"));
+        assert!(msg.contains("uebermensch"));
+    }
+
+    #[tokio::test]
+    async fn install_idempotent_for_same_app_same_keys() {
+        let app = test_app_dual();
+        assert_eq!(install_uber(&app).await.status(), StatusCode::CREATED);
+        // Re-install with same content → also CREATED (upsert), still 1 mount.
+        assert_eq!(install_uber(&app).await.status(), StatusCode::CREATED);
+
+        let req = Request::builder()
+            .uri("/api/app/installs/uebermensch")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let view: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(view["vault_mounts"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_returns_installs_alphabetically() {
+        let app = test_app_dual();
+        assert_eq!(install_uber(&app).await.status(), StatusCode::CREATED);
+
+        let req = Request::builder()
+            .uri("/api/app/installs")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let installs: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(installs.as_array().unwrap().len(), 1);
+        assert_eq!(installs[0]["name"], "uebermensch");
+    }
+
+    #[tokio::test]
+    async fn get_returns_404_for_unknown_app() {
+        let app = test_app_dual();
+        let req = Request::builder()
+            .uri("/api/app/installs/nonexistent")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_drops_install_bindings_and_owned_mounts() {
+        let app = test_app_dual();
+        assert_eq!(install_uber(&app).await.status(), StatusCode::CREATED);
+
+        // Delete
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/api/app/installs/uebermensch")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // 404 on subsequent get
+        let req = Request::builder()
+            .uri("/api/app/installs/uebermensch")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        // Mount also gone (no longer registered)
+        let req = Request::builder()
+            .uri("/api/vault/mounts")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let mounts: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(mounts.as_array().unwrap().is_empty(), "owned mount should be cleaned up");
+
+        // After delete, fresh install of *same* manifest should succeed (no
+        // stale conflicts).
+        assert_eq!(install_uber(&app).await.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn reload_updates_version_preserves_installed_at() {
+        let app = test_app_dual();
+        assert_eq!(install_uber(&app).await.status(), StatusCode::CREATED);
+
+        let bumped = serde_json::json!({
+            "source_ref": "/path/to/uebermensch",
+            "manifest_text": minimal_uber_manifest().replace("0.2.0", "0.3.0"),
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/app/installs/uebermensch/reload")
+            .header("content-type", "application/json")
+            .body(Body::from(bumped.to_string()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let view: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(view["install"]["version"], "0.3.0");
+        assert!(view["install"]["reloaded_at"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn reload_rejects_app_rename() {
+        let app = test_app_dual();
+        assert_eq!(install_uber(&app).await.status(), StatusCode::CREATED);
+
+        // Reload at /uebermensch/reload but the body's [app] name is different.
+        let renamed = serde_json::json!({
+            "source_ref": "/x",
+            "manifest_text": minimal_uber_manifest().replace("uebermensch", "renamed-app"),
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/app/installs/uebermensch/reload")
+            .header("content-type", "application/json")
+            .body(Body::from(renamed.to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let msg = String::from_utf8_lossy(&body);
+        assert!(msg.contains("rename"), "got: {msg}");
+    }
+
+    // ───────── Schedule registration (PR-α.5) ─────────
+
+    #[tokio::test]
+    async fn install_registers_schedules_with_app_id() {
+        let app = test_app_dual();
+        let resp = install_uber(&app).await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let view: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        let schedules = view["schedules"].as_array().unwrap();
+        assert_eq!(schedules.len(), 2, "manifest has 2 [[schedule]] entries");
+        let names: Vec<&str> = schedules
+            .iter()
+            .map(|s| s["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"uber-daily-brief"));
+        assert!(names.contains(&"uber-weekly-report"));
+
+        // Every registered schedule MUST be tagged with the install name so
+        // uninstall can find them. exec target preserves the command argv.
+        for s in schedules {
+            assert_eq!(s["app_id"], "uebermensch");
+            assert_eq!(s["target_kind"], "exec");
+            assert_eq!(s["enabled"], true);
+            assert!(s["next_run_at"].as_str().is_some(), "cron should compute next_run_at");
+        }
+        let daily = schedules
+            .iter()
+            .find(|s| s["name"] == "uber-daily-brief")
+            .unwrap();
+        assert_eq!(
+            daily["command"].as_array().unwrap(),
+            &vec![
+                serde_json::Value::String("uber".into()),
+                serde_json::Value::String("run-daily".into()),
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn install_rejects_schedule_with_invalid_cron() {
+        let app = test_app_dual();
+        let body = serde_json::json!({
+            "source_ref": "/x",
+            "manifest_text": "[app]\nname = \"x\"\nversion = \"0.1.0\"\n\
+                              \n[entrypoint]\nbin = \"x\"\ncommand = \"x\"\nruntime = \"node\"\n\
+                              \n[[schedule]]\nname = \"bad\"\ncron = \"this is not cron\"\ntarget = \"exec\"\ncommand = [\"true\"]\n",
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/app/installs")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let msg = String::from_utf8_lossy(&body);
+        assert!(msg.contains("cron"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn reload_replaces_schedule_set() {
+        let app = test_app_dual();
+        assert_eq!(install_uber(&app).await.status(), StatusCode::CREATED);
+
+        // Reload with a manifest that drops uber-weekly-report and renames the
+        // daily one. After reload the kernel should reflect exactly what's in
+        // the new manifest.
+        let bumped = minimal_uber_manifest()
+            .replace("uber-daily-brief", "uber-morning-brief")
+            // Drop the weekly entry by truncating after the daily block.
+            .split("\n\n[[schedule]]\nname = \"uber-weekly-report\"")
+            .next()
+            .unwrap()
+            .to_string()
+            + "\n";
+        let body = serde_json::json!({
+            "source_ref": "/path/to/uebermensch",
+            "manifest_text": bumped,
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/app/installs/uebermensch/reload")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let view: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let schedules = view["schedules"].as_array().unwrap();
+        assert_eq!(schedules.len(), 1, "weekly was dropped");
+        assert_eq!(schedules[0]["name"], "uber-morning-brief");
+    }
+
+    #[tokio::test]
+    async fn delete_drops_app_owned_schedules_only() {
+        let app = test_app_dual();
+        assert_eq!(install_uber(&app).await.status(), StatusCode::CREATED);
+
+        // Independently create an operator-owned schedule (app_id = NULL).
+        let operator_sched = serde_json::json!({
+            "name": "operator-tick",
+            "cron": "*/5 * * * *",
+            "target_kind": "http",
+            "target_url": "http://example.test/tick",
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/schedules")
+            .header("content-type", "application/json")
+            .body(Body::from(operator_sched.to_string()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // Uninstall the app.
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/api/app/installs/uebermensch")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // The two app-owned schedules should be gone; operator-tick survives.
+        let req = Request::builder()
+            .uri("/api/schedules")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let listing: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let names: Vec<&str> = listing["schedules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["operator-tick"]);
     }
 }

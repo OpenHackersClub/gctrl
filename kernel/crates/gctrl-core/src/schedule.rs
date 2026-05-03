@@ -50,6 +50,12 @@ pub struct Schedule {
     pub last_error: Option<String>,
     pub run_count: i64,
     pub failure_count: i64,
+    /// `Some(name)` when the schedule was registered by `gctrl app install`
+    /// — the value matches `gctrl_app_installs.name`. `None` for ad-hoc
+    /// schedules created via `POST /api/schedules`. Lets uninstall clean
+    /// up app-owned schedules without disturbing operator-owned ones.
+    #[serde(default)]
+    pub app_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     /// Derived state, computed at read time by the storage layer (never
