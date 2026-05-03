@@ -127,43 +127,6 @@ pub async fn run_proxy(
 }
 
 #[cfg(test)]
-pub(crate) mod test_support {
-    use super::*;
-    use std::net::SocketAddr;
-    use tokio::net::TcpListener;
-    use tokio_tungstenite::accept_async;
-
-    /// Spawn a tiny echo WebSocket server. Returns its `ws://` URL and a
-    /// JoinHandle that can be aborted to shut it down. Used to test the
-    /// proxy without a real Chromium.
-    pub async fn spawn_echo_ws() -> (String, tokio::task::JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr: SocketAddr = listener.local_addr().unwrap();
-        let url = format!("ws://{addr}/echo");
-        let handle = tokio::spawn(async move {
-            while let Ok((stream, _)) = listener.accept().await {
-                tokio::spawn(async move {
-                    let Ok(ws) = accept_async(stream).await else {
-                        return;
-                    };
-                    let (mut tx, mut rx) = ws.split();
-                    while let Some(Ok(msg)) = rx.next().await {
-                        match msg {
-                            TungMsg::Text(t) => {
-                                let _ = tx.send(TungMsg::Text(t)).await;
-                            }
-                            TungMsg::Close(_) => break,
-                            _ => {}
-                        }
-                    }
-                });
-            }
-        });
-        (url, handle)
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
