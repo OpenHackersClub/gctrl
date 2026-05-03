@@ -158,3 +158,32 @@ export class ReferenceSequenceInvalid extends Schema.TaggedError<ReferenceSequen
     itemIndex: Schema.optional(Schema.Number),
   },
 ) {}
+
+// ---- NetService errors ----
+
+/**
+ * Raised by NetService methods when the upstream request fails.
+ * Variants:
+ *   - `unavailable`  — kernel daemon is down or `/api/net/*` route not yet deployed
+ *   - `rate_limited` — upstream search/fetch provider is throttling
+ *   - `not_found`    — 404 from the kernel route or the target URL
+ *   - `invalid`      — bad request (malformed query, unsupported accept type, etc.)
+ */
+export class NetError extends Schema.TaggedError<NetError>()("NetError", {
+  message: Schema.String,
+  kind: Schema.Literal("unavailable", "rate_limited", "not_found", "invalid"),
+  url: Schema.optional(Schema.String),
+}) {}
+
+// ---- FreshnessProbeService errors ----
+
+/**
+ * Raised by FreshnessProbeService when the probe stage itself fails unrecoverably.
+ * Per-probe failures (net unavailable, LLM error) are handled gracefully inside
+ * the service; ProbeError surfaces only when the top-level setup fails (e.g. the
+ * directive cannot be parsed, or an unexpected internal error occurs).
+ */
+export class ProbeError extends Schema.TaggedError<ProbeError>()("ProbeError", {
+  message: Schema.String,
+  kind: Schema.Literal("config", "llm_unavailable", "net_unavailable", "io_failure"),
+}) {}
