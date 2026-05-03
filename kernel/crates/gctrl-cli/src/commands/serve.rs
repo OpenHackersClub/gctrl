@@ -57,15 +57,15 @@ pub async fn run(
     let sqlite = Arc::new(SqliteStore::open(&sqlite_path)?);
     tracing::info!("sqlite (board/inbox): {sqlite_path}");
 
-    // Spawn board directory file watcher (if configured). Watcher writes to
-    // SQLite (the source of truth for board data, and the origin side of
-    // the SQLite → D1 sync). Stash a clone of the path so the kernel router
-    // can serve `/api/sync/vault/*` against the same root.
+    // Spawn one file watcher per row in `gctrl_vault_mounts`. Each watcher
+    // writes to SQLite (the source of truth for board data, and the origin
+    // side of the SQLite → D1 sync). The legacy single `board_dir` arg is
+    // kept only so the kernel router can serve `/api/sync/vault/*` against
+    // the same root the operator configured on the CLI; mounts are now the
+    // exclusive source for *which* directories get watched.
     let vault_root = board_dir.clone();
-    if let Some(dir) = board_dir {
-        let watcher_store = Arc::clone(&sqlite);
-        tokio::spawn(watch::watch_board_dir(watcher_store, dir));
-    }
+    let watcher_store = Arc::clone(&sqlite);
+    tokio::spawn(watch::watch_all_vault_mounts(watcher_store));
 
     let sync_config = SyncConfig::from_env();
     let sync_config = if sync_config.d1_enabled() {
