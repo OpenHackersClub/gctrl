@@ -59,7 +59,9 @@ pub async fn run(
 
     // Spawn board directory file watcher (if configured). Watcher writes to
     // SQLite (the source of truth for board data, and the origin side of
-    // the SQLite → D1 sync).
+    // the SQLite → D1 sync). Stash a clone of the path so the kernel router
+    // can serve `/api/sync/vault/*` against the same root.
+    let vault_root = board_dir.clone();
     if let Some(dir) = board_dir {
         let watcher_store = Arc::clone(&sqlite);
         tokio::spawn(watch::watch_board_dir(watcher_store, dir));
@@ -160,12 +162,14 @@ pub async fn run(
         tracing::info!("LLM relay disabled (--no-relay)");
     }
 
-    let router = gctrl_otel::create_router_full_with_scheduler(
+    let router = gctrl_otel::create_router_full_with_vault(
         Arc::clone(&store),
         Arc::clone(&sqlite),
         sync_config,
         Arc::new(net_config),
         Arc::clone(&scheduler_config_arc),
+        vault_root,
+        None, // honor GCTRL_STATE_DIR or platform default
     );
     let router = host_allowlist_middleware::apply(router);
     let addr = format!("{host}:{port}");

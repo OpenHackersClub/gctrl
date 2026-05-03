@@ -286,6 +286,123 @@ pub fn r2_key(project_key: &str, rel_path: &str) -> String {
     format!("vaults/{project_key}/{rel_path}")
 }
 
+// ───────────────────────── Push (engine-free) ─────────────────────────
+
+/// Push every file under `<vault_root>/<project_key>/` to R2 at
+/// `vaults/<project_key>/<rel_path>`. Honors content-hash dedup against the
+/// per-project manifest at `<state_dir>/sync/vaults/<project_key>.json`.
+///
+/// `prefixes` narrows to subtrees (e.g. `["input/briefs", "input/raw"]`).
+///
+/// On `dry_run = true`, skips R2 entirely and returns the plan only — the
+/// manifest is NOT touched. On per-file upload failure, increments `failed`
+/// and continues so a flaky network doesn't lose a whole sync — the next
+/// call retries since the manifest only records what actually uploaded.
+///
+/// Decoupled from `R2SyncEngine` so the HTTP route can call it with just an
+/// `R2Client`, no DuckDB connection. `R2SyncEngine::push_vault` is a thin
+/// wrapper for the engine consumer side.
+pub async fn push_to_r2(
+    r2: &crate::r2::R2Client,
+    vault_root: &Path,
+    state_dir: &Path,
+    project_key: &str,
+    prefixes: &[&str],
+    opts: VaultSyncOpts,
+) -> Result<VaultSyncResult, SyncError> {
+    let mut manifest = VaultManifest::load(state_dir, project_key)?;
+    let plan = plan_push(vault_root, project_key, prefixes, &manifest, opts.force)?;
+
+    let mut uploaded = 0u64;
+    let mut skipped = 0u64;
+    let mut failed = 0u64;
+    let mut bytes_uploaded = 0u64;
+
+    if opts.dry_run {
+        for entry in &plan {
+            if !matches!(entry.action, VaultSyncAction::Upload) {
+                skipped += 1;
+            }
+            // Upload entries in dry-run stay at uploaded=0; callers can
+            // distinguish "nothing changed" from "would change N" by
+            // counting plan entries with action=Upload.
+        }
+        return Ok(VaultSyncResult {
+            project_key: project_key.to_string(),
+            plan,
+            uploaded,
+            skipped,
+            failed,
+            bytes_uploaded,
+        });
+    }
+
+    for entry in &plan {
+        match entry.action {
+            VaultSyncAction::Upload => {
+                let abs = vault_root.join(project_key).join(&entry.rel_path);
+                let key = r2_key(project_key, &entry.rel_path);
+                match tokio::fs::read(&abs).await {
+                    Ok(body) => {
+                        let n = body.len() as u64;
+                        match r2.put_object(&key, body).await {
+                            Ok(()) => {
+                                uploaded += 1;
+                                bytes_uploaded += n;
+                                manifest.entries.insert(
+                                    entry.rel_path.clone(),
+                                    VaultManifestEntry {
+                                        sha256: entry.sha256.clone(),
+                                        size_bytes: entry.size_bytes,
+                                        uploaded_at: chrono::Utc::now().to_rfc3339(),
+                                        etag: None,
+                                    },
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    ?key,
+                                    error = %e,
+                                    "vault sync: R2 upload failed"
+                                );
+                                failed += 1;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %abs.display(),
+                            error = %e,
+                            "vault sync: file read failed"
+                        );
+                        failed += 1;
+                    }
+                }
+            }
+            VaultSyncAction::SkipHashMatch | VaultSyncAction::SkipOutsidePrefix => {
+                skipped += 1;
+            }
+        }
+    }
+
+    if uploaded > 0 {
+        manifest.updated_at = Some(chrono::Utc::now().to_rfc3339());
+        // Manifest save errors are surfaced — losing manifest state means
+        // the next sync re-uploads everything from scratch. That's wasteful
+        // but not corrupting; still worth the explicit error.
+        manifest.save(state_dir)?;
+    }
+
+    Ok(VaultSyncResult {
+        project_key: project_key.to_string(),
+        plan,
+        uploaded,
+        skipped,
+        failed,
+        bytes_uploaded,
+    })
+}
+
 fn is_under_any_prefix(rel_path: &str, prefixes: &[&str]) -> bool {
     if prefixes.is_empty() {
         return true;

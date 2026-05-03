@@ -46,6 +46,17 @@ pub struct AppState {
     /// See vault/specs/implementation/llm-relay.md § "Convergence with
     /// driver-llm".
     pub llm_capture: Arc<gctrl_proxy::Capture>,
+    /// Kernel-owned vault root — resolved at daemon startup from
+    /// `--board-dir` → `GCTRL_BOARD_DIR` → `./gctrl/`, per #163. Used by
+    /// the vault sync routes (`/api/sync/vault/*`) to walk
+    /// `<vault_root>/<project_key>/`. `None` when the daemon was not
+    /// configured with a board dir — sync routes return 503.
+    pub vault_root: Option<std::path::PathBuf>,
+    /// Kernel-owned state dir for vault sync manifests. Defaults to
+    /// `~/.local/share/gctrl/`; tests inject a `TempDir` to avoid
+    /// touching the operator's real state. Daemon startup honors
+    /// `GCTRL_STATE_DIR` for sandboxed deployments.
+    pub state_dir: std::path::PathBuf,
 }
 
 pub fn create_router(store: DuckDbStore) -> Router {
@@ -66,6 +77,8 @@ pub fn create_router_from_arc(store: Arc<DuckDbStore>) -> Router {
         http_client: reqwest::Client::new(),
         event_bus: EventBus::default_capacity(),
         llm_capture,
+        vault_root: None,
+        state_dir: default_state_dir(),
     });
     build_router(state)
 }
@@ -116,6 +129,31 @@ pub fn create_router_full_with_scheduler(
     net_config: Arc<NetConfig>,
     scheduler_config: Arc<SchedulerConfig>,
 ) -> Router {
+    create_router_full_with_vault(
+        store,
+        sqlite,
+        sync_config,
+        net_config,
+        scheduler_config,
+        None,
+        None,
+    )
+}
+
+/// Same as `create_router_full_with_scheduler` but accepts the kernel-owned
+/// vault root. Pass the same path used by `watch_board_dir` so the vault
+/// sync routes (`/api/sync/vault/*`) operate on the same on-disk tree the
+/// watcher indexes. `state_dir` defaults to `~/.local/share/gctrl/`; tests
+/// pass `Some(TempDir.path())` for isolation.
+pub fn create_router_full_with_vault(
+    store: Arc<DuckDbStore>,
+    sqlite: Arc<SqliteStore>,
+    sync_config: Option<Arc<SyncConfig>>,
+    net_config: Arc<NetConfig>,
+    scheduler_config: Arc<SchedulerConfig>,
+    vault_root: Option<std::path::PathBuf>,
+    state_dir: Option<std::path::PathBuf>,
+) -> Router {
     let llm_capture = build_llm_capture(Arc::clone(&store));
     let state = Arc::new(AppState {
         store,
@@ -127,6 +165,8 @@ pub fn create_router_full_with_scheduler(
         http_client: reqwest::Client::new(),
         event_bus: EventBus::default_capacity(),
         llm_capture,
+        vault_root,
+        state_dir: state_dir.unwrap_or_else(default_state_dir),
     });
     build_router(state).merge(gctrl_scheduler::http::router(sqlite, scheduler_config))
 }
@@ -145,6 +185,8 @@ pub fn create_router_with_context(store: DuckDbStore, context: Option<ContextMan
         http_client: reqwest::Client::new(),
         event_bus: EventBus::default_capacity(),
         llm_capture,
+        vault_root: None,
+        state_dir: default_state_dir(),
     });
     build_router(state)
 }
@@ -278,6 +320,11 @@ fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/vault/mounts/{name}", delete(vault_mounts_delete))
         .route("/api/vault/page", get(vault_page_get).post(vault_page_put))
+        // Vault file sync (kernel sync vault extension — replaces in-app
+        // R2Sync adapters per app-decoupling.md). Spec: sync.md § 2.4 and
+        // implementation/kernel/sync-vault.md.
+        .route("/api/sync/vault/push", post(vault_sync_push))
+        .route("/api/sync/vault/status", get(vault_sync_status))
         // Uebermensch briefs index — `(date, kind)` keyed; vault file is the
         // source of truth, this is the queryable index for listing/filtering.
         .route(
@@ -3865,6 +3912,165 @@ async fn sync_push(
     use gctrl_sync::SyncEngine;
     match engine.push(&defaulted).await {
         Ok(result) => Json(result).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+// =============================================================================
+// Vault file sync — POST /api/sync/vault/push, GET /api/sync/vault/status.
+//
+// Walks `<vault_root>/<project_key>/`, hashes each file, uploads changed
+// files to R2 at `vaults/<project_key>/<rel_path>`. Per-project manifest
+// (`<state_dir>/sync/vaults/<project_key>.json`) persists what's been
+// pushed so subsequent calls dedup against content hashes.
+//
+// Pre-conditions enforced before any R2 call:
+//   1. `state.vault_root` is set (daemon was started with --board-dir).
+//   2. `state.sync_config` has the R2 credentials.
+//   3. `project_key` is registered in `gctrl_vault_mounts` (some app owns
+//      it via `[[vault-projects]] key = "..."` in its manifest).
+//
+// Spec: vault/specs/architecture/kernel/sync.md § 2.4 +
+//        vault/specs/implementation/kernel/sync-vault.md.
+// =============================================================================
+
+#[derive(Deserialize)]
+struct VaultSyncPushBody {
+    project_key: String,
+    #[serde(default)]
+    prefixes: Vec<String>,
+    #[serde(default)]
+    dry_run: bool,
+    #[serde(default)]
+    force: bool,
+}
+
+#[derive(Deserialize)]
+struct VaultSyncStatusQuery {
+    project_key: String,
+}
+
+/// Default state dir for daemon startup — `~/.local/share/gctrl/` overridable
+/// via `GCTRL_STATE_DIR`. Tests inject their own path via `AppState.state_dir`
+/// so no env-var race.
+pub fn default_state_dir() -> std::path::PathBuf {
+    if let Ok(p) = std::env::var("GCTRL_STATE_DIR") {
+        return std::path::PathBuf::from(p);
+    }
+    dirs::data_local_dir()
+        .map(|d: std::path::PathBuf| d.join("gctrl"))
+        .unwrap_or_else(|| std::path::PathBuf::from(".gctrl-state"))
+}
+
+fn resolve_r2_client(
+    state: &Arc<AppState>,
+) -> Result<gctrl_sync::r2::R2Client, (StatusCode, String)> {
+    let cfg = state.sync_config.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "R2 sync not configured — set GCTRL_R2_ENDPOINT, GCTRL_R2_BUCKET, \
+             GCTRL_R2_ACCESS_KEY_ID, GCTRL_R2_SECRET_ACCESS_KEY"
+                .to_string(),
+        )
+    })?;
+    if cfg.r2_endpoint.is_empty() || cfg.r2_bucket.is_empty() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "R2 sync not configured — endpoint or bucket missing".to_string(),
+        ));
+    }
+    Ok(gctrl_sync::r2::R2Client::new(
+        &cfg.r2_endpoint,
+        &cfg.r2_bucket,
+        &cfg.r2_access_key_id,
+        &cfg.r2_secret_access_key,
+    ))
+}
+
+fn resolve_vault_root(
+    state: &Arc<AppState>,
+) -> Result<std::path::PathBuf, (StatusCode, String)> {
+    state.vault_root.clone().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "vault root not configured — start gctrld with --board-dir or set GCTRL_BOARD_DIR"
+                .to_string(),
+        )
+    })
+}
+
+/// 404 if `project_key` is not registered as an app vault mount. Without
+/// this check, an HTTP caller could push to any path under the vault root,
+/// including subtrees no installed app owns. This is also where future
+/// per-app authorisation would land (today: any caller can push any
+/// registered key).
+fn require_registered_project_key(
+    state: &Arc<AppState>,
+    project_key: &str,
+) -> Result<(), (StatusCode, String)> {
+    let mounts = state.sqlite.list_vault_mounts().map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    })?;
+    if mounts.iter().any(|m| m.name == project_key) {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            format!(
+                "project key `{project_key}` is not a registered vault mount — \
+                 install an app whose manifest declares `[[vault-projects]] key = \"{project_key}\"`"
+            ),
+        ))
+    }
+}
+
+async fn vault_sync_push(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<VaultSyncPushBody>,
+) -> impl IntoResponse {
+    let r2 = match resolve_r2_client(&state) {
+        Ok(c) => c,
+        Err((s, m)) => return (s, m).into_response(),
+    };
+    let vault_root = match resolve_vault_root(&state) {
+        Ok(p) => p,
+        Err((s, m)) => return (s, m).into_response(),
+    };
+    if let Err((s, m)) = require_registered_project_key(&state, &body.project_key) {
+        return (s, m).into_response();
+    }
+    let state_dir = state.state_dir.clone();
+    let prefixes: Vec<&str> = body.prefixes.iter().map(String::as_str).collect();
+    let opts = gctrl_sync::vault::VaultSyncOpts {
+        dry_run: body.dry_run,
+        force: body.force,
+        concurrency: 8,
+    };
+    match gctrl_sync::vault::push_to_r2(
+        &r2,
+        &vault_root,
+        &state_dir,
+        &body.project_key,
+        &prefixes,
+        opts,
+    )
+    .await
+    {
+        Ok(result) => Json(result).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn vault_sync_status(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<VaultSyncStatusQuery>,
+) -> impl IntoResponse {
+    if let Err((s, m)) = require_registered_project_key(&state, &q.project_key) {
+        return (s, m).into_response();
+    }
+    let state_dir = state.state_dir.clone();
+    match gctrl_sync::vault::VaultManifest::load(&state_dir, &q.project_key) {
+        Ok(manifest) => Json(manifest).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

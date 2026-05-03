@@ -34,9 +34,11 @@ http = { workspace = true }
 feed-rs = { workspace = true }
 sha2 = { workspace = true }
 url = { workspace = true }
+dirs = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true }
 http-body-util = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
+wiremock = "0.6"
