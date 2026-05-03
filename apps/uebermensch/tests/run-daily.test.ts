@@ -144,6 +144,7 @@ describe("run-daily core logic — brief generation + delivery", () => {
         Effect.fail({ _tag: "LlmError", message: "should not be called", kind: "unavailable" } as never),
       summarizeSource: () => Effect.fail({ _tag: "LlmError", message: "no" } as never),
       researchQuery: () => Effect.fail({ _tag: "LlmError", message: "no" } as never),
+      analyzeThought: () => Effect.fail({ _tag: "LlmError", message: "no" } as never),
       proposeSubtopic: () => Effect.fail({ _tag: "LlmError", message: "no" } as never),
       generateInterestReport: () => Effect.fail({ _tag: "LlmError", message: "no" } as never),
       generateProbes: () => Effect.fail({ _tag: "LlmError", message: "no" } as never),

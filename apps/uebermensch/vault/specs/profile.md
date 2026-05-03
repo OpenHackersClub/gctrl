@@ -573,34 +573,40 @@ Why I care: positioning around BoJ rate path, JPY moves, and JGB curve. ...
 
 ### directives/prompts/\<slug\>.md (optional)
 
-User-authored research questions — the human-input root for one-shot research. The user drops a free-form markdown note; `gctrl uber prompts process` (alias `gctrl uber query process`) reads each pending file, runs an LLM research pass (with relevant wiki context), writes the consolidated answer to `input/reports/<slug>.md`, and stamps the prompt's frontmatter with `status: processed`, `output`, `processed_at`, `content_hash`, `prompt_hash`, and `model`.
+The inbox surface for ad-hoc input to CoS. Drop a free-form markdown note here — bullet points, half-formed ideas, a link you saw. `gctrl uber prompts process` reads each pending file and dispatches on `kind`:
+
+- **`kind: thought`** (default when omitted) — CoS extracts intent, generates 3–7 sharp clarifying questions, maps the note to existing wiki/source pages, and proposes addendums to the user's theses under `directives/theses/`. The structured analysis is written to `input/reports/<slug>.md` (sections: Intent / Questions / Relevant sources / Suggested thesis updates) and the source note is **moved** to `directives/prompts/archived/<slug>.md` so the inbox stays a true to-do list. CoS NEVER edits authored thesis files directly — addendums are suggestions for the user to paste in Obsidian.
+- **`kind: query`** (opt-in) — one-shot Q&A. CoS runs an LLM research pass with relevant wiki context, writes the consolidated answer to `input/reports/<slug>.md`, and stamps the prompt's frontmatter with `status: processed`, `output`, `processed_at`, `content_hash`, `prompt_hash`, and `model`. The source file is left in place (frontmatter updated; body untouched) so the user can `status: rerun` it.
 
 Minimum frontmatter (everything optional except `slug`, which defaults to filename if omitted):
 
 ```markdown
 ---
-slug: what-is-claudes-real-moat
-title: "What is Claude's real moat?"
-topics: [ai-dev-workflows]   # optional — narrows wiki context
-status: pending              # pending | processed | failed | rerun
+slug: claude-cli-distribution
+title: "Claude Code CLI distribution moat"     # optional — defaults to titlized stem
+topics: [ai-dev-workflows]                      # optional — narrows wiki + thesis context
+kind: thought                                   # thought (default) | query
+status: pending                                 # pending | processed | failed | rerun
 ---
 
-Question/notes go here in free-form markdown. Anything you'd jot in a notebook works —
-bullet points, half-formed ideas, links you saw. Uebermensch reads the whole file.
+Note/question goes here in free-form markdown. Anything you'd jot in a notebook works.
+Uebermensch reads the whole file.
 ```
 
-After processing:
+After processing (both kinds):
 
 ```yaml
 status: processed
-output: input/reports/what-is-claudes-real-moat.md
-processed_at: 2026-04-25T08:14:11Z
+output: input/reports/claude-cli-distribution.md
+processed_at: 2026-05-03T08:14:11Z
 content_hash: sha256:…
 prompt_hash: sha256:…
 model: claude-opus-4-7
 ```
 
-Set `status: rerun` (or delete the post-processing fields) to re-process. The query file itself is never overwritten by the LLM — only its frontmatter is updated; the body stays as the user wrote it.
+For `kind: query`: set `status: rerun` (or delete the post-processing fields) to re-process. The query file itself is never overwritten by the LLM — only its frontmatter is updated; the body stays as the user wrote it.
+
+For `kind: thought`: the source file lives at `directives/prompts/archived/<slug>.md` after a successful run. To re-process, move it back to `directives/prompts/<slug>.md` (the loader skips the `archived/` subtree). Re-archiving fails with `kind: collision` if the destination already exists — investigate before overwriting.
 
 ### directives/me.md / directives/projects.md
 

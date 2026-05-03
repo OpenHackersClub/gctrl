@@ -66,6 +66,7 @@ const makeMigrationStubLlm = (calls: { count: number }) =>
     proposeSubtopic: () => Effect.die("not used"),
     generateInterestReport: () => Effect.die("not used"),
     researchQuery: () => Effect.die("not used"),
+    analyzeThought: () => Effect.die("not used"),
     generateProbes: () => Effect.die("not used"),
     summarizeSource: (req) =>
       Effect.sync(() => {

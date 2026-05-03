@@ -15,6 +15,7 @@ import { ResearchInterestFrontmatter } from "../schemas.js"
 import {
   VaultService,
   type ResearchInterest,
+  type ThesisRef,
   type WikiPage,
 } from "../services/VaultService.js"
 import { VaultWriterPort } from "../services/VaultWriterPort.js"
@@ -178,6 +179,37 @@ const VaultServiceFromWriter = (vaultDir: string) =>
               })
             }
             return out
+          }),
+        listTheses: () =>
+          Effect.tryPromise({
+            try: async () => {
+              const files = await walkMarkdown(vaultDir, [DIRECTIVES_THESES_DIR])
+              const out: Array<ThesisRef> = []
+              for (const f of files) {
+                const raw = await readFile(f.abs, "utf8")
+                const parsed = matter(raw)
+                const fm = (parsed.data ?? {}) as Record<string, unknown>
+                const stem = basename(f.abs, ".md")
+                const slug = (fm.slug as string | undefined) ?? stem
+                const title = (fm.title as string | undefined) ?? stem
+                const topics =
+                  (fm.topics as ReadonlyArray<string> | undefined) ?? []
+                out.push({
+                  slug,
+                  title,
+                  topics,
+                  body: parsed.content,
+                  relPath: f.rel,
+                })
+              }
+              return out
+            },
+            catch: (e) =>
+              new VaultError({
+                message: `list theses failed: ${String(e)}`,
+                path: vaultDir,
+                kind: "io_failure",
+              }),
           }),
         writeReport: (slug, content) =>
           Effect.gen(function* () {

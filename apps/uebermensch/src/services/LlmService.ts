@@ -125,6 +125,47 @@ export type ResearchQueryResponse = {
   readonly model: string;
 };
 
+export type ThoughtThesisRef = {
+  readonly slug: string;
+  readonly title: string;
+  readonly topics: ReadonlyArray<string>;
+  readonly excerpt: string;
+};
+
+export type ThoughtAnalysisRequest = {
+  readonly slug: string;
+  readonly title: string;
+  readonly topics: ReadonlyArray<string>;
+  readonly note: string;
+  readonly profileName: string;
+  readonly contextPages: ReadonlyArray<ResearchQueryContextPage>;
+  readonly theses: ReadonlyArray<ThoughtThesisRef>;
+};
+
+export type ThoughtThesisUpdate = {
+  readonly thesisSlug: string;
+  // Single-paragraph addendum the user can paste into directives/theses/<slug>.md.
+  // CoS NEVER writes to authored thesis files directly — this is a suggestion
+  // surfaced in the thought report for the user to confirm in Obsidian.
+  readonly addendumMd: string;
+  readonly rationale: string;
+};
+
+export type ThoughtAnalysis = {
+  readonly intent: string;
+  readonly questions: ReadonlyArray<string>;
+  // Stems of existing wiki/source pages from contextPages that bear on the thought.
+  readonly relevantPageStems: ReadonlyArray<string>;
+  readonly thesisUpdates: ReadonlyArray<ThoughtThesisUpdate>;
+};
+
+export type ThoughtAnalysisResponse = {
+  readonly analysis: ThoughtAnalysis;
+  readonly promptHash: string;
+  readonly costUsd: number;
+  readonly model: string;
+};
+
 export type FreshnessProbe = {
   readonly query: string;
   readonly watchlist_entity: string;
@@ -161,6 +202,9 @@ export interface LlmServiceShape {
   readonly researchQuery: (
     req: ResearchQueryRequest,
   ) => Effect.Effect<ResearchQueryResponse, LlmError>;
+  readonly analyzeThought: (
+    req: ThoughtAnalysisRequest,
+  ) => Effect.Effect<ThoughtAnalysisResponse, LlmError>;
   readonly generateProbes: (
     req: GenerateProbesRequest,
   ) => Effect.Effect<GenerateProbesResponse, LlmError>;

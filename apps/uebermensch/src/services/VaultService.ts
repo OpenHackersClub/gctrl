@@ -47,6 +47,17 @@ export type ResearchInterest = {
   readonly relPath: string
 }
 
+// Lightweight thesis view for the prompts/thought processor — slug + title for
+// matching, body excerpt for the LLM to ground "which thesis does this belong
+// to?" decisions in. Full thesis files live under directives/theses/.
+export type ThesisRef = {
+  readonly slug: string
+  readonly title: string
+  readonly topics: ReadonlyArray<string>
+  readonly body: string
+  readonly relPath: string
+}
+
 export interface VaultServiceShape {
   readonly root: () => string
   readonly listWikiPages: () => Effect.Effect<ReadonlyArray<WikiPage>, VaultError>
@@ -58,6 +69,7 @@ export interface VaultServiceShape {
     ReadonlyArray<ResearchInterest>,
     VaultError
   >
+  readonly listTheses: () => Effect.Effect<ReadonlyArray<ThesisRef>, VaultError>
   // Write methods may fail with VaultSecretLeakError when the underlying
   // VaultWriterPort is wrapped by `vaultSecretGuard` — content matching a known
   // credential pattern is rejected before persisting. Production layers
