@@ -1,6 +1,6 @@
 //! Single-page fetch with HTML→markdown conversion and readability extraction.
 
-use crate::render::{CfBrowserBackend, RenderBackend, RenderMode, StaticBackend};
+use crate::render::{CfBrowserBackend, KernelBrowserBackend, RenderBackend, RenderMode, StaticBackend};
 use crate::{NetError, PageContent};
 use url::Url;
 
@@ -72,6 +72,12 @@ fn build_backend(opts: &FetchOptions) -> Result<Box<dyn RenderBackend>, NetError
                 .clone()
                 .ok_or(NetError::MissingApiKey { provider: "cloudflare-browser" })?;
             Ok(Box::new(CfBrowserBackend::new(account_id, api_token, wait_for.clone())?))
+        }
+        RenderMode::Kernel { wait_for, kernel_base_url } => {
+            let base = kernel_base_url
+                .clone()
+                .unwrap_or_else(|| "http://127.0.0.1:4318".to_string());
+            Ok(Box::new(KernelBrowserBackend::new(base, wait_for.clone())?))
         }
     }
 }

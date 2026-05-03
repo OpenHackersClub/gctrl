@@ -23,7 +23,7 @@ use axum::{
     },
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use gctrl_browser::{
@@ -199,6 +199,59 @@ async fn cdp_attach(
     }
 }
 
+/// `POST /api/browser/replays`
+///
+/// Create a fresh session that replays a previously recorded one. The
+/// recorder is currently in-memory only, so this endpoint provisions a
+/// new session and stamps the source session id into a tag for
+/// follow-up by clients. Once recorder persistence to DuckDB lands, the
+/// new session will have its frames re-driven from the recorded trace.
+///
+/// Body:
+/// ```json
+/// { "sessionId": "01HV…", "ttlSeconds": 600 }
+/// ```
+async fn create_replay(Json(body): Json<ReplayRequest>) -> impl IntoResponse {
+    let st = state().await;
+    // Source must exist (or have existed) for the replay to be meaningful.
+    // We don't yet persist released sessions, so missing source → 404 even
+    // though the API is otherwise live.
+    let src_exists = st
+        .pool
+        .get(&SessionId::from(body.session_id.clone()))
+        .await
+        .is_some();
+    if !src_exists {
+        return err_response(BrowserError::SessionNotFound(SessionId::from(
+            body.session_id,
+        )))
+        .into_response();
+    }
+    let opts = SessionOptions {
+        ttl_seconds: body.ttl_seconds.unwrap_or(600),
+        ..Default::default()
+    };
+    match st.pool.acquire(opts).await {
+        Ok(info) => (
+            StatusCode::CREATED,
+            Json(json!({
+                "session": serde_json::to_value(info).unwrap(),
+                "sourceSessionId": body.session_id,
+                "replay": "scaffolded — frame re-drive lands once recorder persistence does",
+            })),
+        )
+            .into_response(),
+        Err(e) => err_response(e).into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReplayRequest {
+    session_id: String,
+    ttl_seconds: Option<u32>,
+}
+
 fn err_response(e: BrowserError) -> (StatusCode, Json<serde_json::Value>) {
     let status = status_for(&e);
     let body = Json(json!({
@@ -235,6 +288,7 @@ pub fn router<S: Clone + Send + Sync + 'static>() -> Router<S> {
             get(get_session).delete(delete_session),
         )
         .route("/api/browser/sessions/{id}/cdp", get(cdp_attach))
+        .route("/api/browser/replays", post(create_replay))
 }
 
 /// Test helper: install a state with a mock launcher so route tests don't
@@ -370,6 +424,54 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn create_replay_404s_for_unknown_source() {
+        let _g = install_mock_pool();
+        let resp = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/browser/replays")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"sessionId": "missing"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn create_replay_returns_new_session_when_source_exists() {
+        let _g = TEST_LOCK.lock().unwrap();
+        // Set up a pool, acquire a source session.
+        let cfg = Arc::new(BrowserConfig::default());
+        let launcher = Arc::new(MockLauncher::new("ws://127.0.0.1:0/fake"));
+        let pool = Arc::new(Pool::new(cfg, launcher, "ws://127.0.0.1:4318".into()));
+        install_test_state(Arc::clone(&pool));
+        let src = pool
+            .acquire(gctrl_browser::SessionOptions::default())
+            .await
+            .unwrap();
+        let body = format!(r#"{{"sessionId": "{}"}}"#, src.id);
+        let resp = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/browser/replays")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["sourceSessionId"], src.id.to_string());
+        assert!(v["session"]["id"].is_string());
     }
 
     #[tokio::test]
