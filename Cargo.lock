@@ -1863,6 +1863,7 @@ dependencies = [
  "async-stream",
  "axum",
  "chrono",
+ "dirs",
  "duckdb",
  "feed-rs",
  "futures-core",
@@ -1889,6 +1890,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]
