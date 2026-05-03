@@ -6,6 +6,8 @@ pub fn run(db_path: &str) -> Result<()> {
 
     let cost_by_model = store.get_cost_by_model(None)?;
     let cost_by_agent = store.get_cost_by_agent(None)?;
+    let cost_by_project = store.get_cost_by_project(None)?;
+    let cost_by_agent_project = store.get_cost_by_agent_project(None)?;
 
     println!("=== Cost by Model ===");
     if cost_by_model.is_empty() {
@@ -32,6 +34,31 @@ pub fn run(db_path: &str) -> Result<()> {
         for (agent, cost, sessions) in &cost_by_agent {
             let avg = if *sessions > 0 { cost / *sessions as f64 } else { 0.0 };
             println!("{:<25} {:>9.4} {:>10} (avg ${:.4}/s)", agent, cost, sessions, avg);
+        }
+    }
+
+    println!();
+    println!("=== Cost by Project ===");
+    if cost_by_project.is_empty() {
+        println!("  No data.");
+    } else {
+        println!("{:<25} {:>10} {:>10}", "PROJECT", "COST", "SESSIONS");
+        println!("{}", "-".repeat(47));
+        for (project, cost, sessions) in &cost_by_project {
+            let avg = if *sessions > 0 { cost / *sessions as f64 } else { 0.0 };
+            println!("{:<25} {:>9.4} {:>10} (avg ${:.4}/s)", project, cost, sessions, avg);
+        }
+    }
+
+    println!();
+    println!("=== Cost by Agent x Project ===");
+    if cost_by_agent_project.is_empty() {
+        println!("  No data.");
+    } else {
+        println!("{:<20} {:<20} {:>10} {:>10}", "AGENT", "PROJECT", "COST", "SESSIONS");
+        println!("{}", "-".repeat(62));
+        for (agent, project, cost, sessions) in &cost_by_agent_project {
+            println!("{:<20} {:<20} {:>9.4} {:>10}", agent, project, cost, sessions);
         }
     }
 

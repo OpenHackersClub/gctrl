@@ -116,6 +116,12 @@ pub struct Session {
     /// behaviour for legacy rows read out of the storage layer.
     #[serde(default)]
     pub created_by: CreatedBy,
+    /// Optional board project this session is attributed to. NULL for
+    /// pre-migration rows and for sessions with no project context
+    /// (e.g. ad-hoc daemon work). Surfaced as the `project` axis in
+    /// analytics rollups.
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 // --- OrchTask (Orchestrator claim record) ---
@@ -237,6 +243,11 @@ pub struct Span {
     pub started_at: DateTime<Utc>,
     pub duration_ms: u64,
     pub attributes: serde_json::Value,
+    /// Optional project attribution mirrored from the parent session.
+    /// Denormalised onto the span row so cost-by-project queries don't
+    /// need a sessions join. NULL for pre-migration rows.
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 // --- Traffic ---
@@ -958,6 +969,7 @@ mod tests {
             started_at: Utc::now(),
             duration_ms: 2000,
             attributes: serde_json::json!({"tool": "bash"}),
+            project_id: None,
         };
         let json = serde_json::to_string(&span).unwrap();
         let parsed: Span = serde_json::from_str(&json).unwrap();

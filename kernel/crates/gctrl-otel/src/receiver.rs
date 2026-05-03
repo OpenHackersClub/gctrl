@@ -868,9 +868,22 @@ async fn analytics_cost(
     let prov_slice = provenances.as_deref();
     let cost_by_model = state.store.get_cost_by_model(prov_slice).unwrap_or_default();
     let cost_by_agent = state.store.get_cost_by_agent(prov_slice).unwrap_or_default();
+    // Project axis is additive — older clients keep working off
+    // `by_model`/`by_agent`, newer clients pick up `by_project` and
+    // `by_agent_project` for the (agent × project) matrix.
+    let cost_by_project = state
+        .store
+        .get_cost_by_project(prov_slice)
+        .unwrap_or_default();
+    let cost_by_agent_project = state
+        .store
+        .get_cost_by_agent_project(prov_slice)
+        .unwrap_or_default();
     Json(serde_json::json!({
         "by_model": cost_by_model.iter().map(|(m, c, n)| serde_json::json!({"model": m, "cost": c, "calls": n})).collect::<Vec<_>>(),
         "by_agent": cost_by_agent.iter().map(|(a, c, n)| serde_json::json!({"agent": a, "cost": c, "sessions": n})).collect::<Vec<_>>(),
+        "by_project": cost_by_project.iter().map(|(p, c, n)| serde_json::json!({"project": p, "cost": c, "sessions": n})).collect::<Vec<_>>(),
+        "by_agent_project": cost_by_agent_project.iter().map(|(a, p, c, n)| serde_json::json!({"agent": a, "project": p, "cost": c, "sessions": n})).collect::<Vec<_>>(),
     })).into_response()
 }
 
@@ -1048,6 +1061,10 @@ async fn ingest_traces(
                     // Auto-create on OTLP ingest is the canonical
                     // `external` provenance — see analytics spec §1.
                     created_by: gctrl_core::CreatedBy::OtelIngest,
+                    // OTLP push doesn't carry project context yet; fill
+                    // in via a later UPDATE if the producer attaches a
+                    // project hint, or leave NULL.
+                    project_id: None,
                 };
                 if state.store.insert_session(&session).is_ok() {
                     started_emit.push(session);
@@ -5311,6 +5328,7 @@ mod tests {
                 total_input_tokens: 0,
                 total_output_tokens: 0,
                 created_by: gctrl_core::CreatedBy::Unknown,
+                project_id: None,
             })
             .unwrap();
 
@@ -5896,6 +5914,7 @@ Getting User settings...
             total_input_tokens: 0,
             total_output_tokens: 0,
             created_by: prov,
+            project_id: None,
         }
     }
 

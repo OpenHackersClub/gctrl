@@ -21,9 +21,24 @@ const CostByAgent = Schema.Struct({
   cost: Schema.Number,
   sessions: Schema.Number,
 })
+const CostByProject = Schema.Struct({
+  project: Schema.String,
+  cost: Schema.Number,
+  sessions: Schema.Number,
+})
+const CostByAgentProject = Schema.Struct({
+  agent: Schema.String,
+  project: Schema.String,
+  cost: Schema.Number,
+  sessions: Schema.Number,
+})
+// `by_project` / `by_agent_project` are optional so the shell stays
+// compatible with older kernels that don't emit them.
 const CostAnalytics = Schema.Struct({
   by_model: Schema.Array(CostByModel),
   by_agent: Schema.Array(CostByAgent),
+  by_project: Schema.optional(Schema.Array(CostByProject)),
+  by_agent_project: Schema.optional(Schema.Array(CostByAgentProject)),
 })
 
 const LatencyByModel = Schema.Struct({
@@ -90,23 +105,87 @@ const overviewCommand = Command.make("overview", {}, () =>
   })
 )
 
-const costCommand = Command.make("cost", {}, () =>
+// `--by` selects which dimension(s) to render. Default `model,agent`
+// preserves prior CLI output. `project` and `agent,project` add the
+// new slices powered by the kernel's project_id column.
+const costBy = Options.text("by").pipe(
+  Options.withDefault("model,agent"),
+  Options.withDescription(
+    "Comma-separated dimensions to show: model, agent, project, agent,project (default: model,agent)"
+  )
+)
+
+const costCommand = Command.make("cost", { by: costBy }, ({ by }) =>
   Effect.gen(function* () {
     const kernel = yield* KernelClient
     const c = yield* kernel.get("/api/analytics/cost", CostAnalytics)
 
-    yield* Console.log("Cost by Model")
-    yield* Console.log(`${"Model".padEnd(30)} ${"Cost".padEnd(12)} Calls`)
-    yield* Console.log("-".repeat(55))
-    for (const m of c.by_model) {
-      yield* Console.log(`${m.model.padEnd(30)} $${m.cost.toFixed(4).padEnd(11)} ${m.calls}`)
+    // Parse --by into a set of canonical dimension names. The string
+    // "agent,project" (the matrix) is matched as a whole token, not
+    // split into "agent" + "project". Keep parsing tolerant: drop
+    // empties, keep order of first appearance.
+    const want = new Set<string>()
+    let raw = by.trim()
+    if (raw.includes("agent,project")) {
+      want.add("agent_project")
+      raw = raw.replaceAll("agent,project", "")
+    }
+    for (const part of raw.split(",").map((s) => s.trim()).filter(Boolean)) {
+      if (part === "model" || part === "agent" || part === "project") want.add(part)
+    }
+    if (want.size === 0) {
+      want.add("model")
+      want.add("agent")
     }
 
-    yield* Console.log("\nCost by Agent")
-    yield* Console.log(`${"Agent".padEnd(30)} ${"Cost".padEnd(12)} Sessions`)
-    yield* Console.log("-".repeat(55))
-    for (const a of c.by_agent) {
-      yield* Console.log(`${a.agent.padEnd(30)} $${a.cost.toFixed(4).padEnd(11)} ${a.sessions}`)
+    if (want.has("model")) {
+      yield* Console.log("Cost by Model")
+      yield* Console.log(`${"Model".padEnd(30)} ${"Cost".padEnd(12)} Calls`)
+      yield* Console.log("-".repeat(55))
+      for (const m of c.by_model) {
+        yield* Console.log(`${m.model.padEnd(30)} $${m.cost.toFixed(4).padEnd(11)} ${m.calls}`)
+      }
+    }
+
+    if (want.has("agent")) {
+      yield* Console.log("\nCost by Agent")
+      yield* Console.log(`${"Agent".padEnd(30)} ${"Cost".padEnd(12)} Sessions`)
+      yield* Console.log("-".repeat(55))
+      for (const a of c.by_agent) {
+        yield* Console.log(`${a.agent.padEnd(30)} $${a.cost.toFixed(4).padEnd(11)} ${a.sessions}`)
+      }
+    }
+
+    if (want.has("project")) {
+      const rows = c.by_project ?? []
+      yield* Console.log("\nCost by Project")
+      yield* Console.log(`${"Project".padEnd(30)} ${"Cost".padEnd(12)} Sessions`)
+      yield* Console.log("-".repeat(55))
+      if (rows.length === 0) {
+        yield* Console.log("(no data — kernel may predate project_id, or no sessions are project-attributed)")
+      } else {
+        for (const p of rows) {
+          yield* Console.log(`${p.project.padEnd(30)} $${p.cost.toFixed(4).padEnd(11)} ${p.sessions}`)
+        }
+      }
+    }
+
+    if (want.has("agent_project")) {
+      const rows = c.by_agent_project ?? []
+      yield* Console.log("\nCost by Agent x Project")
+      yield* Console.log(
+        `${"Agent".padEnd(22)} ${"Project".padEnd(22)} ${"Cost".padEnd(12)} Sessions`
+      )
+      yield* Console.log("-".repeat(70))
+      if (rows.length === 0) {
+        yield* Console.log("(no data — kernel may predate project_id, or no sessions are project-attributed)")
+      } else {
+        for (const r of rows) {
+          yield* Console.log(
+            `${r.agent.padEnd(22)} ${r.project.padEnd(22)} $${r.cost.toFixed(4).padEnd(11)} ${r.sessions}`
+          )
+        }
+      }
     }
   })
 )

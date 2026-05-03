@@ -139,8 +139,8 @@ impl DuckDbStore {
     pub fn insert_session(&self, session: &Session) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO sessions (id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO sessions (id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by, project_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 session.id.0,
                 session.workspace_id.0,
@@ -153,6 +153,7 @@ impl DuckDbStore {
                 session.total_input_tokens as i64,
                 session.total_output_tokens as i64,
                 session.created_by.as_str(),
+                session.project_id,
             ],
         )
         .map_err(|e| GctlError::Storage(e.to_string()))?;
@@ -162,8 +163,8 @@ impl DuckDbStore {
     pub fn insert_span(&self, span: &Span) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO spans (span_id, trace_id, parent_span_id, session_id, agent_name, operation_name, span_type, model, input_tokens, output_tokens, cost_usd, status, error_message, started_at, duration_ms, attributes)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO spans (span_id, trace_id, parent_span_id, session_id, agent_name, operation_name, span_type, model, input_tokens, output_tokens, cost_usd, status, error_message, started_at, duration_ms, attributes, project_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 span.span_id.0,
                 span.trace_id.0,
@@ -181,6 +182,7 @@ impl DuckDbStore {
                 span.started_at.to_rfc3339(),
                 span.duration_ms as i64,
                 span.attributes.to_string(),
+                span.project_id,
             ],
         )
         .map_err(|e| GctlError::Storage(e.to_string()))?;
@@ -210,6 +212,19 @@ impl DuckDbStore {
                 total_input_tokens = (SELECT COALESCE(SUM(input_tokens), 0) FROM spans WHERE session_id = ?1),
                 total_output_tokens = (SELECT COALESCE(SUM(output_tokens), 0) FROM spans WHERE session_id = ?1)
              WHERE id = ?1",
+            params![session_id],
+        )
+        .map_err(|e| GctlError::Storage(e.to_string()))?;
+        // Propagate the session's project_id onto any spans that don't
+        // already carry one. Lets ingest paths (OTel push, manual span
+        // inserts) skip plumbing project_id and still have the span row
+        // line up with the cost-by-project query. Idempotent: rows whose
+        // project_id is already set are left alone.
+        conn.execute(
+            "UPDATE spans
+                SET project_id = (SELECT project_id FROM sessions WHERE id = ?1)
+              WHERE session_id = ?1
+                AND project_id IS NULL",
             params![session_id],
         )
         .map_err(|e| GctlError::Storage(e.to_string()))?;
@@ -256,7 +271,7 @@ impl DuckDbStore {
     pub fn get_session(&self, id: &SessionId) -> Result<Option<Session>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by FROM sessions WHERE id = ?")
+            .prepare("SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by, project_id FROM sessions WHERE id = ?")
             .map_err(|e| GctlError::Storage(e.to_string()))?;
 
         let mut rows = stmt
@@ -273,7 +288,7 @@ impl DuckDbStore {
     pub fn list_sessions(&self, limit: usize) -> Result<Vec<Session>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by FROM sessions ORDER BY started_at DESC LIMIT ?")
+            .prepare("SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by, project_id FROM sessions ORDER BY started_at DESC LIMIT ?")
             .map_err(|e| GctlError::Storage(e.to_string()))?;
 
         let mut rows = stmt
@@ -295,7 +310,7 @@ impl DuckDbStore {
         created_by: Option<&[gctrl_core::CreatedBy]>,
     ) -> Result<Vec<Session>> {
         let conn = self.conn.lock().unwrap();
-        let mut sql = "SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by FROM sessions WHERE 1=1".to_string();
+        let mut sql = "SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by, project_id FROM sessions WHERE 1=1".to_string();
         let mut bound_params: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
 
         if let Some(agent_name) = agent {
@@ -340,7 +355,7 @@ impl DuckDbStore {
     pub fn query_spans(&self, session_id: &SessionId) -> Result<Vec<Span>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT span_id, trace_id, parent_span_id, session_id, agent_name, operation_name, span_type, model, input_tokens, output_tokens, cost_usd, status, error_message, started_at, duration_ms, attributes FROM spans WHERE session_id = ? ORDER BY started_at ASC")
+            .prepare("SELECT span_id, trace_id, parent_span_id, session_id, agent_name, operation_name, span_type, model, input_tokens, output_tokens, cost_usd, status, error_message, started_at, duration_ms, attributes, project_id FROM spans WHERE session_id = ? ORDER BY started_at ASC")
             .map_err(|e| GctlError::Storage(e.to_string()))?;
 
         let mut rows = stmt
@@ -1199,6 +1214,75 @@ impl DuckDbStore {
             let cost: f64 = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
             let count: i64 = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
             results.push((agent, cost, count as u64));
+        }
+        Ok(results)
+    }
+
+    /// Cost rolled up by `project_id`. Sessions without an attributed
+    /// project surface as the bucket key `"unassigned"` so the caller
+    /// always sees the full cost ledger (no silent drop). Caller can
+    /// hide that bucket in the UI when they only want attributed work.
+    pub fn get_cost_by_project(
+        &self,
+        created_by: Option<&[CreatedBy]>,
+    ) -> Result<Vec<(String, f64, u64)>> {
+        let conn = self.conn.lock().unwrap();
+        let sessions = sessions_provenance_filter(created_by);
+        let sess_params = sessions.params();
+        let sql = format!(
+            "SELECT COALESCE(project_id, 'unassigned'), COALESCE(SUM(total_cost_usd), 0), COUNT(*) \
+             FROM sessions{} \
+             GROUP BY COALESCE(project_id, 'unassigned') ORDER BY SUM(total_cost_usd) DESC",
+            sessions.where_clause
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query(sess_params.as_slice())
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut results = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            let project: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let cost: f64 = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let count: i64 = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
+            results.push((project, cost, count as u64));
+        }
+        Ok(results)
+    }
+
+    /// Cost rolled up by the `(agent, project)` pair — answers
+    /// "which agents are running which projects, and what does each
+    /// pair cost?". `project_id` NULL → `"unassigned"` for the same
+    /// reason as `get_cost_by_project`.
+    pub fn get_cost_by_agent_project(
+        &self,
+        created_by: Option<&[CreatedBy]>,
+    ) -> Result<Vec<(String, String, f64, u64)>> {
+        let conn = self.conn.lock().unwrap();
+        let sessions = sessions_provenance_filter(created_by);
+        let sess_params = sessions.params();
+        let sql = format!(
+            "SELECT agent_name, COALESCE(project_id, 'unassigned'), \
+                    COALESCE(SUM(total_cost_usd), 0), COUNT(*) \
+             FROM sessions{} \
+             GROUP BY agent_name, COALESCE(project_id, 'unassigned') \
+             ORDER BY SUM(total_cost_usd) DESC",
+            sessions.where_clause
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query(sess_params.as_slice())
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        let mut results = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| GctlError::Storage(e.to_string()))? {
+            let agent: String = row.get(0).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let project: String = row.get(1).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let cost: f64 = row.get(2).map_err(|e| GctlError::Storage(e.to_string()))?;
+            let count: i64 = row.get(3).map_err(|e| GctlError::Storage(e.to_string()))?;
+            results.push((agent, project, cost, count as u64));
         }
         Ok(results)
     }
@@ -2523,6 +2607,8 @@ fn row_to_session(row: &duckdb::Row<'_>) -> Result<Session> {
     // can't carry NOT NULL on DuckDB). Treat NULL as `Unknown`.
     let created_by_raw: Option<String> =
         row.get(10).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let project_id: Option<String> =
+        row.get(11).map_err(|e| GctlError::Storage(e.to_string()))?;
 
     Ok(Session {
         id: gctrl_core::SessionId(id),
@@ -2549,6 +2635,7 @@ fn row_to_session(row: &duckdb::Row<'_>) -> Result<Session> {
             .as_deref()
             .and_then(gctrl_core::CreatedBy::from_str)
             .unwrap_or(gctrl_core::CreatedBy::Unknown),
+        project_id,
     })
 }
 
@@ -2571,6 +2658,8 @@ fn row_to_span(row: &duckdb::Row<'_>) -> Result<Span> {
     let started_at: String = row.get(13).map_err(|e| GctlError::Storage(e.to_string()))?;
     let duration_ms: i64 = row.get(14).map_err(|e| GctlError::Storage(e.to_string()))?;
     let attributes: String = row.get(15).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let project_id: Option<String> =
+        row.get(16).map_err(|e| GctlError::Storage(e.to_string()))?;
 
     let span_status = match status.as_str() {
         "ok" => SpanStatus::Ok,
@@ -2596,6 +2685,7 @@ fn row_to_span(row: &duckdb::Row<'_>) -> Result<Span> {
             .with_timezone(&chrono::Utc),
         duration_ms: duration_ms as u64,
         attributes: serde_json::from_str(&attributes).unwrap_or(serde_json::Value::Null),
+        project_id,
     })
 }
 
@@ -2776,6 +2866,7 @@ mod tests {
             total_input_tokens: 0,
             total_output_tokens: 0,
             created_by: CreatedBy::Unknown,
+            project_id: None,
         }
     }
 
@@ -2796,6 +2887,7 @@ mod tests {
             started_at: Utc::now(),
             duration_ms: 2000,
             attributes: serde_json::json!({}),
+            project_id: None,
         }
     }
 
@@ -3089,6 +3181,94 @@ mod tests {
         let costs = store.get_cost_by_agent(None).unwrap();
         assert_eq!(costs.len(), 1);
         assert_eq!(costs[0].0, "claude");
+    }
+
+    #[test]
+    fn test_cost_by_project_groups_attributed_and_unassigned() {
+        let store = test_store();
+        // Two sessions on project alpha, one with no project attribution.
+        let mut s1 = make_session("s1");
+        s1.project_id = Some("alpha".into());
+        let mut s2 = make_session("s2");
+        s2.project_id = Some("alpha".into());
+        let s3 = make_session("s3");
+        store.insert_session(&s1).unwrap();
+        store.insert_session(&s2).unwrap();
+        store.insert_session(&s3).unwrap();
+        store.insert_spans(&[make_span("sp1", "s1")]).unwrap();
+        store.insert_spans(&[make_span("sp2", "s2")]).unwrap();
+        store.insert_spans(&[make_span("sp3", "s3")]).unwrap();
+
+        let costs = store.get_cost_by_project(None).unwrap();
+        let alpha = costs.iter().find(|(p, _, _)| p == "alpha").unwrap();
+        let unassigned = costs.iter().find(|(p, _, _)| p == "unassigned").unwrap();
+        assert!((alpha.1 - 0.10).abs() < 0.001, "alpha total = 2 * 0.05");
+        assert_eq!(alpha.2, 2);
+        assert!((unassigned.1 - 0.05).abs() < 0.001);
+        assert_eq!(unassigned.2, 1);
+    }
+
+    #[test]
+    fn test_cost_by_agent_project_pairs() {
+        let store = test_store();
+        // Two agents (`claude`, `codex`), two projects, mixed pairs.
+        let mut s1 = make_session("s1");
+        s1.project_id = Some("alpha".into());
+        let mut s2 = make_session("s2");
+        s2.project_id = Some("beta".into());
+        s2.agent_name = "codex".into();
+        let mut s3 = make_session("s3");
+        s3.project_id = Some("alpha".into());
+        s3.agent_name = "codex".into();
+        store.insert_session(&s1).unwrap();
+        store.insert_session(&s2).unwrap();
+        store.insert_session(&s3).unwrap();
+        store.insert_spans(&[make_span("sp1", "s1")]).unwrap();
+        store.insert_spans(&[make_span("sp2", "s2")]).unwrap();
+        store.insert_spans(&[make_span("sp3", "s3")]).unwrap();
+
+        let costs = store.get_cost_by_agent_project(None).unwrap();
+        // Three distinct (agent, project) pairs.
+        assert_eq!(costs.len(), 3);
+        let claude_alpha = costs
+            .iter()
+            .find(|(a, p, _, _)| a == "claude" && p == "alpha")
+            .expect("claude/alpha pair");
+        let codex_alpha = costs
+            .iter()
+            .find(|(a, p, _, _)| a == "codex" && p == "alpha")
+            .expect("codex/alpha pair");
+        let codex_beta = costs
+            .iter()
+            .find(|(a, p, _, _)| a == "codex" && p == "beta")
+            .expect("codex/beta pair");
+        assert_eq!(claude_alpha.3, 1);
+        assert_eq!(codex_alpha.3, 1);
+        assert_eq!(codex_beta.3, 1);
+    }
+
+    #[test]
+    fn test_session_round_trips_project_id() {
+        let store = test_store();
+        let mut s = make_session("s-with-proj");
+        s.project_id = Some("alpha".into());
+        store.insert_session(&s).unwrap();
+        let got = store.get_session(&s.id).unwrap().expect("session present");
+        assert_eq!(got.project_id.as_deref(), Some("alpha"));
+    }
+
+    #[test]
+    fn test_span_inherits_session_project_id_via_aggregates() {
+        let store = test_store();
+        // Session has a project; span inserted with project_id=None
+        // should have it backfilled by `update_session_aggregates`.
+        let mut s = make_session("s-proj");
+        s.project_id = Some("alpha".into());
+        store.insert_session(&s).unwrap();
+        store.insert_spans(&[make_span("sp1", "s-proj")]).unwrap();
+        let spans = store.query_spans(&s.id).unwrap();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].project_id.as_deref(), Some("alpha"));
     }
 
     #[test]
