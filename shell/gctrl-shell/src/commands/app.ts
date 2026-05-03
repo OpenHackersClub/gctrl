@@ -188,11 +188,26 @@ const llmUrlOpt = Options.text("llm-url").pipe(
 )
 const forceOpt = Options.boolean("force").pipe(
   Options.withDefault(false),
-  Options.withDescription("Overwrite an existing apps/<name>/ directory"),
+  Options.withDescription("Overwrite an existing target directory"),
 )
 const dryRunOpt = Options.boolean("dry-run").pipe(
   Options.withDefault(false),
   Options.withDescription("Print what would be generated; do not write files"),
+)
+const targetOpt = Options.text("target").pipe(
+  Options.optional,
+  Options.withDescription(
+    "Output directory for the bootstrapped app (default: apps/<name> relative to CWD). " +
+      "Use this to scaffold into another repo or a non-default location.",
+  ),
+)
+const gctrlRootOpt = Options.text("gctrl-root").pipe(
+  Options.optional,
+  Options.withDescription(
+    "Path to a gctrl repo checkout used to resolve PRD template + example " +
+      "(default: $GCTRL_REPO_ROOT, else CWD if it has the templates). " +
+      "Required when --target points outside the gctrl repo and CWD isn't a gctrl checkout.",
+  ),
 )
 
 const bootstrapCommand = Command.make(
@@ -204,8 +219,10 @@ const bootstrapCommand = Command.make(
     llmUrl: llmUrlOpt,
     force: forceOpt,
     dryRun: dryRunOpt,
+    target: targetOpt,
+    gctrlRoot: gctrlRootOpt,
   },
-  ({ name, description, model, llmUrl, force, dryRun }) =>
+  ({ name, description, model, llmUrl, force, dryRun, target, gctrlRoot }) =>
     Effect.gen(function* () {
       if (!KEBAB.test(name)) {
         return yield* fail(
@@ -214,30 +231,64 @@ const bootstrapCommand = Command.make(
       }
 
       const cwd = process.cwd()
-      const appsDir = resolve(cwd, "apps")
-      if (!(yield* exists(appsDir))) {
+      const explicitTarget = Option.getOrUndefined(target)
+      const explicitRoot = Option.getOrUndefined(gctrlRoot)
+
+      // Resolve the gctrl repo root for template/example lookup.
+      // Order: --gctrl-root → $GCTRL_REPO_ROOT → CWD.
+      const candidateRoots: string[] = []
+      if (explicitRoot) candidateRoots.push(resolve(explicitRoot))
+      if (process.env.GCTRL_REPO_ROOT) candidateRoots.push(resolve(process.env.GCTRL_REPO_ROOT))
+      candidateRoots.push(cwd)
+
+      let resolvedRoot: string | null = null
+      for (const root of candidateRoots) {
+        if (yield* exists(join(root, TEMPLATE_PATH))) {
+          resolvedRoot = root
+          break
+        }
+      }
+      if (resolvedRoot === null) {
         return yield* fail(
-          `No apps/ directory at ${cwd}. Run from the gctrl repo root.`,
+          `Cannot find PRD template (${TEMPLATE_PATH}). ` +
+            `Pass --gctrl-root <path> to a gctrl repo checkout, set $GCTRL_REPO_ROOT, ` +
+            `or run from the gctrl repo root.`,
         )
       }
 
-      const appDir = join(appsDir, name)
+      // Resolve the output directory.
+      // --target → full app dir (use as-is). Otherwise apps/<name> in CWD.
+      const appDir = explicitTarget
+        ? resolve(explicitTarget)
+        : join(resolve(cwd, "apps"), name)
+
+      if (!explicitTarget) {
+        const appsDir = resolve(cwd, "apps")
+        if (!(yield* exists(appsDir))) {
+          return yield* fail(
+            `No apps/ directory at ${cwd}. Run from the gctrl repo root, ` +
+              `or pass --target <path> to bootstrap into another location.`,
+          )
+        }
+      }
+
       if ((yield* exists(appDir)) && !force) {
         return yield* fail(
-          `apps/${name}/ already exists. Re-run with --force to overwrite.`,
+          `${appDir} already exists. Re-run with --force to overwrite.`,
         )
       }
 
       const desc = Option.getOrElse(description, () => `A new gctrl native application named ${name}.`)
 
-      const templatePath = resolve(cwd, TEMPLATE_PATH)
-      const examplePath = resolve(cwd, EXAMPLE_PATH)
+      const templatePath = join(resolvedRoot, TEMPLATE_PATH)
+      const examplePath = join(resolvedRoot, EXAMPLE_PATH)
 
-      yield* Console.log(`→ Bootstrapping apps/${name}/`)
-      yield* Console.log(`  template: ${TEMPLATE_PATH}`)
-      yield* Console.log(`  example:  ${EXAMPLE_PATH}`)
-      yield* Console.log(`  model:    ${model}`)
-      yield* Console.log(`  llm-url:  ${llmUrl}`)
+      yield* Console.log(`→ Bootstrapping ${appDir}`)
+      yield* Console.log(`  gctrl-root: ${resolvedRoot}`)
+      yield* Console.log(`  template:   ${TEMPLATE_PATH}`)
+      yield* Console.log(`  example:    ${EXAMPLE_PATH}`)
+      yield* Console.log(`  model:      ${model}`)
+      yield* Console.log(`  llm-url:    ${llmUrl}`)
 
       const template = yield* readUtf8(templatePath)
       const example = yield* readUtf8(examplePath)
@@ -302,11 +353,11 @@ const bootstrapCommand = Command.make(
       yield* writeUtf8(join(appDir, "vault", "specs", ".gitkeep"), "")
 
       yield* Console.log("")
-      yield* Console.log(`✓ Bootstrapped apps/${name}/`)
-      yield* Console.log(`  - apps/${name}/PRD.md`)
-      yield* Console.log(`  - apps/${name}/WORKFLOW.md`)
-      yield* Console.log(`  - apps/${name}/ROADMAP.md`)
-      yield* Console.log(`  - apps/${name}/vault/{,specs/}.gitkeep`)
+      yield* Console.log(`✓ Bootstrapped ${appDir}`)
+      yield* Console.log(`  - ${join(appDir, "PRD.md")}`)
+      yield* Console.log(`  - ${join(appDir, "WORKFLOW.md")}`)
+      yield* Console.log(`  - ${join(appDir, "ROADMAP.md")}`)
+      yield* Console.log(`  - ${join(appDir, "vault")}/{,specs/}.gitkeep`)
       yield* Console.log("")
       yield* Console.log("Next: review PRD.md, then commit on a feature branch.")
     }).pipe(
