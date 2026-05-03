@@ -356,14 +356,14 @@ CDP frame proxy itself is **not** spanned per-frame (volume too high). Top-level
 
 ## 8. Migration plan
 
-| PR | Scope | This PR? |
+| PR | Scope | Status |
 |---|---|---|
-| 1 | Spec + scaffold `gctrl-browser` (types, errors, pool stub, route stubs returning 501) + workspace registration + light update to `architecture/kernel/browser.md` | **yes** |
-| 2 | Implement L1: real Chromium pool via `chromiumoxide`, WS proxy, token mint/verify, OTel spans, recycle loop | no |
-| 3 | Add `gctrl-recorder` crate; subscribe to L1 broadcast; DuckDB tables; observation routes + tests | no |
-| 4 | `KernelBrowserClient` Effect-TS adapter in `shell/gctrl-shell/src/services/`; mock-layer tests | no |
-| 5 | Migrate `apps/gctrl-board/tests/acceptance/`: introduce `BROWSER_BACKEND={kernel,local}` env flag; require both green for one CI cycle; then delete `apps/gctrl-board/tests/acceptance/fixtures/cdp.ts` and the local-backend code path | no |
-| 6 | (Additive) `gctrl-net` SPA mode using kernel browser; replay endpoint | no |
+| 1 | Spec + scaffold `gctrl-browser` (types, errors, pool stub, route stubs returning 501) + workspace registration + light update to `architecture/kernel/browser.md` | merged ([#148](https://github.com/OpenHackersClub/gctrl/pull/148)) |
+| 2 | Implement L1: real Chromium pool, WS proxy, token mint/verify, recycle loop. Uses raw `tokio::process` + `tokio-tungstenite` (not `chromiumoxide`) since the kernel only proxies CDP frames and never drives them from Rust | **landed in this PR** |
+| 3 | Add `gctrl-recorder` crate; subscribe to L1 broadcast; DDL in `gctrl-storage`; observation routes (`/network`, `/console`, `/metrics`, `/report`) + tests | **landed in this PR** |
+| 4 | `BrowserClient` Effect-TS port + `HttpBrowserClient` adapter in `shell/gctrl-shell/src/`; `gctrl browser` CLI; mock-layer tests | **landed in this PR** |
+| 5 | Introduce `BROWSER_BACKEND={kernel,local}` env flag in `apps/gctrl-board/tests/acceptance/`; both backends ship together for the parity gate (spec §9). **Deletion of `cdp.ts` is deferred** until one CI cycle is green on both | **gate landed; deletion follow-up TBD** |
+| 6 | (Additive) `gctrl-net` SPA mode using kernel browser; replay endpoint | **landed in this PR** |
 
 Each PR is independently mergeable: PR2 turns the stubs into real behavior; PR3 starts populating the recorder tables that PR2 wrote nothing to; PR4/5 are pure consumer changes.
 
