@@ -37,6 +37,9 @@ description = "Curator + summary lanes for brief / report / sinkin"
 [optional.gcal]
 description = "Google Calendar event apply for timeboxes"
 
+[optional.search]
+description = "Brave Search via kernel /api/search/web — used by IngestService for source discovery"
+
 # Vault project keys this app owns. The vault root is kernel-owned; each
 # subdirectory of the root is a project key. Registered in
 # `gctrl_vault_mounts` so the kernel watcher knows which app owns each key.
@@ -59,3 +62,17 @@ key = "ANTHROPIC_API_KEY"
 kind = "token"
 required = false
 description = "Anthropic API key for LLM curator + summary lanes"
+
+# Environment variables the app reads at startup. The kernel `gctrl app install`
+# flow captures these and propagates them to the launched binary. On a non-gctrl
+# host (forked install per app-decoupling.md § Ejection), the operator reads
+# this list to know which env vars must be set in the new environment.
+[[env]]
+key = "UBER_VAULT_DIR"
+required = true
+description = "Absolute path to the Obsidian-mountable vault holding directives/, input/, output/, action/, plus narrative docs (PRD, ROADMAP, WORKFLOW, specs/, issues/). Default for the maintainer: /Users/debuggingfuture/workspaces/df/uebermensch-vault/"
+
+[[env]]
+key = "UBER_LLM_MODEL"
+required = false
+description = "Override default LLM model for curator + summary lanes (e.g. claude-opus-4-7)"

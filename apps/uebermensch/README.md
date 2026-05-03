@@ -11,7 +11,7 @@ The product, roadmap, architecture, and issue tracker are **not in this director
 | PRD | `$UBER_VAULT_DIR/PRD.md` |
 | Roadmap | `$UBER_VAULT_DIR/ROADMAP.md` |
 | Workflow | `$UBER_VAULT_DIR/WORKFLOW.md` |
-| Specs | `$UBER_VAULT_DIR/specs/` (architecture, domain-model, profile, knowledge-base, briefing-pipeline, delivery, eval, calendar, calendar-timeboxes, sinkin, scheduling, events) |
+| Specs | `$UBER_VAULT_DIR/specs/` — architecture, domain-model, profile, knowledge-base, briefing-pipeline, delivery, eval, calendar, calendar-timeboxes, sinkin, scheduling, events, issues (mirror format), eject-audit (Phase B readiness), fork-to-eject (non-gctrl host playbook) |
 | Issues | `$UBER_VAULT_DIR/issues/UBER-<N>.md` (mirrored from GH `app:uebermensch` label) |
 
 Default `$UBER_VAULT_DIR` for the maintainer: `/Users/debuggingfuture/workspaces/df/uebermensch-vault/` (own git repo, mounted in Obsidian).
