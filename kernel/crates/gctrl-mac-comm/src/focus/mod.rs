@@ -15,7 +15,13 @@ mod iterm2;
 mod terminal;
 
 use crate::error::CommError;
-use crate::model::{FocusRequest, FocusResponse, TerminalApp};
+use crate::model::{FocusRequest, FocusResponse};
+// TerminalApp is only referenced inside the macOS-gated dispatch arm. On
+// Linux/Windows the dispatcher returns NotSupported without inspecting
+// the target, so importing the type unconditionally would trip
+// `unused_imports` under CI's `-D warnings`.
+#[cfg(target_os = "macos")]
+use crate::model::TerminalApp;
 
 /// Bring the originating terminal session to the foreground.
 ///
