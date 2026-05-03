@@ -12,7 +12,13 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  RUSTFLAGS: -D warnings
+  # Drop type-level debuginfo on every crate (keeps panic line numbers).
+  # Cuts rustc time ~10-15% and shrinks target/ so the Swatinem cache
+  # save/restore is dramatically faster.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  # `-D warnings` is preserved; the linker arg is appended so mold is used
+  # for every Rust link step (test binaries dominate the link cost).
+  RUSTFLAGS: -D warnings -C link-arg=-fuse-ld=mold
 
 jobs:
   # ──────────────────────────────────────────────
@@ -50,36 +56,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The Rust cache + cargo target dir for this workspace can exceed 5 GiB.
-      # ubuntu-24.04 runners ship with ~14 GiB free, so the cache restore step
-      # can OOM the disk and crash the runner. Free ~15 GiB by removing
-      # pre-installed toolchains we don't use (Android, .NET, Haskell,
-      # CodeQL caches, dangling Docker images) before anything else runs.
+      # ubuntu-24.04 runners ship with ~14 GiB free; the Rust cache + target
+      # dir for this workspace approaches that even with line-tables-only
+      # debuginfo. Drop the two heaviest pre-installed toolchains we never
+      # use; the rest of the legacy cleanup (ghc/CodeQL/docker) is not worth
+      # the wall-clock cost.
       - name: Free disk space
         run: |
-          sudo rm -rf /usr/share/dotnet || true
-          sudo rm -rf /usr/local/lib/android || true
-          sudo rm -rf /opt/ghc || true
-          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
-          sudo docker image prune --all --force || true
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android
           df -h /
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      # mold is 5-10× faster than GNU ld for the workspace's many test
+      # binaries; the action installs in <2s and is a no-op on cache hits.
+      - name: Install mold linker
+        uses: rui314/setup-mold@v1
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: kernel
 
-      - name: Compile workspace + tests
-        run: cargo test --workspace --locked --no-run
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      # Single cargo invocation builds the test artifacts AND the gctrld bin
+      # under one unified dep graph — `cargo test --no-run` alone does NOT
+      # build the bin (gctrl-cli has no tests), so the previous separate
+      # `cargo build --bin gctrld` step cold-compiled libduckdb-sys + the
+      # full non-test dep tree (~9 min). Doing both in one shot saves that
+      # entire duplicate compile.
+      - name: Build workspace tests + kernel binary
+        run: cargo build --workspace --tests --bin gctrld --locked
 
       - name: Run tests
-        run: cargo test --workspace --no-fail-fast
-
-      - name: Build kernel binary
-        run: cargo build --bin gctrld --locked
+        run: cargo nextest run --workspace --no-fail-fast
 
       # Upload the built kernel binary for the Playwright job
       - name: Upload kernel binary
