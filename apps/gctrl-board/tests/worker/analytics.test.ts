@@ -10,7 +10,7 @@
  */
 import { HttpClient } from "@effect/platform"
 import { env } from "cloudflare:test"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import { afterEach, describe, expect, it } from "vitest"
 import { syncFromKernel, type KernelClient } from "../../src/analytics"
 import { HOST, runTest } from "./fixtures/http"
@@ -221,54 +221,61 @@ describe("Analytics D1 reads", () => {
 })
 
 describe("syncFromKernel", () => {
+  const fixedResponse = (path: string): unknown => {
+    if (path === "/api/sessions?limit=500") {
+      return [
+        {
+          id: "s1",
+          workspace_id: "w",
+          device_id: "d",
+          agent_name: "agent-a",
+          started_at: "2026-04-26T00:00:00Z",
+          ended_at: null,
+          status: "active",
+          total_cost_usd: 1.0,
+          total_input_tokens: 100,
+          total_output_tokens: 50,
+          created_by: "scheduler",
+        },
+      ]
+    }
+    if (path === "/api/analytics") {
+      return { by_agent: [], by_model: [] }
+    }
+    if (path === "/api/analytics/cost") {
+      return {
+        by_model: [{ model: "gpt-4o", cost: 1.0, calls: 5 }],
+        by_agent: [{ agent: "agent-a", cost: 1.0, sessions: 1 }],
+      }
+    }
+    if (path === "/api/analytics/spans") {
+      return {
+        distribution: [
+          { type: "generation", count: 5, percentage: 100.0 },
+        ],
+      }
+    }
+    if (path === "/api/analytics/daily?days=30") {
+      return [
+        { date: "2026-04-26", metric: "sessions", dimension: "total", value: 1 },
+        { date: "2026-04-26", metric: "spans", dimension: "total", value: 5 },
+        { date: "2026-04-26", metric: "cost", dimension: "total", value: 1.0 },
+        { date: "2026-04-26", metric: "tokens", dimension: "total", value: 150 },
+      ]
+    }
+    if (path === "/api/analytics/alerts") {
+      return []
+    }
+    throw new Error(`unexpected path: ${path}`)
+  }
+
+  const decodeWith = <A, I>(
+    raw: unknown,
+    schema: Schema.Schema<A, I, never>,
+  ): Promise<A> => Effect.runPromise(Schema.decodeUnknown(schema)(raw))
+
   const fixedKernel = (): KernelClient => ({
-    fetchJson: async <T>(path: string): Promise<T> => {
-      if (path === "/api/sessions?limit=500") {
-        return [
-          {
-            id: "s1",
-            workspace_id: "w",
-            device_id: "d",
-            agent_name: "agent-a",
-            started_at: "2026-04-26T00:00:00Z",
-            ended_at: null,
-            status: "active",
-            total_cost_usd: 1.0,
-            total_input_tokens: 100,
-            total_output_tokens: 50,
-            created_by: "scheduler",
-          },
-        ] as T
-      }
-      if (path === "/api/analytics") {
-        return { by_agent: [], by_model: [] } as T
-      }
-      if (path === "/api/analytics/cost") {
-        return {
-          by_model: [{ model: "gpt-4o", cost: 1.0, calls: 5 }],
-          by_agent: [{ agent: "agent-a", cost: 1.0, sessions: 1 }],
-        } as T
-      }
-      if (path === "/api/analytics/spans") {
-        return {
-          distribution: [
-            { type: "generation", count: 5, percentage: 100.0 },
-          ],
-        } as T
-      }
-      if (path === "/api/analytics/daily?days=30") {
-        return [
-          { date: "2026-04-26", metric: "sessions", dimension: "total", value: 1 },
-          { date: "2026-04-26", metric: "spans", dimension: "total", value: 5 },
-          { date: "2026-04-26", metric: "cost", dimension: "total", value: 1.0 },
-          { date: "2026-04-26", metric: "tokens", dimension: "total", value: 150 },
-        ] as T
-      }
-      if (path === "/api/analytics/alerts") {
-        return [] as T
-      }
-      throw new Error(`unexpected path: ${path}`)
-    },
+    fetchJson: (path, schema) => decodeWith(fixedResponse(path), schema),
   })
 
   it("populates all analytics tables from kernel responses", async () => {
@@ -304,9 +311,9 @@ describe("syncFromKernel", () => {
 
   it("isolates failures — one resource failing doesn't block others", async () => {
     const flaky: KernelClient = {
-      fetchJson: async <T>(path: string): Promise<T> => {
+      fetchJson: (path, schema) => {
         if (path === "/api/analytics/cost") throw new Error("kernel cost endpoint down")
-        return fixedKernel().fetchJson<T>(path)
+        return fixedKernel().fetchJson(path, schema)
       },
     }
     await syncFromKernel(env.DB, flaky)
@@ -361,25 +368,28 @@ describe("syncFromKernel", () => {
     await syncFromKernel(env.DB, fixedKernel())
 
     const updated: KernelClient = {
-      fetchJson: async <T>(path: string): Promise<T> => {
+      fetchJson: (path, schema) => {
         if (path === "/api/sessions?limit=500") {
-          return [
-            {
-              id: "s1",
-              workspace_id: "w",
-              device_id: "d",
-              agent_name: "agent-a",
-              started_at: "2026-04-26T00:00:00Z",
-              ended_at: "2026-04-26T01:00:00Z",
-              status: "completed",
-              total_cost_usd: 2.5,
-              total_input_tokens: 200,
-              total_output_tokens: 100,
-              created_by: "scheduler",
-            },
-          ] as T
+          return decodeWith(
+            [
+              {
+                id: "s1",
+                workspace_id: "w",
+                device_id: "d",
+                agent_name: "agent-a",
+                started_at: "2026-04-26T00:00:00Z",
+                ended_at: "2026-04-26T01:00:00Z",
+                status: "completed",
+                total_cost_usd: 2.5,
+                total_input_tokens: 200,
+                total_output_tokens: 100,
+                created_by: "scheduler",
+              },
+            ],
+            schema,
+          )
         }
-        return fixedKernel().fetchJson<T>(path)
+        return fixedKernel().fetchJson(path, schema)
       },
     }
     await syncFromKernel(env.DB, updated)

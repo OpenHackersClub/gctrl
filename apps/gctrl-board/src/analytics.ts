@@ -9,8 +9,15 @@
  * Latency percentiles stay on the kernel (D1 lacks PERCENTILE_CONT) — that
  * route is handled by the kernel proxy fallback in worker.ts.
  */
-import { Context, Effect } from "effect"
+import { Context, Effect, Schema } from "effect"
 import { D1Client, D1Error } from "./d1.js"
+
+// ── Kernel fetch error — tagged so failures stay shaped, not stringified ──
+
+export class KernelFetchError extends Schema.TaggedError<KernelFetchError>()(
+  "KernelFetchError",
+  { path: Schema.String, message: Schema.String },
+) {}
 
 // ── HTTP helpers (kept local so this module has no dep on worker.ts) ──
 
@@ -274,14 +281,26 @@ export const triggerSync: AnalyticsHandler = () =>
 // ── Kernel→D1 sync (called from scheduled handler) ──
 
 export interface KernelClient {
-  fetchJson: <T>(path: string) => Promise<T>
+  fetchJson: <A, I>(path: string, schema: Schema.Schema<A, I, never>) => Promise<A>
 }
 
 export const makeKernelClient = (kernelUrl: string): KernelClient => ({
-  fetchJson: async <T>(path: string): Promise<T> => {
+  fetchJson: async <A, I>(
+    path: string,
+    schema: Schema.Schema<A, I, never>,
+  ): Promise<A> => {
     const res = await fetch(new URL(path, kernelUrl).toString())
-    if (!res.ok) throw new Error(`kernel ${path} → HTTP ${res.status}`)
-    return (await res.json()) as T
+    if (!res.ok) {
+      throw new KernelFetchError({ path, message: `HTTP ${res.status}` })
+    }
+    const raw = (await res.json()) as unknown
+    return await Effect.runPromise(
+      Schema.decodeUnknown(schema)(raw).pipe(
+        Effect.mapError(
+          (e) => new KernelFetchError({ path, message: `decode failed: ${String(e)}` }),
+        ),
+      ),
+    )
   },
 })
 
@@ -318,51 +337,81 @@ const syncResource = async (
   }
 }
 
-interface KernelSession {
-  id: string
-  workspace_id: string
-  device_id: string
-  agent_name: string
-  started_at: string
-  ended_at: string | null
-  status: string
-  total_cost_usd: number
-  total_input_tokens: number
-  total_output_tokens: number
-  created_by: string
-}
+const KernelSession = Schema.Struct({
+  id: Schema.String,
+  workspace_id: Schema.String,
+  device_id: Schema.String,
+  agent_name: Schema.String,
+  started_at: Schema.String,
+  ended_at: Schema.NullOr(Schema.String),
+  status: Schema.String,
+  total_cost_usd: Schema.Number,
+  total_input_tokens: Schema.Number,
+  total_output_tokens: Schema.Number,
+  created_by: Schema.String,
+})
+type KernelSession = typeof KernelSession.Type
+const KernelSessionArray = Schema.Array(KernelSession)
 
-interface KernelOverview {
-  by_agent: Array<{ agent_name: string; session_count: number; total_cost_usd: number }>
-  by_model: Array<{ model: string; span_count: number; total_cost_usd: number }>
-}
+const KernelOverview = Schema.Struct({
+  by_agent: Schema.Array(
+    Schema.Struct({
+      agent_name: Schema.String,
+      session_count: Schema.Number,
+      total_cost_usd: Schema.Number,
+    }),
+  ),
+  by_model: Schema.Array(
+    Schema.Struct({
+      model: Schema.String,
+      span_count: Schema.Number,
+      total_cost_usd: Schema.Number,
+    }),
+  ),
+})
 
-interface KernelCost {
-  by_model: Array<{ model: string; cost: number; calls: number }>
-  by_agent: Array<{ agent: string; cost: number; sessions: number }>
-}
+const KernelCost = Schema.Struct({
+  by_model: Schema.Array(
+    Schema.Struct({ model: Schema.String, cost: Schema.Number, calls: Schema.Number }),
+  ),
+  by_agent: Schema.Array(
+    Schema.Struct({ agent: Schema.String, cost: Schema.Number, sessions: Schema.Number }),
+  ),
+})
+type KernelCost = typeof KernelCost.Type
 
-interface KernelSpanDist {
-  distribution: Array<{ type: string; count: number; percentage: number }>
-}
+const KernelSpanDist = Schema.Struct({
+  distribution: Schema.Array(
+    Schema.Struct({
+      type: Schema.String,
+      count: Schema.Number,
+      percentage: Schema.Number,
+    }),
+  ),
+})
+type KernelSpanDist = typeof KernelSpanDist.Type
 
-interface KernelDailyRow {
-  date: string
-  metric: string
-  dimension: string
-  value: number
-}
+const KernelDailyRow = Schema.Struct({
+  date: Schema.String,
+  metric: Schema.String,
+  dimension: Schema.String,
+  value: Schema.Number,
+})
+type KernelDailyRow = typeof KernelDailyRow.Type
+const KernelDailyRowArray = Schema.Array(KernelDailyRow)
 
-interface KernelAlert {
-  id: string
-  name: string
-  condition_type: string
-  threshold: number
-  action: string
-  enabled: boolean
-}
+const KernelAlert = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  condition_type: Schema.String,
+  threshold: Schema.Number,
+  action: Schema.String,
+  enabled: Schema.Boolean,
+})
+type KernelAlert = typeof KernelAlert.Type
+const KernelAlertArray = Schema.Array(KernelAlert)
 
-const upsertSessions = async (db: D1Database, sessions: KernelSession[]): Promise<void> => {
+const upsertSessions = async (db: D1Database, sessions: ReadonlyArray<KernelSession>): Promise<void> => {
   if (sessions.length === 0) return
   const now = new Date().toISOString()
   const stmts = sessions.map((s) =>
@@ -438,7 +487,7 @@ const replaceSpanDistribution = async (
   await db.batch(stmts)
 }
 
-const upsertDaily = async (db: D1Database, rows: KernelDailyRow[]): Promise<void> => {
+const upsertDaily = async (db: D1Database, rows: ReadonlyArray<KernelDailyRow>): Promise<void> => {
   if (rows.length === 0) return
   const now = new Date().toISOString()
   const stmts = rows.map((r) =>
@@ -454,7 +503,7 @@ const upsertDaily = async (db: D1Database, rows: KernelDailyRow[]): Promise<void
   await db.batch(stmts)
 }
 
-const replaceAlerts = async (db: D1Database, rows: KernelAlert[]): Promise<void> => {
+const replaceAlerts = async (db: D1Database, rows: ReadonlyArray<KernelAlert>): Promise<void> => {
   const now = new Date().toISOString()
   const stmts = [
     db.prepare(`DELETE FROM analytics_alerts`),
@@ -480,30 +529,29 @@ export const syncFromKernel = async (
 ): Promise<void> => {
   await Promise.all([
     syncResource(db, "sessions", async () => {
-      const sessions = await kernel.fetchJson<KernelSession[]>("/api/sessions?limit=500")
+      const sessions = await kernel.fetchJson("/api/sessions?limit=500", KernelSessionArray)
       await upsertSessions(db, sessions)
     }),
     syncResource(db, "overview", async () => {
-      const ov = await kernel.fetchJson<KernelOverview>("/api/analytics")
       // Overview's by_agent/by_model are subsumed by the cost rollups; nothing
       // extra to store here. Keep the resource entry so the sync table shows it.
-      void ov
+      await kernel.fetchJson("/api/analytics", KernelOverview)
     }),
     syncResource(db, "cost", async () => {
-      const cost = await kernel.fetchJson<KernelCost>("/api/analytics/cost")
+      const cost = await kernel.fetchJson("/api/analytics/cost", KernelCost)
       await replaceCostByModel(db, cost.by_model)
       await replaceCostByAgent(db, cost.by_agent)
     }),
     syncResource(db, "spans", async () => {
-      const dist = await kernel.fetchJson<KernelSpanDist>("/api/analytics/spans")
+      const dist = await kernel.fetchJson("/api/analytics/spans", KernelSpanDist)
       await replaceSpanDistribution(db, dist.distribution)
     }),
     syncResource(db, "daily", async () => {
-      const rows = await kernel.fetchJson<KernelDailyRow[]>("/api/analytics/daily?days=30")
+      const rows = await kernel.fetchJson("/api/analytics/daily?days=30", KernelDailyRowArray)
       await upsertDaily(db, rows)
     }),
     syncResource(db, "alerts", async () => {
-      const alerts = await kernel.fetchJson<KernelAlert[]>("/api/analytics/alerts")
+      const alerts = await kernel.fetchJson("/api/analytics/alerts", KernelAlertArray)
       await replaceAlerts(db, alerts)
     }),
   ])

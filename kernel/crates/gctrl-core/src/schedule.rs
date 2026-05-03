@@ -220,6 +220,7 @@ mod tests {
             last_error: None,
             run_count: 0,
             failure_count: 0,
+            app_id: None,
             created_at: now.clone(),
             updated_at: now,
             health: None,

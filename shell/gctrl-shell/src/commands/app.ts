@@ -57,6 +57,20 @@ const stripCodeFence = (text: string): string => {
   return fence ? fence[1] : trimmed
 }
 
+const LlmResponse = Schema.Struct({
+  choices: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        message: Schema.optional(
+          Schema.Struct({
+            content: Schema.optional(Schema.String),
+          }),
+        ),
+      }),
+    ),
+  ),
+})
+
 const callLlm = (params: {
   url: string
   model: string
@@ -64,38 +78,58 @@ const callLlm = (params: {
   user: string
   maxTokens: number
 }) =>
-  Effect.tryPromise({
-    try: async () => {
-      const res = await fetch(params.url, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-service-name": "gctrl-app-bootstrap",
-        },
-        body: JSON.stringify({
-          model: params.model,
-          max_tokens: params.maxTokens,
-          messages: [
-            { role: "system", content: params.system },
-            { role: "user", content: params.user },
-          ],
+  Effect.gen(function* () {
+    const res = yield* Effect.tryPromise({
+      try: () =>
+        fetch(params.url, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-service-name": "gctrl-app-bootstrap",
+          },
+          body: JSON.stringify({
+            model: params.model,
+            max_tokens: params.maxTokens,
+            messages: [
+              { role: "system", content: params.system },
+              { role: "user", content: params.user },
+            ],
+          }),
         }),
-      })
-      if (!res.ok) {
-        const body = await res.text().catch(() => "")
-        throw new Error(`LLM ${res.status}: ${body.slice(0, 400)}`)
-      }
-      const json = (await res.json()) as {
-        choices?: Array<{ message?: { content?: string } }>
-      }
-      const content = json.choices?.[0]?.message?.content
-      if (!content) throw new Error("LLM response missing choices[0].message.content")
-      return stripCodeFence(content)
-    },
-    catch: (e) =>
-      new BootstrapError(
-        `LLM call failed (url=${params.url}). Is the kernel relay running? ${e}`,
+      catch: (e) =>
+        new BootstrapError(
+          `LLM call failed (url=${params.url}). Is the kernel relay running? ${e}`,
+        ),
+    })
+
+    if (!res.ok) {
+      const body = yield* Effect.tryPromise({
+        try: () => res.text(),
+        catch: () => new BootstrapError(`LLM ${res.status}: <unreadable body>`),
+      }).pipe(Effect.orElseSucceed(() => ""))
+      return yield* Effect.fail(
+        new BootstrapError(`LLM ${res.status}: ${body.slice(0, 400)}`),
+      )
+    }
+
+    const raw = yield* Effect.tryPromise({
+      try: () => res.json() as Promise<unknown>,
+      catch: (e) => new BootstrapError(`LLM response not JSON: ${e}`),
+    })
+
+    const decoded = yield* Schema.decodeUnknown(LlmResponse)(raw).pipe(
+      Effect.mapError(
+        (e) => new BootstrapError(`LLM response decode failed: ${e}`),
       ),
+    )
+
+    const content = decoded.choices?.[0]?.message?.content
+    if (!content) {
+      return yield* Effect.fail(
+        new BootstrapError("LLM response missing choices[0].message.content"),
+      )
+    }
+    return stripCodeFence(content)
   })
 
 const PRD_SYSTEM = `You are drafting a Product Requirements Document for a new gctrl native application. Follow the provided template structure exactly. Match the tone and section depth of the worked example. The example app (gctrl-digest) is fictional — do NOT copy its content; copy its shape. Output Markdown only — no prose wrapper, no code-fence around the whole document.`
