@@ -94,6 +94,7 @@ pub fn build_gc_row(cfg: &SchedulerConfig) -> Schedule {
     Schedule {
         id: uuid::Uuid::new_v4().to_string(),
         name: GC_SCHEDULE_NAME.into(),
+        app_id: None,
         cron: GC_CRON.into(),
         target_kind: TARGET_KIND_HTTP.into(),
         target_url: target,
