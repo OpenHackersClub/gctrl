@@ -16,7 +16,7 @@ pub use crawl::{crawl_site, CrawlConfig};
 pub use compact::{compact_site, CompactOptions, CompactFormat};
 pub use storage::{SiteStore, PageEntry};
 pub use error::NetError;
-pub use render::{CfBrowserBackend, RenderBackend, RenderMode, RenderedHtml, ScrapeElement, StaticBackend};
+pub use render::{CfBrowserBackend, KernelBrowserBackend, RenderBackend, RenderMode, RenderedHtml, ScrapeElement, StaticBackend};
 pub use search::{BraveSearchClient, SearchKind, SearchQuery, SearchResponse, SearchResult};
 
 /// Result of fetching or crawling a single page.

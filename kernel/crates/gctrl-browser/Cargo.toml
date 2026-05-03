@@ -12,6 +12,14 @@ tracing = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
 async-trait = { workspace = true }
+reqwest = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+getrandom = { workspace = true }
+base64 = { workspace = true }
+which = { workspace = true }
+axum = { workspace = true, features = ["ws"] }
 
 [dev-dependencies]
 tokio = { workspace = true }
+tempfile = { workspace = true }

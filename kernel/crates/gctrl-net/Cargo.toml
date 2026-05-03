@@ -26,6 +26,8 @@ async-trait = "0.1"
 
 # Async utilities
 futures = "0.3"
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
 
 # File system
 dirs = { workspace = true }

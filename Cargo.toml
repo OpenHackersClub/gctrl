@@ -16,6 +16,7 @@ members = [
     "kernel/crates/gctrl-gcal",
     "kernel/crates/gctrl-driver-macos",
     "kernel/crates/gctrl-browser",
+    "kernel/crates/gctrl-recorder",
 ]
 
 [workspace.package]
@@ -84,6 +85,17 @@ feed-rs = "2"
 
 # Filesystem paths
 dirs = "6"
+
+# WebSocket client (outbound proxy to Chromium browser-level CDP endpoint)
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+
+# Random + encoding (per-session bearer tokens for driver-browser)
+getrandom = "0.2"
+base64 = "0.22"
+
+# Chromium binary autodetect for driver-browser
+which = "7"
 
 # Testing
 tower = { version = "0.5", features = ["util"] }
