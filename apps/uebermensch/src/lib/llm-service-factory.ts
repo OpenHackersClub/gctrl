@@ -22,6 +22,7 @@ import {
   buildInterestReportUserPrompt,
   buildResearchQueryUserPrompt,
   buildSubtopicUserPrompt,
+  buildThoughtAnalysisUserPrompt,
   buildUserPrompt,
   decodeLlmJson,
   digestJsonFormat,
@@ -42,6 +43,9 @@ import {
   SUMMARY_MAX_TOKENS,
   SUMMARY_SYSTEM_PROMPT,
   SYSTEM_PROMPT,
+  THOUGHT_SYSTEM_PROMPT,
+  ThoughtAnalysisOutputSchema,
+  thoughtAnalysisJsonFormat,
 } from "./llm-prompts.js"
 import {
   costForResponse,
@@ -216,6 +220,51 @@ export const makeLlmServiceShape = (opts: LlmServiceFactoryOpts): LlmServiceShap
       }
       return {
         answerMd,
+        promptHash,
+        costUsd: costForResponse(res),
+        model: res.model,
+      }
+    }),
+  analyzeThought: (req) =>
+    Effect.gen(function* () {
+      const model = opts.modelFor()
+      const userPrompt = buildThoughtAnalysisUserPrompt(req)
+      const promptHash = sha256(`${THOUGHT_SYSTEM_PROMPT}\n---\n${userPrompt}`)
+      const eff = effortConfigFor(effortFromEnv(), model)
+      const res = yield* opts.postLlm(
+        model,
+        THOUGHT_SYSTEM_PROMPT,
+        userPrompt,
+        eff,
+        thoughtAnalysisJsonFormat(),
+      )
+      const decoded = yield* decodeLlmJson(
+        res.text,
+        ThoughtAnalysisOutputSchema,
+        "analyzeThought",
+      )
+      // Drop fabricated thesis_slug / page_stem references — the LLM is told
+      // not to invent, but cheap enforcement here keeps a malformed model
+      // from poisoning the report.
+      const thesisSlugs = new Set(req.theses.map((t) => t.slug))
+      const pageStems = new Set(req.contextPages.map((p) => p.stem))
+      const thesisUpdates = decoded.thesis_updates
+        .filter((u) => thesisSlugs.has(u.thesis_slug))
+        .map((u) => ({
+          thesisSlug: u.thesis_slug,
+          addendumMd: u.addendum_md,
+          rationale: u.rationale,
+        }))
+      const relevantPageStems = decoded.relevant_page_stems.filter((s) =>
+        pageStems.has(s),
+      )
+      return {
+        analysis: {
+          intent: decoded.intent,
+          questions: decoded.questions,
+          relevantPageStems,
+          thesisUpdates,
+        },
         promptHash,
         costUsd: costForResponse(res),
         model: res.model,

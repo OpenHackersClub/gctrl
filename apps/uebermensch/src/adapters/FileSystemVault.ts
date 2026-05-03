@@ -2,7 +2,7 @@ import { readFile, readdir, stat } from "node:fs/promises"
 import { basename, extname, join, relative } from "node:path"
 import { Effect, Layer, Schema } from "effect"
 import matter from "gray-matter"
-import { VaultError } from "../errors.js"
+import { VaultError, vaultIo } from "../errors.js"
 import {
   DIRECTIVES_RESEARCH_DIR,
   DIRECTIVES_THESES_DIR,
@@ -15,6 +15,7 @@ import { ResearchInterestFrontmatter } from "../schemas.js"
 import {
   VaultService,
   type ResearchInterest,
+  type ThesisRef,
   type WikiPage,
 } from "../services/VaultService.js"
 import { VaultWriterPort } from "../services/VaultWriterPort.js"
@@ -174,6 +175,31 @@ const VaultServiceFromWriter = (vaultDir: string) =>
                 weight: decoded.weight ?? null,
                 fieldFamiliarity: decoded.field_familiarity ?? "expert",
                 notes: parsed.content.trim(),
+                relPath: f.rel,
+              })
+            }
+            return out
+          }),
+        listTheses: () =>
+          Effect.gen(function* () {
+            const files = yield* vaultIo(
+              () => walkMarkdown(vaultDir, [DIRECTIVES_THESES_DIR]),
+              { message: "list theses failed", path: vaultDir },
+            )
+            const out: Array<ThesisRef> = []
+            for (const f of files) {
+              const raw = yield* vaultIo(() => readFile(f.abs, "utf8"), {
+                message: "read thesis failed",
+                path: f.abs,
+              })
+              const parsed = matter(raw)
+              const fm = (parsed.data ?? {}) as Record<string, unknown>
+              const stem = basename(f.abs, ".md")
+              out.push({
+                slug: (fm.slug as string | undefined) ?? stem,
+                title: (fm.title as string | undefined) ?? stem,
+                topics: (fm.topics as ReadonlyArray<string> | undefined) ?? [],
+                body: parsed.content,
                 relPath: f.rel,
               })
             }

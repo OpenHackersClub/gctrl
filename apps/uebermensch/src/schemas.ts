@@ -145,10 +145,18 @@ export const ResearchInterestFrontmatter = Schema.Struct({
 
 export const PromptStatus = Schema.Literal("pending", "processed", "failed", "rerun")
 
+// `thought` — unstructured note: CoS extracts intent, generates clarifying
+// questions, maps to existing wiki context, and proposes thesis updates.
+// `query`  — structured Q&A: CoS produces a consolidated answer with citations.
+// Default when omitted is `thought` (matches the typical "drop a half-formed
+// note in Obsidian and let CoS sort it" workflow).
+export const PromptKind = Schema.Literal("thought", "query")
+
 export const PromptFrontmatter = Schema.Struct({
   slug: Schema.optional(Slug),
   title: Schema.optional(Schema.String),
   topics: Schema.optional(Schema.Array(Slug)),
+  kind: Schema.optional(PromptKind),
   status: Schema.optional(PromptStatus),
   output: Schema.optional(Schema.String),
   processed_at: Schema.optional(IsoLike),

@@ -115,6 +115,49 @@ export const StubLlmLive = Layer.succeed(LlmService, {
       ].join("\n");
       return { answerMd, promptHash, costUsd: 0, model: STUB_MODEL };
     }),
+  analyzeThought: (req) =>
+    Effect.sync(() => {
+      const prompt = [
+        "persona: uber-thinker/stub",
+        `slug: ${req.slug}`,
+        `profile: ${req.profileName}`,
+        `topics: ${req.topics.join(",")}`,
+        `context: ${req.contextPages.map((p) => p.stem).join(",")}`,
+        `theses: ${req.theses.map((t) => t.slug).join(",")}`,
+        `note: ${req.note}`,
+      ].join("\n");
+      const promptHash = sha256(prompt);
+      const intent =
+        req.note.trim().length === 0
+          ? "(no extractable intent)"
+          : `Stub intent for "${req.title}": ${req.note.trim().slice(0, 80)}`;
+      // Deterministic 3 stub questions seeded by topic/title so tests can pin.
+      const seed = req.topics[0] ?? req.title.toLowerCase().split(/\s+/)[0] ?? req.slug;
+      const questions = [
+        `What concrete development in ${seed} would change this view?`,
+        `Which actor is best positioned to act on ${seed} this quarter?`,
+        `What evidence in the wiki contradicts the user's framing on ${seed}?`,
+      ];
+      const relevantPageStems = req.contextPages.slice(0, 3).map((p) => p.stem);
+      const thesisUpdates = req.theses.slice(0, 1).map((t) => ({
+        thesisSlug: t.slug,
+        addendumMd: `Stub addendum: connect the note "${req.title}" to [[${
+          relevantPageStems[0] ?? t.slug
+        }]] for thesis "${t.title}".`,
+        rationale: `Stub rationale: topic overlap with ${seed}.`,
+      }));
+      return {
+        analysis: {
+          intent,
+          questions,
+          relevantPageStems,
+          thesisUpdates,
+        },
+        promptHash,
+        costUsd: 0,
+        model: STUB_MODEL,
+      };
+    }),
   proposeSubtopic: (req) =>
     Effect.sync(() => {
       const it = req.interest;

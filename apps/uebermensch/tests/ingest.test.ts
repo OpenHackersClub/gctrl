@@ -261,6 +261,7 @@ describe("HttpIngest with summarization", () => {
       proposeSubtopic: () => Effect.die("not used"),
       generateInterestReport: () => Effect.die("not used"),
       researchQuery: () => Effect.die("not used"),
+      analyzeThought: () => Effect.die("not used"),
       generateProbes: () => Effect.die("not used"),
       summarizeSource: () =>
         Effect.sync(() => {
@@ -346,6 +347,7 @@ describe("HttpIngest with summarization", () => {
       proposeSubtopic: () => Effect.die("not used"),
       generateInterestReport: () => Effect.die("not used"),
       researchQuery: () => Effect.die("not used"),
+      analyzeThought: () => Effect.die("not used"),
       generateProbes: () => Effect.die("not used"),
       summarizeSource: () =>
         Effect.fail(new LlmError({ message: "upstream 503", kind: "unavailable" })),

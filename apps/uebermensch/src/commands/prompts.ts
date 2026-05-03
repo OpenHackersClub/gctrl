@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import { Args, Command, Options } from "@effect/cli"
-import { Console, Effect, Either, Option } from "effect"
+import { Console, Effect, Option } from "effect"
 import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js"
 import { FileSystemQueryLive } from "../adapters/FileSystemQuery.js"
 import { FileSystemVaultLive } from "../adapters/FileSystemVault.js"
@@ -8,19 +8,29 @@ import { KernelLlmLive } from "../adapters/KernelLlm.js"
 import { StubLlmLive } from "../adapters/StubLlm.js"
 import { resolveVaultDir } from "../lib/env.js"
 import { DIRECTIVES_PROMPTS_DIR, INPUT_REPORTS_DIR } from "../lib/vault-paths.js"
+import type { LlmError } from "../errors.js"
 import {
   LlmService,
+  type LlmServiceShape,
   type ResearchQueryContextPage,
+  type ThoughtAnalysis,
+  type ThoughtThesisRef,
 } from "../services/LlmService.js"
 import { ProfileService } from "../services/ProfileService.js"
 import {
   type Prompt,
   QueryService,
 } from "../services/QueryService.js"
-import { VaultService, type WikiPage } from "../services/VaultService.js"
+import {
+  type ThesisRef,
+  VaultService,
+  type WikiPage,
+} from "../services/VaultService.js"
 
 const MAX_CONTEXT_PAGES = 12
 const MAX_EXCERPT_CHARS = 1500
+const MAX_THESES = 8
+const MAX_THESIS_EXCERPT_CHARS = 1200
 
 const sha256 = (s: string): string =>
   `sha256:${createHash("sha256").update(s, "utf8").digest("hex")}`
@@ -88,6 +98,101 @@ const selectContext = (
   }))
 }
 
+const selectTheses = (
+  theses: ReadonlyArray<ThesisRef>,
+  prompt: Prompt,
+): ReadonlyArray<ThoughtThesisRef> => {
+  if (theses.length === 0) return []
+  const promptTopics = new Set(prompt.topics)
+  // Without prompt topics, hand the LLM every thesis (capped) and let it pick.
+  // With topics, prefer overlapping theses; fall back to the full list when
+  // none overlap so the LLM can still propose addendums.
+  const scored = theses
+    .map((t) => {
+      const overlap =
+        promptTopics.size === 0
+          ? 0
+          : t.topics.reduce((n, x) => (promptTopics.has(x) ? n + 1 : n), 0)
+      return { t, overlap }
+    })
+    .sort((a, b) => b.overlap - a.overlap)
+  const overlapping = scored.filter((x) => x.overlap > 0)
+  const chosen = overlapping.length > 0 ? overlapping : scored
+  return chosen.slice(0, MAX_THESES).map(({ t }) => ({
+    slug: t.slug,
+    title: t.title,
+    topics: t.topics,
+    excerpt: excerptOf(t.body, MAX_THESIS_EXCERPT_CHARS),
+  }))
+}
+
+const renderThoughtPage = (args: {
+  prompt: Prompt
+  analysis: ThoughtAnalysis
+  promptHash: string
+  model: string
+  costUsd: number
+  generatedAt: string
+}): string => {
+  const { prompt, analysis } = args
+  const fm = [
+    "---",
+    `page_type: thought`,
+    `slug: ${prompt.slug}`,
+    `title: ${JSON.stringify(prompt.title)}`,
+    `source_prompt: ${DIRECTIVES_PROMPTS_DIR}/archived/${prompt.slug}.md`,
+    `topics: [${prompt.topics.join(", ")}]`,
+    `generated_at: ${args.generatedAt}`,
+    `model: ${args.model}`,
+    `prompt_hash: ${args.promptHash}`,
+    `cost_usd: ${args.costUsd.toFixed(6)}`,
+    "---",
+    "",
+  ].join("\n")
+  const lines: Array<string> = []
+  lines.push(`## Intent`)
+  lines.push("")
+  lines.push(analysis.intent.trim() || "(no extractable intent)")
+  lines.push("")
+  lines.push(`## Questions`)
+  lines.push("")
+  if (analysis.questions.length === 0) {
+    lines.push("- (none)")
+  } else {
+    for (const q of analysis.questions) lines.push(`- ${q}`)
+  }
+  lines.push("")
+  lines.push(`## Relevant sources`)
+  lines.push("")
+  if (analysis.relevantPageStems.length === 0) {
+    lines.push("(no wiki context yet)")
+  } else {
+    for (const stem of analysis.relevantPageStems) lines.push(`- [[${stem}]]`)
+  }
+  lines.push("")
+  lines.push(`## Suggested thesis updates`)
+  lines.push("")
+  if (analysis.thesisUpdates.length === 0) {
+    lines.push(
+      "(none — the note did not bear on any thesis under directives/theses/)",
+    )
+  } else {
+    lines.push(
+      "Paste each addendum into the named thesis file under `directives/theses/` if you agree — CoS does not edit your authored theses.",
+    )
+    lines.push("")
+    for (const u of analysis.thesisUpdates) {
+      lines.push(`### [[${u.thesisSlug}]]`)
+      lines.push("")
+      lines.push(u.addendumMd.trim())
+      lines.push("")
+      lines.push(`*Why:* ${u.rationale.trim()}`)
+      lines.push("")
+    }
+  }
+  return `${fm}${lines.join("\n").trimEnd()}\n`
+}
+
 const renderResearchPage = (args: {
   prompt: Prompt
   answerMd: string
@@ -112,6 +217,88 @@ const renderResearchPage = (args: {
   ].join("\n")
   return `${fm}${args.answerMd.trimEnd()}\n`
 }
+
+type Built = {
+  readonly markdown: string
+  readonly promptHash: string
+  readonly costUsd: number
+  readonly model: string
+}
+
+// runQuery / runThought keep the error channel typed (LlmError). The caller
+// turns it into an Either with .pipe(Effect.either) so a single prompt's LLM
+// failure logs + stamps `failed` without aborting the rest of the batch.
+const runQuery = (args: {
+  llm: LlmServiceShape
+  prompt: Prompt
+  note: string
+  profileName: string
+  contextPages: ReadonlyArray<ResearchQueryContextPage>
+}): Effect.Effect<Built, LlmError> =>
+  Console.log(
+    `  → ${args.prompt.slug} [query]: ${args.contextPages.length} context page(s); requesting research ...`,
+  ).pipe(
+    Effect.zipRight(
+      args.llm.researchQuery({
+        slug: args.prompt.slug,
+        title: args.prompt.title,
+        topics: args.prompt.topics,
+        question: args.note,
+        profileName: args.profileName,
+        contextPages: args.contextPages,
+      }),
+    ),
+    Effect.map((r) => ({
+      markdown: renderResearchPage({
+        prompt: args.prompt,
+        answerMd: r.answerMd,
+        promptHash: r.promptHash,
+        model: r.model,
+        costUsd: r.costUsd,
+        generatedAt: new Date().toISOString(),
+      }),
+      promptHash: r.promptHash,
+      costUsd: r.costUsd,
+      model: r.model,
+    })),
+  )
+
+const runThought = (args: {
+  llm: LlmServiceShape
+  prompt: Prompt
+  note: string
+  profileName: string
+  contextPages: ReadonlyArray<ResearchQueryContextPage>
+  theses: ReadonlyArray<ThoughtThesisRef>
+}): Effect.Effect<Built, LlmError> =>
+  Console.log(
+    `  → ${args.prompt.slug} [thought]: ${args.contextPages.length} context page(s), ${args.theses.length} thesis candidate(s); analyzing ...`,
+  ).pipe(
+    Effect.zipRight(
+      args.llm.analyzeThought({
+        slug: args.prompt.slug,
+        title: args.prompt.title,
+        topics: args.prompt.topics,
+        note: args.note,
+        profileName: args.profileName,
+        contextPages: args.contextPages,
+        theses: args.theses,
+      }),
+    ),
+    Effect.map((r) => ({
+      markdown: renderThoughtPage({
+        prompt: args.prompt,
+        analysis: r.analysis,
+        promptHash: r.promptHash,
+        model: r.model,
+        costUsd: r.costUsd,
+        generatedAt: new Date().toISOString(),
+      }),
+      promptHash: r.promptHash,
+      costUsd: r.costUsd,
+      model: r.model,
+    })),
+  )
 
 const list = Command.make("list", {}, () =>
   Effect.gen(function* () {
@@ -191,59 +378,68 @@ const process_ = Command.make(
         }
 
         const wikiPages = yield* vault.listWikiPages()
+        const theses = yield* vault.listTheses()
 
         for (const prompt of targets) {
-          const question = prompt.body.trim()
-          if (question.length === 0) {
+          const note = prompt.body.trim()
+          if (note.length === 0) {
             yield* Console.log(`  ! ${prompt.slug}: empty body — skipping`)
             continue
           }
           const contextPages = selectContext(wikiPages, prompt)
-          yield* Console.log(
-            `  → ${prompt.slug}: ${contextPages.length} context page(s); requesting research ...`,
-          )
-          const result = yield* llm
-            .researchQuery({
-              slug: prompt.slug,
-              title: prompt.title,
-              topics: prompt.topics,
-              question,
-              profileName: profile.profile.identity.name,
-              contextPages,
-            })
-            .pipe(
-              Effect.tapError((e) =>
-                Console.log(`  ✗ ${prompt.slug}: llm failed (${e.kind ?? "unknown"}): ${e.message}`),
-              ),
-              Effect.either,
-            )
 
-          const success = yield* Either.match(result, {
-            onLeft: (e) =>
-              queries
-                .stamp(prompt.slug, {
-                  status: "failed",
-                  processedAt: new Date().toISOString(),
-                  failedReason: `${e.kind ?? "unknown"}: ${e.message}`,
+          // Dispatch on kind. Both produce a markdown report at
+          // input/reports/<slug>.md; thought additionally gets the prompt
+          // archived so the user's directives/prompts/ stays a true inbox.
+          const build =
+            prompt.kind === "query"
+              ? runQuery({
+                  llm,
+                  prompt,
+                  note,
+                  profileName: profile.profile.identity.name,
+                  contextPages,
                 })
-                .pipe(Effect.as(null)),
-            onRight: (r) => Effect.succeed(r),
-          })
-          if (success === null) continue
+              : runThought({
+                  llm,
+                  prompt,
+                  note,
+                  profileName: profile.profile.identity.name,
+                  contextPages,
+                  theses: selectTheses(theses, prompt),
+                })
 
-          const { answerMd, promptHash, costUsd, model } = success
+          const built = yield* build.pipe(
+            Effect.tapError((e) =>
+              Console.log(
+                `  ✗ ${prompt.slug}: llm failed (${e.kind ?? "unknown"}): ${e.message}`,
+              ),
+            ),
+            Effect.either,
+          )
+          if (built._tag === "Left") {
+            // Stamp `failed` so the user can see why next time. Drain stamp
+            // errors so one bad write doesn't abort the whole batch.
+            yield* queries
+              .stamp(prompt.slug, {
+                status: "failed",
+                processedAt: new Date().toISOString(),
+                failedReason: `${built.left.kind ?? "unknown"}: ${built.left.message}`,
+              })
+              .pipe(
+                Effect.tapError((e) =>
+                  Console.log(`    ! stamp(failed) errored: ${e.message}`),
+                ),
+                Effect.ignore,
+              )
+            continue
+          }
+
+          const { markdown, promptHash, costUsd, model } = built.right
           const generatedAt = new Date().toISOString()
-          const markdown = renderResearchPage({
-            prompt,
-            answerMd,
-            promptHash,
-            model,
-            costUsd,
-            generatedAt,
-          })
 
           if (dryRun) {
-            yield* Console.log(`  (dry-run) ${prompt.slug}`)
+            yield* Console.log(`  (dry-run) ${prompt.slug} [${prompt.kind}]`)
             yield* Console.log("")
             yield* Console.log(markdown)
             continue
@@ -260,9 +456,27 @@ const process_ = Command.make(
             costUsd,
           })
           yield* Console.log(
-            `  ✓ ${prompt.slug} → ${written.relPath} (${written.contentHash})`,
+            `  ✓ ${prompt.slug} [${prompt.kind}] → ${written.relPath} (${written.contentHash})`,
           )
           yield* Console.log(`    cost: $${costUsd.toFixed(4)} model=${model}`)
+
+          // Thought workflow: source note moves to directives/prompts/archived/
+          // so the inbox surface only ever shows pending notes. Archive
+          // failures (collision, IO) are surfaced but never abort the batch —
+          // the report is already written and the prompt is stamped processed.
+          if (prompt.kind === "thought") {
+            yield* queries.archive(prompt.slug).pipe(
+              Effect.tap((a) =>
+                Console.log(`    archived → ${a.toRelPath}`),
+              ),
+              Effect.tapError((e) =>
+                Console.log(
+                  `    ! archive failed (${e.kind ?? "unknown"}): ${e.message}`,
+                ),
+              ),
+              Effect.ignore,
+            )
+          }
         }
       })
 
@@ -280,7 +494,13 @@ const process_ = Command.make(
   ),
 )
 
-export const _internal = { selectContext, renderResearchPage, sha256 }
+export const _internal = {
+  selectContext,
+  selectTheses,
+  renderResearchPage,
+  renderThoughtPage,
+  sha256,
+}
 
 export const prompts = Command.make("prompts").pipe(
   Command.withSubcommands([list, show, process_]),

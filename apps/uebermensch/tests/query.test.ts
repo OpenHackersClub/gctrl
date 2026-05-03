@@ -35,7 +35,7 @@ describe("prompts (user research queries)", () => {
     await seedFile(
       vaultDir,
       "directives/prompts/what-is-claudes-real-moat.md",
-      'slug: what-is-claudes-real-moat\ntitle: "What is Claude\'s real moat?"\ntopics: [ai-dev-workflows]\n',
+      'slug: what-is-claudes-real-moat\ntitle: "What is Claude\'s real moat?"\ntopics: [ai-dev-workflows]\nkind: query\n',
       "Some half-formed thoughts:\n\n- Tooling ergonomics?\n- Distribution via Claude Code?",
     )
     await seedFile(
@@ -70,9 +70,13 @@ describe("prompts (user research queries)", () => {
     const claude = result.find((p) => p.slug === "what-is-claudes-real-moat")
     expect(claude?.status).toBe("pending")
     expect(claude?.topics).toEqual(["ai-dev-workflows"])
+    expect(claude?.kind).toBe("query")
     const noFm = result.find((p) => p.slug === "no-frontmatter-question")
     expect(noFm?.status).toBe("pending")
     expect(noFm?.topics).toEqual([])
+    // Default kind is `thought` — unstructured notes get the intent →
+    // questions → sources → thesis-update pipeline, not Q&A consolidation.
+    expect(noFm?.kind).toBe("thought")
   })
 
   it("processes a pending prompt: writes input/reports/<slug>.md and stamps frontmatter", async () => {
@@ -164,6 +168,138 @@ describe("prompts (user research queries)", () => {
     expect(result.slug).toBe("no-frontmatter-question")
     expect(result.title).toBe("No frontmatter question")
     expect(result.body.trim()).toBe("What does the wiki say about prediction markets?")
+  })
+
+  it("processes a thought-kind prompt: writes structured report, archives source", async () => {
+    // Drop a fresh thought-kind note: no title, no topics, no kind frontmatter.
+    // The processor should default it to `thought`, run analyzeThought, write
+    // an input/reports/<slug>.md with intent/questions/sources/thesis sections,
+    // and rename the source to directives/prompts/archived/<slug>.md.
+    await seedFile(
+      vaultDir,
+      "directives/prompts/half-formed-thought.md",
+      "",
+      "Wondering whether Claude Code's CLI distribution moat is durable.",
+    )
+    // Seed one thesis so analyzeThought has something to map onto.
+    await seedFile(
+      vaultDir,
+      "directives/theses/ai-dev-tooling.md",
+      "slug: ai-dev-tooling\ntitle: AI dev tooling consolidation\ntopics: [ai-dev-workflows]\n",
+      "Tools that own distribution own the workflow.",
+    )
+
+    const layer = Layer.mergeAll(
+      FileSystemQueryLive(vaultDir),
+      FileSystemVaultLive(vaultDir),
+      StubLlmLive,
+    )
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const q = yield* QueryService
+        const v = yield* VaultService
+        const llm = yield* LlmService
+        const prompt = yield* q.get("half-formed-thought")
+        expect(prompt.kind).toBe("thought")
+
+        const pages = yield* v.listWikiPages()
+        const theses = yield* v.listTheses()
+        expect(theses.map((t) => t.slug)).toContain("ai-dev-tooling")
+
+        const res = yield* llm.analyzeThought({
+          slug: prompt.slug,
+          title: prompt.title,
+          topics: prompt.topics,
+          note: prompt.body,
+          profileName: "Test User",
+          contextPages: pages.map((p) => ({
+            stem: p.stem,
+            title: (p.frontmatter.title as string | undefined) ?? p.stem,
+            topics:
+              (p.frontmatter.topics as ReadonlyArray<string> | undefined) ?? [],
+            excerpt: p.body,
+          })),
+          theses: theses.map((t) => ({
+            slug: t.slug,
+            title: t.title,
+            topics: t.topics,
+            excerpt: t.body,
+          })),
+        })
+        expect(res.analysis.questions.length).toBeGreaterThan(0)
+        expect(res.analysis.thesisUpdates[0]?.thesisSlug).toBe("ai-dev-tooling")
+
+        const written = yield* v.writeResearch(
+          prompt.slug,
+          `## Intent\n\n${res.analysis.intent}\n`,
+        )
+        expect(written.relPath).toBe("input/reports/half-formed-thought.md")
+        yield* q.stamp(prompt.slug, {
+          status: "processed",
+          output: written.relPath,
+          processedAt: "2026-05-03T00:00:00Z",
+          contentHash: written.contentHash,
+          promptHash: res.promptHash,
+          model: res.model,
+          costUsd: res.costUsd,
+        })
+        const archived = yield* q.archive(prompt.slug)
+        expect(archived.toRelPath).toBe(
+          "directives/prompts/archived/half-formed-thought.md",
+        )
+      }).pipe(Effect.provide(layer)),
+    )
+
+    // Source file moved
+    expect(
+      await fileExists(
+        join(vaultDir, "directives", "prompts", "half-formed-thought.md"),
+      ),
+    ).toBe(false)
+    expect(
+      await fileExists(
+        join(
+          vaultDir,
+          "directives",
+          "prompts",
+          "archived",
+          "half-formed-thought.md",
+        ),
+      ),
+    ).toBe(true)
+
+    // list() must NOT surface archived prompts — the inbox stays clean.
+    const remaining = await Effect.runPromise(
+      Effect.gen(function* () {
+        const q = yield* QueryService
+        return yield* q.list()
+      }).pipe(Effect.provide(FileSystemQueryLive(vaultDir))),
+    )
+    expect(remaining.map((p) => p.slug)).not.toContain("half-formed-thought")
+  })
+
+  it("archive fails with collision when target already exists", async () => {
+    await seedFile(
+      vaultDir,
+      "directives/prompts/dup.md",
+      "",
+      "an idea",
+    )
+    await seedFile(
+      vaultDir,
+      "directives/prompts/archived/dup.md",
+      "",
+      "older copy already there",
+    )
+    const program = Effect.gen(function* () {
+      const q = yield* QueryService
+      return yield* q.archive("dup")
+    }).pipe(Effect.provide(FileSystemQueryLive(vaultDir)))
+    const result = await Effect.runPromise(Effect.either(program))
+    expect(result._tag).toBe("Left")
+    if (result._tag === "Left") {
+      expect(result.left.kind).toBe("collision")
+    }
   })
 
   it("returns empty list when directives/prompts/ directory does not exist", async () => {
