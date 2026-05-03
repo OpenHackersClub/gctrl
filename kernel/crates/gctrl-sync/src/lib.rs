@@ -10,6 +10,7 @@ pub mod engine;
 pub mod manifest;
 pub mod parquet_export;
 pub mod r2;
+pub mod vault;
 
 pub use engine::{R2SyncEngine, SyncEngine};
 
