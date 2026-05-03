@@ -507,7 +507,13 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
     }
   })
 
-  it("summarizeSource posts to kernel with SUMMARY_MODEL and returns insights", async () => {
+  it("summarizeSource posts to kernel with SUMMARY_MODEL and returns digest", async () => {
+    const digestPayload = {
+      gist: ["Tokyo lifted restrictions.", "Sales now cover 17 allies."],
+      key_numbers: ["17 allies"],
+      essential_quotes: [],
+      access: "open",
+    }
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -518,7 +524,7 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
           content: [
             {
               type: "text",
-              text: "Here you go:\n\n## Key Insights\n\n- Tokyo lifted restrictions.\n- Sales now cover 17 allies.\n",
+              text: "```json\n" + JSON.stringify(digestPayload) + "\n```",
             },
           ],
         }),
@@ -538,8 +544,9 @@ describe("KernelLlm generateBrief (kernel-routed)", () => {
     )
 
     expect(res.model).toBe(TEST_ANTHROPIC_SUMMARY_MODEL)
-    expect(res.insightsMd.startsWith("## Key Insights")).toBe(true)
-    expect(res.insightsMd).toContain("17 allies")
+    expect(res.digest.gist).toContain("Tokyo lifted restrictions.")
+    expect(res.digest.gist).toContain("Sales now cover 17 allies.")
+    expect(res.digest.access).toBe("open")
     // 500 * $1/M + 200 * $5/M = $0.0005 + $0.001 = $0.0015
     expect(res.costUsd).toBeCloseTo(0.0015, 6)
 

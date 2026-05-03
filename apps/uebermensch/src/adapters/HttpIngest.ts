@@ -2,6 +2,7 @@ import { Context, Effect, Either, Layer, Option } from "effect";
 import { IngestError, type VaultError } from "../errors.js";
 import { sha256 } from "../lib/hash.js";
 import { domainKebab, extractFromHtml, slugForSource } from "../lib/html-extract.js";
+import { renderSourceBody } from "../lib/source-body.js";
 import { IngestService } from "../services/IngestService.js";
 import { LlmService } from "../services/LlmService.js";
 import { VaultService } from "../services/VaultService.js";
@@ -117,30 +118,7 @@ const renderFrontmatter = (fields: Record<string, unknown>): string => {
   return lines.join("\n");
 };
 
-type BodySource = "extracted" | "rss_description" | "llm_insights";
-
-const renderSourceBody = (
-  title: string,
-  url: string,
-  text: string,
-  paywalled: boolean,
-  bodySource: BodySource,
-): string => {
-  const truncated =
-    text.length > MAX_BODY_CHARS ? `${text.slice(0, MAX_BODY_CHARS)}\n\n…(truncated)` : text;
-  const note =
-    bodySource === "llm_insights"
-      ? "_Below is an LLM-generated key-insights summary of the source article._"
-      : bodySource === "rss_description"
-        ? "_Body below is the RSS publisher-supplied description; the linked article is paywalled._"
-        : paywalled
-          ? "_Extracted content may be truncated by a paywall._"
-          : "";
-  const parts = [`# ${title}`, "", `Source: <${url}>`, ""];
-  if (note) parts.push(note, "");
-  parts.push(truncated, "");
-  return parts.join("\n");
-};
+type BodySource = "extracted" | "rss_description" | "llm_digest";
 
 const MIN_FEED_DESCRIPTION_CHARS = 80;
 
@@ -231,12 +209,16 @@ export const HttpIngestLive = Layer.effect(
           );
           const topicsMatched = narrowTopics(classified, req.forceTopics);
 
-          // Optional LLM summarization. Only fires when the caller opts in
-          // AND an LlmService is present in the context. On LLM failure we
-          // keep the extracted/RSS body — ingestion must not break because
+          // Optional LLM digest (Citation Mode v1). Only fires when the caller
+          // opts in AND an LlmService is present in the context. On LLM failure
+          // we fall back to a raw-body page — ingestion must not break because
           // the summarizer is unreachable.
           let summaryModel: string | undefined;
           let summaryCostUsd: number | undefined;
+          let digestedAt: string | undefined;
+          let digestPromptHash: string | undefined;
+          let digestResult: import("../lib/llm-prompts.js").SourceDigest | undefined;
+
           if (req.summarize) {
             const llmOpt = yield* Effect.serviceOption(LlmService);
             if (Option.isSome(llmOpt)) {
@@ -252,23 +234,58 @@ export const HttpIngestLive = Layer.effect(
               Either.match(summary, {
                 onLeft: () => {},
                 onRight: (s) => {
-                  bodyText = s.insightsMd;
-                  bodySource = "llm_insights";
+                  digestResult = s.digest;
+                  bodySource = "llm_digest";
                   summaryModel = s.model;
                   summaryCostUsd = s.costUsd;
+                  digestedAt = new Date().toISOString();
+                  digestPromptHash = s.promptHash;
                 },
               });
             }
           }
-          const contentHash = sha256(bodyText);
 
-          const body = renderSourceBody(
-            extracted.title,
-            req.url,
-            bodyText,
-            paywall.paywalled,
-            bodySource,
-          );
+          // Content hash is computed over the digest gist bullets (stable sections)
+          // when a digest exists, or over the raw extracted text otherwise.
+          const hashableContent = digestResult
+            ? digestResult.gist.join("\n")
+            : bodyText;
+          const contentHash = sha256(hashableContent);
+
+          const body = digestResult
+            ? renderSourceBody({
+                title: extracted.title,
+                url: req.url,
+                digest: digestResult,
+                raw: {
+                  fetchedAt,
+                  charCount: sourceText.length,
+                  wordCount: effectiveWordCount,
+                  readabilityUsed: false,
+                  paywall: paywall.paywalled,
+                },
+                // First ingest — insights + questions are empty (rendered as _None._)
+                insights: [],
+                questions: [],
+              })
+            : (() => {
+                // Pre-digest fallback: emit raw text with a minimal header
+                const truncated =
+                  bodyText.length > MAX_BODY_CHARS
+                    ? `${bodyText.slice(0, MAX_BODY_CHARS)}\n\n…(truncated)`
+                    : bodyText;
+                const note =
+                  bodySource === "rss_description"
+                    ? "_Body below is the RSS publisher-supplied description; the linked article is paywalled._"
+                    : paywall.paywalled
+                      ? "_Extracted content may be truncated by a paywall._"
+                      : "";
+                const parts = [`# ${extracted.title}`, "", `Source: <${req.url}>`, ""];
+                if (note) parts.push(note, "");
+                parts.push(truncated, "");
+                return parts.join("\n");
+              })();
+
           const frontmatterFields: Record<string, unknown> = {
             page_type: "source",
             slug,
@@ -288,6 +305,12 @@ export const HttpIngestLive = Layer.effect(
               body_source: bodySource,
             },
           };
+          if (digestResult !== undefined) {
+            frontmatterFields.digest_version = 1;
+            frontmatterFields.digested_at = digestedAt;
+            frontmatterFields.prompt_hash = digestPromptHash;
+            frontmatterFields.access = digestResult.access;
+          }
           if (summaryModel !== undefined) {
             frontmatterFields.summary = {
               model: summaryModel,

@@ -17,19 +17,24 @@ import { Effect } from "effect"
 import { sha256 } from "./hash.js"
 import {
   briefJsonFormat,
+  buildDigestUserPrompt,
+  buildFreshnessProbeUserPrompt,
   buildInterestReportUserPrompt,
   buildResearchQueryUserPrompt,
   buildSubtopicUserPrompt,
-  buildSummaryUserPrompt,
   buildUserPrompt,
   decodeLlmJson,
+  digestJsonFormat,
+  freshnessProbeJsonFormat,
+  FreshnessProbeOutputSchema,
+  FRESHNESS_PROBE_SYSTEM_PROMPT,
   interestReportJsonFormat,
   InterestReportOutputSchema,
   legacyIdToReference,
   LlmOutputSchema,
-  normalizeInsights,
   REPORT_SYSTEM_PROMPT,
   RESEARCH_SYSTEM_PROMPT,
+  SourceDigestSchema,
   SUBTOPIC_SYSTEM_PROMPT,
   subtopicJsonFormat,
   SubtopicProposeOutputSchema,
@@ -222,7 +227,7 @@ export const makeLlmServiceShape = (opts: LlmServiceFactoryOpts): LlmServiceShap
         req.text.length > SUMMARY_INPUT_CHARS_CAP
           ? `${req.text.slice(0, SUMMARY_INPUT_CHARS_CAP)}…`
           : req.text
-      const userPrompt = buildSummaryUserPrompt(req.title, req.url, req.topics, capped)
+      const userPrompt = buildDigestUserPrompt(req.title, req.url, req.topics, capped)
       const promptHash = sha256(`${SUMMARY_SYSTEM_PROMPT}\n---\n${userPrompt}`)
       // Summary lane is always low-effort: short, cheap, no thinking. Not
       // operator-tunable — bumping summarization to "high" would 10x the
@@ -237,20 +242,43 @@ export const makeLlmServiceShape = (opts: LlmServiceFactoryOpts): LlmServiceShap
         SUMMARY_SYSTEM_PROMPT,
         userPrompt,
         summaryCfg,
-        null,
+        digestJsonFormat(),
       )
-      const insightsMd = normalizeInsights(res.text)
-      if (insightsMd.length === 0) {
-        return yield* Effect.fail(llmErr("invalid", "summarize returned empty insights"))
-      }
+      const digest = yield* decodeLlmJson(res.text, SourceDigestSchema, "summarizeSource")
       return {
-        insightsMd,
+        digest,
         promptHash,
         costUsd: costForResponse(
           res,
           SUMMARY_INPUT_COST_PER_MTOK,
           SUMMARY_OUTPUT_COST_PER_MTOK,
         ),
+        model: res.model,
+      }
+    }),
+  generateProbes: (req) =>
+    Effect.gen(function* () {
+      const model = opts.modelFor()
+      const userPrompt = buildFreshnessProbeUserPrompt(req)
+      const promptHash = sha256(`${FRESHNESS_PROBE_SYSTEM_PROMPT}\n---\n${userPrompt}`)
+      const eff = effortConfigFor(effortFromEnv(), model)
+      const res = yield* opts.postLlm(
+        model,
+        FRESHNESS_PROBE_SYSTEM_PROMPT,
+        userPrompt,
+        eff,
+        freshnessProbeJsonFormat(),
+      )
+      const decoded = yield* decodeLlmJson(res.text, FreshnessProbeOutputSchema, "generateProbes")
+      return {
+        probes: decoded.probes.map((p) => ({
+          query: p.query,
+          watchlist_entity: p.watchlist_entity,
+          rationale: p.rationale,
+          confidence: p.confidence,
+        })),
+        promptHash,
+        costUsd: costForResponse(res),
         model: res.model,
       }
     }),

@@ -146,6 +146,7 @@ describe("run-daily core logic — brief generation + delivery", () => {
       researchQuery: () => Effect.fail({ _tag: "LlmError", message: "no" } as never),
       proposeSubtopic: () => Effect.fail({ _tag: "LlmError", message: "no" } as never),
       generateInterestReport: () => Effect.fail({ _tag: "LlmError", message: "no" } as never),
+      generateProbes: () => Effect.fail({ _tag: "LlmError", message: "no" } as never),
     })
 
     const program = Effect.gen(function* () {

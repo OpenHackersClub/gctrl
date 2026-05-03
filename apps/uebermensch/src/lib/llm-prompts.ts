@@ -9,6 +9,7 @@ import { LlmError } from "../errors.js";
 import type { CandidateRef } from "./candidates.js";
 import type {
   BriefRequest,
+  GenerateProbesRequest,
   InterestReportRequest,
   ResearchQueryRequest,
   SubtopicProposeRequest,
@@ -17,6 +18,22 @@ import type {
 export const MAX_CANDIDATE_EXCERPT = 2000;
 export const SUMMARY_INPUT_CHARS_CAP = 12000;
 export const SUMMARY_MAX_TOKENS = 800;
+
+// ---- Source Digest Schema (Citation Mode v1) ----
+
+export const SourceDigestSchema = Schema.Struct({
+  gist: Schema.Array(Schema.String),
+  key_numbers: Schema.Array(Schema.String),
+  essential_quotes: Schema.Array(
+    Schema.Struct({
+      text: Schema.String,
+      attribution: Schema.String,
+    }),
+  ),
+  access: Schema.Literal("open", "paywall", "metered"),
+});
+
+export type SourceDigest = Schema.Schema.Type<typeof SourceDigestSchema>;
 
 // ---- Effect Schemas (output decoding) ----
 
@@ -287,21 +304,24 @@ INSIGHT-ONLY RULES (strict — enforced by reviewer):
 - If the candidate pool contains only adjacent signal (no direct hit on the interest's question), lead the Thesis with the adjacent signal as a concrete claim. Do NOT frame it as "No direct X but adjacent Y...".
 - No "Suggested action" lines about expanding ingestion, adding feeds, or describing the system itself. Actions must target the substantive domain (markets, policy, company behavior).`;
 
-export const SUMMARY_SYSTEM_PROMPT = `You are uebermensch-ingest, an assistant that condenses a single news article into a compact set of key insights for a research wiki.
+export const SUMMARY_SYSTEM_PROMPT = `You are uebermensch-ingest, a source-digesting assistant for a research wiki. Your output is a JSON digest of one source page.
 
 OUTPUT CONTRACT:
-- Output ONLY markdown — no preamble, no JSON, no fenced blocks.
-- Start with a heading "## Key Insights" on its own line.
-- Follow with 3 to 6 bullet lines starting with "- ".
-- Each bullet: one substantive fact or causal claim in 1–2 sentences, concrete, specific, lifted from the article.
-- After the bullets, optionally add a heading "## Why it matters" with one or two bullet lines of implication for the reader's research topics.
+- Output MUST be a single JSON object wrapped in a triple-backtick json fenced block. No prose outside the fence.
+- Shape: { "gist": string[], "key_numbers": string[], "essential_quotes": [{ "text": string, "attribution": string }], "access": "open" | "paywall" | "metered" }
+
+FIELD RULES:
+- gist: 3–8 bullets. Each bullet is one complete, citable claim MADE BY THE SOURCE ITSELF. No hedging prose, no raw HTML. This is what the source says, not what we think of it.
+- key_numbers: bare numeric facts, verbatim or minimally paraphrased. Empty array [] if none.
+- essential_quotes: at most 3 verbatim quotes, each ≤ 30 words, with attribution (speaker or publication name). Empty array [] if none.
+- access: "open" if the full article body is available, "paywall" if a hard paywall was detected, "metered" if partial content with soft metering.
 
 STYLE RULES:
-- Substantive insight only — no meta commentary about the article, no "the article discusses…", no hedging.
+- Substantive content only — no meta commentary about the article, no "the article discusses…", no hedging.
 - Prefer numbers, named entities, dates, and policy specifics over generalities.
-- Do NOT restate the title.
+- Do NOT restate the title in gist bullets.
 - Do NOT write UI/boilerplate like "read more", "share", photo credits, or bylines.
-- Do NOT output anything outside the headings + bullets structure above.`;
+- Do NOT output anything outside the fenced JSON block.`;
 
 export const RESEARCH_SYSTEM_PROMPT = `You are uebermensch-researcher, a chief-of-staff analyst answering a single user-authored research question by consolidating across the user's existing wiki context.
 
@@ -407,7 +427,7 @@ export const buildInterestReportUserPrompt = (req: InterestReportRequest): strin
   return lines.join("\n");
 };
 
-export const buildSummaryUserPrompt = (
+export const buildDigestUserPrompt = (
   title: string,
   url: string,
   topics: ReadonlyArray<string>,
@@ -420,8 +440,13 @@ export const buildSummaryUserPrompt = (
   lines.push("");
   lines.push("article:");
   lines.push(text);
+  lines.push("");
+  lines.push("Return ONLY a fenced ```json block with the schema above.");
   return lines.join("\n");
 };
+
+/** @deprecated Use buildDigestUserPrompt instead */
+export const buildSummaryUserPrompt = buildDigestUserPrompt;
 
 export const buildResearchQueryUserPrompt = (req: ResearchQueryRequest): string => {
   const lines: Array<string> = [];
@@ -521,4 +546,85 @@ export const subtopicJsonFormat = (): JsonResponseFormat => ({
 export const interestReportJsonFormat = (): JsonResponseFormat => ({
   name: "uber_interest_report",
   schema: JSONSchema.make(InterestReportOutputSchema),
+});
+
+export const digestJsonFormat = (): JsonResponseFormat => ({
+  name: "source_digest",
+  schema: JSONSchema.make(SourceDigestSchema),
+});
+
+// ---- Freshness Probe (§ 2.5) ----
+
+export const FRESHNESS_PROBE_SYSTEM_PROMPT = `You are uebermensch-freshness-probe. Your only job is to identify gaps in a weekly research report's candidate set — specifically, watchlist entities that almost certainly had a major development during the report period that is NOT represented in the candidate pages already collected.
+
+For each entity in WATCHLIST_ENTITIES, ask: "Is there a concrete development I would expect to find in this period that is NOT in the candidates?"
+
+OUTPUT CONTRACT:
+- Output MUST be a single JSON object wrapped in a triple-backtick json fenced block. No prose outside the fence.
+- Shape: { "probes": ProbeEntry[] }
+- ProbeEntry: {
+    "query": string,         // search-engine-quality, specific, dated (NOT "what's new with X")
+    "watchlist_entity": string,  // entity slug or short name
+    "rationale": string,     // 1-2 sentences, concrete, NOT meta-commentary about the pipeline
+    "confidence": "high" | "medium" | "low"
+  }
+- An empty probes: [] array is a VALID answer.
+
+CONFIDENCE:
+- "high": well-known entity, predictable release cadence, strong timing evidence.
+- "medium": reasonable chance but weaker timing signal.
+- "low": speculative.
+
+RULES:
+- NEVER speculate without basis. If you don't know an entity's cadence, default to "low" or omit.
+- NEVER probe an entity already covered by a candidate whose title clearly matches.
+- Each query must be actionable: specific enough that a search API can run it directly.
+- Rationale MUST name a concrete mechanism or timing signal. Forbidden phrases: "the candidate pool lacks X", "no coverage found for Y", "the pipeline did not capture Z".
+- "high" confidence requires at least two concrete signals. "medium" requires one.`;
+
+const FreshnessProbeEntrySchema = Schema.Struct({
+  query: Schema.String,
+  watchlist_entity: Schema.String,
+  rationale: Schema.String,
+  confidence: Schema.Literal("high", "medium", "low"),
+});
+
+export const FreshnessProbeOutputSchema = Schema.Struct({
+  probes: Schema.Array(FreshnessProbeEntrySchema),
+});
+
+export type FreshnessProbeOutput = Schema.Schema.Type<typeof FreshnessProbeOutputSchema>;
+
+export const buildFreshnessProbeUserPrompt = (req: GenerateProbesRequest): string => {
+  const lines: Array<string> = [];
+  lines.push(`period_start: ${req.period.start}`);
+  lines.push(`period_end: ${req.period.end}`);
+  lines.push("");
+  lines.push("WATCHLIST_ENTITIES:");
+  if (req.watchlistEntities.length === 0) {
+    lines.push("  (none)");
+  } else {
+    for (const e of req.watchlistEntities) lines.push(`  - ${e}`);
+  }
+  lines.push("");
+  lines.push("CANDIDATES_SUMMARY (already in vault for this period):");
+  if (req.candidatesSummary.length === 0) {
+    lines.push("  (none)");
+  } else {
+    for (const c of req.candidatesSummary) {
+      lines.push(`  - title: ${c.title}`);
+      lines.push(`    slug: ${c.slug}`);
+    }
+  }
+  lines.push("");
+  lines.push("DIRECTIVE_MD:");
+  lines.push(req.directiveMd);
+  lines.push("");
+  lines.push("Return ONLY a fenced ```json block with the schema above.");
+  return lines.join("\n");
+};
+
+export const freshnessProbeJsonFormat = (): JsonResponseFormat => ({
+  name: "freshness_probe",
+  schema: JSONSchema.make(FreshnessProbeOutputSchema),
 });

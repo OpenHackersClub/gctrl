@@ -1,6 +1,7 @@
 import { Effect, Layer } from "effect";
 import { sha256 } from "../lib/hash.js";
 import { LlmService } from "../services/LlmService.js";
+import type { FreshnessProbe } from "../services/LlmService.js";
 import type { CuratedItem, Reference } from "../services/RendererService.js";
 
 const STUB_MODEL = "stub-llm@0.1";
@@ -69,17 +70,24 @@ export const StubLlmLive = Layer.succeed(LlmService, {
     }),
   summarizeSource: (req) =>
     Effect.sync(() => {
-      const sentences = req.text
-        .replace(/\s+/g, " ")
-        .split(/(?<=[.!?])\s+/)
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0)
-        .slice(0, 3);
-      const bullets =
-        sentences.length > 0 ? sentences.map((s) => `- ${s}`).join("\n") : "- (no content)";
-      const insightsMd = `## Key Insights\n\n${bullets}\n`;
       const promptHash = sha256(`stub-summarize\n${req.url}\n${req.text}`);
-      return { insightsMd, promptHash, costUsd: 0, model: STUB_MODEL };
+      // Deterministic fixture digest — realistic cardinality for test assertions.
+      const digest = {
+        gist: [
+          `${req.title} is the subject of this article.`,
+          "Key policy changes were announced affecting multiple stakeholders.",
+          "Market participants responded with notable shifts in positioning.",
+        ],
+        key_numbers: ["17 partner countries", "$42 billion total exposure"],
+        essential_quotes: [
+          {
+            text: "This marks a historic shift in our approach.",
+            attribution: "Official statement",
+          },
+        ],
+        access: "open" as const,
+      };
+      return { digest, promptHash, costUsd: 0, model: STUB_MODEL };
     }),
   researchQuery: (req) =>
     Effect.sync(() => {
@@ -206,6 +214,31 @@ export const StubLlmLive = Layer.succeed(LlmService, {
         costUsd: 0,
         inputTokens: 0,
         outputTokens: 0,
+        model: STUB_MODEL,
+      };
+    }),
+  generateProbes: (req) =>
+    Effect.sync(() => {
+      const prompt = [
+        "persona: uber-freshness-probe/stub",
+        `period: ${req.period.start}..${req.period.end}`,
+        `entities: ${req.watchlistEntities.slice(0, 4).join(",")}`,
+        `candidates: ${req.candidatesSummary.map((c) => c.slug).join(",")}`,
+      ].join("\n");
+      const promptHash = sha256(prompt);
+      // Deterministic 2-probe fixture: one high-confidence, one medium.
+      // Uses the first two watchlist entities if present; empty array if none.
+      const entities = req.watchlistEntities.slice(0, 2);
+      const probes: Array<FreshnessProbe> = entities.map((entity, i) => ({
+        query: `${entity} release announcement ${req.period.end.slice(0, 4)}`,
+        watchlist_entity: entity,
+        rationale: `Stub probe for ${entity}: fixture deterministic output for tests.`,
+        confidence: i === 0 ? ("high" as const) : ("medium" as const),
+      }));
+      return {
+        probes,
+        promptHash,
+        costUsd: 0,
         model: STUB_MODEL,
       };
     }),
