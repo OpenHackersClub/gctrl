@@ -19,7 +19,7 @@ gctrl-driver-macos = { path = "../gctrl-driver-macos" }
 gctrl-browser = { path = "../gctrl-browser" }
 reqwest = { workspace = true }
 duckdb = { workspace = true }
-axum = { workspace = true }
+axum = { workspace = true, features = ["ws"] }
 tokio = { workspace = true }
 async-stream = { workspace = true }
 futures-core = { workspace = true }

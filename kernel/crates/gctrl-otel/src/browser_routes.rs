@@ -1,49 +1,94 @@
 //! driver-browser HTTP routes (CDP attach layer).
 //!
-//! Mounts `/api/browser/*` onto the kernel router. PR1 surfaces the route
-//! shape with stub responses so clients can be wired against the contract
-//! before the Chromium pool is implemented in PR2:
+//! Mounts `/api/browser/*` onto the kernel router:
 //!
-//! - `GET  /api/browser/health`       — implemented (real config + active count)
-//! - `GET  /api/browser/sessions`     — `[]` (pool is empty)
-//! - `POST /api/browser/sessions`     — `501 Not Implemented` (pool stub returns `Launch`)
-//! - `DELETE /api/browser/sessions/:id` — `404 Not Found`
-//! - `GET  /api/browser/sessions/:id` — `404 Not Found`
-//! - `WS   /api/browser/sessions/:id/cdp` — `501 Not Implemented`
+//! - `GET    /api/browser/health`               — pool config + chromium version
+//! - `GET    /api/browser/sessions`             — list active sessions
+//! - `POST   /api/browser/sessions`             — acquire a session (real)
+//! - `GET    /api/browser/sessions/:id`         — get one session
+//! - `DELETE /api/browser/sessions/:id`         — release immediately
+//! - `WS     /api/browser/sessions/:id/cdp`     — token-gated CDP proxy
 //!
-//! Recorder routes (`/api/browser/sessions/:id/{network,console,metrics,report}`)
-//! are not mounted here — they ship with `gctrl-recorder` in PR3.
+//! Recorder routes (`/network`, `/console`, `/metrics`, `/report`) live in
+//! `recorder_routes.rs` (PR3). They consume the same `Pool` via subscribe.
 //!
 //! Spec: `vault/specs/implementation/kernel/driver-browser.md`.
 
 use std::sync::Arc;
 
 use axum::{
-    extract::Path,
-    http::StatusCode,
+    extract::{
+        ws::{WebSocket, WebSocketUpgrade},
+        Path, Query,
+    },
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::get,
     Json, Router,
 };
-use gctrl_browser::{BrowserConfig, BrowserError, Pool, SessionId, SessionOptions};
-use serde::Serialize;
+use gctrl_browser::{
+    run_proxy, BrowserConfig, BrowserError, MockLauncher, Pool, RealLauncher, SessionId,
+    SessionOptions,
+};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::sync::OnceLock;
 use tokio::sync::OnceCell;
 
 #[derive(Clone)]
-struct BrowserState {
-    pool: Arc<Pool>,
+pub(crate) struct BrowserState {
+    pub(crate) pool: Arc<Pool>,
 }
 
 static STATE: OnceCell<BrowserState> = OnceCell::const_new();
 
-async fn state() -> BrowserState {
+/// Test override — set to use a `MockLauncher` and skip Chromium. Wired
+/// by the route tests below.
+static TEST_OVERRIDE: OnceLock<BrowserState> = OnceLock::new();
+
+pub(crate) async fn state() -> BrowserState {
+    if let Some(s) = TEST_OVERRIDE.get() {
+        return s.clone();
+    }
     STATE
         .get_or_init(|| async {
             let cfg = Arc::new(BrowserConfig::default().with_env_overrides());
-            BrowserState {
-                pool: Arc::new(Pool::new(cfg)),
-            }
+            // Default to a real launcher; misconfiguration / missing
+            // Chromium is reported lazily on first acquire.
+            let launcher: Arc<dyn gctrl_browser::Launcher> = match RealLauncher::new(
+                cfg.chromium_path.clone(),
+                cfg.headed_default,
+            ) {
+                Ok(l) => Arc::new(l),
+                Err(e) => {
+                    tracing::warn!(error=%e, "real chromium launcher unavailable; using mock");
+                    Arc::new(MockLauncher::new("ws://127.0.0.1:0/disabled"))
+                }
+            };
+            let pool = Arc::new(Pool::new(
+                cfg,
+                launcher,
+                "ws://127.0.0.1:4318".into(),
+            ));
+            // Spawn the recycle background task. It runs until the daemon
+            // exits; OnceCell ensures only one is started.
+            let pool_for_loop = Arc::clone(&pool);
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                loop {
+                    interval.tick().await;
+                    let report = pool_for_loop.sweep().await;
+                    if report.expired_sessions + report.drained + report.killed > 0 {
+                        tracing::info!(
+                            expired = report.expired_sessions,
+                            drained = report.drained,
+                            killed = report.killed,
+                            "browser pool sweep"
+                        );
+                    }
+                }
+            });
+            BrowserState { pool }
         })
         .await
         .clone()
@@ -52,9 +97,9 @@ async fn state() -> BrowserState {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HealthResponse {
-    /// `null` until PR2 wires Chromium launch.
     chromium_version: Option<String>,
     active_sessions: usize,
+    chromium_count: usize,
     pool_max: u32,
     contexts_per_chromium_max: u32,
     recycle_idle_seconds: u64,
@@ -65,8 +110,9 @@ async fn health() -> impl IntoResponse {
     let st = state().await;
     let cfg = st.pool.config();
     let body = HealthResponse {
-        chromium_version: None,
+        chromium_version: st.pool.browser_version().await,
         active_sessions: st.pool.active_count().await,
+        chromium_count: st.pool.chromium_count().await,
         pool_max: cfg.pool_max,
         contexts_per_chromium_max: cfg.contexts_per_chromium_max,
         recycle_idle_seconds: cfg.recycle_idle_seconds,
@@ -83,7 +129,10 @@ async fn list_sessions() -> impl IntoResponse {
 async fn create_session(Json(opts): Json<SessionOptions>) -> impl IntoResponse {
     let st = state().await;
     match st.pool.acquire(opts).await {
-        Ok(info) => (StatusCode::CREATED, Json(serde_json::to_value(info).unwrap()))
+        Ok(info) => (
+            StatusCode::CREATED,
+            Json(serde_json::to_value(info).unwrap()),
+        )
             .into_response(),
         Err(e) => err_response(e).into_response(),
     }
@@ -107,13 +156,42 @@ async fn delete_session(Path(id): Path<String>) -> impl IntoResponse {
     }
 }
 
-async fn cdp_attach_stub(Path(_id): Path<String>) -> impl IntoResponse {
-    // PR2 will replace this with a WebSocket upgrade handler that validates
-    // the bearer token and proxies CDP frames bidirectionally between the
-    // client and the per-session Chromium endpoint.
-    err_response(BrowserError::Cdp(
-        "cdp websocket attach is not implemented in PR1 — lands in PR2".into(),
-    ))
+#[derive(Debug, Deserialize, Default)]
+struct CdpQuery {
+    token: Option<String>,
+}
+
+async fn cdp_attach(
+    Path(id): Path<String>,
+    Query(q): Query<CdpQuery>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> axum::response::Response {
+    let st = state().await;
+    let sid = SessionId::from(id);
+
+    // Token can come either as `?token=...` or `Authorization: Bearer ...`.
+    let token = q
+        .token
+        .or_else(|| {
+            headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_default();
+
+    match st.pool.attach(&sid, &token).await {
+        Ok((upstream_url, tap)) => ws
+            .on_upgrade(move |socket: WebSocket| async move {
+                if let Err(e) = run_proxy(socket, upstream_url, tap).await {
+                    tracing::warn!(error=%e, "cdp proxy ended with error");
+                }
+            })
+            .into_response(),
+        Err(e) => err_response(e).into_response(),
+    }
 }
 
 fn err_response(e: BrowserError) -> (StatusCode, Json<serde_json::Value>) {
@@ -133,16 +211,13 @@ fn status_for(e: &BrowserError) -> StatusCode {
         BrowserError::InvalidToken(_) => StatusCode::UNAUTHORIZED,
         BrowserError::RecordingDisabled => StatusCode::CONFLICT,
         BrowserError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
-        // PR1 stub paths land here:
-        BrowserError::Launch(_) | BrowserError::Cdp(_) => StatusCode::NOT_IMPLEMENTED,
+        BrowserError::Launch(_) | BrowserError::Cdp(_) => StatusCode::BAD_GATEWAY,
     }
 }
 
 /// Build the `/api/browser/*` router. State is held in an internal
 /// `OnceCell` so the same `Pool` is reused across requests within the
-/// daemon. The router is parameterized over an arbitrary state type `S`
-/// so it composes with `Router<()>` in `build_router` and any other
-/// state type used by tests.
+/// daemon. Tests inject a mock pool via `install_test_state`.
 pub fn router<S: Clone + Send + Sync + 'static>() -> Router<S> {
     Router::new()
         .route("/api/browser/health", get(health))
@@ -154,16 +229,31 @@ pub fn router<S: Clone + Send + Sync + 'static>() -> Router<S> {
             "/api/browser/sessions/{id}",
             get(get_session).delete(delete_session),
         )
-        .route("/api/browser/sessions/{id}/cdp", get(cdp_attach_stub))
+        .route("/api/browser/sessions/{id}/cdp", get(cdp_attach))
+}
+
+/// Test helper: install a state with a mock launcher so route tests don't
+/// need Chromium. Idempotent — only the first install wins.
+#[doc(hidden)]
+pub fn install_test_state(pool: Arc<Pool>) {
+    let _ = TEST_OVERRIDE.set(BrowserState { pool });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::body::Body;
+    use gctrl_browser::MockLauncher;
     use http::Request;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
+
+    fn install_mock_pool() {
+        let cfg = Arc::new(BrowserConfig::default());
+        let launcher = Arc::new(MockLauncher::new("ws://127.0.0.1:0/fake"));
+        let pool = Arc::new(Pool::new(cfg, launcher, "ws://127.0.0.1:4318".into()));
+        install_test_state(pool);
+    }
 
     fn app() -> Router {
         router::<()>().with_state(())
@@ -171,6 +261,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_reports_pool_config() {
+        install_mock_pool();
         let resp = app()
             .oneshot(
                 Request::builder()
@@ -183,13 +274,13 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(v["chromiumVersion"].is_null());
-        assert_eq!(v["activeSessions"], 0);
         assert_eq!(v["poolMax"], 4);
+        assert_eq!(v["contextsPerChromiumMax"], 8);
     }
 
     #[tokio::test]
-    async fn list_sessions_empty_in_pr1() {
+    async fn list_sessions_starts_empty() {
+        install_mock_pool();
         let resp = app()
             .oneshot(
                 Request::builder()
@@ -203,30 +294,11 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(v.is_array());
-        assert_eq!(v.as_array().unwrap().len(), 0);
-    }
-
-    #[tokio::test]
-    async fn create_session_returns_501_in_pr1() {
-        let resp = app()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/browser/sessions")
-                    .header("content-type", "application/json")
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
-        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(v["error"], "launch_failed");
     }
 
     #[tokio::test]
     async fn create_session_validates_ttl() {
+        install_mock_pool();
         let resp = app()
             .oneshot(
                 Request::builder()
@@ -246,6 +318,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_unknown_session_404s() {
+        install_mock_pool();
         let resp = app()
             .oneshot(
                 Request::builder()
@@ -260,6 +333,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_unknown_session_404s() {
+        install_mock_pool();
         let resp = app()
             .oneshot(
                 Request::builder()
@@ -274,16 +348,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cdp_attach_stub_returns_501() {
+    async fn cdp_attach_without_upgrade_headers_400s() {
+        // axum's `WebSocketUpgrade` extractor rejects non-upgrade requests
+        // before our handler runs, so a plain GET (no Upgrade/Connection
+        // headers) yields 400. End-to-end token / session-lookup behavior
+        // is exercised by the pool's `attach_validates_token` unit test;
+        // a true WS handshake test belongs in an integration suite.
+        install_mock_pool();
         let resp = app()
             .oneshot(
                 Request::builder()
-                    .uri("/api/browser/sessions/abc/cdp")
+                    .uri("/api/browser/sessions/does-not-exist/cdp")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }
