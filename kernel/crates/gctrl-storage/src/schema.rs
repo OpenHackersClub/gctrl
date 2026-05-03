@@ -14,7 +14,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- Provenance: scheduler | otel_ingest | api | unknown.
     -- See specs/architecture/apps/gctrl-analytics.md §1. `unknown`
     -- exists only for pre-migration rows; new rows must set it.
-    created_by      VARCHAR NOT NULL DEFAULT 'unknown'
+    created_by      VARCHAR NOT NULL DEFAULT 'unknown',
+    -- Optional board project attribution. NULL for legacy rows and for
+    -- sessions with no project context. Powers `cost by project` and
+    -- `cost by (agent × project)` analytics queries.
+    project_id      VARCHAR
 )
 "#;
 
@@ -27,6 +31,13 @@ CREATE TABLE IF NOT EXISTS sessions (
 /// pre-migration data.
 pub const ADD_SESSIONS_CREATED_BY: &str = r#"
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS created_by VARCHAR
+"#;
+
+/// Idempotent migration for existing DBs that predate `project_id`.
+/// Always nullable — pre-migration rows have no project context, and
+/// not every session is project-attributable (e.g. ad-hoc daemon work).
+pub const ADD_SESSIONS_PROJECT_ID: &str = r#"
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS project_id VARCHAR
 "#;
 
 pub const CREATE_SPANS_TABLE: &str = r#"
@@ -47,8 +58,17 @@ CREATE TABLE IF NOT EXISTS spans (
     started_at      VARCHAR NOT NULL,
     duration_ms     BIGINT NOT NULL,
     attributes      JSON,
-    synced          BOOLEAN DEFAULT FALSE
+    synced          BOOLEAN DEFAULT FALSE,
+    -- Denormalised from the parent session so cost-by-project queries
+    -- don't need a join. NULL for legacy rows and for spans whose
+    -- session has no project attribution.
+    project_id      VARCHAR
 )
+"#;
+
+/// Idempotent migration for existing DBs that predate `project_id` on spans.
+pub const ADD_SPANS_PROJECT_ID: &str = r#"
+ALTER TABLE spans ADD COLUMN IF NOT EXISTS project_id VARCHAR
 "#;
 
 pub const CREATE_TRAFFIC_TABLE: &str = r#"
@@ -485,6 +505,8 @@ pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_traffic_host ON traffic(host)",
     "CREATE INDEX IF NOT EXISTS idx_traffic_timestamp ON traffic(timestamp)",
     "CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at)",
+    "CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id)",
+    "CREATE INDEX IF NOT EXISTS idx_spans_project ON spans(project_id)",
     "CREATE INDEX IF NOT EXISTS idx_scores_target ON scores(target_type, target_id)",
     "CREATE INDEX IF NOT EXISTS idx_tags_target ON tags(target_type, target_id)",
     "CREATE INDEX IF NOT EXISTS idx_tags_key ON tags(key, value)",
@@ -537,7 +559,9 @@ pub fn all_migrations() -> Vec<&'static str> {
         // Idempotent column add for DBs that predate `created_by`. Runs
         // after CREATE so a fresh schema is also a no-op.
         ADD_SESSIONS_CREATED_BY,
+        ADD_SESSIONS_PROJECT_ID,
         CREATE_SPANS_TABLE,
+        ADD_SPANS_PROJECT_ID,
         CREATE_TRAFFIC_TABLE,
         CREATE_GUARDRAIL_EVENTS_TABLE,
         CREATE_SCORES_TABLE,

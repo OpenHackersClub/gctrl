@@ -44,6 +44,7 @@ fn fixture_store() -> Arc<DuckDbStore> {
                 total_input_tokens: 100,
                 total_output_tokens: 50,
                 created_by: prov,
+                project_id: None,
             })
             .unwrap();
 
@@ -64,6 +65,7 @@ fn fixture_store() -> Arc<DuckDbStore> {
                 started_at: now,
                 duration_ms: 1_500,
                 attributes: serde_json::json!({}),
+                project_id: None,
             })
             .unwrap();
     }

@@ -214,6 +214,10 @@ pub fn process_export_request(req: &OtlpExportRequest) -> Vec<Span> {
                     started_at,
                     duration_ms,
                     attributes: serde_json::Value::Object(attrs),
+                    // Filled in later by `update_session_aggregates`
+                    // once the span is associated with a session row
+                    // that carries a project_id.
+                    project_id: None,
                 });
             }
         }

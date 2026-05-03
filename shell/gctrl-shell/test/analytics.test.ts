@@ -19,6 +19,16 @@ const mockCost = {
     { agent: "Claude Code", cost: 10.5, sessions: 30 },
     { agent: "Codex", cost: 2.0, sessions: 12 },
   ],
+  by_project: [
+    { project: "alpha", cost: 7.0, sessions: 20 },
+    { project: "beta", cost: 3.5, sessions: 10 },
+    { project: "unassigned", cost: 2.0, sessions: 12 },
+  ],
+  by_agent_project: [
+    { agent: "Claude Code", project: "alpha", cost: 7.0, sessions: 20 },
+    { agent: "Claude Code", project: "beta", cost: 3.5, sessions: 10 },
+    { agent: "Codex", project: "unassigned", cost: 2.0, sessions: 12 },
+  ],
 }
 
 const mockLatency = {
@@ -103,6 +113,43 @@ describe("Analytics commands (via KernelClient)", () => {
     expect(result.by_model).toHaveLength(2)
     expect(result.by_model[0].model).toBe("claude-opus-4")
     expect(result.by_agent[0].agent).toBe("Claude Code")
+  })
+
+  it("cost surfaces by_project and by_agent_project slices", async () => {
+    const CostAnalytics = Schema.Struct({
+      by_model: Schema.Array(Schema.Struct({ model: Schema.String, cost: Schema.Number, calls: Schema.Number })),
+      by_agent: Schema.Array(Schema.Struct({ agent: Schema.String, cost: Schema.Number, sessions: Schema.Number })),
+      by_project: Schema.optional(
+        Schema.Array(Schema.Struct({ project: Schema.String, cost: Schema.Number, sessions: Schema.Number }))
+      ),
+      by_agent_project: Schema.optional(
+        Schema.Array(
+          Schema.Struct({
+            agent: Schema.String,
+            project: Schema.String,
+            cost: Schema.Number,
+            sessions: Schema.Number,
+          })
+        )
+      ),
+    })
+
+    const program = Effect.gen(function* () {
+      const kernel = yield* KernelClient
+      return yield* kernel.get("/api/analytics/cost", CostAnalytics)
+    })
+
+    const result = await Effect.runPromise(program.pipe(Effect.provide(MockLayer)))
+    expect(result.by_project).toBeDefined()
+    expect(result.by_project!.find((r) => r.project === "alpha")?.cost).toBe(7.0)
+    expect(result.by_project!.find((r) => r.project === "unassigned")?.sessions).toBe(12)
+
+    const matrix = result.by_agent_project!
+    expect(matrix).toHaveLength(3)
+    const claudeAlpha = matrix.find((r) => r.agent === "Claude Code" && r.project === "alpha")
+    expect(claudeAlpha?.cost).toBe(7.0)
+    const codexUnassigned = matrix.find((r) => r.agent === "Codex" && r.project === "unassigned")
+    expect(codexUnassigned?.sessions).toBe(12)
   })
 
   it("latency returns percentiles", async () => {
