@@ -4,6 +4,7 @@ import { EnvSecretsLive } from "../adapters/EnvSecrets.js"
 import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js"
 import { FileSystemVaultLive } from "../adapters/FileSystemVault.js"
 import { HttpDelivererLive } from "../adapters/HttpDeliverer.js"
+import { HttpNetLive } from "../adapters/HttpNet.js"
 import { _internal as KernelLlmInternal, KernelLlmLive } from "../adapters/KernelLlm.js"
 import { R2SyncConfigFromEnv, R2SyncLive } from "../adapters/R2Sync.js"
 import { StrictRendererLive } from "../adapters/StrictRenderer.js"
@@ -22,6 +23,10 @@ import {
   INPUT_WIKI_DIR,
 } from "../lib/vault-paths.js"
 import { DelivererService } from "../services/DelivererService.js"
+import {
+  FreshnessProbeService,
+  FreshnessProbeServiceLive,
+} from "../services/FreshnessProbeService.js"
 import {
   LlmService,
   type InterestReportResponse,
@@ -180,6 +185,50 @@ const weightedTopicsFor = (
     .map((t) => ({ slug: t.slug, weight: t.weight * boost }))
 }
 
+// Extract watchlist entity slugs/names from a research directive's markdown body.
+// Looks for:
+//   - Table rows (| cell | ...) — takes the first cell of each body row
+//   - Bullet list items (- item, * item) under watchlist-sounding headings
+// Returns deduplicated list of short entity names (lowercased, stripped of markup).
+const extractWatchlistEntities = (markdown: string): ReadonlyArray<string> => {
+  const entities: Array<string> = []
+  const seen = new Set<string>()
+  const add = (raw: string) => {
+    const s = raw.trim().replace(/\*\*?|`/g, "").trim().toLowerCase()
+    if (s.length > 0 && s.length < 80 && !seen.has(s)) {
+      seen.add(s)
+      entities.push(s)
+    }
+  }
+
+  // Table rows: | col1 | col2 | — take first non-header cell.
+  let inTable = false
+  let headerSeen = false
+  for (const line of markdown.split("\n")) {
+    const trimmed = line.trim()
+    if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
+      if (!inTable) { inTable = true; headerSeen = false; continue }
+      // Separator row (| --- | --- |) — marks end of header.
+      if (/^\|[-| :]+\|$/.test(trimmed)) { headerSeen = true; continue }
+      if (headerSeen) {
+        const cells = trimmed.split("|").filter(Boolean).map((c) => c.trim())
+        if (cells[0]) add(cells[0])
+      }
+    } else {
+      inTable = false
+      headerSeen = false
+    }
+  }
+
+  // Bullet list items.
+  for (const line of markdown.split("\n")) {
+    const m = line.match(/^\s*[-*]\s+(.+)$/)
+    if (m) add(m[1])
+  }
+
+  return entities
+}
+
 // First paragraph of analysis_md (the Thesis section body), trimmed for index headlines.
 // Matches any markdown heading level so occasional model drift (## / #### Thesis) still works.
 const thesisHeadline = (analysis_md: string): string | null => {
@@ -322,6 +371,85 @@ export const report = Command.make(
 
         for (const ii of interestInputs) {
           yield* Console.log(`    ${ii.slug}: ${ii.candidates.length} candidate(s)`)
+        }
+
+        // § 2.5 Freshness Probe — runs between Candidate Selection and Curator.
+        // Gate: UBER_FRESHNESS_PROBE_ENABLED=false to skip; defaults to true.
+        // Skipped automatically when a directive has no watchlist in its notes.
+        const freshnessEnabled =
+          (process.env.UBER_FRESHNESS_PROBE_ENABLED ?? "true").toLowerCase() !== "false"
+
+        // Mutate interestInputs in place: augment candidates with probe-sourced pages.
+        if (freshnessEnabled) {
+          const probeSvc = yield* FreshnessProbeService
+          for (let i = 0; i < interestInputs.length; i++) {
+            const ii = interestInputs[i]!
+            const watchlistEntities = extractWatchlistEntities(ii.notes)
+            if (watchlistEntities.length === 0) {
+              yield* Console.log(
+                `    ${ii.slug}: freshness probe skipped (no watchlist in directive)`,
+              )
+              continue
+            }
+            yield* Console.log(
+              `    ${ii.slug}: freshness probe — ${watchlistEntities.length} watchlist entity(ies)`,
+            )
+            const probeResult = yield* probeSvc
+              .run({
+                directive: {
+                  slug: ii.slug,
+                  markdown: ii.notes,
+                  watchlistEntities,
+                },
+                candidates: ii.candidates.map((c) => ({
+                  id: c.id,
+                  title: (c.page.frontmatter.title as string | undefined) ?? c.page.stem,
+                  slug: c.page.stem,
+                })),
+                period: { start: periodStart, end: periodEnd },
+              })
+              .pipe(
+                Effect.catchTag("ProbeError", (e) => {
+                  // Probe errors are non-fatal — log and continue.
+                  return Console.log(
+                    `    ${ii.slug}: freshness probe error (${e.kind}): ${e.message}`,
+                  ).pipe(
+                    Effect.as({
+                      probes: [] as ReadonlyArray<{ query: string; watchlist_entity: string; confidence: string; urls_fetched: number; pages_ingested: number }>,
+                      newCandidates: [] as ReadonlyArray<{ id: string; title: string; slug: string }>,
+                      skipped: true,
+                      skipReason: `probe_error:${e.kind}`,
+                    }),
+                  )
+                }),
+              )
+            if (probeResult.skipped) {
+              yield* Console.log(
+                `    ${ii.slug}: freshness probe skipped (${probeResult.skipReason ?? "unknown"})`,
+              )
+            } else {
+              const totalIngested = (probeResult.probes as ReadonlyArray<{ pages_ingested: number }>).reduce((s, p) => s + p.pages_ingested, 0)
+              yield* Console.log(
+                `    ${ii.slug}: freshness probe — ${probeResult.probes.length} probe(s), ${totalIngested} page(s) ingested`,
+              )
+            }
+            // Re-include probe-sourced pages as candidates (not subject to spam gate).
+            if (probeResult.newCandidates.length > 0) {
+              // Reload vault pages to pick up freshly written probe sources.
+              const allPages = yield* vaultSvc.recentlyChanged(windowHours * 2)
+              const probeSlugs = new Set(probeResult.newCandidates.map((c) => c.slug))
+              const probePages = allPages.filter((p) => probeSlugs.has(p.stem))
+              const now2 = new Date()
+              const probeAsCandidates: ReadonlyArray<CandidateRef> = probePages.map((p, j) => ({
+                id: `probe-${i}-${j}`,
+                page: p,
+                score: 0.5, // below regular candidates but non-zero
+              }))
+              // Merge without exceeding a reasonable cap.
+              ;(interestInputs[i] as { candidates: ReadonlyArray<CandidateRef> }).candidates =
+                [...ii.candidates, ...probeAsCandidates].slice(0, 40)
+            }
+          }
         }
 
         const vaultSlugs = yield* vaultSvc.listSlugs()
@@ -688,14 +816,21 @@ export const report = Command.make(
 
       const llmLayer = llmKind === "stub" ? StubLlmLive : KernelLlmLive
       const syncLayer = R2SyncLive.pipe(Layer.provide(R2SyncConfigFromEnv))
+      // FreshnessProbeService depends on LlmService + NetService + VaultService.
+      // Provide them in the right order so the probe stage has access to all three.
+      const vaultLayer = FileSystemVaultLive(vaultDir)
+      const freshnessLayer = FreshnessProbeServiceLive.pipe(
+        Layer.provide(Layer.mergeAll(llmLayer, HttpNetLive, vaultLayer)),
+      )
       yield* program.pipe(
         Effect.provide(FileSystemProfileLive(vaultDir)),
-        Effect.provide(FileSystemVaultLive(vaultDir)),
+        Effect.provide(vaultLayer),
         Effect.provide(llmLayer),
         Effect.provide(StrictRendererLive),
         Effect.provide(HttpDelivererLive),
         Effect.provide(EnvSecretsLive),
         Effect.provide(syncLayer),
+        Effect.provide(freshnessLayer),
       )
     }),
 ).pipe(

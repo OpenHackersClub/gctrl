@@ -1,6 +1,33 @@
 import { Context, type Effect } from "effect"
-import type { CitationError } from "../errors.js"
+import type {
+  CitationError,
+  ReferenceDuplicate,
+  ReferenceMissing,
+  ReferenceOrphan,
+  ReferenceSequenceInvalid,
+  ReferenceSourceInvalid,
+  SourceCitedInline,
+} from "../errors.js"
 import type { CandidateRef } from "../lib/candidates.ts"
+
+/** Union of all citation-verification errors that the renderer can emit. */
+export type CitationVerifyError =
+  | CitationError
+  | SourceCitedInline
+  | ReferenceMissing
+  | ReferenceDuplicate
+  | ReferenceOrphan
+  | ReferenceSourceInvalid
+  | ReferenceSequenceInvalid
+
+export type Reference = {
+  readonly n: number
+  readonly source_page_id: string
+  readonly canonical_url: string
+  readonly accessed_at: string
+  readonly title: string
+  readonly domain: string
+}
 
 export type CuratedItem = {
   readonly kind: "news" | "update" | "action" | "alert"
@@ -8,6 +35,12 @@ export type CuratedItem = {
   readonly summary_md: string
   readonly topic: string | null
   readonly thesis: string | null
+  // Citation Mode v1: typed references array.  Each [n] in summary_md must
+  // have a matching entry here.
+  readonly references: ReadonlyArray<Reference>
+  // TODO(citation-mode-v1): remove after PR4 migration ships.
+  // Derived for backwards compat: callers that only read source_candidate_ids
+  // can still do so; new callers should prefer references[].source_page_id.
   readonly source_candidate_ids: ReadonlyArray<string>
   readonly suggested_action: string | null
 }
@@ -98,13 +131,13 @@ export type ReportIndexRenderResult = {
 }
 
 export interface RendererServiceShape {
-  readonly render: (input: RenderInput) => Effect.Effect<RenderResult, CitationError>
+  readonly render: (input: RenderInput) => Effect.Effect<RenderResult, CitationVerifyError>
   readonly renderInterestReport: (
     input: InterestReportRenderInput,
-  ) => Effect.Effect<InterestReportRenderResult, CitationError>
+  ) => Effect.Effect<InterestReportRenderResult, CitationVerifyError>
   readonly renderReportIndex: (
     input: ReportIndexRenderInput,
-  ) => Effect.Effect<ReportIndexRenderResult, CitationError>
+  ) => Effect.Effect<ReportIndexRenderResult, never>
 }
 
 export class RendererService extends Context.Tag("uebermensch/RendererService")<

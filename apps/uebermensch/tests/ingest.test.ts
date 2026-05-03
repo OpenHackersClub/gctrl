@@ -244,18 +244,29 @@ describe("HttpIngest adapter", () => {
 })
 
 describe("HttpIngest with summarization", () => {
-  const fakeLlmLayer = (insights: string, calls: { count: number }) =>
+  const fakeDigest = {
+    gist: [
+      "Japan lifted arms-export restrictions to 17 partner countries.",
+      "The move targets lethal weapons for the first time.",
+    ],
+    key_numbers: ["17 partner countries"],
+    essential_quotes: [] as Array<{ text: string; attribution: string }>,
+    access: "open" as const,
+  }
+
+  const fakeLlmLayer = (_insights: string, calls: { count: number }) =>
     Layer.succeed(LlmService, {
       name: () => "fake-llm",
       generateBrief: () => Effect.die("not used"),
       proposeSubtopic: () => Effect.die("not used"),
       generateInterestReport: () => Effect.die("not used"),
       researchQuery: () => Effect.die("not used"),
+      generateProbes: () => Effect.die("not used"),
       summarizeSource: () =>
         Effect.sync(() => {
           calls.count += 1
           return {
-            insightsMd: insights,
+            digest: fakeDigest,
             promptHash: "sha256:deadbeef",
             costUsd: 0.0001,
             model: "fake-llm@1",
@@ -285,33 +296,45 @@ describe("HttpIngest with summarization", () => {
     )
   }
 
-  it("replaces body with LLM insights when summarize=true", async () => {
+  it("replaces body with digest sections when summarize=true", async () => {
     const dir = await mkdtemp(join(tmpdir(), "uber-ingest-sum-"))
     const longBody = `<p>${"sentence about Tokyo arms exports. ".repeat(40)}</p>`
     const html = `<html><head><title>Arms Exports</title></head><body><article>${longBody}</article></body></html>`
     const calls = { count: 0 }
-    const insights =
-      "## Key Insights\n\n- Japan lifted arms-export restrictions to 17 partner countries.\n- The move targets lethal weapons for the first time.\n"
     const exit = await runIngestWithLlm(
       dir,
       mkFetch(200, html),
-      fakeLlmLayer(insights, calls),
+      fakeLlmLayer("", calls),
       { ...seedReq, summarize: true },
     )
     expect(Exit.isSuccess(exit)).toBe(true)
     expect(calls.count).toBe(1)
     if (!Exit.isSuccess(exit)) return
     const res = exit.value
-    expect(res.bodySource).toBe("llm_insights")
+    expect(res.bodySource).toBe("llm_digest")
     expect(res.summaryModel).toBe("fake-llm@1")
 
     const onDisk = await readFile(join(dir, res.relPath), "utf8")
     const parsed = matter(onDisk)
-    expect(parsed.content).toContain("Key Insights")
+    // Six-section digest body
+    expect(parsed.content).toContain("## Gist")
+    expect(parsed.content).toContain("## Key numbers")
+    expect(parsed.content).toContain("## Essential quotes")
+    expect(parsed.content).toContain("## Insights")
+    expect(parsed.content).toContain("## Questions")
+    expect(parsed.content).toContain("## Access metadata")
+    // Gist bullet from fakeDigest
     expect(parsed.content).toContain("17 partner countries")
+    // Raw article text is NOT in the body (replaced by digest)
     expect(parsed.content).not.toContain("sentence about Tokyo arms exports")
-    expect((parsed.data.quality as { body_source: string }).body_source).toBe("llm_insights")
+    expect((parsed.data.quality as { body_source: string }).body_source).toBe("llm_digest")
     expect((parsed.data.summary as { model: string }).model).toBe("fake-llm@1")
+    // Citation Mode v1 frontmatter fields
+    expect(parsed.data.digest_version).toBe(1)
+    expect(parsed.data.access).toBe("open")
+    // gray-matter parses ISO date strings as Date objects; check it's date-like
+    expect(parsed.data.digested_at).toBeTruthy()
+    expect(parsed.data.prompt_hash).toBeTruthy()
   })
 
   it("falls back to extracted body when LLM fails", async () => {
@@ -323,6 +346,7 @@ describe("HttpIngest with summarization", () => {
       proposeSubtopic: () => Effect.die("not used"),
       generateInterestReport: () => Effect.die("not used"),
       researchQuery: () => Effect.die("not used"),
+      generateProbes: () => Effect.die("not used"),
       summarizeSource: () =>
         Effect.fail(new LlmError({ message: "upstream 503", kind: "unavailable" })),
     })
@@ -342,7 +366,7 @@ describe("HttpIngest with summarization", () => {
     const exit = await runIngestWithLlm(
       dir,
       mkFetch(200, html),
-      fakeLlmLayer("## Key Insights\n- x", calls),
+      fakeLlmLayer("", calls),
       { ...seedReq, summarize: false },
     )
     expect(Exit.isSuccess(exit)).toBe(true)

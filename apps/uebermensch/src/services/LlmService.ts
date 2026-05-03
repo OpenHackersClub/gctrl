@@ -1,7 +1,10 @@
 import { Context, type Effect } from "effect";
 import type { LlmError } from "../errors.js";
 import type { CandidateRef } from "../lib/candidates.js";
-import type { CuratedItem } from "./RendererService.js";
+import type { SourceDigest } from "../lib/llm-prompts.js";
+import type { CuratedItem, Reference } from "./RendererService.js";
+
+export type { Reference };
 
 export type BriefRequest = {
   readonly date: string;
@@ -93,7 +96,7 @@ export type SourceSummaryRequest = {
 };
 
 export type SourceSummaryResponse = {
-  readonly insightsMd: string;
+  readonly digest: SourceDigest;
   readonly promptHash: string;
   readonly costUsd: number;
   readonly model: string;
@@ -122,6 +125,27 @@ export type ResearchQueryResponse = {
   readonly model: string;
 };
 
+export type FreshnessProbe = {
+  readonly query: string;
+  readonly watchlist_entity: string;
+  readonly rationale: string;
+  readonly confidence: "high" | "medium" | "low";
+};
+
+export type GenerateProbesRequest = {
+  readonly directiveMd: string;
+  readonly candidatesSummary: ReadonlyArray<{ title: string; slug: string }>;
+  readonly period: { start: string; end: string };
+  readonly watchlistEntities: ReadonlyArray<string>;
+};
+
+export type GenerateProbesResponse = {
+  readonly probes: ReadonlyArray<FreshnessProbe>;
+  readonly promptHash: string;
+  readonly costUsd: number;
+  readonly model: string;
+};
+
 export interface LlmServiceShape {
   readonly name: () => string;
   readonly generateBrief: (req: BriefRequest) => Effect.Effect<BriefResponse, LlmError>;
@@ -137,6 +161,9 @@ export interface LlmServiceShape {
   readonly researchQuery: (
     req: ResearchQueryRequest,
   ) => Effect.Effect<ResearchQueryResponse, LlmError>;
+  readonly generateProbes: (
+    req: GenerateProbesRequest,
+  ) => Effect.Effect<GenerateProbesResponse, LlmError>;
 }
 
 export class LlmService extends Context.Tag("uebermensch/LlmService")<
