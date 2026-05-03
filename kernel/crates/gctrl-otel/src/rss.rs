@@ -8,7 +8,8 @@
 //! PRs once the kb→kernel promotion (#104) defines the canonical vault
 //! mount port.
 //!
-//! Spec: vault/specs/architecture/apps/uebermensch.md (M1 driver-rss row).
+//! Spec: $UBER_VAULT_DIR/ROADMAP.md M1 row "driver-rss" (uebermensch source
+//! carved to OpenHackersClub/uebermensch; vault docs at $UBER_VAULT_DIR/).
 
 use std::path::{Path, PathBuf};
 
