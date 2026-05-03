@@ -348,7 +348,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/uber/briefs/{date}", get(uber_briefs_get_by_date))
         // Uebermensch SinkIn sessions — wiki-introspection runs.
-        // Spec: apps/uebermensch/vault/specs/sinkin.md
+        // Spec: /specs/sinkin.md
         .route(
             "/api/uber/sinkin/sessions",
             get(uber_sinkin_sessions_list).post(uber_sinkin_sessions_upsert),
@@ -5428,7 +5428,7 @@ async fn uber_briefs_get_by_date(
 // Uebermensch SinkIn sessions — wiki-introspection runs.
 // `id` is supplied by the caller (the CLI/service generates it at run start)
 // so subsequent updates (counts, completion status) replace by id.
-// Spec: apps/uebermensch/vault/specs/sinkin.md
+// Spec: /specs/sinkin.md
 // =============================================================================
 
 #[derive(Deserialize)]
