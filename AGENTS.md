@@ -94,7 +94,7 @@ apps/
 
 This separates each app's product context from the kernel specs and keeps everything under one Obsidian-mountable vault per app. Agents working on a specific app load that app's `vault/PRD.md`, `vault/ROADMAP.md`, and `vault/WORKFLOW.md` for context — not the entire `vault/specs/` tree.
 
-> **Migration note:** Existing apps that have `PRD.md` / `WORKFLOW.md` at `apps/{app}/` (e.g. `apps/uebermensch/`) MUST be migrated under `apps/{app}/vault/` over time. New apps MUST start with the vault-internal layout.
+All existing apps (`gctrl-board`, `gctrl-inbox`, `uebermensch`) ship with the vault-internal layout. New apps MUST follow the same shape — `gctrl app bootstrap` writes the trio inside `apps/<name>/vault/` automatically.
 
 ### gctrl Kernel Workflow (Dogfooding)
 
