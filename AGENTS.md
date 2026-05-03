@@ -58,33 +58,39 @@ Opinionated product workflows owned by gctrl-board. These define how work flows 
 
 ### Application Specs (`apps/{app-name}/`)
 
-Every application MUST have its own directory under `apps/` containing at minimum:
+Every application MUST have its own directory under `apps/`. Product/roadmap/workflow docs MUST live **inside the app's vault** (`apps/{app}/vault/`), not at the top level of the app directory — the vault is the Obsidian-mountable surface, and these are first-class vault docs:
 
 | File | Required | Content |
 |------|----------|---------|
-| `PRD.md` | MUST | Product requirements — problem, goals, use cases, roadmap. Instantiates the [PRD template](apps/gctrl-board/vault/specs/workflows/prd-template.md). |
-| `WORKFLOW.md` | MUST | How work flows through the app — agent dispatch, personas, review conventions. |
-| `vault/` | SHOULD | App vault — Obsidian-mountable. Contains `specs/` (architecture, domain model, implementation), and per-app operational data (e.g. `BOARD/`, `INBOX/`). Bare `[[slug]]` wikilinks allowed for issue/operational refs. |
+| `vault/PRD.md` | MUST | Product requirements — problem, goals, non-goals, use cases, success criteria. Does NOT contain PR sequencing. Instantiates the [PRD template](apps/gctrl-board/vault/specs/workflows/prd-template.md). |
+| `vault/ROADMAP.md` | MUST | Milestone tables and slice rows. **PR sequencing lives here** — one row per slice with priority, dependencies, and an `Issue` column linking to GitHub. Instantiates the [roadmap template](apps/gctrl-board/vault/specs/workflows/roadmap-template.md). |
+| `vault/WORKFLOW.md` | MUST | How a slice flows from roadmap row → issue → branch → PR → merge → release. Agent dispatch, personas, review conventions. |
+| `vault/specs/` | SHOULD | Architecture, domain model, implementation specs — design decisions and end state, not slice plans. |
+| `vault/{BOARD,INBOX,...}/` | MAY | Per-app operational data. Bare `[[slug]]` wikilinks allowed for issue/operational refs. |
 
 ```
 apps/
 ├── gctrl-board/                # First application
-│   ├── PRD.md                  # Board-specific product requirements
-│   ├── WORKFLOW.md             # Board-specific workflow (agent assignment, issue lifecycle)
-│   └── vault/
-│       ├── specs/              # Board-specific specs (tracker, kanban, dependencies)
+│   └── vault/                  # Obsidian-mountable
+│       ├── PRD.md              # Board product requirements (problem/goals)
+│       ├── ROADMAP.md          # Board slice plan (issue links)
+│       ├── WORKFLOW.md         # Board workflow (agent dispatch, review)
+│       ├── specs/              # Board-specific design specs
 │       └── BOARD/              # Board issues (BOARD-1.md, ...)
 ├── gctrl-inbox/
-│   ├── PRD.md
-│   ├── WORKFLOW.md
 │   └── vault/
+│       ├── PRD.md
+│       ├── ROADMAP.md
+│       ├── WORKFLOW.md
 │       └── INBOX/              # Inbox messages
 ├── utils/                      # Repo-shipped skills (utility app)
 │   └── skills/
 └── …                           # Future apps follow the same shape
 ```
 
-This separates each app's product context from the kernel specs. Agents working on a specific app load that app's `PRD.md` and `WORKFLOW.md` for context — not the entire `vault/specs/` tree.
+This separates each app's product context from the kernel specs and keeps everything under one Obsidian-mountable vault per app. Agents working on a specific app load that app's `vault/PRD.md`, `vault/ROADMAP.md`, and `vault/WORKFLOW.md` for context — not the entire `vault/specs/` tree.
+
+> **Migration note:** Existing apps that have `PRD.md` / `WORKFLOW.md` at `apps/{app}/` (e.g. `apps/uebermensch/`) MUST be migrated under `apps/{app}/vault/` over time. New apps MUST start with the vault-internal layout.
 
 ### gctrl Kernel Workflow (Dogfooding)
 
