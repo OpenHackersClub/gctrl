@@ -54,6 +54,26 @@ function AnalyticsIcon({ active }: { active: boolean }) {
   )
 }
 
+function ScheduleIcon({ active }: { active: boolean }) {
+  const color = active ? "text-emerald-400" : "text-zinc-500"
+  return (
+    <svg
+      className={`w-5 h-5 ${color} transition-colors duration-150`}
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      {/* Clock outline — circular face with 12-3 hands. Same inline-SVG
+        * style as the other nav icons; spec § 7.4 ("clock outline"). */}
+      <circle cx="10" cy="10" r="7" />
+      <path d="M10 6v4l2.5 2" />
+    </svg>
+  )
+}
+
 function SettingsIcon({ active }: { active: boolean }) {
   const color = active ? "text-emerald-400" : "text-zinc-500"
   return (
@@ -88,6 +108,7 @@ export function NavSidebar({ route, navigate, unreadCount }: NavSidebarProps) {
   const isBoardActive = route.page === "board"
   const isInboxActive = route.page === "inbox"
   const isAnalyticsActive = route.page === "analytics"
+  const isScheduleActive = route.page === "schedule"
   const isSettingsActive = route.page === "settings"
 
   return (
@@ -125,6 +146,17 @@ export function NavSidebar({ route, navigate, unreadCount }: NavSidebarProps) {
         title="Analytics"
       >
         <AnalyticsIcon active={isAnalyticsActive} />
+      </button>
+
+      {/* Schedule nav item */}
+      <button
+        onClick={() => navigate("/schedule")}
+        data-testid="nav-schedule"
+        className={`w-10 h-10 flex items-center justify-center rounded-md transition-all duration-150 cursor-pointer
+          ${isScheduleActive ? "bg-emerald-500/10" : "hover:bg-zinc-800/60"}`}
+        title="Schedule"
+      >
+        <ScheduleIcon active={isScheduleActive} />
       </button>
 
       {/* Spacer */}

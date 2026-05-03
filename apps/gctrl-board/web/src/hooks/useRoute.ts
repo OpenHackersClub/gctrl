@@ -14,8 +14,9 @@ export type Route =
   | { page: "inbox"; threadId: string | null }
   | { page: "analytics"; tab: AnalyticsTab; sessionId: string | null }
   | { page: "settings"; section: "macos-spaces" }
+  | { page: "schedule"; name: string | null; runId: string | null }
 
-function parseRoute(pathname: string): Route {
+export function parseRoute(pathname: string): Route {
   // /analytics/sessions/:sessionId
   const analyticsSession = pathname.match(/^\/analytics\/sessions\/([^/]+)/)
   if (analyticsSession) {
@@ -38,6 +39,23 @@ function parseRoute(pathname: string): Route {
   // /settings/macos-spaces
   if (pathname === "/settings/macos-spaces" || pathname === "/settings/macos-spaces/") {
     return { page: "settings", section: "macos-spaces" }
+  }
+
+  // /schedule/:name/runs/:run_id — most-specific first
+  const scheduleRun = pathname.match(/^\/schedule\/([^/]+)\/runs\/([^/]+)\/?$/)
+  if (scheduleRun) {
+    return { page: "schedule", name: scheduleRun[1], runId: scheduleRun[2] }
+  }
+
+  // /schedule/:name
+  const scheduleName = pathname.match(/^\/schedule\/([^/]+)\/?$/)
+  if (scheduleName) {
+    return { page: "schedule", name: scheduleName[1], runId: null }
+  }
+
+  // /schedule
+  if (pathname === "/schedule" || pathname === "/schedule/") {
+    return { page: "schedule", name: null, runId: null }
   }
 
   // /inbox/:threadId

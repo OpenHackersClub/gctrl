@@ -28,6 +28,11 @@ import type {
   NetDomainsResponse,
   NetDailyResponse,
   NetTrafficRecord,
+  Schedule,
+  SchedulesSummary,
+  ScheduleRunsResponse,
+  ScheduleRunsGlobalResponse,
+  ScheduleRunNowResult,
 } from "../types"
 
 const BASE = "/api/board"
@@ -386,6 +391,65 @@ export const api = {
         `/api/macos/permissions/accessibility/prompt`,
         { method: "POST" },
       ),
+  },
+
+  /// Schedule (kernel `gctrl-scheduler`) routes — M1a substrate.
+  /// Spec: vault/specs/architecture/apps/gctrl-schedule.md.
+  schedules: {
+    /** `GET /api/schedules` — kernel-populated `health` field per row. */
+    list: () =>
+      request<{ schedules: Schedule[] }>(`/api/schedules`),
+
+    /** `GET /api/schedules/summary` — KPI strip source. SPA never
+     *  recomputes the counts (spec § 5.6). */
+    summary: () => request<SchedulesSummary>(`/api/schedules/summary`),
+
+    /** `GET /api/schedules/{id_or_name}` — single row + computed health. */
+    get: (idOrName: string) =>
+      request<Schedule>(`/api/schedules/${encodeURIComponent(idOrName)}`),
+
+    /** `GET /api/schedules/{id_or_name}/runs` — per-schedule history. */
+    runs: (
+      idOrName: string,
+      params?: { since?: string; status?: string; limit?: number },
+    ) => {
+      const qs = new URLSearchParams()
+      if (params?.since) qs.set("since", params.since)
+      if (params?.status) qs.set("status", params.status)
+      if (params?.limit !== undefined) qs.set("limit", String(params.limit))
+      const q = qs.toString()
+      return request<ScheduleRunsResponse>(
+        `/api/schedules/${encodeURIComponent(idOrName)}/runs${q ? `?${q}` : ""}`,
+      )
+    },
+
+    /** `GET /api/schedules/runs` — cross-schedule failure feed. */
+    runsGlobal: (params?: { since?: string; status?: string; limit?: number }) => {
+      const qs = new URLSearchParams()
+      if (params?.since) qs.set("since", params.since)
+      if (params?.status) qs.set("status", params.status)
+      if (params?.limit !== undefined) qs.set("limit", String(params.limit))
+      const q = qs.toString()
+      return request<ScheduleRunsGlobalResponse>(
+        `/api/schedules/runs${q ? `?${q}` : ""}`,
+      )
+    },
+
+    /** `POST /api/schedules/{id_or_name}/run` — manual fire. */
+    runNow: (idOrName: string) =>
+      request<ScheduleRunNowResult>(
+        `/api/schedules/${encodeURIComponent(idOrName)}/run`,
+        { method: "POST" },
+      ),
+
+    enable: (idOrName: string) =>
+      request<null>(`/api/schedules/${encodeURIComponent(idOrName)}/enable`, {
+        method: "POST",
+      }),
+    disable: (idOrName: string) =>
+      request<null>(`/api/schedules/${encodeURIComponent(idOrName)}/disable`, {
+        method: "POST",
+      }),
   },
 }
 
