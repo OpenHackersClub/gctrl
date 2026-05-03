@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import { Args, Command, Options } from "@effect/cli"
-import { Console, Effect, Either, Option } from "effect"
+import { Console, Effect, Option } from "effect"
 import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js"
 import { FileSystemQueryLive } from "../adapters/FileSystemQuery.js"
 import { FileSystemVaultLive } from "../adapters/FileSystemVault.js"
@@ -225,35 +225,30 @@ type Built = {
   readonly model: string
 }
 
+// runQuery / runThought keep the error channel typed (LlmError). The caller
+// turns it into an Either with .pipe(Effect.either) so a single prompt's LLM
+// failure logs + stamps `failed` without aborting the rest of the batch.
 const runQuery = (args: {
   llm: LlmServiceShape
   prompt: Prompt
   note: string
   profileName: string
   contextPages: ReadonlyArray<ResearchQueryContextPage>
-}): Effect.Effect<Either.Either<Built, LlmError>, never> =>
-  Effect.gen(function* () {
-    yield* Console.log(
-      `  → ${args.prompt.slug} [query]: ${args.contextPages.length} context page(s); requesting research ...`,
-    )
-    const result = yield* args.llm
-      .researchQuery({
+}): Effect.Effect<Built, LlmError> =>
+  Console.log(
+    `  → ${args.prompt.slug} [query]: ${args.contextPages.length} context page(s); requesting research ...`,
+  ).pipe(
+    Effect.zipRight(
+      args.llm.researchQuery({
         slug: args.prompt.slug,
         title: args.prompt.title,
         topics: args.prompt.topics,
         question: args.note,
         profileName: args.profileName,
         contextPages: args.contextPages,
-      })
-      .pipe(
-        Effect.tapError((e) =>
-          Console.log(
-            `  ✗ ${args.prompt.slug}: llm failed (${e.kind ?? "unknown"}): ${e.message}`,
-          ),
-        ),
-        Effect.either,
-      )
-    return Either.map(result, (r) => ({
+      }),
+    ),
+    Effect.map((r) => ({
       markdown: renderResearchPage({
         prompt: args.prompt,
         answerMd: r.answerMd,
@@ -265,8 +260,8 @@ const runQuery = (args: {
       promptHash: r.promptHash,
       costUsd: r.costUsd,
       model: r.model,
-    }))
-  })
+    })),
+  )
 
 const runThought = (args: {
   llm: LlmServiceShape
@@ -275,13 +270,12 @@ const runThought = (args: {
   profileName: string
   contextPages: ReadonlyArray<ResearchQueryContextPage>
   theses: ReadonlyArray<ThoughtThesisRef>
-}): Effect.Effect<Either.Either<Built, LlmError>, never> =>
-  Effect.gen(function* () {
-    yield* Console.log(
-      `  → ${args.prompt.slug} [thought]: ${args.contextPages.length} context page(s), ${args.theses.length} thesis candidate(s); analyzing ...`,
-    )
-    const result = yield* args.llm
-      .analyzeThought({
+}): Effect.Effect<Built, LlmError> =>
+  Console.log(
+    `  → ${args.prompt.slug} [thought]: ${args.contextPages.length} context page(s), ${args.theses.length} thesis candidate(s); analyzing ...`,
+  ).pipe(
+    Effect.zipRight(
+      args.llm.analyzeThought({
         slug: args.prompt.slug,
         title: args.prompt.title,
         topics: args.prompt.topics,
@@ -289,16 +283,9 @@ const runThought = (args: {
         profileName: args.profileName,
         contextPages: args.contextPages,
         theses: args.theses,
-      })
-      .pipe(
-        Effect.tapError((e) =>
-          Console.log(
-            `  ✗ ${args.prompt.slug}: llm failed (${e.kind ?? "unknown"}): ${e.message}`,
-          ),
-        ),
-        Effect.either,
-      )
-    return Either.map(result, (r) => ({
+      }),
+    ),
+    Effect.map((r) => ({
       markdown: renderThoughtPage({
         prompt: args.prompt,
         analysis: r.analysis,
@@ -310,8 +297,8 @@ const runThought = (args: {
       promptHash: r.promptHash,
       costUsd: r.costUsd,
       model: r.model,
-    }))
-  })
+    })),
+  )
 
 const list = Command.make("list", {}, () =>
   Effect.gen(function* () {
@@ -404,16 +391,16 @@ const process_ = Command.make(
           // Dispatch on kind. Both produce a markdown report at
           // input/reports/<slug>.md; thought additionally gets the prompt
           // archived so the user's directives/prompts/ stays a true inbox.
-          const built =
+          const build =
             prompt.kind === "query"
-              ? yield* runQuery({
+              ? runQuery({
                   llm,
                   prompt,
                   note,
                   profileName: profile.profile.identity.name,
                   contextPages,
                 })
-              : yield* runThought({
+              : runThought({
                   llm,
                   prompt,
                   note,
@@ -422,20 +409,33 @@ const process_ = Command.make(
                   theses: selectTheses(theses, prompt),
                 })
 
-          const success = yield* Either.match(built, {
-            onLeft: (e) =>
-              queries
-                .stamp(prompt.slug, {
-                  status: "failed",
-                  processedAt: new Date().toISOString(),
-                  failedReason: `${e.kind ?? "unknown"}: ${e.message}`,
-                })
-                .pipe(Effect.as(null)),
-            onRight: (r) => Effect.succeed(r),
-          })
-          if (success === null) continue
+          const built = yield* build.pipe(
+            Effect.tapError((e) =>
+              Console.log(
+                `  ✗ ${prompt.slug}: llm failed (${e.kind ?? "unknown"}): ${e.message}`,
+              ),
+            ),
+            Effect.either,
+          )
+          if (built._tag === "Left") {
+            // Stamp `failed` so the user can see why next time. Drain stamp
+            // errors so one bad write doesn't abort the whole batch.
+            yield* queries
+              .stamp(prompt.slug, {
+                status: "failed",
+                processedAt: new Date().toISOString(),
+                failedReason: `${built.left.kind ?? "unknown"}: ${built.left.message}`,
+              })
+              .pipe(
+                Effect.tapError((e) =>
+                  Console.log(`    ! stamp(failed) errored: ${e.message}`),
+                ),
+                Effect.ignore,
+              )
+            continue
+          }
 
-          const { markdown, promptHash, costUsd, model } = success
+          const { markdown, promptHash, costUsd, model } = built.right
           const generatedAt = new Date().toISOString()
 
           if (dryRun) {
@@ -461,19 +461,21 @@ const process_ = Command.make(
           yield* Console.log(`    cost: $${costUsd.toFixed(4)} model=${model}`)
 
           // Thought workflow: source note moves to directives/prompts/archived/
-          // so the inbox surface only ever shows pending notes.
+          // so the inbox surface only ever shows pending notes. Archive
+          // failures (collision, IO) are surfaced but never abort the batch —
+          // the report is already written and the prompt is stamped processed.
           if (prompt.kind === "thought") {
-            const archived = yield* queries.archive(prompt.slug).pipe(
+            yield* queries.archive(prompt.slug).pipe(
+              Effect.tap((a) =>
+                Console.log(`    archived → ${a.toRelPath}`),
+              ),
               Effect.tapError((e) =>
                 Console.log(
                   `    ! archive failed (${e.kind ?? "unknown"}): ${e.message}`,
                 ),
               ),
-              Effect.either,
+              Effect.ignore,
             )
-            if (archived._tag === "Right") {
-              yield* Console.log(`    archived → ${archived.right.toRelPath}`)
-            }
           }
         }
       })

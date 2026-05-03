@@ -2,7 +2,7 @@ import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promi
 import { basename, extname, join, relative, sep } from "node:path"
 import { Effect, Layer, Schema } from "effect"
 import matter from "gray-matter"
-import { VaultError } from "../errors.js"
+import { VaultError, vaultIo } from "../errors.js"
 import { DIRECTIVES_PROMPTS_DIR } from "../lib/vault-paths.js"
 import { PromptFrontmatter } from "../schemas.js"
 import {
@@ -207,61 +207,52 @@ export const FileSystemQueryLive = (vaultDir: string) =>
     archive: (slug) =>
       Effect.gen(function* () {
         const loaded = yield* loadAll(vaultDir)
-        for (const l of loaded) {
-          const p = yield* decodePrompt(l)
-          if (p.slug !== slug) continue
-          const fileName = basename(l.absPath)
-          const destAbs = join(vaultDir, PROMPTS_DIR, ARCHIVED_SUBDIR, fileName)
-          const destRel = relative(vaultDir, destAbs)
-          const exists = yield* Effect.tryPromise({
-            try: async () => {
-              try {
-                await stat(destAbs)
-                return true
-              } catch {
-                return false
-              }
-            },
-            catch: (e) =>
-              new VaultError({
-                message: `archive stat failed: ${String(e)}`,
-                path: destAbs,
-                kind: "io_failure",
-              }),
-          })
-          if (exists) {
-            return yield* Effect.fail(
-              new VaultError({
-                message: `archive target already exists: ${destRel}`,
-                path: destAbs,
-                kind: "collision",
-              }),
-            )
-          }
-          yield* Effect.tryPromise({
-            try: async () => {
-              await mkdir(join(destAbs, ".."), { recursive: true })
-              await rename(l.absPath, destAbs)
-            },
-            catch: (e) =>
-              new VaultError({
-                message: `archive prompt failed: ${String(e)}`,
-                path: l.absPath,
-                kind: "io_failure",
-              }),
-          })
-          return {
-            slug,
-            fromRelPath: l.relPath,
-            toRelPath: destRel,
-          }
-        }
-        return yield* Effect.fail(
-          new VaultError({
-            message: `prompt not found: ${slug}`,
-            path: join(vaultDir, PROMPTS_DIR),
-            kind: "not_found",
-          }),
+        const target = yield* Effect.forEach(loaded, decodePrompt).pipe(
+          Effect.map((decoded) =>
+            decoded
+              .map((p, i) => ({ p, l: loaded[i] }))
+              .find(({ p }) => p.slug === slug),
+          ),
         )
+        if (target === undefined) {
+          return yield* Effect.fail(
+            new VaultError({
+              message: `prompt not found: ${slug}`,
+              path: join(vaultDir, PROMPTS_DIR),
+              kind: "not_found",
+            }),
+          )
+        }
+        const { l } = target
+        const destAbs = join(vaultDir, PROMPTS_DIR, ARCHIVED_SUBDIR, basename(l.absPath))
+        const destRel = relative(vaultDir, destAbs)
+        // stat → exists boolean: ENOENT is the success case (move target free).
+        // We swallow ALL stat errors to false rather than ENOENT-only on
+        // purpose — the rename below will surface any deeper IO problem
+        // (EACCES, EROFS, etc.) at a more useful frame than this probe.
+        const exists = yield* Effect.tryPromise(() => stat(destAbs)).pipe(
+          Effect.match({ onFailure: () => false, onSuccess: () => true }),
+        )
+        if (exists) {
+          return yield* Effect.fail(
+            new VaultError({
+              message: `archive target already exists: ${destRel}`,
+              path: destAbs,
+              kind: "collision",
+            }),
+          )
+        }
+        yield* vaultIo(
+          async () => {
+            await mkdir(join(destAbs, ".."), { recursive: true })
+            await rename(l.absPath, destAbs)
+          },
+          { message: "archive prompt failed", path: l.absPath },
+        )
+        return {
+          slug,
+          fromRelPath: l.relPath,
+          toRelPath: destRel,
+        }
       }),
   })

@@ -2,7 +2,7 @@ import { readFile, readdir, stat } from "node:fs/promises"
 import { basename, extname, join, relative } from "node:path"
 import { Effect, Layer, Schema } from "effect"
 import matter from "gray-matter"
-import { VaultError } from "../errors.js"
+import { VaultError, vaultIo } from "../errors.js"
 import {
   DIRECTIVES_RESEARCH_DIR,
   DIRECTIVES_THESES_DIR,
@@ -181,35 +181,29 @@ const VaultServiceFromWriter = (vaultDir: string) =>
             return out
           }),
         listTheses: () =>
-          Effect.tryPromise({
-            try: async () => {
-              const files = await walkMarkdown(vaultDir, [DIRECTIVES_THESES_DIR])
-              const out: Array<ThesisRef> = []
-              for (const f of files) {
-                const raw = await readFile(f.abs, "utf8")
-                const parsed = matter(raw)
-                const fm = (parsed.data ?? {}) as Record<string, unknown>
-                const stem = basename(f.abs, ".md")
-                const slug = (fm.slug as string | undefined) ?? stem
-                const title = (fm.title as string | undefined) ?? stem
-                const topics =
-                  (fm.topics as ReadonlyArray<string> | undefined) ?? []
-                out.push({
-                  slug,
-                  title,
-                  topics,
-                  body: parsed.content,
-                  relPath: f.rel,
-                })
-              }
-              return out
-            },
-            catch: (e) =>
-              new VaultError({
-                message: `list theses failed: ${String(e)}`,
-                path: vaultDir,
-                kind: "io_failure",
-              }),
+          Effect.gen(function* () {
+            const files = yield* vaultIo(
+              () => walkMarkdown(vaultDir, [DIRECTIVES_THESES_DIR]),
+              { message: "list theses failed", path: vaultDir },
+            )
+            const out: Array<ThesisRef> = []
+            for (const f of files) {
+              const raw = yield* vaultIo(() => readFile(f.abs, "utf8"), {
+                message: "read thesis failed",
+                path: f.abs,
+              })
+              const parsed = matter(raw)
+              const fm = (parsed.data ?? {}) as Record<string, unknown>
+              const stem = basename(f.abs, ".md")
+              out.push({
+                slug: (fm.slug as string | undefined) ?? stem,
+                title: (fm.title as string | undefined) ?? stem,
+                topics: (fm.topics as ReadonlyArray<string> | undefined) ?? [],
+                body: parsed.content,
+                relPath: f.rel,
+              })
+            }
+            return out
           }),
         writeReport: (slug, content) =>
           Effect.gen(function* () {
