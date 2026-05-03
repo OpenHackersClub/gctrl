@@ -4721,6 +4721,10 @@ struct AppInstallView {
     install: gctrl_core::AppInstall,
     bindings: Vec<gctrl_core::AppBinding>,
     vault_mounts: Vec<gctrl_core::VaultMount>,
+    /// Schedules registered for this app from the manifest's `[[schedule]]`
+    /// entries. The kernel scheduler runs them; uninstall drops them via
+    /// `delete_schedules_by_app`.
+    schedules: Vec<gctrl_core::Schedule>,
 }
 
 #[derive(Serialize)]
@@ -4846,6 +4850,104 @@ fn install_app_inner(
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     }
 
+    // Replace-all schedule registration. On reload, the manifest's
+    // `[[schedule]]` set is the source of truth: drop everything previously
+    // registered for this app, then insert the fresh set. Operator-owned
+    // schedules (`app_id IS NULL`) are untouched. Schedules owned by other
+    // apps are also untouched (delete_schedules_by_app filters by app_id).
+    state
+        .sqlite
+        .delete_schedules_by_app(&manifest.app.name)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    for sched in &manifest.schedule {
+        // Compute initial next_run_at so the runner picks it up on its
+        // first poll. Cron parse errors fail the install — better to
+        // catch a typo at install time than discover a never-firing job
+        // after deploy.
+        let next = match gctrl_scheduler::cron::next_after(&sched.cron, now) {
+            Ok(opt) => opt.map(|dt| dt.to_rfc3339()),
+            Err(e) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "schedule `{}` cron `{}` invalid: {e}",
+                        sched.name, sched.cron
+                    ),
+                ));
+            }
+        };
+        let now_str = now.to_rfc3339();
+        let row = match sched.target.as_str() {
+            "exec" => gctrl_core::Schedule {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: sched.name.clone(),
+                cron: sched.cron.clone(),
+                target_kind: gctrl_core::TARGET_KIND_EXEC.into(),
+                // NOT NULL columns — exec rows tolerate empty strings.
+                target_url: String::new(),
+                target_method: "POST".into(),
+                body_json: None,
+                headers_json: None,
+                command: Some(sched.command.clone()),
+                cwd: None,
+                env_keys: Some(Vec::new()),
+                timeout_secs: 60,
+                enabled: true,
+                next_run_at: next,
+                last_run_at: None,
+                last_status: None,
+                last_response: None,
+                last_error: None,
+                run_count: 0,
+                failure_count: 0,
+                app_id: Some(manifest.app.name.clone()),
+                created_at: now_str.clone(),
+                updated_at: now_str,
+            },
+            "http" => gctrl_core::Schedule {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: sched.name.clone(),
+                cron: sched.cron.clone(),
+                target_kind: gctrl_core::TARGET_KIND_HTTP.into(),
+                // For http schedules from a manifest, we expect command[0]
+                // to be the URL. The manifest schema is intentionally
+                // permissive in v1 — a future revision can add explicit
+                // url/method/body fields.
+                target_url: sched.command.first().cloned().unwrap_or_default(),
+                target_method: "POST".into(),
+                body_json: None,
+                headers_json: None,
+                command: None,
+                cwd: None,
+                env_keys: None,
+                timeout_secs: 60,
+                enabled: true,
+                next_run_at: next,
+                last_run_at: None,
+                last_status: None,
+                last_response: None,
+                last_error: None,
+                run_count: 0,
+                failure_count: 0,
+                app_id: Some(manifest.app.name.clone()),
+                created_at: now_str.clone(),
+                updated_at: now_str,
+            },
+            other => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "schedule `{}` target `{other}` invalid (must be exec or http)",
+                        sched.name
+                    ),
+                ));
+            }
+        };
+        if let Err(e) = state.sqlite.create_schedule(&row) {
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+        }
+    }
+
     let mounts = state
         .sqlite
         .list_vault_mounts()
@@ -4867,11 +4969,19 @@ fn install_app_inner(
         .sqlite
         .list_app_bindings(&manifest.app.name)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let stored_schedules = state
+        .sqlite
+        .list_schedules(&gctrl_core::ScheduleFilter::default())
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .into_iter()
+        .filter(|s| s.app_id.as_deref() == Some(manifest.app.name.as_str()))
+        .collect();
 
     Ok(AppInstallView {
         install: stored_install,
         bindings: stored_bindings,
         vault_mounts: mounts,
+        schedules: stored_schedules,
     })
 }
 
@@ -4941,10 +5051,21 @@ async fn app_installs_get(
             .collect(),
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
+    let schedules: Vec<_> = match state
+        .sqlite
+        .list_schedules(&gctrl_core::ScheduleFilter::default())
+    {
+        Ok(s) => s
+            .into_iter()
+            .filter(|s| s.app_id.as_deref() == Some(name.as_str()))
+            .collect(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
     Json(AppInstallView {
         install,
         bindings,
         vault_mounts: mounts,
+        schedules,
     })
     .into_response()
 }
@@ -4954,8 +5075,9 @@ async fn app_installs_delete(
     Path(name): Path<String>,
 ) -> impl IntoResponse {
     // Drop install record + bindings. ALSO drop vault mount registrations
-    // owned by this app (per spec — files in the kernel vault root are NOT
-    // touched, only the `gctrl_vault_mounts` rows).
+    // and schedules owned by this app (per spec — files in the kernel vault
+    // root are NOT touched, only the registry rows). Operator-owned
+    // schedules (`app_id IS NULL`) are untouched.
     let mounts = match state.sqlite.list_vault_mounts() {
         Ok(m) => m,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -4964,6 +5086,9 @@ async fn app_installs_delete(
         if let Err(e) = state.sqlite.delete_vault_mount(&m.name) {
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
+    }
+    if let Err(e) = state.sqlite.delete_schedules_by_app(&name) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
     match state.sqlite.delete_app_install(&name) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -6418,6 +6543,18 @@ runtime = "node"
 
 [[vault-projects]]
 key = "UBER"
+
+[[schedule]]
+name = "uber-daily-brief"
+cron = "0 8 * * *"
+target = "exec"
+command = ["uber", "run-daily"]
+
+[[schedule]]
+name = "uber-weekly-report"
+cron = "0 9 * * 1"
+target = "exec"
+command = ["uber", "report", "--send"]
 "#
     }
 
@@ -6657,5 +6794,149 @@ key = "UBER"
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let msg = String::from_utf8_lossy(&body);
         assert!(msg.contains("rename"), "got: {msg}");
+    }
+
+    // ───────── Schedule registration (PR-α.5) ─────────
+
+    #[tokio::test]
+    async fn install_registers_schedules_with_app_id() {
+        let app = test_app_dual();
+        let resp = install_uber(&app).await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let view: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        let schedules = view["schedules"].as_array().unwrap();
+        assert_eq!(schedules.len(), 2, "manifest has 2 [[schedule]] entries");
+        let names: Vec<&str> = schedules
+            .iter()
+            .map(|s| s["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"uber-daily-brief"));
+        assert!(names.contains(&"uber-weekly-report"));
+
+        // Every registered schedule MUST be tagged with the install name so
+        // uninstall can find them. exec target preserves the command argv.
+        for s in schedules {
+            assert_eq!(s["app_id"], "uebermensch");
+            assert_eq!(s["target_kind"], "exec");
+            assert_eq!(s["enabled"], true);
+            assert!(s["next_run_at"].as_str().is_some(), "cron should compute next_run_at");
+        }
+        let daily = schedules
+            .iter()
+            .find(|s| s["name"] == "uber-daily-brief")
+            .unwrap();
+        assert_eq!(
+            daily["command"].as_array().unwrap(),
+            &vec![
+                serde_json::Value::String("uber".into()),
+                serde_json::Value::String("run-daily".into()),
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn install_rejects_schedule_with_invalid_cron() {
+        let app = test_app_dual();
+        let body = serde_json::json!({
+            "source_ref": "/x",
+            "manifest_text": "[app]\nname = \"x\"\nversion = \"0.1.0\"\n\
+                              \n[entrypoint]\nbin = \"x\"\ncommand = \"x\"\nruntime = \"node\"\n\
+                              \n[[schedule]]\nname = \"bad\"\ncron = \"this is not cron\"\ntarget = \"exec\"\ncommand = [\"true\"]\n",
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/app/installs")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let msg = String::from_utf8_lossy(&body);
+        assert!(msg.contains("cron"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn reload_replaces_schedule_set() {
+        let app = test_app_dual();
+        assert_eq!(install_uber(&app).await.status(), StatusCode::CREATED);
+
+        // Reload with a manifest that drops uber-weekly-report and renames the
+        // daily one. After reload the kernel should reflect exactly what's in
+        // the new manifest.
+        let bumped = minimal_uber_manifest()
+            .replace("uber-daily-brief", "uber-morning-brief")
+            // Drop the weekly entry by truncating after the daily block.
+            .split("\n\n[[schedule]]\nname = \"uber-weekly-report\"")
+            .next()
+            .unwrap()
+            .to_string()
+            + "\n";
+        let body = serde_json::json!({
+            "source_ref": "/path/to/uebermensch",
+            "manifest_text": bumped,
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/app/installs/uebermensch/reload")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let view: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let schedules = view["schedules"].as_array().unwrap();
+        assert_eq!(schedules.len(), 1, "weekly was dropped");
+        assert_eq!(schedules[0]["name"], "uber-morning-brief");
+    }
+
+    #[tokio::test]
+    async fn delete_drops_app_owned_schedules_only() {
+        let app = test_app_dual();
+        assert_eq!(install_uber(&app).await.status(), StatusCode::CREATED);
+
+        // Independently create an operator-owned schedule (app_id = NULL).
+        let operator_sched = serde_json::json!({
+            "name": "operator-tick",
+            "cron": "*/5 * * * *",
+            "target_kind": "http",
+            "target_url": "http://example.test/tick",
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/schedules")
+            .header("content-type", "application/json")
+            .body(Body::from(operator_sched.to_string()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // Uninstall the app.
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/api/app/installs/uebermensch")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // The two app-owned schedules should be gone; operator-tick survives.
+        let req = Request::builder()
+            .uri("/api/schedules")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let listing: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let names: Vec<&str> = listing["schedules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["operator-tick"]);
     }
 }

@@ -394,6 +394,11 @@ CREATE TABLE IF NOT EXISTS schedules (
     last_error      TEXT,
     run_count       INTEGER NOT NULL DEFAULT 0,
     failure_count   INTEGER NOT NULL DEFAULT 0,
+    -- NULL for ad-hoc schedules created via /api/schedules; set to the
+    -- install name for schedules registered by `gctrl app install`.
+    -- Lets uninstall clean up app-owned schedules without disturbing
+    -- operator-owned ones. Indexed by `idx_schedules_app` (below).
+    app_id          TEXT,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 )
@@ -486,6 +491,8 @@ const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_uber_sinkin_scope ON uber_sinkin_sessions(scope_kind, scope_value)",
     // App installs index — list bindings for an install (PR-α.3 status command)
     "CREATE INDEX IF NOT EXISTS idx_gctrl_app_bindings_install ON gctrl_app_bindings(install_name)",
+    // App-owned schedules index — uninstall cleanup (PR-α.5)
+    "CREATE INDEX IF NOT EXISTS idx_schedules_app ON schedules(app_id)",
 ];
 
 // ═══════════════════════════════════════════════════════════════
@@ -582,6 +589,10 @@ impl SqliteStore {
             "ALTER TABLE schedules ADD COLUMN command_json TEXT",
             "ALTER TABLE schedules ADD COLUMN cwd TEXT",
             "ALTER TABLE schedules ADD COLUMN env_keys_json TEXT",
+            // App-install ownership — added May 2026 (PR-α.5). NULL for ad-hoc
+            // schedules created via /api/schedules; set to the install name
+            // for entries registered by `gctrl app install`.
+            "ALTER TABLE schedules ADD COLUMN app_id TEXT",
         ];
         for stmt in alters {
             if let Err(e) = conn.execute_batch(stmt) {
@@ -2932,8 +2943,8 @@ impl SqliteStore {
     pub fn create_schedule(&self, sched: &Schedule) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO schedules (id, name, cron, target_kind, target_url, target_method, body_json, headers_json, command_json, cwd, env_keys_json, timeout_secs, enabled, next_run_at, last_run_at, last_status, last_response, last_error, run_count, failure_count, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+            "INSERT INTO schedules (id, name, cron, target_kind, target_url, target_method, body_json, headers_json, command_json, cwd, env_keys_json, timeout_secs, enabled, next_run_at, last_run_at, last_status, last_response, last_error, run_count, failure_count, app_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
             params![
                 sched.id,
                 sched.name,
@@ -2955,6 +2966,7 @@ impl SqliteStore {
                 sched.last_error,
                 sched.run_count,
                 sched.failure_count,
+                sched.app_id,
                 sched.created_at,
                 sched.updated_at,
             ],
@@ -2965,7 +2977,7 @@ impl SqliteStore {
     pub fn get_schedule(&self, id_or_name: &str) -> Result<Option<Schedule>> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT id, name, cron, target_kind, target_url, target_method, body_json, headers_json, command_json, cwd, env_keys_json, timeout_secs, enabled, next_run_at, last_run_at, last_status, last_response, last_error, run_count, failure_count, created_at, updated_at
+            "SELECT id, name, cron, target_kind, target_url, target_method, body_json, headers_json, command_json, cwd, env_keys_json, timeout_secs, enabled, next_run_at, last_run_at, last_status, last_response, last_error, run_count, failure_count, app_id, created_at, updated_at
              FROM schedules WHERE id = ?1 OR name = ?1",
             [id_or_name],
             row_to_schedule,
@@ -2979,7 +2991,7 @@ impl SqliteStore {
 
     pub fn list_schedules(&self, filter: &ScheduleFilter) -> Result<Vec<Schedule>> {
         let conn = self.conn.lock().unwrap();
-        let mut sql = "SELECT id, name, cron, target_kind, target_url, target_method, body_json, headers_json, command_json, cwd, env_keys_json, timeout_secs, enabled, next_run_at, last_run_at, last_status, last_response, last_error, run_count, failure_count, created_at, updated_at FROM schedules WHERE 1=1".to_string();
+        let mut sql = "SELECT id, name, cron, target_kind, target_url, target_method, body_json, headers_json, command_json, cwd, env_keys_json, timeout_secs, enabled, next_run_at, last_run_at, last_status, last_response, last_error, run_count, failure_count, app_id, created_at, updated_at FROM schedules WHERE 1=1".to_string();
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         let mut idx = 1;
         if let Some(en) = filter.enabled {
@@ -3004,7 +3016,7 @@ impl SqliteStore {
     pub fn list_due_schedules(&self, now_rfc3339: &str, limit: usize) -> Result<Vec<Schedule>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, cron, target_kind, target_url, target_method, body_json, headers_json, command_json, cwd, env_keys_json, timeout_secs, enabled, next_run_at, last_run_at, last_status, last_response, last_error, run_count, failure_count, created_at, updated_at
+            "SELECT id, name, cron, target_kind, target_url, target_method, body_json, headers_json, command_json, cwd, env_keys_json, timeout_secs, enabled, next_run_at, last_run_at, last_status, last_response, last_error, run_count, failure_count, app_id, created_at, updated_at
              FROM schedules
              WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ?1
              ORDER BY next_run_at LIMIT ?2"
@@ -3030,6 +3042,25 @@ impl SqliteStore {
             [id_or_name],
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(n > 0)
+    }
+
+    /// Drop every schedule owned by `app_id` — used by `gctrl app uninstall`
+    /// to clean up the app's `[[schedule]]` registrations. Cascades through
+    /// `scheduler_runs` the same way as `delete_schedule`. Schedules created
+    /// ad-hoc (`app_id IS NULL`) and schedules owned by other apps are not
+    /// touched. Returns the count of schedules deleted.
+    pub fn delete_schedules_by_app(&self, app_id: &str) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM scheduler_runs
+             WHERE schedule_id IN (SELECT id FROM schedules WHERE app_id = ?1)",
+            [app_id],
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        let n = conn.execute(
+            "DELETE FROM schedules WHERE app_id = ?1",
+            [app_id],
+        ).map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(n)
     }
 
     pub fn set_schedule_enabled(&self, id_or_name: &str, enabled: bool) -> Result<bool> {
@@ -3423,7 +3454,8 @@ fn row_to_schedule(row: &rusqlite::Row<'_>) -> rusqlite::Result<Schedule> {
     //  11 timeout_secs   12 enabled
     //  13 next_run_at    14 last_run_at
     //  15 last_status    16 last_response  17 last_error
-    //  18 run_count      19 failure_count  20 created_at  21 updated_at
+    //  18 run_count      19 failure_count  20 app_id
+    //  21 created_at     22 updated_at
     let body_json_str: Option<String> = row.get(6)?;
     let headers_json_str: Option<String> = row.get(7)?;
     let command_json_str: Option<String> = row.get(8)?;
@@ -3449,8 +3481,9 @@ fn row_to_schedule(row: &rusqlite::Row<'_>) -> rusqlite::Result<Schedule> {
         last_error: row.get(17)?,
         run_count: row.get(18)?,
         failure_count: row.get(19)?,
-        created_at: row.get(20)?,
-        updated_at: row.get(21)?,
+        app_id: row.get(20)?,
+        created_at: row.get(21)?,
+        updated_at: row.get(22)?,
         health: None,
     };
     // Storage is the population point for the derived `health` column —

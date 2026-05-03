@@ -39,6 +39,7 @@ fn make_due_schedule(target_url: &str) -> Schedule {
         last_error: None,
         run_count: 0,
         failure_count: 0,
+        app_id: None,
         created_at: now.to_rfc3339(),
         updated_at: now.to_rfc3339(),
         health: None,
