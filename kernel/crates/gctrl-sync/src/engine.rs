@@ -478,6 +478,45 @@ impl R2SyncEngine {
         // Board tables (projects, issues, etc.) — no local rows to push yet.
         Ok(0)
     }
+
+    // ───────────────────────── Vault file sync ─────────────────────────
+
+    /// Push every file under `<vault_root>/<project_key>/` to R2 at
+    /// `vaults/<project_key>/<rel_path>`. Honors content-hash dedup against
+    /// the per-project manifest at `<state_dir>/sync/vaults/<project_key>.json`.
+    /// `prefixes` narrows to subtrees (e.g. `["input/briefs", "input/raw"]`).
+    ///
+    /// On `dry_run = true`, skips R2 entirely and returns the plan only.
+    /// On per-file upload failure, increments `failed` and continues so a
+    /// flaky network doesn't lose a whole sync — operators get a clean
+    /// retry on next call (the manifest only records what actually
+    /// uploaded, so the next plan picks up where this one left off).
+    ///
+    /// Spec: `vault/specs/implementation/kernel/sync-vault.md`.
+    ///
+    /// Thin wrapper around [`crate::vault::push_to_r2`] that uses the
+    /// engine's already-configured R2 client. The HTTP route layer
+    /// (PR-β.2) calls `push_to_r2` directly without the engine, since
+    /// vault sync needs neither the DuckDB connection nor the rest of
+    /// the engine's surface.
+    pub async fn push_vault(
+        &self,
+        vault_root: &std::path::Path,
+        state_dir: &std::path::Path,
+        project_key: &str,
+        prefixes: &[&str],
+        opts: crate::vault::VaultSyncOpts,
+    ) -> Result<crate::vault::VaultSyncResult, SyncError> {
+        crate::vault::push_to_r2(
+            &self.r2,
+            vault_root,
+            state_dir,
+            project_key,
+            prefixes,
+            opts,
+        )
+        .await
+    }
 }
 
 #[async_trait]

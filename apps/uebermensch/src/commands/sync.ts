@@ -25,7 +25,7 @@ const dryRunOpt = Options.boolean("dry-run").pipe(
 )
 
 const forceOpt = Options.boolean("force").pipe(
-  Options.withDescription("Ignore local sync manifest and re-upload everything"),
+  Options.withDescription("Ignore the kernel's dedup manifest and re-upload everything"),
   Options.withDefault(false),
 )
 
@@ -36,20 +36,19 @@ const prefixesOpt = Options.text("prefixes").pipe(
   Options.withDefault(DEFAULT_SYNC_PREFIXES_STR),
 )
 
-const r2 = Command.make(
-  "r2",
+const push = Command.make(
+  "push",
   { dryRunOpt, forceOpt, prefixesOpt },
   ({ dryRunOpt: dryRun, forceOpt: force, prefixesOpt: prefixesStr }) =>
     Effect.gen(function* () {
       const vaultDir = yield* resolveVaultDir()
       const prefixes = prefixesStr.split(",").map((s) => s.trim()).filter(Boolean)
       yield* Console.log(
-        `syncing ${prefixes.join(", ")} from ${vaultDir} to R2 (dry-run=${dryRun})`,
+        `pushing ${prefixes.join(", ")} via kernel /api/sync/vault/push (dry-run=${dryRun})`,
       )
       const program = Effect.gen(function* () {
         const sync = yield* SyncService
         const result = yield* sync.run({ vaultDir, prefixes, dryRun, force })
-        // Progress is logged inside the adapter; just print the summary line.
         yield* Console.log(
           `\ntotals: uploaded=${result.uploaded} skipped=${result.skipped} failed=${result.failed}`,
         )
@@ -61,11 +60,11 @@ const r2 = Command.make(
     }),
 ).pipe(
   Command.withDescription(
-    "Push input/reports/, input/briefs/, input/raw/, and input/wiki/ to the R2 bucket (S3-compat; dedup via sha256 metadata)",
+    "Push input/reports/, input/briefs/, input/raw/, and input/wiki/ to R2 via the kernel's vault sync route (dedup is kernel-owned)",
   ),
 )
 
 export const sync = Command.make("sync").pipe(
-  Command.withSubcommands([r2]),
-  Command.withDescription("Sync vault content to external storage"),
+  Command.withSubcommands([push]),
+  Command.withDescription("Sync vault content to external storage via the gctrl kernel"),
 )
