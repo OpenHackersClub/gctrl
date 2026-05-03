@@ -18,6 +18,7 @@ gctrl-gcal = { path = "../gctrl-gcal" }
 gctrl-driver-macos = { path = "../gctrl-driver-macos" }
 gctrl-browser = { path = "../gctrl-browser" }
 gctrl-recorder = { path = "../gctrl-recorder" }
+gctrl-mac-comm = { path = "../gctrl-mac-comm" }
 reqwest = { workspace = true }
 duckdb = { workspace = true }
 axum = { workspace = true, features = ["ws"] }

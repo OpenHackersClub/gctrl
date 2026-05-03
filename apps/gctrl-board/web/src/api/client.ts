@@ -7,6 +7,7 @@ import type {
   IssueEvent,
   TeamRecommendation,
   TeamRenderResult,
+  CommCapabilities,
   InboxMessage,
   InboxThread,
   InboxAction,
@@ -258,6 +259,13 @@ export const api = {
       }),
 
     stats: () => request<InboxStats>("/api/inbox/stats"),
+  },
+
+  // gctrl-mac-comm driver — focus terminal sessions, capability probe.
+  // On non-macOS the routes return 501 and `os` reflects the host platform
+  // so the UI can hide the affordance entirely.
+  comm: {
+    capabilities: () => request<CommCapabilities>("/api/comm/capabilities"),
   },
 
   // Kernel analytics + sessions — proxied by Vite dev server to :4318.

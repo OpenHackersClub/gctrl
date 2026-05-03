@@ -1840,6 +1840,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "gctrl-mac-comm"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "gctrl-net"
 version = "0.1.0"
 dependencies = [
@@ -1898,6 +1912,7 @@ dependencies = [
  "gctrl-core",
  "gctrl-driver-macos",
  "gctrl-gcal",
+ "gctrl-mac-comm",
  "gctrl-net",
  "gctrl-proxy",
  "gctrl-recorder",

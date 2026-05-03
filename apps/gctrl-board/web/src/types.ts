@@ -386,6 +386,54 @@ export interface TeamRenderResult {
 
 /* ── Inbox types ── */
 
+/**
+ * Terminal-app discriminator for `context.terminal`. Mirrors the kernel
+ * driver's `gctrl_mac_comm::TerminalApp`.
+ *
+ * `unknown` is the explicit "we couldn't identify" value — the inbox UI
+ * hides the Focus button for unknown.
+ */
+export type TerminalApp =
+  | "iterm2"
+  | "terminal"
+  | "ghostty"
+  | "vscode"
+  | "warp"
+  | "unknown"
+
+/**
+ * Captured terminal identity — present on `context.terminal` for
+ * permission_request, agent_question, and any other kind originating from
+ * a terminal-bound agent. Optional everywhere because older messages and
+ * non-terminal sources don't carry it.
+ */
+export interface TerminalContext {
+  app: TerminalApp
+  bundle_id?: string
+  session_id?: string
+  window_id?: string
+  tab_id?: string
+  tty?: string
+  pid?: number
+  ppid?: number
+  cwd?: string
+  term_program?: string
+  term_program_version?: string
+  captured_at?: string
+}
+
+/**
+ * `GET /api/comm/capabilities` response. Drives whether the Focus button
+ * renders and what tooltip / re-grant prompt to show.
+ */
+export interface CommCapabilities {
+  os: "macos" | "linux" | "windows" | "unknown" | string
+  terminals: string[]
+  notify: boolean
+  automation_granted?: boolean | null
+  captured_at: string
+}
+
 export interface InboxMessage {
   id: string
   thread_id: string
@@ -394,7 +442,7 @@ export interface InboxMessage {
   urgency: string
   title: string
   body?: string
-  context: Record<string, unknown>
+  context: Record<string, unknown> & { terminal?: TerminalContext }
   status: string
   requires_action: boolean
   payload?: Record<string, unknown>
