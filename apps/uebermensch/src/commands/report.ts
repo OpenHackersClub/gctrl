@@ -1,5 +1,5 @@
 import { Command, Options } from "@effect/cli"
-import { Console, Effect, Either, Layer, Option } from "effect"
+import { Console, Effect, Either, Layer, Match, Option } from "effect"
 import { EnvSecretsLive } from "../adapters/EnvSecrets.js"
 import { FileSystemProfileLive } from "../adapters/FileSystemProfile.js"
 import { FileSystemVaultLive } from "../adapters/FileSystemVault.js"
@@ -628,8 +628,20 @@ export const report = Command.make(
             .pipe(Effect.either)
           if (Either.isLeft(renderEither)) {
             const err = renderEither.left
+            const tag = Match.value(err).pipe(
+              Match.tags({
+                CitationError: () => "CitationError",
+                SourceCitedInline: () => "SourceCitedInline",
+                ReferenceMissing: () => "ReferenceMissing",
+                ReferenceDuplicate: () => "ReferenceDuplicate",
+                ReferenceOrphan: () => "ReferenceOrphan",
+                ReferenceSourceInvalid: () => "ReferenceSourceInvalid",
+                ReferenceSequenceInvalid: () => "ReferenceSequenceInvalid",
+              }),
+              Match.exhaustive,
+            )
             yield* Console.log(
-              `  ✗ ${ii.slug}: render failed (${(err as { _tag?: string })._tag ?? "error"}): ${(err as { message?: string }).message ?? String(err)} — skipping`,
+              `  ✗ ${ii.slug}: render failed (${tag}): ${err.message} — skipping`,
             )
             continue
           }

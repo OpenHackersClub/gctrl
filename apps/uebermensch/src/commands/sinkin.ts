@@ -9,10 +9,15 @@
  * through the existing `LlmService`.
  */
 import { Command, Options } from "@effect/cli"
-import { Console, Effect, Option } from "effect"
+import { Console, Effect, Option, Schema } from "effect"
 import { FileSystemVaultLive } from "../adapters/FileSystemVault.js"
 import { resolveVaultDir } from "../lib/env.js"
 import { VaultService } from "../services/VaultService.js"
+
+class KernelSinkinWriteError extends Schema.TaggedError<KernelSinkinWriteError>()(
+  "KernelSinkinWriteError",
+  { sessionId: Schema.String, message: Schema.String },
+) {}
 
 const scopeTopicOpt = Options.text("topic").pipe(
   Options.withDescription("Restrict the pass to one topic slug"),
@@ -82,10 +87,29 @@ const upsertKernelSession = (args: UpsertArgs) =>
           completed_at: args.completedAt,
         }),
       })
-      return resp.ok
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => "")
+        throw new KernelSinkinWriteError({
+          sessionId: args.id,
+          message: `kernel ${resp.status}: ${body.slice(0, 400)}`,
+        })
+      }
+      return true
     },
-    catch: (e) => new Error(String(e)),
-  }).pipe(Effect.catchAll(() => Effect.succeed(false)))
+    catch: (e) =>
+      e instanceof KernelSinkinWriteError
+        ? e
+        : new KernelSinkinWriteError({
+            sessionId: args.id,
+            message: `kernel unreachable: ${String(e)}`,
+          }),
+  }).pipe(
+    Effect.catchTag("KernelSinkinWriteError", (err) =>
+      Console.error(
+        `! sinkin kernel write failed (session=${err.sessionId}): ${err.message}`,
+      ).pipe(Effect.as(false)),
+    ),
+  )
 
 export const sinkin = Command.make(
   "sinkin",

@@ -10,15 +10,15 @@ import type { KernelError, KernelUnavailableError } from "../errors"
 export class KernelClient extends Context.Tag("KernelClient")<
   KernelClient,
   {
-    readonly get: <A, I, R>(
+    readonly get: <A, I>(
       path: string,
-      schema: Schema.Schema<A, I, R>
+      schema: Schema.Schema<A, I, never>
     ) => Effect.Effect<A, KernelError | KernelUnavailableError>
 
-    readonly post: <A, I, R>(
+    readonly post: <A, I>(
       path: string,
       body: unknown,
-      schema: Schema.Schema<A, I, R>
+      schema: Schema.Schema<A, I, never>
     ) => Effect.Effect<A, KernelError | KernelUnavailableError>
 
     readonly delete: (
