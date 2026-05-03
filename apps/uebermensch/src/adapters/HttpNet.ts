@@ -1,12 +1,25 @@
 // HttpNet.ts — kernel-backed adapter for NetService.
 //
-// Routes through POST /api/net/search and POST /api/net/fetch on the gctrld
-// kernel (GCTRL_KERNEL_URL, default http://127.0.0.1:4318).
+// Routes through:
+//   - POST /api/search/web   — Brave Search (web). Already wired in
+//     `gctrl-otel/src/receiver.rs` and backed by `gctrl-net::search`.
+//     Requires `BRAVE_SEARCH_API_KEY` configured on the kernel; without it
+//     the kernel returns HTTP 503 and the freshness probe degrades
+//     gracefully (no probes ingested, report renders against existing
+//     candidates).
+//   - POST /api/net/fetch    — `gctrl-net` page fetch + readability +
+//     min-word gate. Returns markdown directly; no separate accept toggle
+//     is needed because the kernel always emits `markdown`.
 //
-// NOTE: Routes assumed to exist; `gctrl-driver-net` LKM lands separately.
-// The adapter codes against the spec'd HTTP shape; until the LKM is up,
-// calls fail with NetError::unavailable, which FreshnessProbeService catches
-// and skips gracefully.
+// Both routes ship today; no new kernel work is required to enable the
+// freshness probe at runtime.
+//
+// Connection-level failures (kernel down) → NetError::unavailable.
+// Brave-key-missing (HTTP 503) → NetError::unavailable, logged so the
+// operator can wire the key.
+// gctrl-net quality gates (e.g. "page below word threshold") return
+// HTTP 502; we surface them as NetError::not_found so the probe drops
+// the URL and continues.
 
 import { Effect, Layer } from "effect";
 import { NetError } from "../errors.js";
@@ -20,10 +33,13 @@ const kernelBase = (): string =>
 const netErr = (kind: NetError["kind"], message: string, url?: string): NetError =>
   new NetError({ kind, message, url });
 
-const classifyStatus = (status: number): NetError["kind"] => {
+const classifyStatus = (status: number, path: string): NetError["kind"] => {
   if (status === 404) return "not_found";
   if (status === 429) return "rate_limited";
   if (status === 400 || status === 401 || status === 403) return "invalid";
+  // gctrl-net's quality gates (min_words, paywall) come back as 502.
+  // Treat those as not_found so the probe drops the URL silently.
+  if (status === 502 && path === "/api/net/fetch") return "not_found";
   if (status >= 500) return "unavailable";
   return "invalid";
 };
@@ -49,7 +65,7 @@ const postKernel = <T>(path: string, body: unknown): Effect.Effect<T, NetError> 
         if (isConnRefused(e)) {
           return netErr(
             "unavailable",
-            `kernel net route not reachable at ${url} — start gctrld or wait for gctrl-driver-net LKM`,
+            `kernel ${path} not reachable at ${url} — start gctrld via 'gctrld serve --port 4318' or set GCTRL_KERNEL_URL`,
           );
         }
         return netErr("unavailable", `kernel ${path} fetch failed: ${String(e)}`);
@@ -63,7 +79,10 @@ const postKernel = <T>(path: string, body: unknown): Effect.Effect<T, NetError> 
 
     if (!res.ok) {
       return yield* Effect.fail(
-        netErr(classifyStatus(res.status), `kernel ${path} HTTP ${res.status}: ${raw.slice(0, 300)}`),
+        netErr(
+          classifyStatus(res.status, path),
+          `kernel ${path} HTTP ${res.status}: ${raw.slice(0, 300)}`,
+        ),
       );
     }
 
@@ -73,38 +92,46 @@ const postKernel = <T>(path: string, body: unknown): Effect.Effect<T, NetError> 
     });
   });
 
-// Kernel /api/net/search response shape (matches driver-net spec).
+// Kernel /api/search/web response shape (gctrl_net::SearchResponse).
 type KernelSearchResponse = {
   readonly query: string;
+  readonly kind: string;
   readonly results: ReadonlyArray<{
-    readonly url: string;
     readonly title: string;
-    readonly snippet: string;
+    readonly url: string;
+    readonly description: string;
+    readonly age?: string;
   }>;
 };
 
-// Kernel /api/net/fetch response shape (matches driver-net spec).
+// Kernel /api/net/fetch response shape (gctrl_net::PageContent).
+// `markdown` is the post-readability rendered content; `status` is the
+// upstream HTTP status; `title` is extracted from the page.
 type KernelFetchResponse = {
   readonly url: string;
+  readonly title: string;
+  readonly markdown: string;
+  readonly word_count: number;
   readonly status: number;
-  readonly content: string;
-  readonly content_type: string;
 };
 
 export const HttpNetLive = Layer.succeed(NetService, {
   search: (req) =>
     Effect.gen(function* () {
       const body = {
-        query: req.query,
-        max_results: req.maxResults ?? 5,
+        q: req.query,
+        count: req.maxResults ?? 5,
       };
-      const resp = yield* postKernel<KernelSearchResponse>("/api/net/search", body);
+      const resp = yield* postKernel<KernelSearchResponse>("/api/search/web", body);
       const response: NetSearchResponse = {
         query: resp.query,
         results: (resp.results ?? []).map((r) => ({
           url: r.url,
           title: r.title,
-          snippet: r.snippet,
+          // Brave returns `description`; NetService models it as `snippet`
+          // because the field is meant for the agent prompt regardless of
+          // upstream nomenclature.
+          snippet: r.description,
         })),
       };
       return response;
@@ -112,16 +139,20 @@ export const HttpNetLive = Layer.succeed(NetService, {
 
   fetch: (req) =>
     Effect.gen(function* () {
+      // gctrl-net always emits markdown via readability; the `accept` flag
+      // on NetService is honored by readability=false when the caller
+      // explicitly asks for raw HTML.
       const body = {
         url: req.url,
-        accept: req.accept ?? "markdown",
+        readability: req.accept !== "html",
       };
       const resp = yield* postKernel<KernelFetchResponse>("/api/net/fetch", body);
       const response: NetFetchResponse = {
         url: resp.url,
         status: resp.status,
-        content: resp.content,
-        contentType: resp.content_type,
+        content: resp.markdown,
+        // gctrl-net returns markdown when readability=true, else HTML.
+        contentType: req.accept === "html" ? "text/html" : "text/markdown",
       };
       return response;
     }),
