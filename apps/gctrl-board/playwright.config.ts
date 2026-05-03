@@ -59,6 +59,12 @@ export default defineConfig({
           // kernel-only. Skip in remote mode for the same reason as
           // agent-integration above.
           "**/analytics-dashboard.spec.ts",
+          // Schedule page tests seed via `POST /api/schedules` directly
+          // against the kernel; deployed Workers proxy to KERNEL_URL
+          // when set, but the schedule routes are kernel-only and the
+          // preview Worker has no reachable kernel. Same shape as the
+          // analytics-dashboard skip above.
+          "**/schedule-page.spec.ts",
         ],
       }
     : {}),
