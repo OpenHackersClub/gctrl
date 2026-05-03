@@ -67,14 +67,17 @@ See [vault/specs/profile.md](vault/specs/profile.md) for the full schema and syn
 
 ```
 apps/uebermensch/
-├── PRD.md                  # Problem, goals, principles
-├── ROADMAP.md              # M0–M4 milestones
-├── WORKFLOW.md             # Brief lifecycle state machine
 ├── README.md               # (this file)
 ├── src/                    # Effect-TS CLI + services + adapters
 ├── tests/                  # vitest + fixtures/vault
-└── vault/specs/                  # Architecture, domain model, pipeline, KB, delivery, eval
+└── vault/                  # Obsidian-mountable app vault
+    ├── PRD.md              # Problem, goals, principles
+    ├── ROADMAP.md          # M0–M4 milestones, slice rows, issue links
+    ├── WORKFLOW.md         # Brief lifecycle state machine
+    └── specs/              # Architecture, domain model, pipeline, KB, delivery, eval
 ```
+
+> Per the workspace convention (see `AGENTS.md` § Application Specs), `PRD.md` / `ROADMAP.md` / `WORKFLOW.md` MUST live inside the app's vault. If they currently appear at `apps/uebermensch/` top level, that's the legacy layout pending migration into `apps/uebermensch/vault/`.
 
 ## Related specs
 
