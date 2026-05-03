@@ -18,6 +18,9 @@ arrow = { workspace = true }
 parquet = { workspace = true }
 reqwest = { workspace = true }
 duckdb = { workspace = true }
+sha2 = { workspace = true }
+walkdir = "2"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+wiremock = "0.6"

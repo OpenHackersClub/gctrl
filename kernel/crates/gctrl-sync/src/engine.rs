@@ -478,6 +478,130 @@ impl R2SyncEngine {
         // Board tables (projects, issues, etc.) — no local rows to push yet.
         Ok(0)
     }
+
+    // ───────────────────────── Vault file sync ─────────────────────────
+
+    /// Push every file under `<vault_root>/<project_key>/` to R2 at
+    /// `vaults/<project_key>/<rel_path>`. Honors content-hash dedup against
+    /// the per-project manifest at `<state_dir>/sync/vaults/<project_key>.json`.
+    /// `prefixes` narrows to subtrees (e.g. `["input/briefs", "input/raw"]`).
+    ///
+    /// On `dry_run = true`, skips R2 entirely and returns the plan only.
+    /// On per-file upload failure, increments `failed` and continues so a
+    /// flaky network doesn't lose a whole sync — operators get a clean
+    /// retry on next call (the manifest only records what actually
+    /// uploaded, so the next plan picks up where this one left off).
+    ///
+    /// Spec: `vault/specs/implementation/kernel/sync-vault.md`.
+    pub async fn push_vault(
+        &self,
+        vault_root: &std::path::Path,
+        state_dir: &std::path::Path,
+        project_key: &str,
+        prefixes: &[&str],
+        opts: crate::vault::VaultSyncOpts,
+    ) -> Result<crate::vault::VaultSyncResult, SyncError> {
+        let mut manifest =
+            crate::vault::VaultManifest::load(state_dir, project_key)?;
+        let plan = crate::vault::plan_push(
+            vault_root,
+            project_key,
+            prefixes,
+            &manifest,
+            opts.force,
+        )?;
+
+        let mut uploaded = 0u64;
+        let mut skipped = 0u64;
+        let mut failed = 0u64;
+        let mut bytes_uploaded = 0u64;
+
+        if opts.dry_run {
+            for entry in &plan {
+                if matches!(entry.action, crate::vault::VaultSyncAction::Upload) {
+                    // dry-run treats Upload entries as "would upload"; counts
+                    // stay at 0 so callers can distinguish "nothing changed"
+                    // from "would change N".
+                } else {
+                    skipped += 1;
+                }
+            }
+            return Ok(crate::vault::VaultSyncResult {
+                project_key: project_key.to_string(),
+                plan,
+                uploaded,
+                skipped,
+                failed,
+                bytes_uploaded,
+            });
+        }
+
+        for entry in &plan {
+            match entry.action {
+                crate::vault::VaultSyncAction::Upload => {
+                    let abs = vault_root.join(project_key).join(&entry.rel_path);
+                    let key = crate::vault::r2_key(project_key, &entry.rel_path);
+                    match tokio::fs::read(&abs).await {
+                        Ok(body) => {
+                            let n = body.len() as u64;
+                            match self.r2.put_object(&key, body).await {
+                                Ok(()) => {
+                                    uploaded += 1;
+                                    bytes_uploaded += n;
+                                    manifest.entries.insert(
+                                        entry.rel_path.clone(),
+                                        crate::vault::VaultManifestEntry {
+                                            sha256: entry.sha256.clone(),
+                                            size_bytes: entry.size_bytes,
+                                            uploaded_at: chrono::Utc::now().to_rfc3339(),
+                                            etag: None,
+                                        },
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        ?key,
+                                        error = %e,
+                                        "vault sync: R2 upload failed"
+                                    );
+                                    failed += 1;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                path = %abs.display(),
+                                error = %e,
+                                "vault sync: file read failed"
+                            );
+                            failed += 1;
+                        }
+                    }
+                }
+                crate::vault::VaultSyncAction::SkipHashMatch
+                | crate::vault::VaultSyncAction::SkipOutsidePrefix => {
+                    skipped += 1;
+                }
+            }
+        }
+
+        if uploaded > 0 {
+            manifest.updated_at = Some(chrono::Utc::now().to_rfc3339());
+            // Manifest save errors are surfaced — losing manifest state means
+            // the next sync re-uploads everything from scratch. That's
+            // wasteful but not corrupting; still worth the explicit error.
+            manifest.save(state_dir)?;
+        }
+
+        Ok(crate::vault::VaultSyncResult {
+            project_key: project_key.to_string(),
+            plan,
+            uploaded,
+            skipped,
+            failed,
+            bytes_uploaded,
+        })
+    }
 }
 
 #[async_trait]
