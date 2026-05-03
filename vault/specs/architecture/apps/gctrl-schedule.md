@@ -75,7 +75,7 @@ flowchart LR
 1. A Schedule page in the board SPA: list, create, run-now, enable/disable, edit, delete; per-routine detail drawer with run history, embedded sessions, and embedded inbox alerts.
 2. A "Routine" wrapper concept on top of `target_kind: exec` schedules — agentic recurring jobs (gap analysis, codebase audit, weekly status, eval ticks).
 3. CI-style health roll-up at the top of the page, sourced from a kernel-computed summary endpoint (§5.6) — never recomputed client-side.
-4. Vault-defined routine catalog (`directives/routines/<name>.md`), reconciled to the kernel via a `gctrl routines sync` command — same shape as `uber schedule sync` ([uber scheduling.md](../../../../apps/uebermensch/vault/specs/scheduling.md)).
+4. Vault-defined routine catalog (`directives/routines/<name>.md`), reconciled to the kernel via a `gctrl routines sync` command — same shape as `uber schedule sync` ([uber scheduling.md](/specs/scheduling.md)).
 5. Cross-link surfaces:
    - per-run → embed `<SessionsTab>` from gctrl-analytics filtered to the routine
    - per-routine alerts → embed inbox messages with `kind = schedule_failed`
@@ -296,7 +296,7 @@ A routine with `alert_after_failures = NULL` STAYS amber under sustained failure
 
 ### 6.4 Routine catalog (vault-driven)
 
-Apps contribute routine templates as YAML frontmatter in their vault, mirroring the existing pattern in [uber scheduling.md § Vault Schema](../../../../apps/uebermensch/vault/specs/scheduling.md#vault-schema--directivesschedulesmd):
+Apps contribute routine templates as YAML frontmatter in their vault, mirroring the existing pattern in [uber scheduling.md § Vault Schema](/specs/scheduling.md#vault-schema--directivesschedulesmd):
 
 ```yaml
 ---
@@ -333,7 +333,7 @@ Files live at `apps/<app>/vault/directives/routines/<name>.md` (or `vault/direct
 5. **Graceful degradation**: a missing `directives/routines/` directory is a no-op exit 0 with a `tracing::info!` log line — fresh checkouts MUST NOT fail `pnpm dev` startup. An empty existing directory is also a no-op.
 6. **Atomicity**: any per-row apply failure aborts the run; subsequent runs are idempotent and resume.
 
-The reconciler is scoped by **author directory**, not by name prefix — two apps cannot fight over the same prefix. A reconciler invoked from `apps/gctrl-board/vault/directives/routines/` will never touch a row created by the uber reconciler in `apps/uebermensch/vault/directives/routines/`.
+The reconciler is scoped by **author directory**, not by name prefix — two apps cannot fight over the same prefix. A reconciler invoked from `apps/gctrl-board/vault/directives/routines/` will never touch a row created by the uber reconciler in `/directives/routines/`.
 
 ## 7. UX
 
@@ -658,4 +658,4 @@ Both prior open questions are resolved in §5 and §6. Only one item remains gen
 2. [apps/gctrl-analytics.md](gctrl-analytics.md) — sibling native app; `<SessionsTab>` (or its M1c-refactored variant) is embedded in the routine detail drawer.
 3. [apps/gctrl-inbox.md](gctrl-inbox.md) — inbox routes the failure-streak alerts go through; defines the `kind` enum extensibility.
 4. [apps/gctrl-board.md](gctrl-board.md) — host SPA for the Schedule page; nav sidebar mounts the new route.
-5. [apps/uebermensch — scheduling.md](../../../../apps/uebermensch/vault/specs/scheduling.md) — reference implementation of vault-driven `gctrl-scheduler` reconciliation; the routine catalog mirrors its shape.
+5. [apps/uebermensch — scheduling.md](/specs/scheduling.md) — reference implementation of vault-driven `gctrl-scheduler` reconciliation; the routine catalog mirrors its shape.

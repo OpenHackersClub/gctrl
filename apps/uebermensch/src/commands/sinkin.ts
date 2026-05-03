@@ -4,7 +4,7 @@
  * M0 scope: scaffolding only — registers a session row at start, scans the
  * vault to count pages, and closes the session with `pages_scanned`. The
  * actual gap-pass + answer-pass LLM stages (per
- * apps/uebermensch/vault/specs/sinkin.md) land in a follow-up that wires
+ * /specs/sinkin.md) land in a follow-up that wires
  * the prompt templates in directives/personas/sinkin-{gap,answer}.md
  * through the existing `LlmService`.
  */

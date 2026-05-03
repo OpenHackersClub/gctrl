@@ -344,7 +344,7 @@ CREATE TABLE IF NOT EXISTS uber_briefs (
 "#;
 
 // App-namespaced (per the `<app>_*` invariant). One row per SinkIn run.
-// Per apps/uebermensch/vault/specs/sinkin.md, SinkIn introspects the wiki
+// Per /specs/sinkin.md, SinkIn introspects the wiki
 // and files Question + Connection markdown pages; this table tracks the
 // run itself (cost, scope, counts). The resulting Question/Connection
 // pages live in the vault and are indexed via the watcher in a follow-up.

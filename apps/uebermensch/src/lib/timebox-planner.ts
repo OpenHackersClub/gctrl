@@ -1,5 +1,5 @@
 // Pure deterministic planner for timeboxes.
-// Spec: apps/uebermensch/vault/specs/calendar-timeboxes.md § Planner.
+// Spec: /specs/calendar-timeboxes.md § Planner.
 //
 // Inputs: timebox (or planning input) + working_windows + existing events to avoid.
 // Output: proposal with N sessions placed in working windows, ending by deadline

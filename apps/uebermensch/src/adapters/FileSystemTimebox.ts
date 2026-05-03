@@ -1,5 +1,5 @@
 // FileSystem-backed Timebox adapter.
-// Spec: apps/uebermensch/vault/specs/calendar-timeboxes.md.
+// Spec: /specs/calendar-timeboxes.md.
 // Pattern mirrors FileSystemCalendar — vault is source of truth, no SQLite yet.
 
 import { createHash } from "node:crypto"

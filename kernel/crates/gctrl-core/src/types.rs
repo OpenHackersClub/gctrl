@@ -866,7 +866,7 @@ pub struct UberBrief {
 /// One row per SinkIn run. SinkIn introspects the wiki and files
 /// Question + Connection markdown pages; this row tracks the run itself
 /// (cost, scope, counts). Filed pages live in the vault.
-/// Spec: apps/uebermensch/vault/specs/sinkin.md
+/// Spec: /specs/sinkin.md
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UberSinkinSession {
     pub id: String,
