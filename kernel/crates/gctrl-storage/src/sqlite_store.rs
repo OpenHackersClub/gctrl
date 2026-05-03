@@ -13,9 +13,9 @@ use gctrl_core::{
     memory::{MemoryEntry, MemoryEntryId, MemoryFilter, MemoryStats, MemoryType},
     AcceptanceCheck, AcceptanceCheckRow, AcceptanceKind, AcceptanceRollup, AcceptanceStatus,
     GctlError, InboxAction, InboxActionFilter, InboxMessage, InboxMessageFilter, InboxThread,
-    PersonaDefinition, PersonaReviewRule, Result, Schedule, ScheduleFilter, ScheduleRun,
-    ScheduleRunFilter, ScheduleRunUpdate, OrchTask, UberBrief, UberSinkinSession,
-    VaultMount, VaultMountKind,
+    PersonaDefinition, PersonaReviewRule, Result, Schedule, ScheduleFilter, ScheduleHealth,
+    ScheduleRun, ScheduleRunFilter, ScheduleRunUpdate, SchedulesHealthCounts, SchedulesRunsCounts,
+    SchedulesSummary, OrchTask, UberBrief, UberSinkinSession, VaultMount, VaultMountKind,
 };
 use rusqlite::{params, Connection};
 
@@ -2908,6 +2908,53 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Apply a patched-row update to an existing schedule. Caller is
+    /// responsible for assembling the merged row — this method overwrites
+    /// every patchable field unconditionally. Identity-fields
+    /// (`id`, `name`, `target_kind`, `created_at`, `run_count`,
+    /// `failure_count`, `last_*`) are preserved by NOT being in the
+    /// UPDATE list. Returns true if a row matched the id.
+    ///
+    /// Spec: vault/specs/architecture/apps/gctrl-schedule.md § 5.2.
+    pub fn update_schedule_patch(&self, sched: &Schedule) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        let n = conn
+            .execute(
+                "UPDATE schedules
+                 SET cron = ?1,
+                     target_url = ?2,
+                     target_method = ?3,
+                     body_json = ?4,
+                     headers_json = ?5,
+                     command_json = ?6,
+                     cwd = ?7,
+                     env_keys_json = ?8,
+                     timeout_secs = ?9,
+                     enabled = ?10,
+                     next_run_at = ?11,
+                     updated_at = ?12
+                 WHERE id = ?13",
+                params![
+                    sched.cron,
+                    sched.target_url,
+                    sched.target_method,
+                    sched.body_json.as_ref().map(|v| v.to_string()),
+                    sched.headers_json.as_ref().map(|v| v.to_string()),
+                    sched.command.as_ref().map(|v| serde_json::to_string(v).unwrap_or_default()),
+                    sched.cwd,
+                    sched.env_keys.as_ref().map(|v| serde_json::to_string(v).unwrap_or_default()),
+                    sched.timeout_secs,
+                    sched.enabled,
+                    sched.next_run_at,
+                    now,
+                    sched.id,
+                ],
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(n > 0)
+    }
+
     /// Set `next_run_at` without touching run history — used after creating a
     /// schedule or when re-enabling one whose stored `next_run_at` is stale.
     pub fn set_schedule_next_run(&self, id: &str, next_run_at: Option<&str>) -> Result<()> {
@@ -2952,6 +2999,96 @@ impl SqliteStore {
             ],
         ).map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(())
+    }
+
+    /// Transactional fire write: UPDATE schedules cache + INSERT
+    /// scheduler_runs in a single SQLite transaction. This is the
+    /// path the runner SHOULD use post-PR-2; a daemon crash mid-fire
+    /// will leave the row UPDATE and the history INSERT both rolled
+    /// back rather than leaving an incremented `failure_count` with
+    /// no run record.
+    ///
+    /// Inbox emit on streak boundary lands as a third operation in
+    /// the same transaction in M3 (see § 5.3 of the spec); this
+    /// helper signature accepts the run row + the cache update only,
+    /// so the M3 caller pattern is `record_schedule_run_v2(...)?;
+    /// maybe_emit_inbox(...)?` against a single-tx wrapper.
+    pub fn record_schedule_run_v2(
+        &self,
+        schedule_id: &str,
+        run: &ScheduleRun,
+        update: &ScheduleRunUpdate,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        let failure_inc: i64 = if update.success { 0 } else { 1 };
+        let tx = conn
+            .transaction()
+            .map_err(|e| GctlError::Storage(format!("begin tx: {e}")))?;
+        tx.execute(
+            "UPDATE schedules
+             SET last_run_at = ?1,
+                 next_run_at = ?2,
+                 last_status = ?3,
+                 last_response = ?4,
+                 last_error = ?5,
+                 run_count = run_count + 1,
+                 failure_count = failure_count + ?6,
+                 updated_at = ?7
+             WHERE id = ?8",
+            params![
+                update.last_run_at,
+                update.next_run_at,
+                update.last_status,
+                update.last_response,
+                update.last_error,
+                failure_inc,
+                now,
+                schedule_id,
+            ],
+        )
+        .map_err(|e| GctlError::Storage(format!("update schedules: {e}")))?;
+        tx.execute(
+            "INSERT INTO scheduler_runs (id, schedule_id, started_at, finished_at, status, fire_kind, exit_code, http_status, response_preview, error_preview, duration_ms, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                run.id,
+                run.schedule_id,
+                run.started_at,
+                run.finished_at,
+                run.status,
+                run.fire_kind,
+                run.exit_code,
+                run.http_status,
+                run.response_preview,
+                run.error_preview,
+                run.duration_ms,
+                run.created_at,
+            ],
+        )
+        .map_err(|e| GctlError::Storage(format!("insert scheduler_runs: {e}")))?;
+        tx.commit()
+            .map_err(|e| GctlError::Storage(format!("commit tx: {e}")))?;
+        Ok(())
+    }
+
+    /// Reaper: mark every `scheduler_runs` row with `finished_at IS NULL`
+    /// as `interrupted`, stamping `finished_at = now`. Called on daemon
+    /// startup so a manual `run-now` interrupted by a crash is reapable
+    /// instead of dangling forever.
+    ///
+    /// Returns the number of rows touched.
+    pub fn reap_interrupted_schedule_runs(&self, now_rfc3339: &str) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn
+            .execute(
+                "UPDATE scheduler_runs
+                 SET status = 'interrupted', finished_at = ?1
+                 WHERE finished_at IS NULL",
+                [now_rfc3339],
+            )
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        Ok(n)
     }
 
     /// History for a single schedule, latest first. Filters compose with AND.
@@ -3029,6 +3166,61 @@ impl SqliteStore {
             .map_err(|e| GctlError::Storage(e.to_string()))?;
         Ok(n)
     }
+
+    /// Aggregate counts powering `GET /api/schedules/summary`. Computed
+    /// kernel-side per spec § 5.6 — no client-side rollup. The CLI
+    /// consumes the same shape via `gctrl scheduler list --summary`.
+    ///
+    /// `runs_last_24h` is sourced from `scheduler_runs.status`. The
+    /// `started_at >= ?1` bound makes the query touch only the prefix
+    /// of the `idx_scheduler_runs_status_started` index.
+    pub fn schedules_summary(&self, since_24h: &str) -> Result<SchedulesSummary> {
+        // Fetch every row, compute health inline. Routine count is
+        // expected to stay in dozens; full table scan beats a multi-CTE
+        // SQL view at this scale and stays in pure Rust.
+        let rows = self.list_schedules(&ScheduleFilter::default())?;
+        let total = rows.len() as i64;
+        let mut counts = SchedulesHealthCounts::default();
+        for s in &rows {
+            // `list_schedules` already populates `health`; fall back to
+            // `compute_schedule_health` defensively in case a code path
+            // bypasses the populating mapper.
+            let h = s
+                .health
+                .unwrap_or_else(|| gctrl_core::compute_schedule_health(s));
+            match h {
+                ScheduleHealth::Green => counts.green += 1,
+                ScheduleHealth::Amber => counts.amber += 1,
+                ScheduleHealth::Red => counts.red += 1,
+                ScheduleHealth::Pending => counts.pending += 1,
+                ScheduleHealth::Paused => counts.paused += 1,
+            }
+        }
+
+        let conn = self.conn.lock().unwrap();
+        let success: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM scheduler_runs
+                 WHERE started_at >= ?1 AND status = 'success'",
+                [since_24h],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(format!("count success runs: {e}")))?;
+        let failure: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM scheduler_runs
+                 WHERE started_at >= ?1 AND status IN ('failure','timed_out','refused','interrupted')",
+                [since_24h],
+                |row| row.get(0),
+            )
+            .map_err(|e| GctlError::Storage(format!("count failure runs: {e}")))?;
+
+        Ok(SchedulesSummary {
+            total,
+            by_health: counts,
+            runs_last_24h: SchedulesRunsCounts { success, failure },
+        })
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -3069,7 +3261,7 @@ fn row_to_schedule(row: &rusqlite::Row<'_>) -> rusqlite::Result<Schedule> {
     let headers_json_str: Option<String> = row.get(7)?;
     let command_json_str: Option<String> = row.get(8)?;
     let env_keys_json_str: Option<String> = row.get(10)?;
-    Ok(Schedule {
+    let mut s = Schedule {
         id: row.get(0)?,
         name: row.get(1)?,
         cron: row.get(2)?,
@@ -3092,7 +3284,14 @@ fn row_to_schedule(row: &rusqlite::Row<'_>) -> rusqlite::Result<Schedule> {
         failure_count: row.get(19)?,
         created_at: row.get(20)?,
         updated_at: row.get(21)?,
-    })
+        health: None,
+    };
+    // Storage is the population point for the derived `health` column —
+    // every fetch through this mapper carries it. The GET / list HTTP
+    // handlers then never need to recompute, and the SPA / CLI parity
+    // is structural, not by convention.
+    s.health = Some(gctrl_core::compute_schedule_health(&s));
+    Ok(s)
 }
 
 fn row_to_schedule_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScheduleRun> {

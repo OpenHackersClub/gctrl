@@ -90,6 +90,7 @@ pub fn add(
         failure_count: 0,
         created_at: now.clone(),
         updated_at: now,
+        health: None,
     };
     store.create_schedule(&sched)?;
     println!("created schedule '{}' (id={})", sched.name, sched.id);

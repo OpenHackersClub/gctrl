@@ -17,6 +17,9 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true }
 cron = "0.15"
+regex = "1"
+once_cell = "1"
+urlencoding = "2"
 
 [dev-dependencies]
 tower = { workspace = true }

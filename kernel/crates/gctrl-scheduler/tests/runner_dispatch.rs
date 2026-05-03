@@ -41,6 +41,7 @@ fn make_due_schedule(target_url: &str) -> Schedule {
         failure_count: 0,
         created_at: now.to_rfc3339(),
         updated_at: now.to_rfc3339(),
+        health: None,
     }
 }
 
