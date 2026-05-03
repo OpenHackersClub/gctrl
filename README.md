@@ -21,6 +21,17 @@ cargo run -- status          # health check
 cargo run -- sessions        # list agent sessions
 ```
 
+To keep Rust build artifacts outside the checkout, set a local shared target
+directory before running Cargo:
+
+```sh
+export CARGO_TARGET_DIR="$HOME/Library/Caches/gctrl/cargo-target"
+```
+
+Do not commit this as repo config; the path is machine-specific. The desktop
+kernel build script honors `CARGO_TARGET_DIR` when staging its universal2
+release binary.
+
 ## Architecture
 
 ```mermaid

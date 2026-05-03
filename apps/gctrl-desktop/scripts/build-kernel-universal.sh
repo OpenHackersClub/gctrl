@@ -22,6 +22,7 @@ PACKAGE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 WORKSPACE_ROOT="$(cd "${PACKAGE_ROOT}/../.." && pwd)"
 
 OUT_DIR="${PACKAGE_ROOT}/resources/kernel"
+CARGO_OUT_DIR="${CARGO_TARGET_DIR:-target}"
 # Source binary defined in `kernel/crates/gctrl-cli/Cargo.toml`. The kernel
 # daemon binary is `gctrld` (with the `d` suffix); we bundle it under a
 # friendlier `gctrl-kernel` name so the desktop's path resolver doesn't have
@@ -30,6 +31,7 @@ BIN_NAME="gctrld"
 DEST_NAME="gctrl-kernel"
 
 echo "[build-kernel] workspace: ${WORKSPACE_ROOT}"
+echo "[build-kernel] cargo target dir: ${CARGO_OUT_DIR}"
 
 # Sanity-check toolchain so failures surface at the top of the log instead
 # of mid-cargo.
@@ -55,8 +57,8 @@ cargo build \
 echo "[build-kernel] fusing into universal2 with lipo..."
 mkdir -p "${OUT_DIR}"
 lipo -create -output "${OUT_DIR}/${DEST_NAME}" \
-  "target/aarch64-apple-darwin/release/${BIN_NAME}" \
-  "target/x86_64-apple-darwin/release/${BIN_NAME}"
+  "${CARGO_OUT_DIR}/aarch64-apple-darwin/release/${BIN_NAME}" \
+  "${CARGO_OUT_DIR}/x86_64-apple-darwin/release/${BIN_NAME}"
 
 echo "[build-kernel] staged ${OUT_DIR}/${DEST_NAME}"
 file "${OUT_DIR}/${DEST_NAME}"
