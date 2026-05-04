@@ -54,7 +54,21 @@ pub async fn watch_all_vault_mounts(store: Arc<SqliteStore>) {
 /// of the root is treated as a project key (same semantics as the legacy
 /// board-dir watcher). Failures log and exit this task only — sibling
 /// watchers keep running.
+///
+/// Only `Workspace`- and `External`-kind mounts run the BoardIssue importer.
+/// `App`-kind mounts (registered by `gctrl app install`) belong to the owning
+/// app; the kernel does not auto-import their markdown as board issues —
+/// the app reads them directly from disk via its own filesystem code.
 pub async fn watch_vault_mount(store: Arc<SqliteStore>, mount: VaultMount) {
+    if matches!(mount.kind, gctrl_core::VaultMountKind::App) {
+        tracing::info!(
+            mount = %mount.name,
+            kind = "app",
+            "skipping kernel-side import for app-owned vault mount; the owning app reads directly"
+        );
+        return;
+    }
+
     let root_input = PathBuf::from(&mount.root_path);
     if !root_input.is_dir() {
         tracing::warn!(

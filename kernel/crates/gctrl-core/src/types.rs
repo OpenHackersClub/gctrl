@@ -122,6 +122,21 @@ pub struct Session {
     /// analytics rollups.
     #[serde(default)]
     pub project_id: Option<String>,
+    /// Free-form session kind — apps namespace their own values
+    /// (e.g. `uber.sinkin`, `board.review`). Default `llm` covers the
+    /// pre-existing OTel-ingested LLM session population. The kernel
+    /// never interprets `kind` beyond filtering and analytics axes.
+    #[serde(default = "default_session_kind")]
+    pub kind: String,
+    /// Opaque per-app metadata. JSON stored as text in DuckDB; the
+    /// kernel does not interpret the contents. Apps namespace their
+    /// own keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+pub fn default_session_kind() -> String {
+    "llm".to_string()
 }
 
 // --- OrchTask (Orchestrator claim record) ---
@@ -829,74 +844,6 @@ pub struct VaultMount {
     pub updated_at: DateTime<Utc>,
 }
 
-/// Index row for an Uebermensch brief. Vault file is the source of truth;
-/// this row carries the metadata needed to list/filter without re-reading
-/// every markdown file. `(date, kind)` is the natural unique key.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UberBrief {
-    pub id: String,
-    pub date: String,
-    pub kind: String,
-    pub vault_path: String,
-    pub content_hash: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub profile_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub generator: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prompt_hash: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cost_usd: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub item_count: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cited_claims: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub total_claims: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub failed_at: Option<DateTime<Utc>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub failed_reason: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-/// One row per SinkIn run. SinkIn introspects the wiki and files
-/// Question + Connection markdown pages; this row tracks the run itself
-/// (cost, scope, counts). Filed pages live in the vault.
-/// Spec: /specs/sinkin.md
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UberSinkinSession {
-    pub id: String,
-    pub started_at: DateTime<Utc>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub completed_at: Option<DateTime<Utc>>,
-    /// `running` | `completed` | `failed` | `aborted`
-    pub status: String,
-    /// `scheduled` | `interactive` | `manual`
-    pub mode: String,
-    /// e.g. `topic` or `thesis`
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub scope_kind: Option<String>,
-    /// The slug being scoped to.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub scope_value: Option<String>,
-    pub pages_scanned: i64,
-    pub gaps_found: i64,
-    pub gaps_answered: i64,
-    pub connections_found: i64,
-    pub cost_usd: f64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prompt_hash: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub failed_reason: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
 
 #[cfg(test)]
 mod tests {

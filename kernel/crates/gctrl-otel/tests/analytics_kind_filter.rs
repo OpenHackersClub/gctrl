@@ -45,6 +45,8 @@ fn fixture_store() -> Arc<DuckDbStore> {
                 total_output_tokens: 50,
                 created_by: prov,
                 project_id: None,
+                kind: gctrl_core::default_session_kind(),
+                metadata: None,
             })
             .unwrap();
 

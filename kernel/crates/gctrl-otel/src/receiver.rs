@@ -219,7 +219,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/logs", post(ingest_logs))
         .route("/v1/metrics", post(ingest_metrics))
         // Query endpoints
-        .route("/api/sessions", get(list_sessions))
+        .route("/api/sessions", get(list_sessions).post(upsert_session))
         .route("/api/sessions/{session_id}", get(get_session))
         .route("/api/sessions/{session_id}/spans", get(get_spans))
         .route("/api/analytics", get(get_analytics))
@@ -340,23 +340,6 @@ fn build_router(state: Arc<AppState>) -> Router {
         // implementation/kernel/sync-vault.md.
         .route("/api/sync/vault/push", post(vault_sync_push))
         .route("/api/sync/vault/status", get(vault_sync_status))
-        // Uebermensch briefs index — `(date, kind)` keyed; vault file is the
-        // source of truth, this is the queryable index for listing/filtering.
-        .route(
-            "/api/uber/briefs",
-            get(uber_briefs_list).post(uber_briefs_upsert),
-        )
-        .route("/api/uber/briefs/{date}", get(uber_briefs_get_by_date))
-        // Uebermensch SinkIn sessions — wiki-introspection runs.
-        // Spec: /specs/sinkin.md
-        .route(
-            "/api/uber/sinkin/sessions",
-            get(uber_sinkin_sessions_list).post(uber_sinkin_sessions_upsert),
-        )
-        .route(
-            "/api/uber/sinkin/sessions/{id}",
-            get(uber_sinkin_sessions_get),
-        )
         // Search driver (Brave Search API)
         .route("/api/search/web", post(search_web))
         .route("/api/search/news", post(search_news))
@@ -509,6 +492,78 @@ async fn list_sessions(
         provenances.as_deref(),
     ) {
         Ok(sessions) => Json(serde_json::to_value(&sessions).unwrap()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// `POST /api/sessions` — upsert a session row from an app or tool.
+///
+/// Apps that own their own session-shaped run records (e.g. uebermensch's
+/// SinkIn passes) POST here with a free-form `kind` (e.g. `uber.sinkin`)
+/// and put their domain-specific fields under `metadata`. The kernel never
+/// interprets `kind` or `metadata` — it stores them as opaque values for
+/// later retrieval.
+///
+/// `workspace_id`, `device_id`, `agent_name` default when omitted so the
+/// minimal app payload (id, kind, status, started_at, completed_at,
+/// cost_usd, metadata) is enough.
+#[derive(Deserialize)]
+struct SessionUpsertBody {
+    id: String,
+    #[serde(default = "gctrl_core::default_session_kind")]
+    kind: String,
+    #[serde(default)]
+    workspace_id: Option<String>,
+    #[serde(default)]
+    device_id: Option<String>,
+    #[serde(default)]
+    agent_name: Option<String>,
+    started_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default)]
+    completed_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    cost_usd: Option<f64>,
+    #[serde(default)]
+    project_id: Option<String>,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
+}
+
+async fn upsert_session(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<SessionUpsertBody>,
+) -> impl IntoResponse {
+    let status = body
+        .status
+        .as_deref()
+        .and_then(gctrl_core::SessionStatus::from_str)
+        .unwrap_or(gctrl_core::SessionStatus::Active);
+
+    let session = gctrl_core::Session {
+        id: gctrl_core::SessionId(body.id),
+        workspace_id: gctrl_core::WorkspaceId(
+            body.workspace_id.unwrap_or_else(|| "default".into()),
+        ),
+        device_id: gctrl_core::DeviceId(body.device_id.unwrap_or_else(|| "local".into())),
+        agent_name: body.agent_name.unwrap_or_else(|| body.kind.clone()),
+        started_at: body.started_at,
+        ended_at: body.completed_at,
+        status,
+        total_cost_usd: body.cost_usd.unwrap_or(0.0),
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        // Sessions written via this route are app-driven, distinct from
+        // OTLP-ingested or scheduler-spawned rows.
+        created_by: gctrl_core::CreatedBy::Api,
+        project_id: body.project_id,
+        kind: body.kind,
+        metadata: body.metadata,
+    };
+
+    match state.store.insert_session(&session) {
+        Ok(()) => (StatusCode::CREATED, Json(session)).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -1130,6 +1185,8 @@ async fn ingest_traces(
                     // in via a later UPDATE if the producer attaches a
                     // project hint, or leave NULL.
                     project_id: None,
+                    kind: gctrl_core::default_session_kind(),
+                    metadata: None,
                 };
                 if state.store.insert_session(&session).is_ok() {
                     started_emit.push(session);
@@ -5320,225 +5377,6 @@ async fn app_capabilities_list() -> impl IntoResponse {
     Json(view).into_response()
 }
 
-// =============================================================================
-// Uebermensch briefs index — `(date, kind)` keyed app-namespaced table.
-// Vault markdown is the source of truth; this is the queryable metadata index.
-// =============================================================================
-
-#[derive(Deserialize)]
-struct UberBriefUpsertBody {
-    date: String,
-    #[serde(default)]
-    kind: Option<String>,
-    vault_path: String,
-    content_hash: String,
-    #[serde(default)]
-    profile_name: Option<String>,
-    #[serde(default)]
-    generator: Option<String>,
-    #[serde(default)]
-    model: Option<String>,
-    #[serde(default)]
-    prompt_hash: Option<String>,
-    #[serde(default)]
-    cost_usd: Option<f64>,
-    #[serde(default)]
-    item_count: Option<i64>,
-    #[serde(default)]
-    cited_claims: Option<i64>,
-    #[serde(default)]
-    total_claims: Option<i64>,
-    #[serde(default)]
-    failed_reason: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct UberBriefListQuery {
-    #[serde(default)]
-    kind: Option<String>,
-    #[serde(default)]
-    limit: Option<i64>,
-}
-
-#[derive(Deserialize)]
-struct UberBriefByDateQuery {
-    #[serde(default)]
-    kind: Option<String>,
-}
-
-async fn uber_briefs_upsert(
-    State(state): State<Arc<AppState>>,
-    Json(body): Json<UberBriefUpsertBody>,
-) -> impl IntoResponse {
-    let now = chrono::Utc::now();
-    let kind = body.kind.unwrap_or_else(|| "daily".to_string());
-    // Stable id per (date, kind) so re-running doesn't churn ids.
-    let id = format!("brief-{}-{}", body.date, kind);
-    let failed_at = body.failed_reason.as_ref().map(|_| now);
-    let brief = gctrl_core::UberBrief {
-        id,
-        date: body.date,
-        kind,
-        vault_path: body.vault_path,
-        content_hash: body.content_hash,
-        profile_name: body.profile_name,
-        generator: body.generator,
-        model: body.model,
-        prompt_hash: body.prompt_hash,
-        cost_usd: body.cost_usd,
-        item_count: body.item_count,
-        cited_claims: body.cited_claims,
-        total_claims: body.total_claims,
-        failed_at,
-        failed_reason: body.failed_reason,
-        created_at: now,
-        updated_at: now,
-    };
-    match state.sqlite.upsert_uber_brief(&brief) {
-        Ok(()) => Json(brief).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
-}
-
-async fn uber_briefs_list(
-    State(state): State<Arc<AppState>>,
-    Query(q): Query<UberBriefListQuery>,
-) -> impl IntoResponse {
-    let limit = q.limit.unwrap_or(50).clamp(1, 500);
-    match state.sqlite.list_uber_briefs(q.kind.as_deref(), limit) {
-        Ok(briefs) => Json(briefs).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
-}
-
-async fn uber_briefs_get_by_date(
-    State(state): State<Arc<AppState>>,
-    Path(date): Path<String>,
-    Query(q): Query<UberBriefByDateQuery>,
-) -> impl IntoResponse {
-    let kind = q.kind.unwrap_or_else(|| "daily".to_string());
-    match state.sqlite.get_uber_brief(&date, &kind) {
-        Ok(Some(brief)) => Json(brief).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, format!("no brief for {date}/{kind}")).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
-}
-
-// =============================================================================
-// Uebermensch SinkIn sessions — wiki-introspection runs.
-// `id` is supplied by the caller (the CLI/service generates it at run start)
-// so subsequent updates (counts, completion status) replace by id.
-// Spec: /specs/sinkin.md
-// =============================================================================
-
-#[derive(Deserialize)]
-struct UberSinkinUpsertBody {
-    id: String,
-    /// `running` | `completed` | `failed` | `aborted`. Defaults to `running`.
-    #[serde(default)]
-    status: Option<String>,
-    /// `scheduled` | `interactive` | `manual`. Defaults to `manual`.
-    #[serde(default)]
-    mode: Option<String>,
-    #[serde(default)]
-    scope_kind: Option<String>,
-    #[serde(default)]
-    scope_value: Option<String>,
-    #[serde(default)]
-    pages_scanned: Option<i64>,
-    #[serde(default)]
-    gaps_found: Option<i64>,
-    #[serde(default)]
-    gaps_answered: Option<i64>,
-    #[serde(default)]
-    connections_found: Option<i64>,
-    #[serde(default)]
-    cost_usd: Option<f64>,
-    #[serde(default)]
-    model: Option<String>,
-    #[serde(default)]
-    prompt_hash: Option<String>,
-    #[serde(default)]
-    failed_reason: Option<String>,
-    /// If supplied, marks the run as completed at this time.
-    #[serde(default)]
-    completed_at: Option<chrono::DateTime<chrono::Utc>>,
-}
-
-#[derive(Deserialize)]
-struct UberSinkinListQuery {
-    #[serde(default)]
-    status: Option<String>,
-    #[serde(default)]
-    limit: Option<i64>,
-}
-
-async fn uber_sinkin_sessions_upsert(
-    State(state): State<Arc<AppState>>,
-    Json(body): Json<UberSinkinUpsertBody>,
-) -> impl IntoResponse {
-    let now = chrono::Utc::now();
-    // If the row already exists, preserve started_at; otherwise stamp now.
-    let started_at = state
-        .sqlite
-        .get_uber_sinkin_session(&body.id)
-        .ok()
-        .flatten()
-        .map(|prev| prev.started_at)
-        .unwrap_or(now);
-    let created_at = state
-        .sqlite
-        .get_uber_sinkin_session(&body.id)
-        .ok()
-        .flatten()
-        .map(|prev| prev.created_at)
-        .unwrap_or(now);
-    let sess = gctrl_core::UberSinkinSession {
-        id: body.id,
-        started_at,
-        completed_at: body.completed_at,
-        status: body.status.unwrap_or_else(|| "running".to_string()),
-        mode: body.mode.unwrap_or_else(|| "manual".to_string()),
-        scope_kind: body.scope_kind,
-        scope_value: body.scope_value,
-        pages_scanned: body.pages_scanned.unwrap_or(0),
-        gaps_found: body.gaps_found.unwrap_or(0),
-        gaps_answered: body.gaps_answered.unwrap_or(0),
-        connections_found: body.connections_found.unwrap_or(0),
-        cost_usd: body.cost_usd.unwrap_or(0.0),
-        model: body.model,
-        prompt_hash: body.prompt_hash,
-        failed_reason: body.failed_reason,
-        created_at,
-        updated_at: now,
-    };
-    match state.sqlite.upsert_uber_sinkin_session(&sess) {
-        Ok(()) => Json(sess).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
-}
-
-async fn uber_sinkin_sessions_list(
-    State(state): State<Arc<AppState>>,
-    Query(q): Query<UberSinkinListQuery>,
-) -> impl IntoResponse {
-    let limit = q.limit.unwrap_or(50).clamp(1, 500);
-    match state.sqlite.list_uber_sinkin_sessions(q.status.as_deref(), limit) {
-        Ok(rows) => Json(rows).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
-}
-
-async fn uber_sinkin_sessions_get(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
-    match state.sqlite.get_uber_sinkin_session(&id) {
-        Ok(Some(sess)) => Json(sess).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, format!("no sinkin session {id}")).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -5977,6 +5815,8 @@ mod tests {
                 total_output_tokens: 0,
                 created_by: gctrl_core::CreatedBy::Unknown,
                 project_id: None,
+                kind: gctrl_core::default_session_kind(),
+                metadata: None,
             })
             .unwrap();
 
@@ -6563,6 +6403,8 @@ Getting User settings...
             total_output_tokens: 0,
             created_by: prov,
             project_id: None,
+            kind: gctrl_core::default_session_kind(),
+            metadata: None,
         }
     }
 

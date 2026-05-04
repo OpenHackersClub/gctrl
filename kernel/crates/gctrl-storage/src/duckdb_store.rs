@@ -138,9 +138,13 @@ impl DuckDbStore {
 
     pub fn insert_session(&self, session: &Session) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        let metadata_text = session
+            .metadata
+            .as_ref()
+            .map(|v| v.to_string());
         conn.execute(
-            "INSERT OR REPLACE INTO sessions (id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by, project_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO sessions (id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by, project_id, kind, metadata)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 session.id.0,
                 session.workspace_id.0,
@@ -154,6 +158,8 @@ impl DuckDbStore {
                 session.total_output_tokens as i64,
                 session.created_by.as_str(),
                 session.project_id,
+                session.kind,
+                metadata_text,
             ],
         )
         .map_err(|e| GctlError::Storage(e.to_string()))?;
@@ -271,7 +277,7 @@ impl DuckDbStore {
     pub fn get_session(&self, id: &SessionId) -> Result<Option<Session>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by, project_id FROM sessions WHERE id = ?")
+            .prepare("SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by, project_id, kind, metadata FROM sessions WHERE id = ?")
             .map_err(|e| GctlError::Storage(e.to_string()))?;
 
         let mut rows = stmt
@@ -288,7 +294,7 @@ impl DuckDbStore {
     pub fn list_sessions(&self, limit: usize) -> Result<Vec<Session>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by, project_id FROM sessions ORDER BY started_at DESC LIMIT ?")
+            .prepare("SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by, project_id, kind, metadata FROM sessions ORDER BY started_at DESC LIMIT ?")
             .map_err(|e| GctlError::Storage(e.to_string()))?;
 
         let mut rows = stmt
@@ -310,7 +316,7 @@ impl DuckDbStore {
         created_by: Option<&[gctrl_core::CreatedBy]>,
     ) -> Result<Vec<Session>> {
         let conn = self.conn.lock().unwrap();
-        let mut sql = "SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by, project_id FROM sessions WHERE 1=1".to_string();
+        let mut sql = "SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by, project_id, kind, metadata FROM sessions WHERE 1=1".to_string();
         let mut bound_params: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
 
         if let Some(agent_name) = agent {
@@ -2609,6 +2615,13 @@ fn row_to_session(row: &duckdb::Row<'_>) -> Result<Session> {
         row.get(10).map_err(|e| GctlError::Storage(e.to_string()))?;
     let project_id: Option<String> =
         row.get(11).map_err(|e| GctlError::Storage(e.to_string()))?;
+    // `kind` and `metadata` were added later — pre-migration rows are
+    // NULL. Default kind to `llm` so existing OTel-ingested rows keep
+    // their semantics; metadata stays None when absent.
+    let kind_raw: Option<String> =
+        row.get(12).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let metadata_raw: Option<String> =
+        row.get(13).map_err(|e| GctlError::Storage(e.to_string()))?;
 
     Ok(Session {
         id: gctrl_core::SessionId(id),
@@ -2636,6 +2649,10 @@ fn row_to_session(row: &duckdb::Row<'_>) -> Result<Session> {
             .and_then(gctrl_core::CreatedBy::from_str)
             .unwrap_or(gctrl_core::CreatedBy::Unknown),
         project_id,
+        kind: kind_raw.unwrap_or_else(gctrl_core::default_session_kind),
+        metadata: metadata_raw
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok()),
     })
 }
 
@@ -2867,6 +2884,8 @@ mod tests {
             total_output_tokens: 0,
             created_by: CreatedBy::Unknown,
             project_id: None,
+            kind: gctrl_core::default_session_kind(),
+            metadata: None,
         }
     }
 

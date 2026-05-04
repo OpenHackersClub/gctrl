@@ -418,7 +418,7 @@ mod tests {
     fn minimal_manifest() -> &'static str {
         r#"
 [app]
-name = "uebermensch"
+name = "demo-app"
 version = "0.2.0"
 
 [entrypoint]
@@ -428,13 +428,13 @@ runtime = "node"
 "#
     }
 
-    fn full_uebermensch_manifest() -> &'static str {
+    fn full_demo_app_manifest() -> &'static str {
         r#"
 [app]
-name = "uebermensch"
+name = "demo-app"
 version = "0.2.0"
 description = "Personal Chief of Staff for investors."
-homepage = "https://github.com/OpenHackersClub/uebermensch"
+homepage = "https://github.com/OpenHackersClub/demo-app"
 license = "MIT"
 
 [entrypoint]
@@ -488,7 +488,7 @@ kind = "token"
     #[test]
     fn parses_minimal_manifest() {
         let m = AppManifest::parse(minimal_manifest()).expect("parse");
-        assert_eq!(m.app.name, "uebermensch");
+        assert_eq!(m.app.name, "demo-app");
         assert_eq!(m.app.version, "0.2.0");
         assert_eq!(m.entrypoint.runtime, "node");
         assert!(m.requires.is_empty());
@@ -499,9 +499,9 @@ kind = "token"
     }
 
     #[test]
-    fn parses_full_uebermensch_manifest() {
-        let m = AppManifest::parse(full_uebermensch_manifest()).expect("parse");
-        assert_eq!(m.app.name, "uebermensch");
+    fn parses_full_demo_app_manifest() {
+        let m = AppManifest::parse(full_demo_app_manifest()).expect("parse");
+        assert_eq!(m.app.name, "demo-app");
         // Required: llm, deliverer.telegram, deliverer.discord, vault.write, vault.sync, secrets
         assert_eq!(m.requires.len(), 6);
         assert!(m.requires.contains_key("llm"));
@@ -661,7 +661,7 @@ kind = "token"
 
     #[test]
     fn all_capabilities_iterates_required_then_optional() {
-        let m = AppManifest::parse(full_uebermensch_manifest()).unwrap();
+        let m = AppManifest::parse(full_demo_app_manifest()).unwrap();
         let caps: Vec<(&str, bool)> = m.all_capabilities().collect();
         // First 6 are required (BTreeMap → alphabetical); last 3 are optional.
         let required_count = caps.iter().filter(|(_, req)| *req).count();
@@ -677,9 +677,9 @@ kind = "token"
     fn load_from_disk_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("gctrl-app.toml");
-        std::fs::write(&path, full_uebermensch_manifest()).unwrap();
+        std::fs::write(&path, full_demo_app_manifest()).unwrap();
         let m = AppManifest::load(&path).expect("load");
-        assert_eq!(m.app.name, "uebermensch");
+        assert_eq!(m.app.name, "demo-app");
     }
 
     #[test]
