@@ -314,6 +314,7 @@ impl DuckDbStore {
         agent: Option<&str>,
         status: Option<&str>,
         created_by: Option<&[gctrl_core::CreatedBy]>,
+        session_kind: Option<&str>,
     ) -> Result<Vec<Session>> {
         let conn = self.conn.lock().unwrap();
         let mut sql = "SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by, project_id, kind, metadata FROM sessions WHERE 1=1".to_string();
@@ -338,6 +339,13 @@ impl DuckDbStore {
                     bound_params.push(Box::new(p.as_str().to_string()));
                 }
             }
+        }
+        // `session_kind` filters the free-form column added in M8 Phase B
+        // (e.g. `uber.sinkin`). Distinct from the `?kind=` provenance
+        // shorthand consumed above.
+        if let Some(k) = session_kind {
+            sql.push_str(" AND kind = ?");
+            bound_params.push(Box::new(k.to_string()));
         }
         sql.push_str(" ORDER BY started_at DESC");
         sql.push_str(&format!(" LIMIT {}", limit));
@@ -3421,7 +3429,7 @@ mod tests {
         store.insert_session(&s2).unwrap();
 
         let filtered = store
-            .list_sessions_filtered(20, Some("claude"), None, None)
+            .list_sessions_filtered(20, Some("claude"), None, None, None)
             .unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].agent_name, "claude");
@@ -3435,7 +3443,7 @@ mod tests {
         store.insert_session(&make_session("s2")).unwrap();
 
         let filtered = store
-            .list_sessions_filtered(20, None, Some("completed"), None)
+            .list_sessions_filtered(20, None, Some("completed"), None, None)
             .unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id.0, "s1");
@@ -3473,14 +3481,14 @@ mod tests {
 
         // External-only filter (OtelIngest).
         let ext = store
-            .list_sessions_filtered(20, None, None, Some(&[CreatedBy::OtelIngest]))
+            .list_sessions_filtered(20, None, None, Some(&[CreatedBy::OtelIngest]), None)
             .unwrap();
         assert_eq!(ext.len(), 1);
         assert_eq!(ext[0].id.0, "s-otel");
 
         // Internal filter (Scheduler ∪ Api).
         let int = store
-            .list_sessions_filtered(20, None, None, Some(&[CreatedBy::Scheduler, CreatedBy::Api]))
+            .list_sessions_filtered(20, None, None, Some(&[CreatedBy::Scheduler, CreatedBy::Api]), None)
             .unwrap();
         assert_eq!(int.len(), 2);
         let mut ids: Vec<_> = int.iter().map(|s| s.id.0.as_str()).collect();

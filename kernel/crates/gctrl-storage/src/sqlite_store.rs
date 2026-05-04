@@ -541,6 +541,24 @@ impl SqliteStore {
             conn.execute_batch(stmt)
                 .map_err(|e| GctlError::Storage(format!("migration: {e}")))?;
         }
+        // One-shot cleanup for daemons that booted on a kernel that carried
+        // app-specific schemas before M8 Phase B. `CREATE TABLE IF NOT EXISTS`
+        // is one-way, so simply removing the DDL leaves the tables on disk
+        // forever. These DROP IF EXISTS are idempotent — fresh DBs are a
+        // no-op; upgraded DBs drop the orphan tables + their indexes.
+        let removed: &[&str] = &[
+            "DROP TABLE IF EXISTS uber_briefs",
+            "DROP TABLE IF EXISTS uber_sinkin_sessions",
+            "DROP INDEX IF EXISTS idx_uber_briefs_date",
+            "DROP INDEX IF EXISTS idx_uber_briefs_kind_date",
+            "DROP INDEX IF EXISTS idx_uber_sinkin_started",
+            "DROP INDEX IF EXISTS idx_uber_sinkin_status",
+            "DROP INDEX IF EXISTS idx_uber_sinkin_scope",
+        ];
+        for stmt in removed {
+            conn.execute_batch(stmt)
+                .map_err(|e| GctlError::Storage(format!("migration cleanup: {e}")))?;
+        }
         Ok(())
     }
 

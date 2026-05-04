@@ -442,10 +442,15 @@ struct ListParams {
     /// are silently ignored so an empty filter doesn't 400 on typos —
     /// we'd rather over-return than under-return on filter sites.
     created_by: Option<String>,
-    /// Derived shorthand: `internal` ⇒ {Scheduler, Api},
+    /// Provenance shorthand: `internal` ⇒ {Scheduler, Api},
     /// `external` ⇒ {OtelIngest}. Mutually exclusive with `created_by`;
-    /// `created_by` wins if both are present.
+    /// `created_by` wins if both are present. ANY other value returns
+    /// 400 — silent fallback to "all rows" was a cross-app data-leak
+    /// hazard with the new `kind` column.
     kind: Option<String>,
+    /// Filters by the `sessions.kind` column (free-form, app-namespaced
+    /// — e.g. `uber.sinkin`). Distinct from `kind` (provenance shorthand).
+    session_kind: Option<String>,
 }
 
 fn default_limit() -> usize {
@@ -453,13 +458,17 @@ fn default_limit() -> usize {
 }
 
 /// Parse `?created_by=scheduler,api` and `?kind=internal|external` into
-/// the `CreatedBy` set passed to the storage layer. Returns `None` when
-/// no filter is requested (i.e. "all rows"), `Some([])` when the caller
-/// passed only unrecognised tokens (matches no rows).
+/// the `CreatedBy` set passed to the storage layer. Returns `Ok(None)`
+/// when no filter is requested (i.e. "all rows"), `Ok(Some([]))` when the
+/// caller passed only unrecognised tokens to `created_by` (matches no
+/// rows), `Err(reason)` when `?kind=` is set to anything other than
+/// `internal` / `external` — the caller is misusing the param and we
+/// must not silently fall through to "all rows" because that leaks
+/// cross-app `metadata` blobs.
 fn parse_created_by_filter(
     raw: Option<&str>,
     kind: Option<&str>,
-) -> Option<Vec<gctrl_core::CreatedBy>> {
+) -> Result<Option<Vec<gctrl_core::CreatedBy>>, String> {
     if let Some(s) = raw {
         let parsed: Vec<_> = s
             .split(',')
@@ -467,15 +476,18 @@ fn parse_created_by_filter(
             .filter(|t| !t.is_empty())
             .filter_map(gctrl_core::CreatedBy::from_str)
             .collect();
-        return Some(parsed);
+        return Ok(Some(parsed));
     }
     match kind {
-        Some("internal") => Some(vec![
+        None => Ok(None),
+        Some("internal") => Ok(Some(vec![
             gctrl_core::CreatedBy::Scheduler,
             gctrl_core::CreatedBy::Api,
-        ]),
-        Some("external") => Some(vec![gctrl_core::CreatedBy::OtelIngest]),
-        _ => None,
+        ])),
+        Some("external") => Ok(Some(vec![gctrl_core::CreatedBy::OtelIngest])),
+        Some(other) => Err(format!(
+            "?kind={other} is not a valid provenance shorthand (expected `internal` or `external`); did you mean ?session_kind={other}? for column-based filtering"
+        )),
     }
 }
 
@@ -484,12 +496,16 @@ async fn list_sessions(
     Query(params): Query<ListParams>,
 ) -> impl IntoResponse {
     let provenances =
-        parse_created_by_filter(params.created_by.as_deref(), params.kind.as_deref());
+        match parse_created_by_filter(params.created_by.as_deref(), params.kind.as_deref()) {
+            Ok(p) => p,
+            Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
+        };
     match state.store.list_sessions_filtered(
         params.limit,
         params.agent.as_deref(),
         params.status.as_deref(),
         provenances.as_deref(),
+        params.session_kind.as_deref(),
     ) {
         Ok(sessions) => Json(serde_json::to_value(&sessions).unwrap()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -541,8 +557,39 @@ async fn upsert_session(
         .and_then(gctrl_core::SessionStatus::from_str)
         .unwrap_or(gctrl_core::SessionStatus::Active);
 
+    // Provenance guard + token preservation. `INSERT OR REPLACE` would
+    // otherwise let any local caller clobber an OTLP-ingested or scheduler-
+    // spawned session by id collision (token counts → 0, created_by flipped
+    // to Api, costs lost).
+    //
+    // Rules:
+    //   - existing session with non-Api created_by → 409 Conflict
+    //   - existing API-owned session       → preserve token counts (they
+    //                                         come from spans, not the API)
+    //   - new id                           → straight insert
+    let session_id = gctrl_core::SessionId(body.id.clone());
+    let (preserved_input_tokens, preserved_output_tokens) =
+        match state.store.get_session(&session_id) {
+            Ok(Some(existing)) => {
+                if !matches!(existing.created_by, gctrl_core::CreatedBy::Api) {
+                    return (
+                        StatusCode::CONFLICT,
+                        format!(
+                            "session {} already exists with created_by={}; refuse to overwrite via /api/sessions",
+                            body.id,
+                            existing.created_by.as_str()
+                        ),
+                    )
+                        .into_response();
+                }
+                (existing.total_input_tokens, existing.total_output_tokens)
+            }
+            Ok(None) => (0, 0),
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        };
+
     let session = gctrl_core::Session {
-        id: gctrl_core::SessionId(body.id),
+        id: session_id,
         workspace_id: gctrl_core::WorkspaceId(
             body.workspace_id.unwrap_or_else(|| "default".into()),
         ),
@@ -552,8 +599,8 @@ async fn upsert_session(
         ended_at: body.completed_at,
         status,
         total_cost_usd: body.cost_usd.unwrap_or(0.0),
-        total_input_tokens: 0,
-        total_output_tokens: 0,
+        total_input_tokens: preserved_input_tokens,
+        total_output_tokens: preserved_output_tokens,
         // Sessions written via this route are app-driven, distinct from
         // OTLP-ingested or scheduler-spawned rows.
         created_by: gctrl_core::CreatedBy::Api,
@@ -971,8 +1018,10 @@ async fn get_analytics(
     State(state): State<Arc<AppState>>,
     Query(params): Query<AnalyticsParams>,
 ) -> impl IntoResponse {
-    let provenances =
-        parse_created_by_filter(params.created_by.as_deref(), params.kind.as_deref());
+    let provenances = match parse_created_by_filter(params.created_by.as_deref(), params.kind.as_deref()) {
+        Ok(p) => p,
+        Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
+    };
     match state.store.get_analytics(provenances.as_deref()) {
         Ok(analytics) => Json(serde_json::to_value(&analytics).unwrap()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -983,8 +1032,10 @@ async fn analytics_cost(
     State(state): State<Arc<AppState>>,
     Query(params): Query<AnalyticsParams>,
 ) -> impl IntoResponse {
-    let provenances =
-        parse_created_by_filter(params.created_by.as_deref(), params.kind.as_deref());
+    let provenances = match parse_created_by_filter(params.created_by.as_deref(), params.kind.as_deref()) {
+        Ok(p) => p,
+        Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
+    };
     let prov_slice = provenances.as_deref();
     let cost_by_model = state.store.get_cost_by_model(prov_slice).unwrap_or_default();
     let cost_by_agent = state.store.get_cost_by_agent(prov_slice).unwrap_or_default();
@@ -1011,8 +1062,10 @@ async fn analytics_latency(
     State(state): State<Arc<AppState>>,
     Query(params): Query<AnalyticsParams>,
 ) -> impl IntoResponse {
-    let provenances =
-        parse_created_by_filter(params.created_by.as_deref(), params.kind.as_deref());
+    let provenances = match parse_created_by_filter(params.created_by.as_deref(), params.kind.as_deref()) {
+        Ok(p) => p,
+        Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
+    };
     let latencies = state
         .store
         .get_latency_by_model(provenances.as_deref())
@@ -1026,8 +1079,10 @@ async fn analytics_spans(
     State(state): State<Arc<AppState>>,
     Query(params): Query<AnalyticsParams>,
 ) -> impl IntoResponse {
-    let provenances =
-        parse_created_by_filter(params.created_by.as_deref(), params.kind.as_deref());
+    let provenances = match parse_created_by_filter(params.created_by.as_deref(), params.kind.as_deref()) {
+        Ok(p) => p,
+        Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
+    };
     let dist = state
         .store
         .get_span_type_distribution(provenances.as_deref())
@@ -2757,7 +2812,10 @@ async fn list_contributions(
 ) -> impl IntoResponse {
     let limit_str = params.limit.to_string();
     let prov_filter =
-        parse_created_by_filter(params.created_by.as_deref(), params.kind.as_deref());
+        match parse_created_by_filter(params.created_by.as_deref(), params.kind.as_deref()) {
+            Ok(p) => p,
+            Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
+        };
     let store = state.store.clone();
 
     let since_iso = params
