@@ -1,7 +1,7 @@
 // Read + mutate event suggestions in R2. Mirrors the local CLI's accept/dismiss
-// flow (apps/uebermensch/src/adapters/FileSystemCalendar.ts). The local daemon's
-// bidirectional R2 sync reflects these changes back into $UBER_VAULT_DIR within
-// one pull cycle.
+// flow (OpenHackersClub/uebermensch:src/adapters/FileSystemCalendar.ts). The
+// local daemon's bidirectional R2 sync reflects these changes back into
+// $UBER_VAULT_DIR within one pull cycle.
 
 import matter from "gray-matter"
 import { listUnder, SAFE_KEY_RE } from "./vault.ts"

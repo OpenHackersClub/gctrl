@@ -18,7 +18,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- Optional board project attribution. NULL for legacy rows and for
     -- sessions with no project context. Powers `cost by project` and
     -- `cost by (agent × project)` analytics queries.
-    project_id      VARCHAR
+    project_id      VARCHAR,
+    -- Free-form session kind — apps namespace their own values
+    -- (e.g. 'uber.sinkin', 'board.review'). Default 'llm' covers the
+    -- pre-existing OTel-ingested LLM session population.
+    kind            VARCHAR NOT NULL DEFAULT 'llm',
+    -- Opaque per-app metadata blob. JSON text stored as VARCHAR — the
+    -- kernel never interprets it; readers parse on the way out.
+    metadata        VARCHAR
 )
 "#;
 
@@ -38,6 +45,20 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS created_by VARCHAR
 /// not every session is project-attributable (e.g. ad-hoc daemon work).
 pub const ADD_SESSIONS_PROJECT_ID: &str = r#"
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS project_id VARCHAR
+"#;
+
+/// Idempotent migration for existing DBs that predate `kind`.
+/// Same DuckDB constraint as above — ALTER is constraint-less; legacy
+/// rows land as NULL and `row_to_session` defaults to `'llm'`.
+pub const ADD_SESSIONS_KIND: &str = r#"
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS kind VARCHAR
+"#;
+
+/// Idempotent migration for existing DBs that predate `metadata`.
+/// Stored as JSON-text; kernel never interprets the contents — apps
+/// namespace their own values per `kind`.
+pub const ADD_SESSIONS_METADATA: &str = r#"
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS metadata VARCHAR
 "#;
 
 pub const CREATE_SPANS_TABLE: &str = r#"
@@ -627,6 +648,8 @@ pub fn all_migrations() -> Vec<&'static str> {
         // after CREATE so a fresh schema is also a no-op.
         ADD_SESSIONS_CREATED_BY,
         ADD_SESSIONS_PROJECT_ID,
+        ADD_SESSIONS_KIND,
+        ADD_SESSIONS_METADATA,
         CREATE_SPANS_TABLE,
         ADD_SPANS_PROJECT_ID,
         CREATE_TRAFFIC_TABLE,

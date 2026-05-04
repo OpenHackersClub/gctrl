@@ -138,9 +138,13 @@ impl DuckDbStore {
 
     pub fn insert_session(&self, session: &Session) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        let metadata_text = session
+            .metadata
+            .as_ref()
+            .map(|v| v.to_string());
         conn.execute(
-            "INSERT OR REPLACE INTO sessions (id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by, project_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO sessions (id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by, project_id, kind, metadata)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 session.id.0,
                 session.workspace_id.0,
@@ -154,6 +158,8 @@ impl DuckDbStore {
                 session.total_output_tokens as i64,
                 session.created_by.as_str(),
                 session.project_id,
+                session.kind,
+                metadata_text,
             ],
         )
         .map_err(|e| GctlError::Storage(e.to_string()))?;
@@ -271,7 +277,7 @@ impl DuckDbStore {
     pub fn get_session(&self, id: &SessionId) -> Result<Option<Session>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by, project_id FROM sessions WHERE id = ?")
+            .prepare("SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by, project_id, kind, metadata FROM sessions WHERE id = ?")
             .map_err(|e| GctlError::Storage(e.to_string()))?;
 
         let mut rows = stmt
@@ -288,7 +294,7 @@ impl DuckDbStore {
     pub fn list_sessions(&self, limit: usize) -> Result<Vec<Session>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by, project_id FROM sessions ORDER BY started_at DESC LIMIT ?")
+            .prepare("SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by, project_id, kind, metadata FROM sessions ORDER BY started_at DESC LIMIT ?")
             .map_err(|e| GctlError::Storage(e.to_string()))?;
 
         let mut rows = stmt
@@ -308,9 +314,10 @@ impl DuckDbStore {
         agent: Option<&str>,
         status: Option<&str>,
         created_by: Option<&[gctrl_core::CreatedBy]>,
+        session_kind: Option<&str>,
     ) -> Result<Vec<Session>> {
         let conn = self.conn.lock().unwrap();
-        let mut sql = "SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by, project_id FROM sessions WHERE 1=1".to_string();
+        let mut sql = "SELECT id, workspace_id, device_id, agent_name, started_at, ended_at, status, total_cost_usd, total_input_tokens, total_output_tokens, created_by, project_id, kind, metadata FROM sessions WHERE 1=1".to_string();
         let mut bound_params: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
 
         if let Some(agent_name) = agent {
@@ -332,6 +339,13 @@ impl DuckDbStore {
                     bound_params.push(Box::new(p.as_str().to_string()));
                 }
             }
+        }
+        // `session_kind` filters the free-form column added in M8 Phase B
+        // (e.g. `uber.sinkin`). Distinct from the `?kind=` provenance
+        // shorthand consumed above.
+        if let Some(k) = session_kind {
+            sql.push_str(" AND kind = ?");
+            bound_params.push(Box::new(k.to_string()));
         }
         sql.push_str(" ORDER BY started_at DESC");
         sql.push_str(&format!(" LIMIT {}", limit));
@@ -2609,6 +2623,13 @@ fn row_to_session(row: &duckdb::Row<'_>) -> Result<Session> {
         row.get(10).map_err(|e| GctlError::Storage(e.to_string()))?;
     let project_id: Option<String> =
         row.get(11).map_err(|e| GctlError::Storage(e.to_string()))?;
+    // `kind` and `metadata` were added later — pre-migration rows are
+    // NULL. Default kind to `llm` so existing OTel-ingested rows keep
+    // their semantics; metadata stays None when absent.
+    let kind_raw: Option<String> =
+        row.get(12).map_err(|e| GctlError::Storage(e.to_string()))?;
+    let metadata_raw: Option<String> =
+        row.get(13).map_err(|e| GctlError::Storage(e.to_string()))?;
 
     Ok(Session {
         id: gctrl_core::SessionId(id),
@@ -2636,6 +2657,10 @@ fn row_to_session(row: &duckdb::Row<'_>) -> Result<Session> {
             .and_then(gctrl_core::CreatedBy::from_str)
             .unwrap_or(gctrl_core::CreatedBy::Unknown),
         project_id,
+        kind: kind_raw.unwrap_or_else(gctrl_core::default_session_kind),
+        metadata: metadata_raw
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok()),
     })
 }
 
@@ -2867,6 +2892,8 @@ mod tests {
             total_output_tokens: 0,
             created_by: CreatedBy::Unknown,
             project_id: None,
+            kind: gctrl_core::default_session_kind(),
+            metadata: None,
         }
     }
 
@@ -3402,7 +3429,7 @@ mod tests {
         store.insert_session(&s2).unwrap();
 
         let filtered = store
-            .list_sessions_filtered(20, Some("claude"), None, None)
+            .list_sessions_filtered(20, Some("claude"), None, None, None)
             .unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].agent_name, "claude");
@@ -3416,7 +3443,7 @@ mod tests {
         store.insert_session(&make_session("s2")).unwrap();
 
         let filtered = store
-            .list_sessions_filtered(20, None, Some("completed"), None)
+            .list_sessions_filtered(20, None, Some("completed"), None, None)
             .unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id.0, "s1");
@@ -3454,14 +3481,14 @@ mod tests {
 
         // External-only filter (OtelIngest).
         let ext = store
-            .list_sessions_filtered(20, None, None, Some(&[CreatedBy::OtelIngest]))
+            .list_sessions_filtered(20, None, None, Some(&[CreatedBy::OtelIngest]), None)
             .unwrap();
         assert_eq!(ext.len(), 1);
         assert_eq!(ext[0].id.0, "s-otel");
 
         // Internal filter (Scheduler ∪ Api).
         let int = store
-            .list_sessions_filtered(20, None, None, Some(&[CreatedBy::Scheduler, CreatedBy::Api]))
+            .list_sessions_filtered(20, None, None, Some(&[CreatedBy::Scheduler, CreatedBy::Api]), None)
             .unwrap();
         assert_eq!(int.len(), 2);
         let mut ids: Vec<_> = int.iter().map(|s| s.id.0.as_str()).collect();

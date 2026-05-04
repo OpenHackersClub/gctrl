@@ -33,6 +33,8 @@ fn store_with_provenance(rows: &[(&str, CreatedBy)]) -> Arc<DuckDbStore> {
                 total_output_tokens: 0,
                 created_by: *prov,
                 project_id: None,
+                kind: gctrl_core::default_session_kind(),
+                metadata: None,
             })
             .unwrap();
     }
