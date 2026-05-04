@@ -282,7 +282,11 @@ mod tests {
             id: id.into(),
             name: name.into(),
             root_path: root.to_string_lossy().into_owned(),
-            kind: VaultMountKind::App,
+            // The test asserts BoardIssue auto-import — that's the
+            // Workspace/External flow. App-kind mounts (registered by
+            // `gctrl app install`) deliberately skip the kernel-side
+            // import; the owning app reads its own subtree.
+            kind: VaultMountKind::Workspace,
             git_url: None,
             app_id: None,
             last_commit_sha: None,
@@ -370,5 +374,42 @@ mod tests {
         let bbb_issues = store.list_board_issues(&bbb_filter).unwrap();
         assert!(!aaa_issues.is_empty(), "AAA issues should be imported");
         assert!(!bbb_issues.is_empty(), "BBB issues should be imported");
+    }
+
+    /// `App`-kind mounts (registered by `gctrl app install`) belong to the
+    /// owning app — the kernel must NOT auto-import their markdown as board
+    /// issues. The owning app reads its own subtree directly.
+    #[tokio::test]
+    async fn watch_skips_app_kind_vault_mounts() {
+        let store = Arc::new(SqliteStore::open(":memory:").unwrap());
+
+        let tmp = TempDir::new().unwrap();
+        let proj_dir = tmp.path().join("UBER");
+        std::fs::create_dir_all(&proj_dir).unwrap();
+
+        let mut mount = make_mount("m-app", "uber-mount", tmp.path());
+        mount.kind = VaultMountKind::App;
+        mount.app_id = Some("uebermensch".into());
+        store.create_vault_mount(&mount).unwrap();
+
+        watch_all_vault_mounts(Arc::clone(&store)).await;
+        sleep(Duration::from_millis(300)).await;
+
+        // Drop a markdown file the legacy importer would have happily slurped.
+        std::fs::write(
+            proj_dir.join("UBER-1.md"),
+            issue_md("UBER", "UBER", 1),
+        )
+        .unwrap();
+        sleep(Duration::from_millis(2000)).await;
+
+        // The kernel must not have auto-created an UBER board project.
+        let projects = store.list_board_projects().unwrap();
+        let keys: std::collections::HashSet<_> =
+            projects.iter().map(|p| p.key.as_str()).collect();
+        assert!(
+            !keys.contains("UBER"),
+            "App-kind mount must skip BoardIssue import; got projects {keys:?}"
+        );
     }
 }
