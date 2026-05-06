@@ -59,3 +59,19 @@ export const resolveKernelBinPath = (ctx: PathContext): string => {
  */
 export const resolveKernelDataDir = (ctx: PathContext): string =>
   path.join(ctx.userDataPath, "kernel")
+
+/**
+ * Resolve the default vault directory the kernel sidecar should watch.
+ *
+ * Layout under this root follows the existing kernel convention — one
+ * subdirectory per project key holding `*.md` files (e.g. `vault/BOARD/BOARD-1.md`,
+ * `vault/INBOX/INBOX-1.md`). The kernel auto-registers a `default`
+ * `gctrl_vault_mounts` row at this path on first boot when the table is
+ * empty so the file watcher starts indexing immediately.
+ *
+ * Always `<userDataPath>/vault/`; operators who want to watch an existing
+ * Obsidian vault elsewhere can override at the kernel level via
+ * `GCTRL_BOARD_DIR` (consumed by the bundled binary directly).
+ */
+export const resolveKernelVaultDir = (ctx: PathContext): string =>
+  path.join(ctx.userDataPath, "vault")

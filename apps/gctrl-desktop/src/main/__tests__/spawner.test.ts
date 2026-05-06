@@ -22,6 +22,17 @@ describe("buildKernelArgs", () => {
     ])
   })
 
+  it("appends --board-dir when vaultDir is configured", () => {
+    const args = buildKernelArgs({ ...baseConfig, vaultDir: "/abs/vault" })
+    const idx = args.indexOf("--board-dir")
+    expect(idx).toBeGreaterThanOrEqual(0)
+    expect(args[idx + 1]).toBe("/abs/vault")
+  })
+
+  it("omits --board-dir when vaultDir is not set", () => {
+    expect(buildKernelArgs(baseConfig)).not.toContain("--board-dir")
+  })
+
   it("always binds 127.0.0.1, never 0.0.0.0", () => {
     const args = buildKernelArgs({ ...baseConfig, port: 5555 })
     const hostIdx = args.indexOf("--host")

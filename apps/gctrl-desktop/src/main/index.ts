@@ -5,12 +5,13 @@
 import { app, BrowserWindow, Menu, ipcMain, shell } from "electron"
 import electronUpdater from "electron-updater"
 const { autoUpdater } = electronUpdater
+import { mkdirSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { KernelSidecar } from "./kernel-sidecar"
 import { buildAppMenu } from "./menu"
-import { resolveKernelBinPath, resolveKernelDataDir } from "./paths"
+import { resolveKernelBinPath, resolveKernelDataDir, resolveKernelVaultDir } from "./paths"
 import { createScheduler } from "./scheduler"
 import { createSpawner } from "./spawner"
 import { startAutoUpdater } from "./updater"
@@ -41,11 +42,25 @@ const createSidecar = (): KernelSidecar | undefined => {
     devKernelPath: process.env.GCTRL_KERNEL_DEV_PATH,
   }
 
+  const dataDir = resolveKernelDataDir(ctx)
+  // `GCTRL_BOARD_DIR` lets operators point the desktop kernel at an existing
+  // Obsidian vault (e.g. `~/workspaces/ohc/vault-gctrl/`) without symlinking.
+  // Falls back to the per-user default under Application Support.
+  const vaultDir = process.env.GCTRL_BOARD_DIR ?? resolveKernelVaultDir(ctx)
+
+  // Ensure both the kernel data dir and the vault root exist before the
+  // sidecar starts — DuckDB's path must resolve, and the kernel's file
+  // watcher canonicalizes the vault root (silent skip if missing).
+  // `recursive: true` is idempotent; safe to run on every launch.
+  mkdirSync(dataDir, { recursive: true })
+  mkdirSync(vaultDir, { recursive: true })
+
   return new KernelSidecar(
     {
       binPath: resolveKernelBinPath(ctx),
       port: KERNEL_PORT,
-      dataDir: resolveKernelDataDir(ctx),
+      dataDir,
+      vaultDir,
     },
     {
       spawner: createSpawner(),

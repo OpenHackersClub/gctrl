@@ -64,6 +64,17 @@ pub async fn run(
     // the same root the operator configured on the CLI; mounts are now the
     // exclusive source for *which* directories get watched.
     let vault_root = board_dir.clone();
+
+    // Bootstrap a `default` mount when the operator passed a vault root and
+    // the mounts table is empty. Without this the desktop sidecar — which has
+    // no UI to register a mount yet — silently idles its watcher and the
+    // board surface stays empty even when `<vault>/BOARD/*.md` exists on
+    // disk. CLI users who already curate mounts via `/api/vault/mounts` are
+    // unaffected (the empty-table guard skips the bootstrap).
+    if let Some(ref root) = vault_root {
+        bootstrap_default_vault_mount(&sqlite, root);
+    }
+
     let watcher_store = Arc::clone(&sqlite);
     tokio::spawn(watch::watch_all_vault_mounts(watcher_store));
 
@@ -205,4 +216,93 @@ pub async fn run(
 
     axum_fut.await?;
     Ok(())
+}
+
+/// Insert a `default` Workspace mount pointing at `root` if and only if
+/// `gctrl_vault_mounts` is empty. Idempotent across daemon restarts: once
+/// the mount exists (or any other mount has been registered) this is a
+/// no-op and the operator's curated mounts win. Failure is non-fatal —
+/// the daemon still serves everything else; the file watcher just stays
+/// idle until a mount is registered manually.
+fn bootstrap_default_vault_mount(sqlite: &SqliteStore, root: &std::path::Path) {
+    let mounts = match sqlite.list_vault_mounts() {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(error = %e, "vault bootstrap: failed to list mounts");
+            return;
+        }
+    };
+    if !mounts.is_empty() {
+        return;
+    }
+    let now = chrono::Utc::now();
+    let mount = gctrl_core::VaultMount {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: "default".into(),
+        root_path: root.to_string_lossy().into_owned(),
+        kind: gctrl_core::VaultMountKind::Workspace,
+        git_url: None,
+        app_id: None,
+        last_commit_sha: None,
+        last_synced_at: None,
+        created_at: now,
+        updated_at: now,
+    };
+    match sqlite.create_vault_mount(&mount) {
+        Ok(()) => tracing::info!(
+            path = %root.display(),
+            "vault bootstrap: registered `default` mount"
+        ),
+        Err(e) => tracing::warn!(
+            path = %root.display(),
+            error = %e,
+            "vault bootstrap: create_vault_mount failed"
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bootstrap_creates_default_mount_when_table_empty() {
+        let sqlite = SqliteStore::open(":memory:").unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        bootstrap_default_vault_mount(&sqlite, tmp.path());
+
+        let mounts = sqlite.list_vault_mounts().unwrap();
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].name, "default");
+        assert_eq!(mounts[0].root_path, tmp.path().to_string_lossy());
+        assert_eq!(mounts[0].kind, gctrl_core::VaultMountKind::Workspace);
+    }
+
+    #[test]
+    fn bootstrap_is_noop_when_any_mount_already_exists() {
+        let sqlite = SqliteStore::open(":memory:").unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let now = chrono::Utc::now();
+        sqlite
+            .create_vault_mount(&gctrl_core::VaultMount {
+                id: "preexisting".into(),
+                name: "curated".into(),
+                root_path: "/elsewhere".into(),
+                kind: gctrl_core::VaultMountKind::App,
+                git_url: None,
+                app_id: None,
+                last_commit_sha: None,
+                last_synced_at: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .unwrap();
+
+        bootstrap_default_vault_mount(&sqlite, tmp.path());
+
+        let mounts = sqlite.list_vault_mounts().unwrap();
+        assert_eq!(mounts.len(), 1, "operator's curated mount must be preserved");
+        assert_eq!(mounts[0].name, "curated");
+    }
 }
