@@ -13,6 +13,7 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "build:kernel": "bash scripts/build-kernel-universal.sh",
+    "build:icon": "bash scripts/build-icon.sh",
     "build:renderer-spa": "rm -rf ../gctrl-board/dist-web && VITE_BASE=./ pnpm --filter gctrl-board build:web && rm -rf out/renderer && cp -r ../gctrl-board/dist-web out/renderer",
     "pack": "pnpm build && pnpm run build:renderer-spa && electron-builder --mac --dir",
     "release:mac": "pnpm build:kernel && pnpm build && pnpm build:renderer-spa && electron-builder --mac",
