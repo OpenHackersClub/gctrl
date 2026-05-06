@@ -10,27 +10,36 @@ const BoardProject = Schema.Struct({
   name: Schema.String,
   key: Schema.String,
   counter: Schema.Number,
-  github_repo: Schema.optional(Schema.String),
+  github_repo: Schema.optional(Schema.NullOr(Schema.String)),
 })
 const BoardProjectList = Schema.Array(BoardProject)
 
-const BoardIssue = Schema.Struct({
+// Kernel serializes `Option<T>` fields as JSON `null` (not omitted), so every
+// nullable field needs `Schema.NullOr` — `Schema.optional` alone rejects null
+// and fails the entire `Schema.Array(BoardIssue)` decode. That regression
+// surfaced as `gctrl board issues list` showing zero issues despite the
+// kernel holding 32+. Match the wire shape: present-with-null OR present-
+// with-value OR (for `created_by_*`, kernel guarantees the value) absent.
+//
+// Exported so tests can decode a real wire payload through the production
+// schema rather than a test-local copy that drifts.
+export const BoardIssue = Schema.Struct({
   id: Schema.String,
   project_id: Schema.String,
   title: Schema.String,
-  description: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.NullOr(Schema.String)),
   status: Schema.String,
   priority: Schema.String,
-  assignee_id: Schema.optional(Schema.String),
-  assignee_name: Schema.optional(Schema.String),
+  assignee_id: Schema.optional(Schema.NullOr(Schema.String)),
+  assignee_name: Schema.optional(Schema.NullOr(Schema.String)),
   labels: Schema.Array(Schema.String),
   created_at: Schema.String,
   updated_at: Schema.String,
-  created_by_id: Schema.optional(Schema.String),
-  created_by_name: Schema.optional(Schema.String),
-  created_by_type: Schema.optional(Schema.String),
-  github_issue_number: Schema.optional(Schema.Number),
-  github_url: Schema.optional(Schema.String),
+  created_by_id: Schema.optional(Schema.NullOr(Schema.String)),
+  created_by_name: Schema.optional(Schema.NullOr(Schema.String)),
+  created_by_type: Schema.optional(Schema.NullOr(Schema.String)),
+  github_issue_number: Schema.optional(Schema.NullOr(Schema.Number)),
+  github_url: Schema.optional(Schema.NullOr(Schema.String)),
 })
 const BoardIssueList = Schema.Array(BoardIssue)
 
