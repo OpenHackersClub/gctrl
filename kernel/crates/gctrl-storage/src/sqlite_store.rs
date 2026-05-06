@@ -19,6 +19,8 @@ use gctrl_core::{
 };
 use rusqlite::{params, Connection};
 
+use crate::schema::is_missing_schema_object;
+
 // ═══════════════════════════════════════════════════════════════
 // Schema (SQLite-compatible DDL)
 // ═══════════════════════════════════════════════════════════════
@@ -538,8 +540,29 @@ impl SqliteStore {
             }
         }
         for stmt in CREATE_INDEXES {
-            conn.execute_batch(stmt)
-                .map_err(|e| GctlError::Storage(format!("migration: {e}")))?;
+            if let Err(e) = conn.execute_batch(stmt) {
+                let msg = e.to_string();
+                // A missing column or table on CREATE INDEX means the schema
+                // moved (e.g. CREATE TABLE was updated but the matching
+                // ALTER backfill wasn't added — the exact bug PR #80 patched
+                // for start_date/due_date). The index is a perf hint, not a
+                // correctness invariant: skip with a loud warn and let the
+                // daemon boot. Without this, one missing-column migration
+                // takes :4318 down for every restart.
+                if is_missing_schema_object(&msg) {
+                    tracing::warn!(
+                        target: "storage::migration",
+                        stmt = %stmt,
+                        error = %msg,
+                        "skipping index — referenced column/table missing; \
+                         daemon booting without it. Add the matching ALTER \
+                         TABLE ADD COLUMN above and the index will land on \
+                         the next restart."
+                    );
+                    continue;
+                }
+                return Err(GctlError::Storage(format!("migration: {msg}")));
+            }
         }
         // One-shot cleanup for daemons that booted on a kernel that carried
         // app-specific schemas before M8 Phase B. `CREATE TABLE IF NOT EXISTS`

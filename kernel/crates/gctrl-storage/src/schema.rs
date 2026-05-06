@@ -694,3 +694,51 @@ pub fn all_migrations() -> Vec<&'static str> {
     stmts.extend(CREATE_INDEXES.iter());
     stmts
 }
+
+/// True if a migration error is "the column or table this index/migration
+/// references doesn't exist yet". Covers SQLite ("no such column", "no such
+/// table") and DuckDB ("Referenced column ... not found", "Table ... does
+/// not exist", "Catalog Error: ...does not exist") error surfaces.
+///
+/// Used by both SQLite and DuckDB stores to treat such failures as
+/// non-fatal during index creation — a missing index is a perf hit, not a
+/// correctness bug, and should never prevent the daemon from binding :4318.
+pub fn is_missing_schema_object(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("no such column")
+        || m.contains("no such table")
+        || (m.contains("referenced column") && m.contains("not found"))
+        || (m.contains("does not exist") && (m.contains("table") || m.contains("column")))
+}
+
+#[cfg(test)]
+mod schema_helper_tests {
+    use super::is_missing_schema_object;
+
+    #[test]
+    fn detects_sqlite_missing_column() {
+        assert!(is_missing_schema_object(
+            "no such column: start_date in CREATE INDEX IF NOT EXISTS \
+             idx_board_issues_start_date ON board_issues(start_date)"
+        ));
+    }
+
+    #[test]
+    fn detects_sqlite_missing_table() {
+        assert!(is_missing_schema_object("no such table: board_issues"));
+    }
+
+    #[test]
+    fn detects_duckdb_missing_column() {
+        assert!(is_missing_schema_object(
+            "Binder Error: Referenced column \"start_date\" not found in FROM clause"
+        ));
+    }
+
+    #[test]
+    fn ignores_unrelated_errors() {
+        assert!(!is_missing_schema_object("syntax error near 'FROM'"));
+        assert!(!is_missing_schema_object("constraint failed: UNIQUE id"));
+        assert!(!is_missing_schema_object("disk i/o error"));
+    }
+}
