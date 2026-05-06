@@ -2,6 +2,7 @@ pub mod alert;
 pub mod analytics;
 pub mod board;
 pub mod context;
+pub mod cors_middleware;
 pub mod analytics_cost;
 pub mod analytics_cost_breakdown;
 pub mod analytics_daily;

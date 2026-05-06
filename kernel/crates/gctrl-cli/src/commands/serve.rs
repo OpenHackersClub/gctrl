@@ -7,6 +7,7 @@ use gctrl_proxy::{Capture, CaptureConfig, LlmRelay, RelayConfig};
 use gctrl_scheduler::ScheduleRunner;
 use gctrl_storage::{DuckDbStore, SqliteStore};
 
+use super::cors_middleware;
 use super::host_allowlist_middleware;
 use super::watch;
 
@@ -172,6 +173,9 @@ pub async fn run(
         None, // honor GCTRL_STATE_DIR or platform default
     );
     let router = host_allowlist_middleware::apply(router);
+    // CORS sits outside the Host check so the browser preflight is answered
+    // before the rebinding guard rejects requests with mismatched Host.
+    let router = cors_middleware::apply(router);
     let addr = format!("{host}:{port}");
     tracing::info!("gctrl OTel receiver listening on {addr}");
     tracing::info!("database: {db_path}");
