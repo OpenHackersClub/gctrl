@@ -130,8 +130,29 @@ impl DuckDbStore {
     fn run_migrations(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         for stmt in schema::all_migrations() {
-            conn.execute_batch(stmt)
-                .map_err(|e| GctlError::Storage(format!("migration: {e}")))?;
+            if let Err(e) = conn.execute_batch(stmt) {
+                let msg = e.to_string();
+                // Treat missing-column/table errors on CREATE INDEX as
+                // non-fatal — index is a perf hint, not a correctness
+                // invariant. Without this, one stale schema reference
+                // (e.g. CREATE TABLE updated, ALTER backfill missing)
+                // takes the daemon down on every restart. CREATE TABLE
+                // and ALTER errors still propagate.
+                let is_index = stmt.trim_start().to_ascii_uppercase().starts_with("CREATE INDEX");
+                if is_index && schema::is_missing_schema_object(&msg) {
+                    tracing::warn!(
+                        target: "storage::migration",
+                        stmt = %stmt,
+                        error = %msg,
+                        "skipping index — referenced column/table missing; \
+                         daemon booting without it. Add the matching ALTER \
+                         TABLE ADD COLUMN above and the index will land on \
+                         the next restart."
+                    );
+                    continue;
+                }
+                return Err(GctlError::Storage(format!("migration: {msg}")));
+            }
         }
         Ok(())
     }
