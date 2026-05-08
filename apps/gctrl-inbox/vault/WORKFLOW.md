@@ -355,7 +355,7 @@ Inbox messages are authored as plain markdown files in the same **external vault
 
 Vault path resolution (kernel daemon):
 1. `--board-dir <path>` CLI flag
-2. `GCTRL_BOARD_DIR` env var (preferred; the launchd plist sets this)
+2. `GCTRL_BOARD_DIR` env var (preferred — set in the operator's shell env so both gctrl-desktop's bundled sidecar and CLI `gctrld serve` invocations inherit it)
 3. `./gctrl/` in cwd (legacy fallback)
 
 Reference layout:

@@ -5,11 +5,13 @@
 import { app, BrowserWindow, Menu, ipcMain, shell } from "electron"
 import electronUpdater from "electron-updater"
 const { autoUpdater } = electronUpdater
-import { mkdirSync } from "node:fs"
+import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
+import { createHealthCheck } from "./health-check"
 import { KernelSidecar } from "./kernel-sidecar"
+import { ensureLoginItemRegistered } from "./login-item"
 import { buildAppMenu } from "./menu"
 import { resolveKernelBinPath, resolveKernelDataDir, resolveKernelVaultDir } from "./paths"
 import { createScheduler } from "./scheduler"
@@ -30,8 +32,9 @@ const pendingUrls: string[] = []
 
 const createSidecar = (): KernelSidecar | undefined => {
   // Only spawn the kernel sidecar in packaged mode. In dev, contributors run
-  // `gctrld serve` (or the launchd agent) separately to avoid double-binding
-  // port 4318.
+  // `gctrld serve` separately. The singleton probe inside KernelSidecar would
+  // catch the dev-mode case anyway (it'd defer to the contributor's daemon),
+  // but skipping the construction is cheaper and avoids stray probe traffic.
   if (!app.isPackaged) return undefined
 
   const ctx = {
@@ -65,9 +68,28 @@ const createSidecar = (): KernelSidecar | undefined => {
     {
       spawner: createSpawner(),
       scheduler: createScheduler(),
+      // Defers to any gctrl daemon already on :4318 — brew/cargo install,
+      // a `gctrld serve` left running, or a previous app session. Without
+      // this the bundled kernel races for the port and the DuckDB writer
+      // lock and one of them crash-loops.
+      healthCheck: createHealthCheck(),
       logger: console,
     },
   )
+}
+
+const LOGIN_ITEM_MARKER = "login-item-registered"
+
+const registerLoginItem = (): void => {
+  const markerPath = path.join(app.getPath("userData"), LOGIN_ITEM_MARKER)
+  ensureLoginItemRegistered({
+    isPackaged: app.isPackaged,
+    markerExists: () => existsSync(markerPath),
+    writeMarker: () => writeFileSync(markerPath, new Date().toISOString()),
+    getCurrent: () => app.getLoginItemSettings(),
+    set: (settings) => app.setLoginItemSettings(settings),
+    logger: console,
+  })
 }
 
 const createWindow = (): BrowserWindow => {
@@ -185,8 +207,9 @@ app.on("open-url", (event, url) => {
 
 void app.whenReady().then(() => {
   Menu.setApplicationMenu(buildAppMenu())
+  registerLoginItem()
   sidecar = createSidecar()
-  sidecar?.start()
+  void sidecar?.start()
   mainWindow = createWindow()
 
   startAutoUpdater({

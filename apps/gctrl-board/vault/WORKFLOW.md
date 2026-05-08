@@ -181,7 +181,7 @@ Issues are authored as plain markdown files in an **external vault directory** (
 
 The vault path is resolved in this order:
 1. `--board-dir <path>` CLI flag
-2. `GCTRL_BOARD_DIR` env var (preferred for launchd/systemd; the launchd plist already sets this)
+2. `GCTRL_BOARD_DIR` env var (preferred — set in the operator's shell env so both gctrl-desktop's bundled sidecar and CLI `gctrld serve` invocations inherit it)
 3. `./gctrl/` in the daemon's cwd (legacy in-repo fallback)
 
 Reference layout:
