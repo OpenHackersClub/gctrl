@@ -36,6 +36,7 @@ tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
 axum = { workspace = true }
+tower-http = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 notify = "7"
