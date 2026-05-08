@@ -28,11 +28,13 @@ apps/gctrl-desktop/
 │   └── kernel/                      # universal2 binary staged here for extraResources (gitignored)
 ├── src/
 │   ├── main/                        # Electron main process (Node)
-│   │   ├── index.ts                 # app lifecycle, BrowserWindow, IPC, updater
+│   │   ├── index.ts                 # app lifecycle, BrowserWindow, IPC, updater, Login Item
 │   │   ├── menu.ts                  # native macOS menu
 │   │   ├── kernel-sidecar.ts        # lifecycle — pure logic, port-injected
 │   │   ├── spawner.ts               # production Spawner (child_process.spawn)
 │   │   ├── scheduler.ts             # production Scheduler (globalThis.setTimeout)
+│   │   ├── health-check.ts          # singleton probe — defers to external gctrld
+│   │   ├── login-item.ts            # one-time macOS Login Item registration
 │   │   ├── paths.ts                 # kernel binary + data dir resolution
 │   │   ├── updater.ts               # auto-updater logic — port-injected
 │   │   └── __tests__/               # vitest unit tests

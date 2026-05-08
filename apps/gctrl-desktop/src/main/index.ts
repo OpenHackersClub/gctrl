@@ -85,7 +85,18 @@ const registerLoginItem = (): void => {
   ensureLoginItemRegistered({
     isPackaged: app.isPackaged,
     markerExists: () => existsSync(markerPath),
-    writeMarker: () => writeFileSync(markerPath, new Date().toISOString()),
+    // Marker write failures (full disk, sandboxed permissions, locked
+    // userData) MUST NOT crash the app: setLoginItemSettings has already
+    // run, so the worst case is that next launch hits the
+    // `skipped-already-registered` branch and self-corrects via the
+    // marker bootstrap path.
+    writeMarker: () => {
+      try {
+        writeFileSync(markerPath, new Date().toISOString())
+      } catch (err) {
+        console.warn("[login-item] failed to write marker file:", err)
+      }
+    },
     getCurrent: () => app.getLoginItemSettings(),
     set: (settings) => app.setLoginItemSettings(settings),
     logger: console,

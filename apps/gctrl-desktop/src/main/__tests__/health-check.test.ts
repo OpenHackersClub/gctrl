@@ -21,8 +21,20 @@ describe("createHealthCheck (production fetch adapter)", () => {
     vi.useRealTimers()
   })
 
-  it("returns true on a 2xx response", async () => {
-    globalThis.fetch = vi.fn(async () => new Response("ok", { status: 200 })) as typeof fetch
+  it("returns true on a 2xx response with the gctrl /health body shape", async () => {
+    const gctrlHealthBody = JSON.stringify({
+      status: "ok",
+      version: "0.1.0",
+      uptime_seconds: 42,
+      storage: {},
+    })
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(gctrlHealthBody, {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    ) as typeof fetch
 
     const probe = createHealthCheck()
     await expect(probe(config)).resolves.toBe(true)
@@ -34,6 +46,31 @@ describe("createHealthCheck (production fetch adapter)", () => {
 
   it("returns false on a non-2xx response (something else is squatting on :4318)", async () => {
     globalThis.fetch = vi.fn(async () => new Response("nope", { status: 404 })) as typeof fetch
+
+    const probe = createHealthCheck()
+    await expect(probe(config)).resolves.toBe(false)
+  })
+
+  it("returns false when a foreign service responds 200 but the body isn't gctrl-shaped", async () => {
+    // A misconfigured Vite/Python http.server/etc. squatting on :4318 would
+    // happily 200 on /health. Without body validation, the bundled sidecar
+    // would defer to it forever and autostart would silently brick.
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ message: "hello from another service" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    ) as typeof fetch
+
+    const probe = createHealthCheck()
+    await expect(probe(config)).resolves.toBe(false)
+  })
+
+  it("returns false when /health returns 200 with a non-JSON body", async () => {
+    globalThis.fetch = vi.fn(
+      async () => new Response("plain text not json", { status: 200 }),
+    ) as typeof fetch
 
     const probe = createHealthCheck()
     await expect(probe(config)).resolves.toBe(false)

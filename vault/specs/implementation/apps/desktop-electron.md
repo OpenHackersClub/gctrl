@@ -13,8 +13,13 @@ apps/gctrl-desktop/
 ├── tsconfig.json
 ├── src/
 │   ├── main/                         ← Electron main process (Node)
-│   │   ├── index.ts                  ← app lifecycle, window mgmt
-│   │   ├── kernel-sidecar.ts         ← spawn / watchdog the Rust kernel
+│   │   ├── index.ts                  ← app lifecycle, window mgmt, Login Item
+│   │   ├── kernel-sidecar.ts         ← lifecycle — port-injected; singleton probe + watchdog
+│   │   ├── health-check.ts           ← /health probe adapter; gates the singleton check
+│   │   ├── login-item.ts             ← one-time macOS Login Item registration
+│   │   ├── spawner.ts                ← production Spawner (child_process.spawn)
+│   │   ├── scheduler.ts              ← production Scheduler (globalThis.setTimeout)
+│   │   ├── paths.ts                  ← kernel binary + data dir resolution
 │   │   ├── menu.ts                   ← native macOS menu bar
 │   │   └── updater.ts                ← electron-updater integration
 │   └── preload/
@@ -173,59 +178,24 @@ We initially tried `cargo-zigbuild` for single-command universal2 output, but zi
 
 ## Kernel Sidecar Lifecycle
 
-`src/main/kernel-sidecar.ts` is the only place where the kernel binary is spawned, watched, and shut down. Cross-cutting concerns (logging, restart policy) live here, not in the renderer.
+`src/main/kernel-sidecar.ts` is the only place where the kernel binary is spawned, watched, and shut down. The lifecycle is split into a pure `KernelSidecar` class (state machine, restart policy, singleton-probe gating) and three adapters: `spawner.ts` (production `child_process.spawn`), `scheduler.ts` (`globalThis.setTimeout`), `health-check.ts` (loopback `fetch` to `/health`). The class owns the rules; the adapters own the side-effects. See `apps/gctrl-desktop/src/main/kernel-sidecar.ts` for the canonical source — do not duplicate it here.
 
-```typescript
-import { app } from "electron"
-import { execFile, ChildProcess } from "node:child_process"
-import { join } from "node:path"
+**Lifecycle states:** `idle → probing → running | external` on start; `running → restartQueued → probing` on a watchdog crash; `* → stopping → stopped` on quit.
 
-const KERNEL_PORT = 4318
-const RESTART_BACKOFF_MS = [1000, 2000, 5000, 15000, 60000]
-
-let kernel: ChildProcess | null = null
-let restartCount = 0
-
-const kernelPath = () =>
-  app.isPackaged
-    ? join(process.resourcesPath, "kernel", "gctrl-kernel")
-    : join(__dirname, "../../resources/kernel/gctrl-kernel")
-
-export const startKernel = () => {
-  const dataDir = join(app.getPath("userData"), "kernel")
-  kernel = execFile(
-    kernelPath(),
-    ["serve", "--port", String(KERNEL_PORT), "--data-dir", dataDir, "--bind", "127.0.0.1"],
-    { env: { ...process.env, RUST_LOG: "info" } }
-  )
-  kernel.stdout?.on("data", (d) => console.log("[kernel]", d.toString()))
-  kernel.stderr?.on("data", (d) => console.error("[kernel]", d.toString()))
-  kernel.on("exit", (code, signal) => onKernelExit(code, signal))
-}
-
-const onKernelExit = (code: number | null, signal: NodeJS.Signals | null) => {
-  if (app.isQuitting) return
-  const delay = RESTART_BACKOFF_MS[Math.min(restartCount, RESTART_BACKOFF_MS.length - 1)]
-  console.warn(`[kernel] exited code=${code} signal=${signal}; restart in ${delay}ms`)
-  restartCount += 1
-  setTimeout(startKernel, delay)
-}
-
-export const stopKernel = () => {
-  if (!kernel) return
-  kernel.kill("SIGTERM")
-  kernel = null
-}
-
-app.on("before-quit", stopKernel)
-```
+**Singleton probe.** Before each spawn, and again on every watchdog respawn, the lifecycle calls `healthCheck(config)` which probes `http://127.0.0.1:<port>/health` and asserts the gctrl response body shape (`{"status":"ok",...}`). When a daemon already answers, the sidecar transitions to `external` and never spawns. This makes a brew/cargo `gctrld` install or a leftover prior session win cleanly — no race for `:4318`, no race for the DuckDB writer lock. A monotonic probe-epoch counter guards against verdicts from probes superseded by a later `start()` call.
 
 **Invariants:**
 
 1. The kernel binds `127.0.0.1` exclusively. Never `0.0.0.0`. (This avoids inadvertently exposing the local kernel on a shared network and reduces App Store review risk.)
-2. The kernel's `--data-dir` is always `app.getPath("userData") + "/kernel"`, mapping to `~/Library/Application Support/gctrl/kernel/` on macOS. This directory survives app uninstall.
+2. The kernel's `--db` is always `app.getPath("userData") + "/kernel/gctrl.duckdb"`, mapping to `~/Library/Application Support/<bundle-id>/kernel/` on macOS. This directory survives app uninstall.
 3. The renderer never spawns the kernel and never knows where the binary is. All kernel access is HTTP.
-4. Watchdog uses bounded exponential backoff. After repeated failures, the renderer surfaces a banner with a "Restart kernel" button that resets the counter and calls `startKernel()`.
+4. Watchdog uses bounded exponential backoff (`RESTART_BACKOFF_MS`); each respawn re-probes for an external daemon first, so a CLI install brought up between crashes is honored. There is no in-app "restart kernel" UI today; if needed, a renderer button could call back into the main process via IPC and `start()` again, since the lifecycle resets backoff after `stop()`.
+
+## Login Item (autostart)
+
+The desktop `.app` registers itself as a macOS Login Item on first packaged launch via `app.setLoginItemSettings({ openAtLogin: true })`. On macOS 13+ Electron delegates to `SMAppService.mainApp` — no separate launchd plist, no extra entitlements beyond what's already in `build/entitlements.mac.plist`. The bundled `gctrld` sidecar is then up before any `gctrl://` click, terminal `gctrl` invocation, or scheduled job hits the kernel HTTP API.
+
+Registration is one-time, gated by a marker file at `<userData>/login-item-registered`. A user who unticks gctrl in System Settings → General → Login Items is NOT silently re-enabled on the next launch. The decision logic lives in `src/main/login-item.ts` (pure, port-injected, unit-tested); the wrapper in `index.ts` wires it to Electron and `node:fs` and tolerates marker-write failures (full disk, sandbox) without crashing the app.
 
 ## Renderer Wiring
 
@@ -415,8 +385,8 @@ Two distinct local-dev modes for the desktop app:
 
 | Mode | Command | What runs |
 |---|---|---|
-| **Renderer dev (hot reload)** | `pnpm --filter gctrl-desktop dev` | electron-vite hot-reloads main + renderer; kernel must be started separately (`cargo run -- serve`) |
-| **Production-shaped local build** | `pnpm --filter gctrl-desktop build && open release/mac/gctrl.app` | Builds the bundle without signing; useful for catching bundling regressions |
+| **Renderer dev (hot reload)** | `pnpm --filter gctrl-desktop dev` | electron-vite hot-reloads main + renderer; kernel must be started separately (`cargo run -- serve` or `gctrl serve`). Sidecar construction is skipped in dev. |
+| **Production-shaped local build** | `pnpm --filter gctrl-desktop build && open release/mac/gctrl.app` | Builds the bundle without signing; useful for catching bundling regressions. The bundled sidecar singleton-probes `:4318` on launch, so a CLI `gctrld` already running wins and the bundled binary defers cleanly. |
 
 The renderer-dev mode is the day-to-day workflow. The bundled-kernel mode is for pre-release verification.
 

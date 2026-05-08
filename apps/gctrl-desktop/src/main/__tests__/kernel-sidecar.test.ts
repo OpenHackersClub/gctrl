@@ -508,4 +508,82 @@ describe("KernelSidecar singleton (external daemon already running)", () => {
     expect(fakeSpawner.spawnCount()).toBe(0)
     expect(sidecar.state).toBe("stopped")
   })
+
+  it("ignores a stale probe verdict when stop+start raced with the in-flight probe (epoch guard)", async () => {
+    // Sequence: start1 begins probing, stop+start2 issues a new probe while
+    // probe1 is still in flight, probe1 finally resolves saying "external
+    // daemon present." Without an epoch guard, probe1's verdict would mutate
+    // the second start's lifecycle (state happens to be `probing` again).
+    // With the guard, probe1 is dropped on the floor.
+    const fakeSpawner = makeFakeSpawner()
+    const fakeScheduler = makeFakeScheduler()
+
+    let release1: ((alive: boolean) => void) | undefined
+    let release2: ((alive: boolean) => void) | undefined
+    let probeIndex = 0
+    const probe: HealthCheck = () =>
+      new Promise<boolean>((resolve) => {
+        const which = probeIndex++
+        if (which === 0) release1 = resolve
+        else release2 = resolve
+      })
+
+    const sidecar = new KernelSidecar(config, {
+      spawner: fakeSpawner.spawner,
+      scheduler: fakeScheduler.scheduler,
+      healthCheck: probe,
+      logger: silentLogger,
+    })
+
+    const start1 = sidecar.start()
+    expect(sidecar.state).toBe("probing")
+
+    sidecar.stop()
+    expect(sidecar.state).toBe("stopped")
+    const start2 = sidecar.start()
+    expect(sidecar.state).toBe("probing")
+
+    // probe1 resolves with "external daemon present" — STALE.
+    release1?.(true)
+    await flushMicrotasks()
+    await start1
+    expect(sidecar.state).toBe("probing")
+    expect(fakeSpawner.spawnCount()).toBe(0)
+
+    // probe2 resolves with "no external daemon" — fresh, lifecycle acts.
+    release2?.(false)
+    await flushMicrotasks()
+    await start2
+    expect(sidecar.state).toBe("running")
+    expect(fakeSpawner.spawnCount()).toBe(1)
+  })
+
+  it("watchdog re-probe that rejects still respawns (rejection treated as 'no external')", async () => {
+    const fakeSpawner = makeFakeSpawner()
+    const fakeScheduler = makeFakeScheduler()
+    let probeIndex = 0
+    const probe: HealthCheck = async () => {
+      const which = probeIndex++
+      if (which === 0) return false // initial start: spawn
+      throw new Error("transient network blip during re-probe")
+    }
+    const sidecar = new KernelSidecar(config, {
+      spawner: fakeSpawner.spawner,
+      scheduler: fakeScheduler.scheduler,
+      healthCheck: probe,
+      logger: silentLogger,
+    })
+
+    await sidecar.start()
+    expect(fakeSpawner.spawnCount()).toBe(1)
+
+    fakeSpawner.triggerExit(1) // crash → restartQueued
+    fakeScheduler.runAll() // timer fires → re-probe (which rejects)
+    await flushMicrotasks()
+
+    // Rejected probe is treated as "no external daemon present" per the
+    // catch in `_probeAndSpawn`, so the watchdog respawns.
+    expect(fakeSpawner.spawnCount()).toBe(2)
+    expect(sidecar.state).toBe("running")
+  })
 })

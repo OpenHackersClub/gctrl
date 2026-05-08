@@ -599,9 +599,9 @@ async fn run_dispatch(cli: Cli) -> Result<()> {
                 None
             } else {
                 // Resolution order: explicit --board-dir flag, then
-                // GCTRL_BOARD_DIR env (for launchd / systemd / containers
-                // where flags are awkward to pass), then ./gctrl/ in cwd
-                // for legacy in-repo usage. The env path lets operators
+                // GCTRL_BOARD_DIR env (for the gctrl-desktop sidecar /
+                // systemd / containers where flags are awkward to pass),
+                // then ./gctrl/ in cwd for legacy in-repo usage. The env path lets operators
                 // mount the BOARD vault outside the source tree
                 // (Obsidian-mountable, decoupled from git) without
                 // touching the daemon launch script.

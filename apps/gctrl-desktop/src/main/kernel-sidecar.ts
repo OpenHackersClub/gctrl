@@ -107,6 +107,13 @@ export class KernelSidecar {
   private _process: SpawnedProcess | undefined
   private _backoffIndex = 0
   private _pendingRestart: SchedulerHandle | undefined
+  // Monotonic counter — incremented at the start of every `_probeAndSpawn`.
+  // Each probe captures the epoch it was issued under and refuses to act if
+  // a newer probe has been queued by the time it resolves. Without this, a
+  // start → stop → start sequence with a slow probe would let the first
+  // probe's verdict mutate the lifecycle for the second start (state is
+  // `probing` again, so the freshness guard alone is not enough).
+  private _probeEpoch = 0
   private readonly _logger: SidecarLogger
 
   constructor(
@@ -194,6 +201,7 @@ export class KernelSidecar {
 
   private async _probeAndSpawn(): Promise<void> {
     this._state = "probing"
+    const epoch = ++this._probeEpoch
     let externalAlive = false
     try {
       externalAlive = await this.deps.healthCheck(this.config)
@@ -203,6 +211,10 @@ export class KernelSidecar {
       // same as "no external daemon" and proceed to spawn.
       externalAlive = false
     }
+
+    // A newer probe has been issued (e.g. stop → start while we awaited).
+    // The lifecycle is now driven by that probe; ours is stale data.
+    if (this._probeEpoch !== epoch) return
 
     // stop() may have run while the probe was in flight. Honor it.
     if (this._state !== "probing") return
