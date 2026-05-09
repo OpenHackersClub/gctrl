@@ -4,6 +4,17 @@
  * All GitHub operations route through the kernel HTTP API (/api/github/*),
  * which delegates to driver-github (a kernel LKM using native gh CLI).
  * The shell has no direct knowledge of the GitHub API or gh CLI.
+ *
+ * Common pitfalls:
+ * - @effect/cli requires options to precede positional args.
+ *   Use `gctrl gh prs view --repo owner/repo 13`, not
+ *   `gctrl gh prs view 13 --repo owner/repo`.
+ * - `--repo` (or `-r`) is required on every typed subcommand — none of
+ *   them infer the repo from the current working directory.
+ * - The typed subcommands wrap a curated subset of `gh`. Flags such as
+ *   `--json`, `--web`, and other gh-only options are NOT exposed here.
+ *   For full gh CLI access (including `gh api`, `gh pr merge`, JSON output,
+ *   etc.) use the passthrough: `gctrl gh exec -- <gh args>`.
  */
 import { Command, Options, Args } from "@effect/cli"
 import { Console, Effect, Option, Schema } from "effect"
@@ -80,6 +91,10 @@ const issuesListCommand = Command.make(
         )
       }
     })
+).pipe(
+  Command.withDescription(
+    "List GitHub issues for a repo.\nExample: gctrl gh issues list --repo OpenHackersClub/gctrl --limit 20"
+  )
 )
 
 const issueNumber = Args.integer({ name: "number" })
@@ -102,6 +117,10 @@ const issuesViewCommand = Command.make(
       yield* Console.log(`Created: ${issue.createdAt}`)
       yield* Console.log(`URL:     ${issue.url}`)
     })
+).pipe(
+  Command.withDescription(
+    "View a GitHub issue by number.\nExample: gctrl gh issues view --repo OpenHackersClub/gctrl 42\nFor flags this typed command does not expose (e.g. --json, --web), use:\n  gctrl gh exec -- issue view 42 --repo OpenHackersClub/gctrl --json title,body"
+  )
 )
 
 const issueTitle = Options.text("title").pipe(
@@ -134,10 +153,15 @@ const issuesCreateCommand = Command.make(
       yield* Console.log(`Created issue #${issue.number}: ${issue.title}`)
       yield* Console.log(`URL: ${issue.url}`)
     })
+).pipe(
+  Command.withDescription(
+    "Create a GitHub issue.\nExample: gctrl gh issues create --repo OpenHackersClub/gctrl --title \"Bug: ...\" --body \"...\" --label bug"
+  )
 )
 
 const issuesCommand = Command.make("issues").pipe(
-  Command.withSubcommands([issuesListCommand, issuesViewCommand, issuesCreateCommand])
+  Command.withSubcommands([issuesListCommand, issuesViewCommand, issuesCreateCommand]),
+  Command.withDescription("GitHub issues — list, view, create. Subcommands: list, view, create.")
 )
 
 // --- prs ---
@@ -166,6 +190,10 @@ const prsListCommand = Command.make(
         )
       }
     })
+).pipe(
+  Command.withDescription(
+    "List GitHub pull requests for a repo.\nExample: gctrl gh prs list --repo OpenHackersClub/gctrl --limit 20"
+  )
 )
 
 const prNumber = Args.integer({ name: "number" })
@@ -187,10 +215,15 @@ const prsViewCommand = Command.make(
       yield* Console.log(`Branch: ${pr.branch}`)
       yield* Console.log(`URL:    ${pr.url}`)
     })
+).pipe(
+  Command.withDescription(
+    "View a pull request by number.\nExample: gctrl gh prs view --repo OpenHackersClub/gctrl 13\nFor flags this typed command does not expose (e.g. --json, --web), use:\n  gctrl gh exec -- pr view 13 --repo OpenHackersClub/gctrl --json title,body,isDraft"
+  )
 )
 
 const prsCommand = Command.make("prs").pipe(
-  Command.withSubcommands([prsListCommand, prsViewCommand])
+  Command.withSubcommands([prsListCommand, prsViewCommand]),
+  Command.withDescription("GitHub pull requests — list, view. Subcommands: list, view.")
 )
 
 // --- runs ---
@@ -225,6 +258,10 @@ const runsListCommand = Command.make(
         )
       }
     })
+).pipe(
+  Command.withDescription(
+    "List GitHub Actions workflow runs.\nExample: gctrl gh runs list --repo OpenHackersClub/gctrl --branch main --limit 20"
+  )
 )
 
 const runId = Args.integer({ name: "run-id" })
@@ -246,18 +283,31 @@ const runsViewCommand = Command.make(
       yield* Console.log(`Branch:     ${run.branch}`)
       yield* Console.log(`URL:        ${run.url}`)
     })
+).pipe(
+  Command.withDescription(
+    "View a GitHub Actions workflow run by id.\nExample: gctrl gh runs view --repo OpenHackersClub/gctrl 22549748112\nFor flags this typed command does not expose (e.g. --log, --web), use:\n  gctrl gh exec -- run view 22549748112 --repo OpenHackersClub/gctrl --log"
+  )
 )
 
 const runsCommand = Command.make("runs").pipe(
-  Command.withSubcommands([runsListCommand, runsViewCommand])
+  Command.withSubcommands([runsListCommand, runsViewCommand]),
+  Command.withDescription("GitHub Actions runs — list, view. Subcommands: list, view.")
 )
 
 // --- exec (passthrough) ---
 
 const execCommand = makeExecCommand("/api/github/exec")
+const execCommandWithDesc = execCommand.pipe(
+  Command.withDescription(
+    "Passthrough to native gh CLI via kernel (auth handled by driver-github). Example: gctrl gh exec -- pr view 13 --repo OpenHackersClub/gctrl --json title,body"
+  )
+)
 
 // --- gh (parent) ---
 
 export const ghCommand = Command.make("gh").pipe(
-  Command.withSubcommands([issuesCommand, prsCommand, runsCommand, execCommand])
+  Command.withSubcommands([issuesCommand, prsCommand, runsCommand, execCommandWithDesc]),
+  Command.withDescription(
+    "GitHub operations via kernel driver-github. Typed subcommands (issues/prs/runs) cover common reads; use `gctrl gh exec -- <gh args>` for full gh CLI passthrough (e.g. --json, gh api, gh pr merge)."
+  )
 )
