@@ -1,3 +1,4 @@
 out/
 release/
 resources/kernel/
+*.tgz
