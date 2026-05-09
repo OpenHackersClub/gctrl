@@ -1,15 +1,26 @@
 //! R2 client — S3-compatible upload/download to Cloudflare R2.
 //!
-//! Uses reqwest with AWS Signature V4 style auth headers.
+//! Uses reqwest with proper AWS Signature V4 (AWS4-HMAC-SHA256) signing.
+//! Cloudflare R2 strictly requires sigv4 — earlier `basic_auth + x-amz-*`
+//! header form returns `400 InvalidRequest "Please use AWS4-HMAC-SHA256"`.
+//!
 //! R2 supports the S3 PutObject/GetObject/ListObjectsV2 API subset.
 
 use chrono::Utc;
-use reqwest::Client;
+use hmac::{Hmac, Mac};
+use reqwest::{Client, Url};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use tokio::fs;
 use tracing::{debug, warn};
 
 use crate::SyncError;
+
+type HmacSha256 = Hmac<Sha256>;
+
+/// R2 region tag — Cloudflare uses literal "auto" for sigv4 scope.
+const R2_REGION: &str = "auto";
+const R2_SERVICE: &str = "s3";
 
 /// S3-compatible client for Cloudflare R2.
 #[derive(Debug, Clone)]
@@ -47,12 +58,16 @@ impl R2Client {
         let url = self.object_url(key);
         debug!(key, url, size = body.len(), "R2 PUT");
 
+        let body_sha = sha256_hex(&body);
+        let auth = self.signed_headers("PUT", &url, &body_sha)?;
+
         let resp = self
             .client
             .put(&url)
-            .header("x-amz-date", Utc::now().format("%Y%m%dT%H%M%SZ").to_string())
-            .header("x-amz-content-sha256", "UNSIGNED-PAYLOAD")
-            .basic_auth(&self.access_key_id, Some(&self.secret_access_key))
+            .header("host", auth.host)
+            .header("x-amz-date", auth.amz_date)
+            .header("x-amz-content-sha256", body_sha)
+            .header("authorization", auth.authorization)
             .body(body)
             .send()
             .await
@@ -79,12 +94,16 @@ impl R2Client {
         let url = self.object_url(key);
         debug!(key, url, "R2 GET");
 
+        let body_sha = sha256_hex(&[]);
+        let auth = self.signed_headers("GET", &url, &body_sha)?;
+
         let resp = self
             .client
             .get(&url)
-            .header("x-amz-date", Utc::now().format("%Y%m%dT%H%M%SZ").to_string())
-            .header("x-amz-content-sha256", "UNSIGNED-PAYLOAD")
-            .basic_auth(&self.access_key_id, Some(&self.secret_access_key))
+            .header("host", auth.host)
+            .header("x-amz-date", auth.amz_date)
+            .header("x-amz-content-sha256", body_sha)
+            .header("authorization", auth.authorization)
             .send()
             .await
             .map_err(|e| SyncError::R2(format!("GET {key}: {e}")))?;
@@ -118,9 +137,21 @@ impl R2Client {
     /// Check if R2 is reachable by issuing a HEAD on the bucket.
     pub async fn health_check(&self) -> bool {
         let url = format!("{}/{}", self.endpoint, self.bucket);
-        match self.client
+        let body_sha = sha256_hex(&[]);
+        let auth = match self.signed_headers("HEAD", &url, &body_sha) {
+            Ok(a) => a,
+            Err(e) => {
+                warn!(error = %e, "R2 health check sign failed");
+                return false;
+            }
+        };
+        match self
+            .client
             .head(&url)
-            .basic_auth(&self.access_key_id, Some(&self.secret_access_key))
+            .header("host", auth.host)
+            .header("x-amz-date", auth.amz_date)
+            .header("x-amz-content-sha256", body_sha)
+            .header("authorization", auth.authorization)
             .send()
             .await
         {
@@ -137,6 +168,108 @@ impl R2Client {
             }
         }
     }
+
+    /// Build sigv4 signed headers for a request. Signs `host`, `x-amz-date`,
+    /// `x-amz-content-sha256`. R2 region is `auto`, service is `s3`.
+    fn signed_headers(
+        &self,
+        method: &str,
+        url_str: &str,
+        payload_sha_hex: &str,
+    ) -> Result<SignedHeaders, SyncError> {
+        let url: Url = url_str
+            .parse()
+            .map_err(|e| SyncError::R2(format!("parse url {url_str}: {e}")))?;
+        let host = url
+            .host_str()
+            .ok_or_else(|| SyncError::R2(format!("no host in url {url_str}")))?
+            .to_string();
+        let path = url.path();
+        let canonical_path = aws_uri_encode_path(path);
+
+        let now = Utc::now();
+        let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
+        let date_stamp = now.format("%Y%m%d").to_string();
+        let scope = format!("{date_stamp}/{R2_REGION}/{R2_SERVICE}/aws4_request");
+
+        // Canonical request — headers must be sorted lowercase, trimmed, no dup whitespace.
+        let canonical_headers = format!(
+            "host:{host}\nx-amz-content-sha256:{payload_sha_hex}\nx-amz-date:{amz_date}\n"
+        );
+        let signed_header_names = "host;x-amz-content-sha256;x-amz-date";
+        let canonical_request = format!(
+            "{method}\n{canonical_path}\n\n{canonical_headers}\n{signed_header_names}\n{payload_sha_hex}"
+        );
+
+        // String to sign.
+        let cr_hash = sha256_hex(canonical_request.as_bytes());
+        let string_to_sign = format!("AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{cr_hash}");
+
+        // Derived signing key: HMAC chain date → region → service → "aws4_request".
+        let k_date = hmac_sha256(
+            format!("AWS4{}", self.secret_access_key).as_bytes(),
+            date_stamp.as_bytes(),
+        )?;
+        let k_region = hmac_sha256(&k_date, R2_REGION.as_bytes())?;
+        let k_service = hmac_sha256(&k_region, R2_SERVICE.as_bytes())?;
+        let k_signing = hmac_sha256(&k_service, b"aws4_request")?;
+
+        // Signature.
+        let signature = hex::encode(hmac_sha256(&k_signing, string_to_sign.as_bytes())?);
+
+        let authorization = format!(
+            "AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={signed_header_names}, Signature={signature}",
+            self.access_key_id
+        );
+
+        Ok(SignedHeaders {
+            host,
+            amz_date,
+            authorization,
+        })
+    }
+}
+
+struct SignedHeaders {
+    host: String,
+    amz_date: String,
+    authorization: String,
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
+}
+
+fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<Vec<u8>, SyncError> {
+    let mut mac = HmacSha256::new_from_slice(key)
+        .map_err(|e| SyncError::R2(format!("hmac key: {e}")))?;
+    mac.update(data);
+    Ok(mac.finalize().into_bytes().to_vec())
+}
+
+/// AWS canonical URI encoding for the path. Each path segment is URL-encoded
+/// (RFC 3986 unreserved set kept verbatim, everything else percent-encoded),
+/// but `/` between segments is preserved.
+fn aws_uri_encode_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for (i, seg) in path.split('/').enumerate() {
+        if i > 0 {
+            out.push('/');
+        }
+        for b in seg.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    out.push(b as char);
+                }
+                _ => {
+                    out.push_str(&format!("%{b:02X}"));
+                }
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -169,5 +302,31 @@ mod tests {
             client.object_url("test.parquet"),
             "https://abc.r2.cloudflarestorage.com/gctrl-sync/test.parquet"
         );
+    }
+
+    #[test]
+    fn aws_uri_encode_keeps_slashes_encodes_spaces() {
+        assert_eq!(
+            aws_uri_encode_path("/foo/bar baz/2026-W19.md"),
+            "/foo/bar%20baz/2026-W19.md"
+        );
+    }
+
+    #[test]
+    fn signed_headers_have_aws4_prefix() {
+        let client = R2Client::new(
+            "https://abc.r2.cloudflarestorage.com",
+            "gctrl-vault",
+            "AKIATEST",
+            "secret-key-test",
+        );
+        let h = client
+            .signed_headers("PUT", "https://abc.r2.cloudflarestorage.com/gctrl-vault/x.md", &sha256_hex(b"hi"))
+            .expect("sign");
+        assert!(h.authorization.starts_with("AWS4-HMAC-SHA256 "));
+        assert!(h.authorization.contains("Credential=AKIATEST/"));
+        assert!(h.authorization.contains("/auto/s3/aws4_request"));
+        assert!(h.authorization.contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date"));
+        assert!(h.host == "abc.r2.cloudflarestorage.com");
     }
 }

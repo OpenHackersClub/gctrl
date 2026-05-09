@@ -155,9 +155,17 @@ impl SyncConfig {
             && !self.d1_api_token.is_empty()
     }
 
-    /// Populate D1 credentials from env vars (GCTRL_D1_DATABASE_ID,
-    /// GCTRL_D1_ACCOUNT_ID, GCTRL_D1_API_TOKEN). Returns a config with
-    /// `enabled=true` iff all three are set.
+    /// Returns true if R2 vault sync is configured (all four fields non-empty).
+    pub fn r2_enabled(&self) -> bool {
+        !self.r2_endpoint.is_empty()
+            && !self.r2_bucket.is_empty()
+            && !self.r2_access_key_id.is_empty()
+            && !self.r2_secret_access_key.is_empty()
+    }
+
+    /// Populate D1 + R2 credentials from env vars. Returns a config with
+    /// `enabled=true` iff either D1 or R2 is fully configured. Vault sync
+    /// (`/api/sync/vault/*`) only needs R2; DuckDB telemetry sync needs D1.
     pub fn from_env() -> Self {
         let mut cfg = Self::default();
         if let Ok(v) = std::env::var("GCTRL_D1_DATABASE_ID") {
@@ -169,10 +177,22 @@ impl SyncConfig {
         if let Ok(v) = std::env::var("GCTRL_D1_API_TOKEN") {
             cfg.d1_api_token = v;
         }
+        if let Ok(v) = std::env::var("GCTRL_R2_ENDPOINT") {
+            cfg.r2_endpoint = v;
+        }
+        if let Ok(v) = std::env::var("GCTRL_R2_BUCKET") {
+            cfg.r2_bucket = v;
+        }
+        if let Ok(v) = std::env::var("GCTRL_R2_ACCESS_KEY_ID") {
+            cfg.r2_access_key_id = v;
+        }
+        if let Ok(v) = std::env::var("GCTRL_R2_SECRET_ACCESS_KEY") {
+            cfg.r2_secret_access_key = v;
+        }
         if let Ok(v) = std::env::var("GCTRL_DEVICE_ID") {
             cfg.device_id = v;
         }
-        cfg.enabled = cfg.d1_enabled();
+        cfg.enabled = cfg.d1_enabled() || cfg.r2_enabled();
         cfg
     }
 }

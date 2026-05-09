@@ -69,8 +69,16 @@ pub async fn run(
     tokio::spawn(watch::watch_all_vault_mounts(watcher_store));
 
     let sync_config = SyncConfig::from_env();
-    let sync_config = if sync_config.d1_enabled() {
-        tracing::info!("D1 sync enabled: database_id={}", sync_config.d1_database_id);
+    let sync_config = if sync_config.d1_enabled() || sync_config.r2_enabled() {
+        if sync_config.d1_enabled() {
+            tracing::info!("D1 sync enabled: database_id={}", sync_config.d1_database_id);
+        }
+        if sync_config.r2_enabled() {
+            tracing::info!(
+                "R2 vault sync enabled: bucket={} endpoint={}",
+                sync_config.r2_bucket, sync_config.r2_endpoint
+            );
+        }
         Some(Arc::new(sync_config))
     } else {
         None
