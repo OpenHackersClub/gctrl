@@ -23,6 +23,13 @@ export type SidecarConfig = {
   readonly binPath: string
   readonly port: number
   readonly dataDir: string
+  /**
+   * Vault root the kernel watches for `*.md` issue files. Forwarded as
+   * `--board-dir`; the kernel auto-registers a `default` mount here on
+   * first boot when `gctrl_vault_mounts` is empty so the file watcher
+   * starts indexing without any UI flow.
+   */
+  readonly vaultDir?: string
   readonly env?: Readonly<Record<string, string>>
 }
 

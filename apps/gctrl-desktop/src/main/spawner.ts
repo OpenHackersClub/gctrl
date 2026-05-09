@@ -10,18 +10,24 @@ import { spawn, type ChildProcess } from "node:child_process"
 import type { SidecarConfig, SpawnedProcess, Spawner } from "./kernel-sidecar"
 
 /** CLI args passed to the kernel binary. Pure for testability. */
-export const buildKernelArgs = (config: SidecarConfig): readonly string[] => [
-  "serve",
-  "--port",
-  String(config.port),
-  "--db",
-  `${config.dataDir}/gctrl.duckdb`,
-  // Always bind loopback. Never `0.0.0.0` — the desktop kernel must not be
-  // reachable from the network, both for security and to avoid Apple App
-  // Store review pushback on inbound connections.
-  "--host",
-  "127.0.0.1",
-]
+export const buildKernelArgs = (config: SidecarConfig): readonly string[] => {
+  const args: string[] = [
+    "serve",
+    "--port",
+    String(config.port),
+    "--db",
+    `${config.dataDir}/gctrl.duckdb`,
+    // Always bind loopback. Never `0.0.0.0` — the desktop kernel must not be
+    // reachable from the network, both for security and to avoid Apple App
+    // Store review pushback on inbound connections.
+    "--host",
+    "127.0.0.1",
+  ]
+  if (config.vaultDir) {
+    args.push("--board-dir", config.vaultDir)
+  }
+  return args
+}
 
 /**
  * Wrap a `ChildProcess` as a `SpawnedProcess`. Single-fire `onExit` per the

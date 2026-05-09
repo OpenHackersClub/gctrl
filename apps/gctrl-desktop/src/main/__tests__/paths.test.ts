@@ -1,7 +1,12 @@
 import path from "node:path"
 import { describe, expect, it } from "vitest"
 
-import { type PathContext, resolveKernelBinPath, resolveKernelDataDir } from "../paths"
+import {
+  type PathContext,
+  resolveKernelBinPath,
+  resolveKernelDataDir,
+  resolveKernelVaultDir,
+} from "../paths"
 
 const packagedCtx: PathContext = {
   isPackaged: true,
@@ -51,5 +56,20 @@ describe("resolveKernelDataDir", () => {
     expect(resolveKernelDataDir(devCtx)).toBe(
       "/Users/alice/Library/Application Support/Electron/kernel",
     )
+  })
+})
+
+describe("resolveKernelVaultDir", () => {
+  it("returns <userDataPath>/vault regardless of packaging", () => {
+    expect(resolveKernelVaultDir(packagedCtx)).toBe(
+      "/Users/alice/Library/Application Support/gctrl/vault",
+    )
+    expect(resolveKernelVaultDir(devCtx)).toBe(
+      "/Users/alice/Library/Application Support/Electron/vault",
+    )
+  })
+
+  it("never collides with the kernel data dir (kept on a sibling path)", () => {
+    expect(resolveKernelVaultDir(packagedCtx)).not.toBe(resolveKernelDataDir(packagedCtx))
   })
 })
