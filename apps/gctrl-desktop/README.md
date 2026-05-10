@@ -28,11 +28,13 @@ apps/gctrl-desktop/
 │   └── kernel/                      # universal2 binary staged here for extraResources (gitignored)
 ├── src/
 │   ├── main/                        # Electron main process (Node)
-│   │   ├── index.ts                 # app lifecycle, BrowserWindow, IPC, updater
+│   │   ├── index.ts                 # app lifecycle, BrowserWindow, IPC, updater, Login Item
 │   │   ├── menu.ts                  # native macOS menu
 │   │   ├── kernel-sidecar.ts        # lifecycle — pure logic, port-injected
 │   │   ├── spawner.ts               # production Spawner (child_process.spawn)
 │   │   ├── scheduler.ts             # production Scheduler (globalThis.setTimeout)
+│   │   ├── health-check.ts          # singleton probe — defers to external gctrld
+│   │   ├── login-item.ts            # one-time macOS Login Item registration
 │   │   ├── paths.ts                 # kernel binary + data dir resolution
 │   │   ├── updater.ts               # auto-updater logic — port-injected
 │   │   └── __tests__/               # vitest unit tests
@@ -64,7 +66,7 @@ Override the renderer URL if your gctrl-board dev server is on a different port:
 GCTRL_DESKTOP_DEV_URL=http://localhost:5174 pnpm --filter gctrl-desktop dev
 ```
 
-The kernel sidecar is intentionally **not spawned in dev** — running both `gctrl serve` and the Electron sidecar would double-bind port 4318. The lifecycle wiring is in place for packaged mode.
+The kernel sidecar is intentionally **not spawned in dev** — `pnpm dev` skips construction entirely. In packaged mode, the sidecar lifecycle probes `:4318/health` first and defers to any external daemon already there (a `brew`/`cargo gctrld serve` you left running, or another gctrl-desktop session) so two daemons never race for the port and the DuckDB writer lock. On first packaged launch, the .app also registers itself as a macOS Login Item via `app.setLoginItemSettings` so `gctrld` is up before any `gctrl://` click; subsequent launches respect a user who has unticked it in System Settings → General → Login Items.
 
 ## Release
 

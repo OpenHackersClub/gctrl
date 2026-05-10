@@ -17,12 +17,13 @@ cleanup() {
 }
 trap cleanup INT TERM EXIT
 
-# If the launchd kernel agent (./scripts/install-launchd.sh) is loaded, it
-# already owns :4318 and `cargo run -- serve` will fail to bind. Detect and
-# bail out with a hint instead of thrashing.
-if launchctl print "gui/$UID/dev.gctrl.kernel" >/dev/null 2>&1; then
-  echo "[dev] dev.gctrl.kernel LaunchAgent is loaded — it already owns :4318" >&2
-  echo "[dev] stop it first: ./scripts/install-launchd.sh uninstall" >&2
+# If anything is already on :4318 (gctrl-desktop's bundled kernel sidecar, a
+# brew/cargo `gctrld serve`, or some other listener), `cargo run -- serve`
+# will fail to bind. Detect and bail with a hint instead of thrashing.
+if lsof -nP -iTCP:4318 -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "[dev] something is already listening on :4318" >&2
+  echo "[dev] inspect: lsof -nP -iTCP:4318 -sTCP:LISTEN" >&2
+  echo "[dev] common causes: gctrl.app (quit it), or a brew/cargo gctrld serve" >&2
   exit 1
 fi
 
@@ -31,7 +32,7 @@ echo "[dev] starting kernel on :4318..."
 pids+=($!)
 
 echo "[dev] waiting for kernel health on :4318..."
-for i in {1..120}; do
+for _ in {1..120}; do
   if curl -sf http://127.0.0.1:4318/health >/dev/null 2>&1; then
     echo "[dev] kernel ready"
     break

@@ -91,7 +91,7 @@ The schedule row stores env var **names**, not values. Values come from the daem
 - **Pro:** schedule rows are not secret-bearing; `GET /api/schedules` is safe to read. Rotating `TELEGRAM_BOT_TOKEN` does not require touching schedule rows.
 - **Con:** all `exec` schedules with the same `env_keys` see the same daemon-env value. There is no per-schedule scoping below the daemon's own env. Acceptable for a single-user, local-first daemon; revisit if multi-tenant ever ships.
 
-The daemon's own env stays the single secret store. Bootstrapping is operator-owned (e.g. `scripts/launchd/dev.gctrl.kernel.plist` `EnvironmentVariables` block).
+The daemon's own env stays the single secret store. Bootstrapping is operator-owned — the gctrl macOS app launches the bundled `gctrld` sidecar (registered as a Login Item; see `apps/gctrl-desktop/src/main/login-item.ts`), and the operator's shell env (e.g. `~/.zshenv`, `direnv`) supplies driver secrets to that process. CLI users running `gctrld serve` directly inherit env from their shell as usual.
 
 ### Output Redaction
 

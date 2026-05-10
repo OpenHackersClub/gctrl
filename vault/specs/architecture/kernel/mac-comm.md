@@ -34,7 +34,7 @@ This spec closes the loop with two native channels, M0 and M1 respectively:
 - **Bidirectional streaming** between inbox and terminal (live tail, sending keystrokes). Out of scope; would be a separate `gctrl-tty` driver.
 - **Replacing the inbox web UI** — the deeplink complements; it does not bypass.
 - **Agent-side capture wiring** (e.g., the Claude Code `PreToolUse` hook) — split into [cc-permission-hook.md](../apps/cc-permission-hook.md) so each agent framework can have its own integration spec.
-- **macOS sandboxing of the kernel daemon** — `gctrld` runs as a launchd LaunchAgent with full user permissions today, and that does not change.
+- **macOS sandboxing of the kernel daemon** — `gctrld` runs as the gctrl-desktop sidecar (or as a user-launched CLI process) with full user permissions today, and that does not change.
 
 ---
 
@@ -132,7 +132,7 @@ sequenceDiagram
 | **`UNUserNotificationCenter`** (M1) | Native banner with a "Focus" action button — fires the same `gctrl://` URL | Lets the user respond from outside the inbox UI. Modern API; no Info.plist key needed (prompt fires on first `requestAuthorization`). |
 | **`NSWorkspace.shared.open(_:)`** | Programmatic URL invocation from the driver (fallback when triggered server-side) | Standard Cocoa entry-point; respects user's default-app mappings. |
 | **Process env: `ITERM_SESSION_ID`, `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`** | Terminal-identity capture inside the agent process | Stable on iTerm2 (`ITERM_SESSION_ID`); `TERM_PROGRAM` is the cross-terminal discriminator. |
-| **`launchd` LaunchAgent** (existing) | Hosts `gctrld` so the kernel HTTP API is up before any inbox click happens | No change. Code-sign + Hardened Runtime required (see Security). |
+| **gctrl-desktop kernel sidecar** (registered as a macOS Login Item) | Hosts `gctrld` so the kernel HTTP API is up before any inbox click happens | The bundled sidecar singleton-probes `:4318` first and defers to any CLI install (`brew`/`cargo`) already there. Code-sign + Hardened Runtime apply to both the .app and the sidecar binary (see Security). |
 
 Channels deliberately **not** used:
 
@@ -458,7 +458,7 @@ Clicking the copy button writes the exact CLI invocation to clipboard — headle
 | Concern | Mitigation |
 |---|---|
 | **Automation prompt** for iTerm2 / Terminal.app | First focus call triggers the system prompt. `Info.plist`'s `NSAppleEventsUsageDescriptionTargets` provides per-target rationale text. Refusal is sticky; UI links to System Settings. |
-| **TOFU sticky grants — compromised gctrl-desktop inherits permanent automation** | Mitigations layered: (a) the daemon (`gctrld`), not the Electron renderer, is the process that invokes `osascript`. A compromised renderer cannot drive AppleScript directly — it only POSTs to the kernel, which validates. (b) `gctrld` MUST be code-signed with Hardened Runtime; the LaunchAgent plist verifies via `LegacyTimers` / `EnableTransactions` patterns. (c) Documentation in the security table tells users to revoke automation in System Settings if they uninstall. |
+| **TOFU sticky grants — compromised gctrl-desktop inherits permanent automation** | Mitigations layered: (a) the daemon (`gctrld`), not the Electron renderer, is the process that invokes `osascript`. A compromised renderer cannot drive AppleScript directly — it only POSTs to the kernel, which validates. (b) Both the .app and the bundled `gctrld` sidecar MUST be code-signed with Hardened Runtime, notarized, and stapled (see `apps/gctrl-desktop/build/`). (c) Documentation in the security table tells users to revoke automation in System Settings if they uninstall. |
 | **URL handler injection** (`gctrl://...` from any web page) | `handleGctrlUrl` strict-parses against a closed allowlist of paths and a UUID-v4 regex for inbox IDs. No prefix match, no fallback. Same allowlist on the kernel side as defence-in-depth. |
 | **`osascript` injection via context.terminal fields** (`session_id`, `cwd`, `tty`, `pid`) | Single canonical validator (`validate.rs`) applied at **two** entry points: the inbox intake (`/api/inbox/messages`) and the comm endpoints (`/api/comm/*`). Argv-array form only — no string concatenation into AppleScript source. The CLI path (`gctrl terminal focus`) hits the same kernel validator; it does not bypass. |
 | **Remote session (ssh/mosh) — `host` field is spoofable in the payload** | Removed `terminal.host` from the trust path. The kernel infers local-vs-remote at intake from the connection's source address: only loopback (`127.0.0.1`) connections produce messages flagged `local: true`. The driver's `focus` returns `200 { focused: false, reason: "remote_session" }` for non-local messages regardless of any payload claim. |

@@ -60,6 +60,20 @@ export type Scheduler = {
   clear(handle: SchedulerHandle): void
 }
 
+/**
+ * Probe an existing daemon on the configured host/port. Returns `true` when a
+ * gctrl daemon is already responding to `/health`, in which case the lifecycle
+ * defers to it instead of spawning the bundled binary — the singleton check
+ * that lets a brew/cargo `gctrld` (or a prior session that survived an app
+ * restart) keep ownership of `:4318` and the DuckDB writer lock without two
+ * processes racing.
+ *
+ * Implementations MUST tolerate timeouts and connection errors by resolving
+ * `false` rather than rejecting; a probe failure means "no external daemon",
+ * not "abort startup".
+ */
+export type HealthCheck = (config: SidecarConfig) => Promise<boolean>
+
 export type SidecarLogger = {
   info(message: string): void
   warn(message: string): void
@@ -68,7 +82,9 @@ export type SidecarLogger = {
 
 export type SidecarState =
   | "idle"
+  | "probing"
   | "running"
+  | "external"
   | "restartQueued"
   | "stopping"
   | "stopped"
@@ -76,6 +92,7 @@ export type SidecarState =
 export type SidecarDeps = {
   readonly spawner: Spawner
   readonly scheduler: Scheduler
+  readonly healthCheck: HealthCheck
   readonly logger?: SidecarLogger
 }
 
@@ -90,6 +107,13 @@ export class KernelSidecar {
   private _process: SpawnedProcess | undefined
   private _backoffIndex = 0
   private _pendingRestart: SchedulerHandle | undefined
+  // Monotonic counter — incremented at the start of every `_probeAndSpawn`.
+  // Each probe captures the epoch it was issued under and refuses to act if
+  // a newer probe has been queued by the time it resolves. Without this, a
+  // start → stop → start sequence with a slow probe would let the first
+  // probe's verdict mutate the lifecycle for the second start (state is
+  // `probing` again, so the freshness guard alone is not enough).
+  private _probeEpoch = 0
   private readonly _logger: SidecarLogger
 
   constructor(
@@ -108,26 +132,37 @@ export class KernelSidecar {
   }
 
   /**
-   * Spawn the sidecar.
+   * Spawn the sidecar — but only after probing for an existing daemon on the
+   * configured port. If something is already answering `/health`, the
+   * lifecycle defers to it (state `external`) rather than racing for the port
+   * and the DuckDB writer lock.
    *
-   * - From `idle` or `stopped`: spawns fresh and resets the backoff counter,
-   *   so a `start()` after explicit `stop()` does not inherit a previous flap.
-   * - From `running` or `restartQueued`: no-op (idempotent).
-   * - From `stopping`: no-op. Callers wanting to restart in mid-stop should
-   *   await graceful shutdown (state transitions to `stopped` on `_onExit`)
-   *   and call `start()` again. Composing `start()` over an in-flight `stop()`
-   *   intentionally requires explicit serialization.
+   * - From `idle` or `stopped`: probes, then either spawns or transitions to
+   *   `external`. Backoff counter resets so a `start()` after explicit
+   *   `stop()` does not inherit a previous flap.
+   * - From `probing`, `running`, `restartQueued`, `external`, `stopping`:
+   *   no-op (idempotent).
+   *
+   * Composing `start()` over an in-flight `stop()` intentionally requires
+   * explicit serialization — callers must await graceful shutdown
+   * (state transitions to `stopped` on `_onExit`) and call `start()` again.
+   *
+   * Returns a Promise that resolves once the probe completes and the
+   * lifecycle has decided to spawn or defer. Callers that don't care can
+   * ignore the return value with `void sidecar.start()`.
    */
-  start(): void {
+  async start(): Promise<void> {
     if (
+      this._state === "probing" ||
       this._state === "running" ||
       this._state === "restartQueued" ||
+      this._state === "external" ||
       this._state === "stopping"
     ) {
       return
     }
     this._backoffIndex = 0
-    this._spawn()
+    await this._probeAndSpawn()
   }
 
   stop(): void {
@@ -140,7 +175,15 @@ export class KernelSidecar {
 
     if (this._state === "stopping" || this._state === "stopped") return
 
-    if (this._state === "idle") {
+    if (this._state === "idle" || this._state === "external") {
+      // `external` means we never owned a process — there's nothing to kill.
+      this._state = "stopped"
+      return
+    }
+
+    if (this._state === "probing") {
+      // The probe is in-flight. Mark stopped now; when the promise resolves,
+      // `_probeAndSpawn` checks state and bails before spawning.
       this._state = "stopped"
       return
     }
@@ -154,6 +197,37 @@ export class KernelSidecar {
     // running
     this._state = "stopping"
     this._process?.kill("SIGTERM")
+  }
+
+  private async _probeAndSpawn(): Promise<void> {
+    this._state = "probing"
+    const epoch = ++this._probeEpoch
+    let externalAlive = false
+    try {
+      externalAlive = await this.deps.healthCheck(this.config)
+    } catch {
+      // Defensive: the HealthCheck contract says implementations should
+      // resolve false on failure, but if a buggy adapter rejects, treat the
+      // same as "no external daemon" and proceed to spawn.
+      externalAlive = false
+    }
+
+    // A newer probe has been issued (e.g. stop → start while we awaited).
+    // The lifecycle is now driven by that probe; ours is stale data.
+    if (this._probeEpoch !== epoch) return
+
+    // stop() may have run while the probe was in flight. Honor it.
+    if (this._state !== "probing") return
+
+    if (externalAlive) {
+      this._state = "external"
+      this._logger.info(
+        `external gctrl daemon detected on :${this.config.port} — bundled kernel sidecar will not spawn`,
+      )
+      return
+    }
+
+    this._spawn()
   }
 
   private _spawn(): void {
@@ -196,7 +270,11 @@ export class KernelSidecar {
       this._pendingRestart = undefined
       // Defensive: if stop() ran between scheduling and firing, do not respawn.
       if (this._state !== "restartQueued") return
-      this._spawn()
+      // Re-probe before respawning. Covers the "another daemon came up
+      // between crashes" path — typically the user starting `gctrld serve`
+      // by hand to debug, or a brew/cargo install grabbing :4318 while the
+      // bundled kernel was flapping.
+      void this._probeAndSpawn()
     }, delay)
   }
 }

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 import {
   KernelSidecar,
   RESTART_BACKOFF_MS,
+  type HealthCheck,
   type Scheduler,
   type SidecarConfig,
   type SidecarLogger,
@@ -14,6 +15,19 @@ const config: SidecarConfig = {
   binPath: "/abs/path/to/gctrl-kernel",
   port: 4318,
   dataDir: "/abs/path/to/data",
+}
+
+// Default fake: no external daemon → lifecycle proceeds to spawn. Tests that
+// exercise the singleton path build their own controllable HealthCheck.
+const noExternalDaemon: HealthCheck = async () => false
+
+// Yield a microtask so the awaited probe inside `start()` has a chance to
+// resolve before the test inspects state. The probe is fully synchronous in
+// these tests (the fake resolves immediately), so a single microtask flush
+// is enough.
+const flushMicrotasks = async (): Promise<void> => {
+  await Promise.resolve()
+  await Promise.resolve()
 }
 
 type ExitHandler = (code: number | null, signal: NodeJS.Signals | null) => void
@@ -103,16 +117,17 @@ const makeFakeScheduler = (): {
 const silentLogger: SidecarLogger = { info: () => {}, warn: () => {}, error: () => {} }
 
 describe("KernelSidecar.start", () => {
-  it("spawns once with the configured binary, port, and data directory", () => {
+  it("spawns once with the configured binary, port, and data directory", async () => {
     const fakeSpawner = makeFakeSpawner()
     const fakeScheduler = makeFakeScheduler()
     const sidecar = new KernelSidecar(config, {
       spawner: fakeSpawner.spawner,
       scheduler: fakeScheduler.scheduler,
+      healthCheck: noExternalDaemon,
       logger: silentLogger,
     })
 
-    sidecar.start()
+    await sidecar.start()
 
     expect(fakeSpawner.spawnCount()).toBe(1)
     expect(fakeSpawner.spawnedConfigs()[0]).toEqual(config)
@@ -120,34 +135,36 @@ describe("KernelSidecar.start", () => {
     expect(sidecar.currentPid).toBe(fakeSpawner.lastPid())
   })
 
-  it("is a no-op when already running", () => {
+  it("is a no-op when already running", async () => {
     const fakeSpawner = makeFakeSpawner()
     const fakeScheduler = makeFakeScheduler()
     const sidecar = new KernelSidecar(config, {
       spawner: fakeSpawner.spawner,
       scheduler: fakeScheduler.scheduler,
+      healthCheck: noExternalDaemon,
       logger: silentLogger,
     })
 
-    sidecar.start()
-    sidecar.start()
-    sidecar.start()
+    await sidecar.start()
+    await sidecar.start()
+    await sidecar.start()
 
     expect(fakeSpawner.spawnCount()).toBe(1)
   })
 })
 
 describe("KernelSidecar watchdog", () => {
-  it("schedules a restart on unexpected exit using the first backoff value", () => {
+  it("schedules a restart on unexpected exit using the first backoff value", async () => {
     const fakeSpawner = makeFakeSpawner()
     const fakeScheduler = makeFakeScheduler()
     const sidecar = new KernelSidecar(config, {
       spawner: fakeSpawner.spawner,
       scheduler: fakeScheduler.scheduler,
+      healthCheck: noExternalDaemon,
       logger: silentLogger,
     })
 
-    sidecar.start()
+    await sidecar.start()
     fakeSpawner.triggerExit(1)
 
     expect(sidecar.state).toBe("restartQueued")
@@ -155,35 +172,40 @@ describe("KernelSidecar watchdog", () => {
     expect(fakeScheduler.pending()[0]!.ms).toBe(RESTART_BACKOFF_MS[0])
   })
 
-  it("respawns when the restart timer fires", () => {
+  it("respawns when the restart timer fires", async () => {
     const fakeSpawner = makeFakeSpawner()
     const fakeScheduler = makeFakeScheduler()
     const sidecar = new KernelSidecar(config, {
       spawner: fakeSpawner.spawner,
       scheduler: fakeScheduler.scheduler,
+      healthCheck: noExternalDaemon,
       logger: silentLogger,
     })
 
-    sidecar.start()
+    await sidecar.start()
     fakeSpawner.triggerExit(1)
     fakeScheduler.runAll()
+    // Timer-fired restart re-probes asynchronously; flush the probe before
+    // asserting state.
+    await flushMicrotasks()
 
     expect(fakeSpawner.spawnCount()).toBe(2)
     expect(sidecar.state).toBe("running")
   })
 
-  it("uses an increasing backoff for successive crashes, capped at the last value", () => {
+  it("uses an increasing backoff for successive crashes, capped at the last value", async () => {
     const fakeSpawner = makeFakeSpawner()
     const fakeScheduler = makeFakeScheduler()
     const sidecar = new KernelSidecar(config, {
       spawner: fakeSpawner.spawner,
       scheduler: fakeScheduler.scheduler,
+      healthCheck: noExternalDaemon,
       logger: silentLogger,
     })
 
     const recordedDelays: number[] = []
 
-    sidecar.start()
+    await sidecar.start()
     // Crash repeatedly; expect each backoff to match the schedule, with the
     // tail extending at the cap.
     for (let i = 0; i < RESTART_BACKOFF_MS.length + 2; i++) {
@@ -192,6 +214,7 @@ describe("KernelSidecar watchdog", () => {
       expect(next).toBeDefined()
       recordedDelays.push(next!.ms)
       fakeScheduler.runAll()
+      await flushMicrotasks()
     }
 
     const cap = RESTART_BACKOFF_MS[RESTART_BACKOFF_MS.length - 1]!
@@ -201,16 +224,17 @@ describe("KernelSidecar watchdog", () => {
 })
 
 describe("KernelSidecar.stop", () => {
-  it("sends SIGTERM to the running process and transitions to stopped", () => {
+  it("sends SIGTERM to the running process and transitions to stopped", async () => {
     const fakeSpawner = makeFakeSpawner()
     const fakeScheduler = makeFakeScheduler()
     const sidecar = new KernelSidecar(config, {
       spawner: fakeSpawner.spawner,
       scheduler: fakeScheduler.scheduler,
+      healthCheck: noExternalDaemon,
       logger: silentLogger,
     })
 
-    sidecar.start()
+    await sidecar.start()
     sidecar.stop()
     // Fake spawner records the kill signal but does not auto-fire exit;
     // simulate a process that exits promptly on SIGTERM by triggering it.
@@ -220,16 +244,17 @@ describe("KernelSidecar.stop", () => {
     expect(sidecar.state).toBe("stopped")
   })
 
-  it("does not schedule a restart after stop, even on subsequent exit events", () => {
+  it("does not schedule a restart after stop, even on subsequent exit events", async () => {
     const fakeSpawner = makeFakeSpawner()
     const fakeScheduler = makeFakeScheduler()
     const sidecar = new KernelSidecar(config, {
       spawner: fakeSpawner.spawner,
       scheduler: fakeScheduler.scheduler,
+      healthCheck: noExternalDaemon,
       logger: silentLogger,
     })
 
-    sidecar.start()
+    await sidecar.start()
     sidecar.stop()
     fakeSpawner.triggerExit(0, "SIGTERM")
 
@@ -237,16 +262,17 @@ describe("KernelSidecar.stop", () => {
     expect(fakeSpawner.spawnCount()).toBe(1)
   })
 
-  it("cancels a queued restart when stop is called between crash and respawn", () => {
+  it("cancels a queued restart when stop is called between crash and respawn", async () => {
     const fakeSpawner = makeFakeSpawner()
     const fakeScheduler = makeFakeScheduler()
     const sidecar = new KernelSidecar(config, {
       spawner: fakeSpawner.spawner,
       scheduler: fakeScheduler.scheduler,
+      healthCheck: noExternalDaemon,
       logger: silentLogger,
     })
 
-    sidecar.start()
+    await sidecar.start()
     fakeSpawner.triggerExit(1)
     expect(fakeScheduler.pending()).toHaveLength(1)
 
@@ -257,22 +283,24 @@ describe("KernelSidecar.stop", () => {
 
     // Even if a stale timer somehow fired, the sidecar must not respawn.
     fakeScheduler.runAll()
+    await flushMicrotasks()
     expect(fakeSpawner.spawnCount()).toBe(1)
   })
 
-  it("is a no-op when called from idle or stopped", () => {
+  it("is a no-op when called from idle or stopped", async () => {
     const fakeSpawner = makeFakeSpawner()
     const fakeScheduler = makeFakeScheduler()
     const sidecar = new KernelSidecar(config, {
       spawner: fakeSpawner.spawner,
       scheduler: fakeScheduler.scheduler,
+      healthCheck: noExternalDaemon,
       logger: silentLogger,
     })
 
     expect(() => sidecar.stop()).not.toThrow()
     expect(sidecar.state).toBe("stopped")
 
-    sidecar.start()
+    await sidecar.start()
     sidecar.stop()
     fakeSpawner.triggerExit(0, "SIGTERM")
     expect(() => sidecar.stop()).not.toThrow()
@@ -281,7 +309,7 @@ describe("KernelSidecar.stop", () => {
 })
 
 describe("KernelSidecar duplicate / stale exit defense", () => {
-  it("ignores a duplicate exit event after the lifecycle has already stopped", () => {
+  it("ignores a duplicate exit event after the lifecycle has already stopped", async () => {
     // Real OS exit fires once per process, but the SpawnedProcess interface is
     // adapter-specific — a buggy adapter that wraps `child.on("exit", h)` could
     // fire twice if multiple listeners are registered. Without a guard, the
@@ -292,10 +320,11 @@ describe("KernelSidecar duplicate / stale exit defense", () => {
     const sidecar = new KernelSidecar(config, {
       spawner: fakeSpawner.spawner,
       scheduler: fakeScheduler.scheduler,
+      healthCheck: noExternalDaemon,
       logger: silentLogger,
     })
 
-    sidecar.start()
+    await sidecar.start()
     fakeSpawner.triggerExit(1) // first (real) exit → restartQueued
     sidecar.stop() // clears timer → stopped
     expect(sidecar.state).toBe("stopped")
@@ -309,23 +338,25 @@ describe("KernelSidecar duplicate / stale exit defense", () => {
 })
 
 describe("KernelSidecar restart after stop", () => {
-  it("allows start() to spawn again after stop, with the backoff counter reset", () => {
+  it("allows start() to spawn again after stop, with the backoff counter reset", async () => {
     const fakeSpawner = makeFakeSpawner()
     const fakeScheduler = makeFakeScheduler()
     const sidecar = new KernelSidecar(config, {
       spawner: fakeSpawner.spawner,
       scheduler: fakeScheduler.scheduler,
+      healthCheck: noExternalDaemon,
       logger: silentLogger,
     })
 
-    sidecar.start()
+    await sidecar.start()
     fakeSpawner.triggerExit(1)
     fakeScheduler.runAll()
+    await flushMicrotasks()
     fakeSpawner.triggerExit(1) // second crash → second backoff
     expect(fakeScheduler.pending()[0]!.ms).toBe(RESTART_BACKOFF_MS[1])
 
     sidecar.stop()
-    sidecar.start()
+    await sidecar.start()
     fakeSpawner.triggerExit(1)
 
     expect(fakeScheduler.pending()[0]!.ms).toBe(RESTART_BACKOFF_MS[0])
@@ -333,7 +364,7 @@ describe("KernelSidecar restart after stop", () => {
 })
 
 describe("KernelSidecar logging", () => {
-  it("logs warnings on unexpected exit and info on graceful shutdown", () => {
+  it("logs warnings on unexpected exit and info on graceful shutdown", async () => {
     const fakeSpawner = makeFakeSpawner()
     const fakeScheduler = makeFakeScheduler()
     const logger: SidecarLogger = {
@@ -344,16 +375,215 @@ describe("KernelSidecar logging", () => {
     const sidecar = new KernelSidecar(config, {
       spawner: fakeSpawner.spawner,
       scheduler: fakeScheduler.scheduler,
+      healthCheck: noExternalDaemon,
       logger,
     })
 
-    sidecar.start()
+    await sidecar.start()
     fakeSpawner.triggerExit(1)
     expect(logger.warn).toHaveBeenCalled()
 
     fakeScheduler.runAll()
+    await flushMicrotasks()
     sidecar.stop()
     fakeSpawner.triggerExit(0, "SIGTERM")
     expect(logger.info).toHaveBeenCalled()
+  })
+})
+
+describe("KernelSidecar singleton (external daemon already running)", () => {
+  it("defers to an external daemon — no spawn, state goes to external", async () => {
+    const fakeSpawner = makeFakeSpawner()
+    const fakeScheduler = makeFakeScheduler()
+    const externalAlive: HealthCheck = async () => true
+    const sidecar = new KernelSidecar(config, {
+      spawner: fakeSpawner.spawner,
+      scheduler: fakeScheduler.scheduler,
+      healthCheck: externalAlive,
+      logger: silentLogger,
+    })
+
+    await sidecar.start()
+
+    expect(fakeSpawner.spawnCount()).toBe(0)
+    expect(sidecar.state).toBe("external")
+  })
+
+  it("logs the deferral with the configured port so the user knows why we didn't spawn", async () => {
+    const fakeSpawner = makeFakeSpawner()
+    const fakeScheduler = makeFakeScheduler()
+    const logger: SidecarLogger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    }
+    const sidecar = new KernelSidecar(config, {
+      spawner: fakeSpawner.spawner,
+      scheduler: fakeScheduler.scheduler,
+      healthCheck: async () => true,
+      logger,
+    })
+
+    await sidecar.start()
+
+    expect(logger.info).toHaveBeenCalled()
+    const message = (logger.info as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]
+    expect(message).toContain(":4318")
+    expect(message).toContain("not spawn")
+  })
+
+  it("treats a probe that throws as 'no external daemon' and proceeds to spawn", async () => {
+    const fakeSpawner = makeFakeSpawner()
+    const fakeScheduler = makeFakeScheduler()
+    const buggyProbe: HealthCheck = async () => {
+      throw new Error("network error during probe")
+    }
+    const sidecar = new KernelSidecar(config, {
+      spawner: fakeSpawner.spawner,
+      scheduler: fakeScheduler.scheduler,
+      healthCheck: buggyProbe,
+      logger: silentLogger,
+    })
+
+    await sidecar.start()
+
+    expect(fakeSpawner.spawnCount()).toBe(1)
+    expect(sidecar.state).toBe("running")
+  })
+
+  it("re-probes before each watchdog respawn — defers when an external daemon shows up between crashes", async () => {
+    const fakeSpawner = makeFakeSpawner()
+    const fakeScheduler = makeFakeScheduler()
+    let externalAlive = false
+    const sidecar = new KernelSidecar(config, {
+      spawner: fakeSpawner.spawner,
+      scheduler: fakeScheduler.scheduler,
+      healthCheck: async () => externalAlive,
+      logger: silentLogger,
+    })
+
+    await sidecar.start()
+    expect(sidecar.state).toBe("running")
+    expect(fakeSpawner.spawnCount()).toBe(1)
+
+    // Crash the bundled kernel; user (or brew) brings up `gctrld` between
+    // the crash and the restart timer firing.
+    fakeSpawner.triggerExit(1)
+    expect(sidecar.state).toBe("restartQueued")
+    externalAlive = true
+
+    fakeScheduler.runAll()
+    await flushMicrotasks()
+
+    // No second spawn; lifecycle has yielded to the external daemon.
+    expect(fakeSpawner.spawnCount()).toBe(1)
+    expect(sidecar.state).toBe("external")
+  })
+
+  it("stop() during an in-flight probe lands in stopped without spawning", async () => {
+    const fakeSpawner = makeFakeSpawner()
+    const fakeScheduler = makeFakeScheduler()
+    let releaseProbe: ((alive: boolean) => void) | undefined
+    const slowProbe: HealthCheck = () =>
+      new Promise<boolean>((resolve) => {
+        releaseProbe = resolve
+      })
+    const sidecar = new KernelSidecar(config, {
+      spawner: fakeSpawner.spawner,
+      scheduler: fakeScheduler.scheduler,
+      healthCheck: slowProbe,
+      logger: silentLogger,
+    })
+
+    const startPromise = sidecar.start()
+    expect(sidecar.state).toBe("probing")
+
+    sidecar.stop()
+    expect(sidecar.state).toBe("stopped")
+
+    // Probe finally resolves; lifecycle MUST NOT respawn or transition.
+    releaseProbe?.(false)
+    await startPromise
+
+    expect(fakeSpawner.spawnCount()).toBe(0)
+    expect(sidecar.state).toBe("stopped")
+  })
+
+  it("ignores a stale probe verdict when stop+start raced with the in-flight probe (epoch guard)", async () => {
+    // Sequence: start1 begins probing, stop+start2 issues a new probe while
+    // probe1 is still in flight, probe1 finally resolves saying "external
+    // daemon present." Without an epoch guard, probe1's verdict would mutate
+    // the second start's lifecycle (state happens to be `probing` again).
+    // With the guard, probe1 is dropped on the floor.
+    const fakeSpawner = makeFakeSpawner()
+    const fakeScheduler = makeFakeScheduler()
+
+    let release1: ((alive: boolean) => void) | undefined
+    let release2: ((alive: boolean) => void) | undefined
+    let probeIndex = 0
+    const probe: HealthCheck = () =>
+      new Promise<boolean>((resolve) => {
+        const which = probeIndex++
+        if (which === 0) release1 = resolve
+        else release2 = resolve
+      })
+
+    const sidecar = new KernelSidecar(config, {
+      spawner: fakeSpawner.spawner,
+      scheduler: fakeScheduler.scheduler,
+      healthCheck: probe,
+      logger: silentLogger,
+    })
+
+    const start1 = sidecar.start()
+    expect(sidecar.state).toBe("probing")
+
+    sidecar.stop()
+    expect(sidecar.state).toBe("stopped")
+    const start2 = sidecar.start()
+    expect(sidecar.state).toBe("probing")
+
+    // probe1 resolves with "external daemon present" — STALE.
+    release1?.(true)
+    await flushMicrotasks()
+    await start1
+    expect(sidecar.state).toBe("probing")
+    expect(fakeSpawner.spawnCount()).toBe(0)
+
+    // probe2 resolves with "no external daemon" — fresh, lifecycle acts.
+    release2?.(false)
+    await flushMicrotasks()
+    await start2
+    expect(sidecar.state).toBe("running")
+    expect(fakeSpawner.spawnCount()).toBe(1)
+  })
+
+  it("watchdog re-probe that rejects still respawns (rejection treated as 'no external')", async () => {
+    const fakeSpawner = makeFakeSpawner()
+    const fakeScheduler = makeFakeScheduler()
+    let probeIndex = 0
+    const probe: HealthCheck = async () => {
+      const which = probeIndex++
+      if (which === 0) return false // initial start: spawn
+      throw new Error("transient network blip during re-probe")
+    }
+    const sidecar = new KernelSidecar(config, {
+      spawner: fakeSpawner.spawner,
+      scheduler: fakeScheduler.scheduler,
+      healthCheck: probe,
+      logger: silentLogger,
+    })
+
+    await sidecar.start()
+    expect(fakeSpawner.spawnCount()).toBe(1)
+
+    fakeSpawner.triggerExit(1) // crash → restartQueued
+    fakeScheduler.runAll() // timer fires → re-probe (which rejects)
+    await flushMicrotasks()
+
+    // Rejected probe is treated as "no external daemon present" per the
+    // catch in `_probeAndSpawn`, so the watchdog respawns.
+    expect(fakeSpawner.spawnCount()).toBe(2)
+    expect(sidecar.state).toBe("running")
   })
 })
