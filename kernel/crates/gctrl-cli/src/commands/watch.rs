@@ -139,6 +139,13 @@ pub async fn watch_vault_mount(store: Arc<SqliteStore>, mount: VaultMount) {
         return;
     }
 
+    // Initial scan: notify only fires on Create/Modify, so a vault that
+    // already contains `{root}/PROJECT/*.md` at daemon startup would never
+    // trigger `import_subdir` and the projects table would stay empty.
+    // Walk direct children once so the desktop sidecar shows projects on
+    // first launch against an existing vault.
+    initial_scan(&store, &root, &mount.name);
+
     // Debounce: collect events for 500ms before processing
     loop {
         let Some(first_path) = rx.recv().await else {
@@ -167,6 +174,39 @@ pub async fn watch_vault_mount(store: Arc<SqliteStore>, mount: VaultMount) {
 
     // Keep watcher alive — dropping it stops watching
     drop(watcher);
+}
+
+/// One-shot scan of a mount root's direct children. Each subdirectory is
+/// fed through `import_subdir`, which auto-creates the project row and
+/// upserts any markdown issues. Errors are logged and skipped per-entry —
+/// a single unreadable subdirectory must not stop the watcher from booting.
+fn initial_scan(store: &SqliteStore, root: &Path, mount_name: &str) {
+    let entries = match std::fs::read_dir(root) {
+        Ok(it) => it,
+        Err(e) => {
+            tracing::warn!(
+                mount = %mount_name,
+                path = %root.display(),
+                error = %e,
+                "initial vault scan: read_dir failed"
+            );
+            return;
+        }
+    };
+    let mut scanned = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            import_subdir(store, &path, root, mount_name);
+            scanned += 1;
+        }
+    }
+    tracing::info!(
+        mount = %mount_name,
+        path = %root.display(),
+        subdirs = scanned,
+        "initial vault scan complete"
+    );
 }
 
 /// Import a single project subdirectory (e.g. `{mount_root}/BOARD/`).
@@ -374,6 +414,45 @@ mod tests {
         let bbb_issues = store.list_board_issues(&bbb_filter).unwrap();
         assert!(!aaa_issues.is_empty(), "AAA issues should be imported");
         assert!(!bbb_issues.is_empty(), "BBB issues should be imported");
+    }
+
+    /// Vault that already contains projects + markdown at daemon startup
+    /// must be imported by the initial scan — notify won't emit Create
+    /// events for files that exist before `watcher.watch` is called.
+    #[tokio::test]
+    async fn watch_imports_preexisting_projects_via_initial_scan() {
+        let store = Arc::new(SqliteStore::open(":memory:").unwrap());
+
+        let tmp = TempDir::new().unwrap();
+        let proj_dir = tmp.path().join("BOARD");
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        // Write the markdown BEFORE the watcher starts so notify sees no events.
+        std::fs::write(proj_dir.join("BOARD-1.md"), issue_md("BOARD", "BOARD", 1)).unwrap();
+
+        store
+            .create_vault_mount(&make_mount("m-pre", "preexisting", tmp.path()))
+            .unwrap();
+
+        watch_all_vault_mounts(Arc::clone(&store)).await;
+        // Initial scan runs synchronously during watcher startup; a brief
+        // sleep gives the spawned task time to reach it.
+        sleep(Duration::from_millis(300)).await;
+
+        let projects = store.list_board_projects().unwrap();
+        let keys: std::collections::HashSet<_> =
+            projects.iter().map(|p| p.key.as_str()).collect();
+        assert!(
+            keys.contains("BOARD"),
+            "initial scan must auto-create BOARD project for preexisting vault content; got {keys:?}"
+        );
+        let board = projects.iter().find(|p| p.key == "BOARD").unwrap();
+        let issues = store
+            .list_board_issues(&gctrl_core::BoardIssueFilter {
+                project_id: Some(board.id.clone()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(!issues.is_empty(), "initial scan must import preexisting markdown");
     }
 
     /// `App`-kind mounts (registered by `gctrl app install`) belong to the
