@@ -55,6 +55,32 @@ describe("build wiring contract", () => {
     expect(source).toContain("--gctrl-api-base=")
   })
 
+  it("main bundle's preload path matches the actual preload entry filename", () => {
+    // Regression guard: electron-vite emits `out/preload/index.mjs` (ES
+    // module format). When `src/main/index.ts` referenced
+    // `../preload/index.js` instead, Electron silently failed to load the
+    // preload, `window.desktop` was never defined, the SPA's `resolveUrl()`
+    // fell back to the document origin (`file://`), and every `/api/...`
+    // fetch turned into "Failed to fetch". Symptom-only — no error logged.
+    const mainSource = skipIfMissing(join(outDir, "main", "index.js"))
+    const preloadDir = join(outDir, "preload")
+    if (mainSource === null || !existsSync(preloadDir)) {
+      console.warn("[build-wiring] skipping — main or preload not built")
+      return
+    }
+    const preloadEntry = readdirSync(preloadDir).find(
+      (f) => f.startsWith("index.") && (f.endsWith(".js") || f.endsWith(".mjs")),
+    )
+    if (!preloadEntry) {
+      console.warn("[build-wiring] skipping — preload entry missing")
+      return
+    }
+    expect(
+      mainSource,
+      `main bundle must reference ../preload/${preloadEntry} (the actual built filename)`,
+    ).toContain(`../preload/${preloadEntry}`)
+  })
+
   it("bundled renderer index.html uses relative asset paths so file:// can load it", () => {
     const indexPath = join(outDir, "renderer", "index.html")
     const html = skipIfMissing(indexPath)
@@ -72,6 +98,28 @@ describe("build wiring contract", () => {
     for (const ref of assetRefs) {
       expect(ref, `asset ref must be relative (not /...) for file:// loading: ${ref}`).not.toMatch(/^\//)
     }
+  })
+
+  it("bundled renderer is the SPA, not the placeholder fallback", () => {
+    // `pnpm build` writes `out/renderer/index.html` as a placeholder
+    // ("Renderer not bundled."). The real SPA only lands when
+    // `pnpm build:renderer-spa` runs after — it RM's `out/renderer/` and
+    // copies `apps/gctrl-board/dist-web/` in. If someone packages with
+    // just `pnpm build`, the asar ships the placeholder and users see
+    // "Renderer not bundled" on launch instead of the dashboard.
+    //
+    // Hard-fail instead of skipping: if `out/renderer/` exists but is the
+    // placeholder, packaging is broken and CI must see it.
+    const indexPath = join(outDir, "renderer", "index.html")
+    const indexHtml = skipIfMissing(indexPath)
+    if (indexHtml === null) {
+      console.warn("[build-wiring] skipping — out/renderer/index.html not built")
+      return
+    }
+    expect(
+      indexHtml,
+      "out/renderer/index.html is the fallback placeholder — `pnpm build:renderer-spa` did not run",
+    ).not.toContain("Renderer not bundled")
   })
 
   it("bundled renderer SPA reads window.desktop.apiBase before fetching", () => {

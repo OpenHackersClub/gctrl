@@ -116,7 +116,10 @@ const createWindow = (): BrowserWindow => {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      preload: path.join(__dirname, "../preload/index.js"),
+      // electron-vite is configured `formats: ["es"]` for preload, which
+      // emits `out/preload/index.mjs`. The `.mjs` here must match the
+      // bundler output exactly — the build-wiring test asserts agreement.
+      preload: path.join(__dirname, "../preload/index.mjs"),
       // Pass the kernel sidecar's base URL into preload's argv so the SPA
       // (loaded from `file://` in packaged mode) can reach the loopback API
       // instead of resolving relative `/api/...` paths against `file:///`.
