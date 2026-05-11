@@ -161,7 +161,9 @@ const issuesCreateCommand = Command.make(
 
 const issuesCommand = Command.make("issues").pipe(
   Command.withSubcommands([issuesListCommand, issuesViewCommand, issuesCreateCommand]),
-  Command.withDescription("GitHub issues — list, view, create. Subcommands: list, view, create.")
+  Command.withDescription(
+    "GitHub issues — list, view, create. Subcommands: list, view, create.\nRequired on every subcommand: --repo <owner>/<name> (no auto-detect from cwd).\nOptions must precede positional args: `gctrl gh issues view --repo owner/repo 42`, NOT `... 42 --repo owner/repo`."
+  )
 )
 
 // --- prs ---
@@ -223,7 +225,9 @@ const prsViewCommand = Command.make(
 
 const prsCommand = Command.make("prs").pipe(
   Command.withSubcommands([prsListCommand, prsViewCommand]),
-  Command.withDescription("GitHub pull requests — list, view. Subcommands: list, view.")
+  Command.withDescription(
+    "GitHub pull requests — list, view. Subcommands: list, view.\nRequired on every subcommand: --repo <owner>/<name> (no auto-detect from cwd).\nOptions must precede positional args: `gctrl gh prs view --repo owner/repo 32`, NOT `... 32 --repo owner/repo`.\nFor cwd-based repo detection or unsupported flags, use the passthrough: `gctrl gh exec -- pr view 32`."
+  )
 )
 
 // --- runs ---
@@ -291,7 +295,9 @@ const runsViewCommand = Command.make(
 
 const runsCommand = Command.make("runs").pipe(
   Command.withSubcommands([runsListCommand, runsViewCommand]),
-  Command.withDescription("GitHub Actions runs — list, view. Subcommands: list, view.")
+  Command.withDescription(
+    "GitHub Actions runs — list, view. Subcommands: list, view.\nRequired on every subcommand: --repo <owner>/<name> (no auto-detect from cwd).\nOptions must precede positional args: `gctrl gh runs view --repo owner/repo 22549748112`, NOT `... 22549748112 --repo owner/repo`."
+  )
 )
 
 // --- exec (passthrough) ---
@@ -308,6 +314,6 @@ const execCommandWithDesc = execCommand.pipe(
 export const ghCommand = Command.make("gh").pipe(
   Command.withSubcommands([issuesCommand, prsCommand, runsCommand, execCommandWithDesc]),
   Command.withDescription(
-    "GitHub operations via kernel driver-github. Typed subcommands (issues/prs/runs) cover common reads; use `gctrl gh exec -- <gh args>` for full gh CLI passthrough (e.g. --json, gh api, gh pr merge)."
+    "GitHub operations via kernel driver-github.\nTyped subcommands: issues, prs, runs. Passthrough: exec.\n\nGotchas for typed subcommands (issues/prs/runs):\n  1. --repo <owner>/<name> is REQUIRED — no auto-detect from cwd.\n  2. Options must precede positional args (e.g. `gctrl gh prs view --repo owner/repo 32`, NOT `... 32 --repo owner/repo`).\nIf you need cwd-based repo detection or flags not exposed here (--json, --web, gh api, gh pr merge), use `gctrl gh exec -- <gh args>`."
   )
 )
