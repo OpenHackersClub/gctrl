@@ -116,10 +116,12 @@ const createWindow = (): BrowserWindow => {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      // electron-vite is configured `formats: ["es"]` for preload, which
-      // emits `out/preload/index.mjs`. The `.mjs` here must match the
-      // bundler output exactly — the build-wiring test asserts agreement.
-      preload: path.join(__dirname, "../preload/index.mjs"),
+      // A sandboxed renderer can only load a CommonJS preload — an ESM
+      // preload silently fails to execute. electron-vite is configured
+      // `formats: ["cjs"]` for preload, which emits `out/preload/index.cjs`.
+      // The `.cjs` here must match the bundler output exactly — the
+      // build-wiring test asserts agreement and that it is not ESM.
+      preload: path.join(__dirname, "../preload/index.cjs"),
       // Pass the kernel sidecar's base URL into preload's argv so the SPA
       // (loaded from `file://` in packaged mode) can reach the loopback API
       // instead of resolving relative `/api/...` paths against `file:///`.
