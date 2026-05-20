@@ -1,0 +1,15 @@
+export {
+  type Capability,
+  type CapabilityScope,
+  type FileSystemScope,
+  type NetworkScope,
+  type ProcessScope,
+  type LlmScope,
+  type DatabaseScope,
+  type SecretsScope,
+  requestCapability,
+  requestCapabilityAsync,
+  isCapability,
+  assertNotRevoked,
+  CapabilityRevokedError,
+} from "./capability.js";
