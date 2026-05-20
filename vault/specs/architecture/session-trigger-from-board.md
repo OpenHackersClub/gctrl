@@ -123,7 +123,10 @@ The deployed gctrl-board runs on Cloudflare Workers and has no local kernel to t
 
 - Add `cf-containers` ComputeSubstrate. Same `claude-code` runtime.
 - Local kernel orchestrates; agent runs in a CF Container and streams OTLP back to the local kernel.
+- LLM egress routes through a Proxy Worker (credential injection, cost enforcement, ZDR).
+- Workspace transferred via R2 snapshot; telemetry via cloudflared tunnel or relay Worker.
 - Still requires a local kernel daemon. Deployed board unchanged.
+- Implementation spec: [`../../implementation/kernel/compute-cf-containers.md`](../../implementation/kernel/compute-cf-containers.md)
 - Acceptance: local kernel + CF Container — session completes, spans land in DuckDB.
 
 ### Slice 3 — Cloud orchestrator (end goal)

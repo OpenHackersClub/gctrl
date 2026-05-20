@@ -45,7 +45,7 @@ The ComputeSubstrate MUST NOT decide *what* runs inside — that is the Runtime'
 | ComputeKind | Where it runs | Durable? | Status |
 |---|---|---|---|
 | `local-process` | `tokio::process::Child` on the gctrl daemon host | Workspace dir persists; process does not | Wired today |
-| `cf-containers` | Cloudflare Container, ephemeral | No (re-provision on retry) | [deferred] |
+| `cf-containers` | Cloudflare Container, ephemeral | No (re-provision on retry) | [deferred] — impl spec: [../../implementation/kernel/compute-cf-containers.md](../../implementation/kernel/compute-cf-containers.md) |
 | `e2b` | e2b cloud sandbox VM | No (re-provision on retry) | [deferred] |
 | `ssh-remote` | SSH-attached remote host | Workspace persists on the host | [deferred] |
 | `docker` | Local Docker / Podman container | Workspace via volume mount | [deferred] |
