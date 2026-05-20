@@ -44,7 +44,9 @@ describe("build wiring contract", () => {
       return
     }
     const entry = readdirSync(dir).find(
-      (f) => f.startsWith("index.") && (f.endsWith(".js") || f.endsWith(".mjs")),
+      (f) =>
+        f.startsWith("index.") &&
+        (f.endsWith(".js") || f.endsWith(".cjs") || f.endsWith(".mjs")),
     )
     if (!entry) {
       console.warn("[build-wiring] skipping — preload entry missing")
@@ -69,7 +71,9 @@ describe("build wiring contract", () => {
       return
     }
     const preloadEntry = readdirSync(preloadDir).find(
-      (f) => f.startsWith("index.") && (f.endsWith(".js") || f.endsWith(".mjs")),
+      (f) =>
+        f.startsWith("index.") &&
+        (f.endsWith(".js") || f.endsWith(".cjs") || f.endsWith(".mjs")),
     )
     if (!preloadEntry) {
       console.warn("[build-wiring] skipping — preload entry missing")
@@ -79,6 +83,49 @@ describe("build wiring contract", () => {
       mainSource,
       `main bundle must reference ../preload/${preloadEntry} (the actual built filename)`,
     ).toContain(`../preload/${preloadEntry}`)
+  })
+
+  it("sandboxed renderer's preload is CommonJS, not an ES module", () => {
+    // Regression guard for the second half of the "Failed to fetch" bug.
+    // The renderer runs with `webPreferences.sandbox: true`, and Electron
+    // loads a sandboxed preload in a CommonJS-only context. An ESM preload
+    // (`.mjs` extension, top-level `import ... from`) silently fails to
+    // execute there — `contextBridge.exposeInMainWorld("desktop", ...)`
+    // never runs, `window.desktop` stays undefined, and the SPA's
+    // `resolveUrl()` falls back to the `file://` origin. #199 fixed the
+    // preload *filename* but left it ESM; matching filenames is not enough
+    // if the format itself can't load in the sandbox.
+    const mainSource = skipIfMissing(join(outDir, "main", "index.js"))
+    const preloadDir = join(outDir, "preload")
+    if (mainSource === null || !existsSync(preloadDir)) {
+      console.warn("[build-wiring] skipping — main or preload not built")
+      return
+    }
+    // Only enforced when the renderer is actually sandboxed. Minifiers
+    // emit `sandbox:!0` for `sandbox: true`; accept both forms.
+    const sandboxed = /sandbox\s*:\s*(true|!0)/.test(mainSource)
+    if (!sandboxed) {
+      console.warn("[build-wiring] skipping — renderer not sandboxed")
+      return
+    }
+    const preloadEntry = readdirSync(preloadDir).find(
+      (f) =>
+        f.startsWith("index.") &&
+        (f.endsWith(".js") || f.endsWith(".cjs") || f.endsWith(".mjs")),
+    )
+    if (!preloadEntry) {
+      console.warn("[build-wiring] skipping — preload entry missing")
+      return
+    }
+    expect(
+      preloadEntry.endsWith(".mjs"),
+      `preload entry is ${preloadEntry} (ESM) but the renderer is sandboxed — build it as CommonJS (electron.vite.config.ts preload formats: ["cjs"])`,
+    ).toBe(false)
+    const preloadSource = readFileSync(join(preloadDir, preloadEntry), "utf8")
+    expect(
+      /(^|\n)\s*import\s[^\n]*\sfrom\s/.test(preloadSource),
+      "sandboxed preload must not use a top-level ESM `import` — it cannot load in a sandboxed renderer",
+    ).toBe(false)
   })
 
   it("bundled renderer index.html uses relative asset paths so file:// can load it", () => {
