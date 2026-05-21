@@ -1,8 +1,16 @@
-use gctrl_core::{ExecutionContext, PolicyDecision};
+use gctrl_core::{ActiveCapabilities, ExecutionContext, PolicyDecision};
 
 pub trait GuardrailPolicy: Send + Sync {
     fn name(&self) -> &str;
     fn check(&self, context: &ExecutionContext) -> PolicyDecision;
+
+    fn check_with_caps(
+        &self,
+        context: &ExecutionContext,
+        _caps: &ActiveCapabilities,
+    ) -> PolicyDecision {
+        self.check(context)
+    }
 }
 
 pub struct GuardrailEngine {
