@@ -37,6 +37,17 @@ These apply the Unix philosophy to gctrl's specific architecture.
 7. **Adapt, don't replace.** External tools (Linear, Notion, Phoenix, etc.) are applications installed on the OS, connected via drivers implementing kernel interface traits (`TrackerPort`, `ObservabilityExportPort`, etc.). Shipped native applications (gctrl-board, Observe & Eval) are defaults, not mandates.
 8. **Malleable by design.** gctrl MUST be software that users can adapt to their own needs with minimal friction, following the [malleable software](https://www.inkandswitch.com/essay/malleable-software/) philosophy. Anyone — developer or agent — SHOULD be able to customize gctrl's behavior by updating prompts (AGENTS.md) or swapping modularized implementation components, without forking or deep code surgery. Terminal-based coding agents (Claude Code, Aider, OpenCode) are the built-in customization tool — prompts are the first-class extension surface.
 
+## AI-Native Team Operation
+
+> See the [PRD](gctrl/PRD.md) for the full reframe. These invariants are the non-negotiable consequences for design.
+
+1. **Direction is the primary input, not tickets.** The kernel's primary user surface MUST be direction (intent, goals, priorities, constraints, review feedback) stored in the vault. Ticket-style dispatch (board cards, queues, orchestrate) MUST be opt-in surfaces layered over direction, never the only happy path. Features that *require* a pre-decomposed ticket to do useful work belong in M2d / drivers, not the kernel core.
+2. **Every session MUST write back.** A session that produces a diff but does not produce structured signal (insights, decisions, eval-eligible artifacts, or review feedback) is an under-used session. The kernel MUST provide a write-back contract (vault entries + DuckDB rows) and applications MUST honor it.
+3. **In-loop improvement, not out-of-band.** Performance signal (eval scores, judge metrics, review feedback, run outcomes) MUST be able to flow back into the agent harness (prompts, skill selection, scope, retry policy) without a human prompt-editing ritual. Manual prompt edits are a fallback, not the design.
+4. **The harness, not the model, is what gctrl improves.** "Agents improve themselves" means the *harness* improves — context, prompts, skills, scope, guardrails. The kernel MUST NOT attempt to train or fine-tune models. Treat model swapping as configuration; treat harness curation as the product.
+5. **Agents are employees, not jobs.** Personas are long-lived, scoped, and accumulate a performance record. Cost budgets, branch protections, command allowlists, and direction MUST attach to personas — not to one-off task rows. A persona that underperforms gets its scope, harness, or assignments adjusted, not retired-and-rehired.
+6. **The team is a first-class object.** Direction, work-in-flight, cost trend, eval trend, skill coverage are team-level views the kernel surfaces directly. Aggregating these from raw session rows in user code is a sign the kernel is missing a primitive.
+
 ## Vendor Independence
 
 1. **Minimal vendor lock-in.** gctrl MUST avoid deep coupling to proprietary platforms or APIs. Prefer open standards and protocols over vendor-specific SDKs. Where a vendor dependency exists, isolate it behind a kernel interface trait so it can be swapped without modifying the kernel or applications.
