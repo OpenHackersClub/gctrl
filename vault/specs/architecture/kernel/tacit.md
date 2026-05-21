@@ -1,19 +1,21 @@
 # TACIT — Tracked Agent Capabilities In Types
 
-Kernel-level guardrails for agent-generated code. Prevents capability leakage, classified data exfiltration, and unsafe operations before code executes — not after.
+Pre-execution lint pass for agent-generated code. Catches common capability violations, information-flow leaks, and forbidden operations via static analysis before code executes.
 
-> Inspired by: [Tracking Capabilities for Safer Agents](https://arxiv.org/abs/2603.00991) (Odersky et al., EPFL, 2025). Reimplemented in TypeScript without Scala's capture checking — enforced via static analysis + runtime scoping rather than compiler-level type tracking.
+> **This is NOT a security boundary.** The actual security boundary is the ComputeSubstrate sandbox (process isolation, container, egress policy). TACIT is a best-effort heuristic linter that provides fast feedback and cost savings by rejecting obviously-unsafe code before burning compute. It can be bypassed by a sufficiently motivated adversary using indirection techniques (bracket notation, aliasing, template expressions).
 
-> Status: **[initial]**. Core engine implemented. MCP server optional.
+> Inspired by: [Tracking Capabilities for Safer Agents](https://arxiv.org/abs/2603.00991) (Odersky et al., EPFL, 2025). Reimplemented in TypeScript without Scala's capture checking — enforced via regex-based pattern matching + runtime scoping rather than compiler-level type tracking.
+
+> Status: **[experimental]**. Core engine implemented. MCP server optional. Not on the default code path.
 
 ---
 
 ## 1. Design Principles
 
-1. **Kernel-level, not app-level.** TACIT is a kernel primitive under Guardrails. Apps and agents call it; they don't own it.
+1. **Defense in depth, not sole defense.** TACIT is a pre-execution lint layer under Guardrails. The real safety boundary is the ComputeSubstrate sandbox + egress proxy. TACIT catches accidental misuse early; the sandbox prevents intentional abuse.
 2. **Static-first, runtime-second.** The `guard()` function rejects code before execution. Runtime scoping (`requestCapability`) is the second line for code that passes validation.
 3. **MCP is optional.** The library works as a direct import (`import { guard } from "gctrl-tacit"`). The MCP server is an adapter that exposes the same functionality as tools — for agents that prefer tool-calling over code-mode.
-4. **No Scala dependency.** The original paper uses Scala 3's capture checking for compile-time guarantees. We achieve equivalent safety via pattern validation + capability scoping + information-flow tracking in TypeScript.
+4. **No Scala dependency.** The original paper uses Scala 3's capture checking for compile-time guarantees. TypeScript cannot provide equivalent compile-time safety. We use pattern-based validation + capability scoping + information-flow tracking as a best-effort approximation.
 
 ---
 

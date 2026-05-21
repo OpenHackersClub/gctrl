@@ -212,13 +212,6 @@ importers:
         version: 3.2.4(@types/debug@4.1.13)(@types/node@22.19.17)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3)
 
   shell/gctrl-tacit:
-    dependencies:
-      '@effect/schema':
-        specifier: ^0.75.0
-        version: 0.75.5(effect@3.21.0)
-      effect:
-        specifier: ^3.14.0
-        version: 3.21.0
     devDependencies:
       tsup:
         specifier: ^8.0.0

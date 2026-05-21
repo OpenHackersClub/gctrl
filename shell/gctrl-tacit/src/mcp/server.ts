@@ -1,4 +1,5 @@
 import { guard, type GuardOptions } from "../engine.js";
+import { checkCapabilities } from "../validator/capability-checker.js";
 import type { CapabilityGrant, CodeSubmission } from "../types.js";
 import { Verdict } from "../types.js";
 
@@ -23,7 +24,7 @@ export function createTacitMcpServer(options: GuardOptions = {}): TacitMcpServer
     {
       name: "tacit_guard",
       description:
-        "Validate agent-generated code against capability boundaries, classified data leakage, and forbidden patterns. Returns a verdict (Allow/Deny/Warn) with details.",
+        "Validate agent-generated code against capability boundaries, classified data leakage, and forbidden patterns. Returns a verdict (Allow/Deny/Warn) with violation details. This is a best-effort static lint pass — not a security boundary.",
       inputSchema: {
         type: "object",
         properties: {
@@ -61,19 +62,6 @@ export function createTacitMcpServer(options: GuardOptions = {}): TacitMcpServer
         required: ["code"],
       },
     },
-    {
-      name: "tacit_classify",
-      description:
-        "Wrap a value as Classified — once classified, it cannot be leaked to stdout, network, or filesystem without going through .map() with a pure function.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          value: { type: "string", description: "The value to classify (will be treated as opaque)" },
-          label: { type: "string", description: "A label for this classified value (for audit)" },
-        },
-        required: ["value"],
-      },
-    },
   ];
 
   async function handleToolCall(
@@ -85,8 +73,6 @@ export function createTacitMcpServer(options: GuardOptions = {}): TacitMcpServer
         return handleGuard(args, options);
       case "tacit_check_capabilities":
         return handleCheckCapabilities(args);
-      case "tacit_classify":
-        return handleClassify(args);
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
     }
@@ -99,11 +85,18 @@ function handleGuard(
   args: Record<string, unknown>,
   options: GuardOptions,
 ): McpToolResult {
+  if (typeof args.code !== "string" || !args.code) {
+    return { content: [{ type: "text", text: "Error: 'code' must be a non-empty string" }], isError: true };
+  }
+  if (typeof args.sessionId !== "string" || !args.sessionId) {
+    return { content: [{ type: "text", text: "Error: 'sessionId' must be a non-empty string" }], isError: true };
+  }
+
   const submission: CodeSubmission = {
-    code: args.code as string,
-    language: (args.language as "typescript" | "javascript") ?? "typescript",
-    sessionId: args.sessionId as string,
-    capabilities: (args.capabilities as CapabilityGrant[]) ?? [],
+    code: args.code,
+    language: (args.language === "javascript" ? "javascript" : "typescript"),
+    sessionId: args.sessionId,
+    capabilities: Array.isArray(args.capabilities) ? (args.capabilities as CapabilityGrant[]) : [],
   };
 
   const result = guard(submission, options);
@@ -125,40 +118,18 @@ function handleGuard(
 }
 
 function handleCheckCapabilities(args: Record<string, unknown>): McpToolResult {
-  const code = args.code as string;
-  const { checkCapabilities } = require("../validator/capability-checker.js");
-  const violations = checkCapabilities(code, []);
+  if (typeof args.code !== "string" || !args.code) {
+    return { content: [{ type: "text", text: "Error: 'code' must be a non-empty string" }], isError: true };
+  }
 
-  const required = [...new Set(violations.map((v: { required: string }) => v.required))];
+  const violations = checkCapabilities(args.code, []);
+  const required = [...new Set(violations.map((v) => v.required))];
 
   return {
     content: [
       {
         type: "text",
-        text: JSON.stringify(
-          {
-            requiredCapabilities: required,
-            details: violations,
-          },
-          null,
-          2,
-        ),
-      },
-    ],
-  };
-}
-
-function handleClassify(args: Record<string, unknown>): McpToolResult {
-  return {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify({
-          classified: true,
-          label: args.label ?? "unlabeled",
-          value: "Classified(****)",
-          note: "Value is now classified. Any code using this value must go through .map() with a pure function.",
-        }),
+        text: JSON.stringify({ requiredCapabilities: required, details: violations }, null, 2),
       },
     ],
   };

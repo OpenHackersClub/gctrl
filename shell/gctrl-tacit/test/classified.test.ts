@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { classify, isClassified, classifyRecord, createRevealPermission } from "../src/classified/index.js";
+import { classify, isClassified, classifyRecord, createRevealPermission, reveal } from "../src/classified/index.js";
 
 describe("Classified", () => {
   it("wraps a value", () => {
@@ -39,5 +39,24 @@ describe("Classified", () => {
     expect(isClassified(42)).toBe(false);
     expect(isClassified(null)).toBe(false);
     expect(isClassified({})).toBe(false);
+  });
+
+  it("reveal extracts value with valid permission", () => {
+    const secret = classify("super-secret");
+    const perm = createRevealPermission("test-session");
+    expect(reveal(secret, perm)).toBe("super-secret");
+  });
+
+  it("reveal works after map transformation", () => {
+    const secret = classify("hello");
+    const mapped = secret.map((s) => s.length);
+    const perm = createRevealPermission("test-session");
+    expect(reveal(mapped, perm)).toBe(5);
+  });
+
+  it("reveal throws with forged permission object", () => {
+    const secret = classify("password");
+    const forged = { _tag: "RevealPermission" as const, sessionId: "fake" } as any;
+    expect(() => reveal(secret, forged)).toThrow("Invalid RevealPermission");
   });
 });

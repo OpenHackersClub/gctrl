@@ -83,6 +83,3 @@ export function validatePatterns(code: string): ReadonlyArray<Violation> {
   return violations;
 }
 
-export function addCustomPattern(pattern: ForbiddenPattern): ForbiddenPattern {
-  return pattern;
-}

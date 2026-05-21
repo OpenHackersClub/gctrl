@@ -1,6 +1,12 @@
+import { readFile, writeFile, readdir, stat } from "node:fs/promises";
+import { resolve, relative, realpath } from "node:path";
+import { execFile as execFileCb } from "node:child_process";
+import { promisify } from "node:util";
 import { type Capability, requestCapabilityAsync, assertNotRevoked } from "../capabilities/index.js";
 import { classify, type Classified, isClassified } from "../classified/index.js";
 import type { CapabilityGrant, CapabilityKind } from "../types.js";
+
+const execFileAsync = promisify(execFileCb);
 
 export interface SandboxConfig {
   readonly capabilities: ReadonlyArray<CapabilityGrant>;
@@ -27,11 +33,15 @@ export interface OutputChannel {
   toString(): string;
 }
 
-function createOutputChannel(): OutputChannel & { buffer: string[] } {
+function createOutputChannel(maxSize: number): OutputChannel & { buffer: string[] } {
+  let totalSize = 0;
   const channel = {
     buffer: [] as string[],
     write(data: string) {
-      channel.buffer.push(data);
+      if (totalSize >= maxSize) return;
+      const truncated = data.slice(0, maxSize - totalSize);
+      channel.buffer.push(truncated);
+      totalSize += truncated.length;
     },
     toString() {
       return channel.buffer.join("");
@@ -43,8 +53,8 @@ function createOutputChannel(): OutputChannel & { buffer: string[] } {
 export function createSandboxGlobals(
   config: SandboxConfig,
 ): Record<string, unknown> {
-  const output = createOutputChannel();
-  const secureOutput = createOutputChannel();
+  const output = createOutputChannel(config.maxOutputSize);
+  const secureOutput = createOutputChannel(config.maxOutputSize);
 
   return {
     classify,
@@ -89,7 +99,7 @@ export function createSandboxGlobals(
     ): Promise<T> => {
       assertCapabilityGranted(config.capabilities, "process");
       return requestCapabilityAsync("process", { allowedCommands: commands, strictMode: true }, async (cap) => {
-        const proc = createScopedProcess(cap, commands);
+        const proc = createScopedProcess(cap, commands, config.timeout_ms);
         return op(proc);
       });
     },
@@ -116,42 +126,56 @@ export interface ScopedFileSystem {
   exists(path: string): Promise<boolean>;
 }
 
-function createScopedFileSystem(cap: Capability<"filesystem">, root: string): ScopedFileSystem {
-  const { readFile, writeFile, readdir, stat } = require("node:fs/promises");
-  const { join, resolve, relative } = require("node:path");
-
-  function assertWithinRoot(path: string): string {
-    const resolved = resolve(root, path);
-    const rel = relative(root, resolved);
-    if (rel.startsWith("..") || resolve(resolved) !== resolved.replace(/\/$/, "")) {
-      throw new Error(`Path '${path}' escapes root '${root}'`);
-    }
-    return resolved;
+async function assertWithinRoot(root: string, path: string): Promise<string> {
+  const resolved = resolve(root, path);
+  const rel = relative(root, resolved);
+  if (rel.startsWith("..")) {
+    throw new Error(`Path '${path}' escapes root '${root}'`);
   }
+  try {
+    const real = await realpath(resolved);
+    const realRoot = await realpath(root);
+    if (!real.startsWith(realRoot)) {
+      throw new Error(`Path '${path}' resolves via symlink outside root '${root}'`);
+    }
+    return real;
+  } catch (e: unknown) {
+    if ((e as { code?: string }).code === "ENOENT") {
+      return resolved;
+    }
+    throw e;
+  }
+}
 
+function createScopedFileSystem(cap: Capability<"filesystem">, root: string): ScopedFileSystem {
   return {
     async read(path: string): Promise<string> {
       assertNotRevoked(cap);
-      return readFile(assertWithinRoot(path), "utf-8");
+      const resolved = await assertWithinRoot(root, path);
+      return readFile(resolved, "utf-8");
     },
     async readClassified(path: string): Promise<Classified<string>> {
       assertNotRevoked(cap);
-      const content = await readFile(assertWithinRoot(path), "utf-8");
+      const resolved = await assertWithinRoot(root, path);
+      const content = await readFile(resolved, "utf-8");
       return classify(content);
     },
     async write(path: string, content: string): Promise<void> {
       assertNotRevoked(cap);
       if (cap.scope.readonly) throw new Error("Filesystem is readonly");
-      await writeFile(assertWithinRoot(path), content, "utf-8");
+      const resolved = await assertWithinRoot(root, path);
+      await writeFile(resolved, content, "utf-8");
     },
     async list(path: string): Promise<string[]> {
       assertNotRevoked(cap);
-      return readdir(assertWithinRoot(path));
+      const resolved = await assertWithinRoot(root, path);
+      return readdir(resolved);
     },
     async exists(path: string): Promise<boolean> {
       assertNotRevoked(cap);
       try {
-        await stat(assertWithinRoot(path));
+        const resolved = await assertWithinRoot(root, path);
+        await stat(resolved);
         return true;
       } catch {
         return false;
@@ -193,18 +217,15 @@ export interface ScopedProcess {
   exec(command: string, args?: string[]): Promise<{ stdout: string; stderr: string; exitCode: number }>;
 }
 
-function createScopedProcess(cap: Capability<"process">, allowedCommands: ReadonlyArray<string>): ScopedProcess {
+function createScopedProcess(cap: Capability<"process">, allowedCommands: ReadonlyArray<string>, timeoutMs: number): ScopedProcess {
   return {
     async exec(command: string, args: string[] = []) {
       assertNotRevoked(cap);
       if (!allowedCommands.includes(command)) {
         throw new Error(`Command '${command}' is not in the allowed list: [${allowedCommands.join(", ")}]`);
       }
-      const { execFile } = require("node:child_process");
-      const { promisify } = require("node:util");
-      const execFileAsync = promisify(execFile);
       try {
-        const { stdout, stderr } = await execFileAsync(command, args, { timeout: 30_000 });
+        const { stdout, stderr } = await execFileAsync(command, args, { timeout: timeoutMs });
         return { stdout, stderr, exitCode: 0 };
       } catch (e: unknown) {
         const err = e as { stdout?: string; stderr?: string; code?: number };
