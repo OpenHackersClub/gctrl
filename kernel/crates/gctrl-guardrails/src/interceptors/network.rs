@@ -29,9 +29,10 @@ impl ToolInterceptor for NetworkInterceptor {
 
         for host in &invocation.affected_hosts {
             if !scope.permits_host(host) {
-                return InterceptionResult::Deny(format!(
-                    "host {host} is outside permitted scope"
-                ));
+                tracing::warn!(%host, "network access denied — outside permitted scope");
+                return InterceptionResult::Deny(
+                    "network access denied".into(),
+                );
             }
         }
 

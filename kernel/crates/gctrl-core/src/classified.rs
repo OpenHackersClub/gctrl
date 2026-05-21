@@ -47,7 +47,13 @@ impl<T> Classified<T> {
         }
     }
 
-    pub fn map_pure<U>(&self, f: impl Fn(&T) -> U) -> Classified<U> {
+    /// Apply a pure function to the classified value. The result inherits the taint.
+    ///
+    /// Uses a function pointer (`fn`) instead of a closure (`impl Fn`) to enforce
+    /// local purity: function pointers cannot capture any environment, preventing
+    /// side-channel exfiltration of the inner value through mutable captures.
+    /// This is the Rust equivalent of TACIT's `T -> U` (pure) vs `T => U` (impure).
+    pub fn map_pure<U>(&self, f: fn(&T) -> U) -> Classified<U> {
         Classified {
             value: f(&self.value),
             taint: self.taint.clone(),
@@ -153,6 +159,10 @@ mod tests {
         assert!(TaintLevel::Confidential < TaintLevel::Secret);
     }
 
+    fn to_uppercase(s: &String) -> String {
+        s.to_uppercase()
+    }
+
     #[test]
     fn classified_map_pure_propagates_taint() {
         let secret = classify(
@@ -164,7 +174,7 @@ mod tests {
             "test",
         );
 
-        let upper = secret.map_pure(|s| s.to_uppercase());
+        let upper = secret.map_pure(to_uppercase);
         assert_eq!(upper.taint().level, TaintLevel::Secret);
         assert_eq!(upper.taint().source, "secrets.API_KEY");
     }

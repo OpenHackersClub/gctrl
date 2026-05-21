@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod acceptance;
 pub mod app_install;
 pub mod app_manifest;

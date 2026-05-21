@@ -31,9 +31,10 @@ impl ToolInterceptor for ProcessInterceptor {
 
         for cmd in &invocation.affected_commands {
             if !scope.permits_command(cmd) {
-                return InterceptionResult::Deny(format!(
-                    "command '{cmd}' is outside permitted scope"
-                ));
+                tracing::warn!(%cmd, "process execution denied — outside permitted scope");
+                return InterceptionResult::Deny(
+                    "process execution denied".into(),
+                );
             }
         }
 

@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod cap_engine;
 pub mod engine;
 pub mod interceptors;

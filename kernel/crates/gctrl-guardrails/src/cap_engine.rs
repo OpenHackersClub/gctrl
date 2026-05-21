@@ -12,25 +12,25 @@ use crate::taint::TaintTracker;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CapabilityError {
-    #[error("scope {requested:?} exceeds parent grant scope {parent:?}")]
+    #[error("requested scope exceeds parent grant scope")]
     ScopeExceedsParent {
         requested: CapabilityScope,
         parent: CapabilityScope,
     },
 
-    #[error("no manifest-level grant for capability {kind:?}")]
+    #[error("no manifest-level grant for the requested capability")]
     NoManifestGrant { kind: CapabilityKind },
 
-    #[error("no session-level grant for capability {kind:?} in session {session_id:?}")]
+    #[error("no session-level grant for the requested capability")]
     NoSessionGrant {
         kind: CapabilityKind,
         session_id: SessionId,
     },
 
-    #[error("grant {grant_id} already revoked")]
+    #[error("grant already revoked")]
     AlreadyRevoked { grant_id: String },
 
-    #[error("session {0:?} has no registered grants")]
+    #[error("session has no registered grants")]
     UnknownSession(SessionId),
 }
 
@@ -243,18 +243,9 @@ impl CapabilityEngine {
 }
 
 fn rand_nonce() -> u128 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let time_part = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let random_part: u64 = {
-        // Simple entropy mixing without external RNG crate
-        let ptr = Box::new(0u8);
-        let addr = &*ptr as *const u8 as u64;
-        addr ^ time_part as u64
-    };
-    (time_part as u128) << 64 | random_part as u128
+    let mut buf = [0u8; 16];
+    getrandom::getrandom(&mut buf).expect("CSPRNG failed — cannot mint capability tokens");
+    u128::from_le_bytes(buf)
 }
 
 #[cfg(test)]

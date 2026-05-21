@@ -1,9 +1,27 @@
+use std::path::Path;
+
 use async_trait::async_trait;
 use gctrl_core::{ActiveCapabilities, CapabilityKind};
 
 use crate::interception::{InterceptionResult, ToolInterceptor, ToolInvocation};
 
 pub struct FilesystemInterceptor;
+
+fn canonicalize_or_logical(path: &Path) -> std::path::PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| {
+        // File may not exist yet (e.g. Write to new file). Use logical normalization:
+        // resolve ".." and "." components without requiring filesystem access.
+        let mut components = Vec::new();
+        for comp in path.components() {
+            match comp {
+                std::path::Component::ParentDir => { components.pop(); }
+                std::path::Component::CurDir => {}
+                other => components.push(other),
+            }
+        }
+        components.iter().collect()
+    })
+}
 
 #[async_trait]
 impl ToolInterceptor for FilesystemInterceptor {
@@ -30,11 +48,12 @@ impl ToolInterceptor for FilesystemInterceptor {
         };
 
         for path in &invocation.affected_paths {
-            if !scope.permits_path(path) {
-                return InterceptionResult::Deny(format!(
-                    "path {} is outside permitted scope",
-                    path.display()
-                ));
+            let resolved = canonicalize_or_logical(path);
+            if !scope.permits_path(&resolved) {
+                tracing::warn!(path = %path.display(), resolved = %resolved.display(), "filesystem access denied — outside permitted scope");
+                return InterceptionResult::Deny(
+                    "filesystem access denied".into(),
+                );
             }
         }
 

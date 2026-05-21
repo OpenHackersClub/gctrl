@@ -69,7 +69,8 @@ impl ToolInvocation {
             "vault_write" => Some((CapabilityKind::VaultWrite, CapabilityScope::Full)),
             "secrets" | "secret_get" => Some((CapabilityKind::Secrets, CapabilityScope::Full)),
             "browser" | "cdp" => Some((CapabilityKind::BrowserCdp, CapabilityScope::Full)),
-            _ => None,
+            "scheduler" | "schedule" => Some((CapabilityKind::Scheduler, CapabilityScope::Full)),
+            _ => Some((CapabilityKind::Custom(self.tool_name.clone()), CapabilityScope::Full)),
         }
     }
 }
@@ -144,14 +145,19 @@ impl CapabilityGuardrailEngine {
             return InterceptionResult::Deny(reason);
         }
 
-        // Step 2: Check capability requirements
+        // Step 2: Check capability requirements (fail-closed — all tools require a grant)
         let caps = self.cap_engine.active_for_session(&invocation.session_id);
         if let Some((required_kind, required_scope)) = invocation.required_capability() {
             if !caps.has_scoped(&required_kind, &required_scope) {
-                return InterceptionResult::Deny(format!(
-                    "missing capability {:?} with required scope",
-                    required_kind
-                ));
+                tracing::warn!(
+                    session_id = %invocation.session_id.0,
+                    tool = %invocation.tool_name,
+                    ?required_kind,
+                    "capability check failed — insufficient grant"
+                );
+                return InterceptionResult::Deny(
+                    "insufficient capability for this operation".into(),
+                );
             }
         }
 
