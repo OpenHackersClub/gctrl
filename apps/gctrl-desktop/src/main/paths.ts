@@ -1,7 +1,7 @@
 // Path resolution for the kernel sidecar — pure module so the rules are
 // testable without an Electron runtime. Production wiring fills in the
-// `PathContext` from `app.isPackaged`, `process.resourcesPath`, and
-// `app.getPath("userData")`.
+// `PathContext` from `app.isPackaged`, `process.resourcesPath`,
+// `app.getPath("userData")`, `os.homedir()`, and `process.platform`.
 
 import path from "node:path"
 
@@ -16,8 +16,10 @@ export type PathContext = {
   readonly resourcesPath: string
   /**
    * `app.getPath("userData")`. On macOS this is
-   * `~/Library/Application Support/<bundle-id>/`. The kernel's DuckDB and
-   * vault directory live under this path.
+   * `~/Library/Application Support/<electron-name>/`. The Electron-managed
+   * vault directory lives under this path; the kernel DB does NOT (it
+   * lives at the OS-native `gctrl/` data dir so terminal-launched `gctrld`
+   * and the bundled sidecar share state).
    */
   readonly userDataPath: string
   /**
@@ -25,6 +27,16 @@ export type PathContext = {
    * Required only when `isPackaged === false`.
    */
   readonly appRoot: string
+  /**
+   * `os.homedir()`. Drives the OS-native data-dir resolution shared with
+   * the standalone `gctrld` CLI (see `resolveKernelDataDir`).
+   */
+  readonly homedir: string
+  /**
+   * `process.platform`. Selects the per-OS data dir convention — macOS
+   * uses `~/Library/Application Support/`, everything else uses XDG.
+   */
+  readonly platform: NodeJS.Platform
   /**
    * Optional override for the dev-mode kernel binary. When set, takes
    * precedence over the default dev-mode lookup. Wire to env var
@@ -54,11 +66,26 @@ export const resolveKernelBinPath = (ctx: PathContext): string => {
 }
 
 /**
- * Resolve the kernel data directory. Independent of packaging — always
- * `<userDataPath>/kernel/`. This directory survives app uninstall.
+ * Resolve the kernel data directory. **Shared with the standalone `gctrld`
+ * CLI** so terminal-launched and Dock-launched kernels see the same DB.
+ * Historically the sidecar wrote to `<userData>/kernel/` while the CLI
+ * defaulted to `~/.local/share/gctrl/`, so projects created by one were
+ * invisible to the other.
+ *
+ * Per-OS native location (mirrors `gctrl-core::config::gctrl_data_dir`):
+ * - macOS:        `~/Library/Application Support/gctrl/`
+ * - Linux/other:  `~/.local/share/gctrl/`
+ *
+ * Independent of packaging — dev and packaged sidecars both land at the
+ * same per-host dir, which is the whole point.
  */
-export const resolveKernelDataDir = (ctx: PathContext): string =>
-  path.join(ctx.userDataPath, "kernel")
+export const resolveKernelDataDir = (ctx: PathContext): string => {
+  const nativeParent =
+    ctx.platform === "darwin"
+      ? path.join(ctx.homedir, "Library", "Application Support")
+      : path.join(ctx.homedir, ".local", "share")
+  return path.join(nativeParent, "gctrl")
+}
 
 /**
  * Resolve the default vault directory the kernel sidecar should watch.

@@ -6,7 +6,9 @@ mod commands;
 #[derive(Parser)]
 #[command(name = "gctrld", version, about = "GroundCtrl kernel daemon — local-first OS for human+agent teams")]
 struct Cli {
-    /// Path to DuckDB database file (default: ~/.local/share/gctrl/gctrl.duckdb)
+    /// Path to DuckDB database file (default: OS-native — macOS:
+    /// `~/Library/Application Support/gctrl/gctrl.duckdb`, Linux:
+    /// `~/.local/share/gctrl/gctrl.duckdb`)
     #[arg(long, global = true)]
     db: Option<String>,
 

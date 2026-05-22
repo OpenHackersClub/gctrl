@@ -8,11 +8,18 @@ import {
   resolveKernelVaultDir,
 } from "../paths"
 
+// `userDataPath` reflects what Electron actually returns from
+// `app.getPath("userData")` — keyed by the Electron app name
+// (`gctrl-desktop`), NOT the bundle id. The CLI default lives one level
+// up (`Application Support/gctrl/`), so the two must NOT be equal —
+// historically they did diverge, and that divergence was the bug.
 const packagedCtx: PathContext = {
   isPackaged: true,
   resourcesPath: "/Applications/gctrl.app/Contents/Resources",
-  userDataPath: "/Users/alice/Library/Application Support/gctrl",
+  userDataPath: "/Users/alice/Library/Application Support/gctrl-desktop",
   appRoot: "/Applications/gctrl.app/Contents/Resources/app/main",
+  homedir: "/Users/alice",
+  platform: "darwin",
 }
 
 const devCtx: PathContext = {
@@ -20,6 +27,17 @@ const devCtx: PathContext = {
   resourcesPath: "",
   userDataPath: "/Users/alice/Library/Application Support/Electron",
   appRoot: "/Users/alice/repo/apps/gctrl-desktop",
+  homedir: "/Users/alice",
+  platform: "darwin",
+}
+
+const linuxCtx: PathContext = {
+  isPackaged: true,
+  resourcesPath: "/opt/gctrl/resources",
+  userDataPath: "/home/alice/.config/gctrl",
+  appRoot: "/opt/gctrl/resources/app/main",
+  homedir: "/home/alice",
+  platform: "linux",
 }
 
 describe("resolveKernelBinPath", () => {
@@ -49,20 +67,33 @@ describe("resolveKernelBinPath", () => {
 })
 
 describe("resolveKernelDataDir", () => {
-  it("returns <userDataPath>/kernel regardless of packaging", () => {
+  it("macOS: returns ~/Library/Application Support/gctrl (matches gctrld CLI default)", () => {
     expect(resolveKernelDataDir(packagedCtx)).toBe(
-      "/Users/alice/Library/Application Support/gctrl/kernel",
+      "/Users/alice/Library/Application Support/gctrl",
     )
+    // Dev mode (different userDataPath but same homedir+platform) MUST
+    // resolve to the same dir as packaged — sharing state with the CLI is
+    // the whole point, and divergence here was the original bug.
     expect(resolveKernelDataDir(devCtx)).toBe(
-      "/Users/alice/Library/Application Support/Electron/kernel",
+      "/Users/alice/Library/Application Support/gctrl",
     )
+  })
+
+  it("Linux: returns ~/.local/share/gctrl (XDG)", () => {
+    expect(resolveKernelDataDir(linuxCtx)).toBe("/home/alice/.local/share/gctrl")
+  })
+
+  it("ignores userDataPath — does NOT live under Electron's per-app dir", () => {
+    // userDataPath is platform-dependent and uses the Electron app name;
+    // anchoring kernel state there would diverge from the CLI default.
+    expect(resolveKernelDataDir(packagedCtx)).not.toContain(packagedCtx.userDataPath)
   })
 })
 
 describe("resolveKernelVaultDir", () => {
   it("returns <userDataPath>/vault regardless of packaging", () => {
     expect(resolveKernelVaultDir(packagedCtx)).toBe(
-      "/Users/alice/Library/Application Support/gctrl/vault",
+      "/Users/alice/Library/Application Support/gctrl-desktop/vault",
     )
     expect(resolveKernelVaultDir(devCtx)).toBe(
       "/Users/alice/Library/Application Support/Electron/vault",

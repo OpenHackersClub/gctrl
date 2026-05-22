@@ -6,6 +6,7 @@ import { app, BrowserWindow, Menu, ipcMain, shell } from "electron"
 import electronUpdater from "electron-updater"
 const { autoUpdater } = electronUpdater
 import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -42,6 +43,8 @@ const createSidecar = (): KernelSidecar | undefined => {
     resourcesPath: process.resourcesPath,
     userDataPath: app.getPath("userData"),
     appRoot: __dirname,
+    homedir: os.homedir(),
+    platform: process.platform,
     devKernelPath: process.env.GCTRL_KERNEL_DEV_PATH,
   }
 
