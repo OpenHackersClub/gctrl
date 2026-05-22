@@ -21,7 +21,7 @@
 
 ### M2a: Direction Surface (vault-first)
 
-The team's intent — goals, priorities, conventions, review feedback — is the first-class object. Stored in vault markdown (so non-devs and Obsidian users can edit), watched by the kernel, propagated to sessions.
+The team's intent — goals, priorities, conventions, review feedback — is the first-class object. Stored in vault markdown (so non-devs and Obsidian users can edit), watched by the kernel, propagated to sessions. See the [direction example in PRD](PRD.md#direction-example) for the shape.
 
 | Task | Description | Priority | Depends On | Issue |
 |------|-------------|----------|------------|-------|
@@ -29,6 +29,7 @@ The team's intent — goals, priorities, conventions, review feedback — is the
 | Direction watch + index | Kernel watcher hashes direction files, indexes `vault_path`+`content_hash`, fires events | P0 | M1 Vault watch | TBD |
 | Direction → session injection | At session start, render relevant direction into the prompt harness | P0 | Direction schema, M1 Context Manager | TBD |
 | `gctrl direct` CLI | `direct set / list / show / archive` — write direction without leaving the terminal | P0 | Direction schema | TBD |
+| **Obsidian editor UX** | Direction files render and edit cleanly in Obsidian; frontmatter validation surfaces inline | **P0** | Direction schema | TBD |
 | Direction propagation events | Emit `DirectionChanged` so subscribers (board, eval, drivers) react | P1 | Direction watch | TBD |
 | Per-persona scoping | Direction can target persona, project, repo, or global | P1 | Direction schema, M2c Personas | TBD |
 
@@ -97,6 +98,8 @@ Teams that still want a queue get one. **This used to be M2's headline; in the p
 
 **Goal:** Agents improve between runs from their own signal. Performance is a property of the persona, not of one-off sessions. Team capacity is forecastable from accumulated signal.
 
+> **Scope change under the pivot.** Observe & Eval is no longer a sibling application — it is the **engine of in-loop improvement**. Eval scores, judge metrics, and structured review feedback all flow through its substrate API and into per-persona scorecards; the kernel reads from those scorecards to update the next session's harness. Its previous scope (substrate + harness runner + Langfuse-grade observability) is retained; what changes is that this work is now load-bearing for the project's headline success metric, not a future-nice-to-have. Owners of existing observe-eval work should treat M4a as the new top of their queue.
+
 Observe & Eval owns both the **substrate** (metrics, prompts, judges, datasets, runs, score store) and the **harness** (`gctrl eval run`). See [Observe & Eval architecture](../architecture/apps/observe-eval.md).
 
 ### M4a: Closed Improvement Loop
@@ -108,7 +111,7 @@ Observe & Eval owns both the **substrate** (metrics, prompts, judges, datasets, 
 | Built-in judge metrics | `faithfulness`, `tool_correctness`, `json_correctness`, `hallucination`, generic `g_eval` | P0 | Substrate API, M1 LLM relay | TBD |
 | Harness runner | `gctrl eval run <suite>` — thin client of the substrate API | P0 | Substrate API | TBD |
 | Baseline & CI gating | `--baseline <run-id>` regression diff, non-zero exit on threshold breach | P1 | Harness runner | TBD |
-| **Signal → harness update** | Eval scores + review feedback automatically update the prompt/skill harness for next session (no manual edit) | **P0** | Harness runner, M2b Skill registry, M2b Review feedback | TBD |
+| **Signal → harness update** | Eval scores + review feedback automatically update the prompt/skill harness for next session (no manual edit). **P1 until Open Question #2 is closed** — promising P0 on undesigned mechanics is how roadmaps drift. | **P1** (blocked) | Harness runner, M2b Skill registry, M2b Review feedback, Open Question #2 | TBD |
 | Per-persona scorecard | Longitudinal eval + cost + outcome trend per persona | P0 | Substrate API, M2c Persona table | TBD |
 | Skill score updates | Skill registry scores update from runs that used the skill | P1 | Skill registry, Substrate API | TBD |
 | Prompt A/B comparison | Compare prompt versions / models against the same suite | P2 | Harness runner | TBD |
