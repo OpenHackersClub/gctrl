@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GctlConfig {
@@ -41,9 +41,8 @@ pub struct StorageConfig {
 
 impl Default for StorageConfig {
     fn default() -> Self {
-        let data_dir = dirs_default_data().join("gctrl");
         Self {
-            db_path: data_dir.join("gctrl.duckdb"),
+            db_path: gctrl_data_dir().join("gctrl.duckdb"),
             retention_days: 30,
         }
     }
@@ -92,16 +91,45 @@ impl Default for ProxyConfig {
 }
 
 impl ProxyConfig {
-    /// Directory where the MITM CA cert + key live.
-    /// Format matches gctrl convention: `~/.local/share/gctrl/proxy/ca/`.
+    /// Directory where the MITM CA cert + key live. Resolves under
+    /// `gctrl_data_dir()`, so the proxy CA tracks the same OS-native
+    /// location as the DuckDB store.
     pub fn ca_dir() -> PathBuf {
         gctrl_data_dir().join("proxy/ca")
     }
 }
 
-/// Public helper — `~/.local/share/gctrl/`.
+/// Public helper — the gctrl data directory.
+///
+/// Per-OS native location (Apple's File System Programming Guide / XDG):
+/// - macOS: `~/Library/Application Support/gctrl/`
+/// - Linux/other: `~/.local/share/gctrl/`
+///
+/// **Back-compat on macOS**: if the new Application-Support path does not
+/// yet exist but the legacy XDG path (`~/.local/share/gctrl/`) does, we
+/// return the legacy path so existing installs keep their DB without a
+/// manual move. Fresh macOS installs go straight to the Apple-native
+/// location. The fallback only triggers when the legacy dir contains a
+/// `gctrl.duckdb` — an empty stub doesn't count.
 pub fn gctrl_data_dir() -> PathBuf {
-    dirs_default_data().join("gctrl")
+    let native = dirs_default_data().join("gctrl");
+    let legacy = std::env::var_os("HOME")
+        .map(|h| PathBuf::from(h).join(".local/share/gctrl"));
+    resolve_data_dir(&native, legacy.as_deref(), cfg!(target_os = "macos"))
+}
+
+/// Pure resolver, separated for hermetic tests. Returns `legacy` only when
+/// running on macOS, the native path is absent on disk, and the legacy
+/// dir holds a `gctrl.duckdb` (i.e. real data, not an empty stub).
+fn resolve_data_dir(native: &Path, legacy: Option<&Path>, is_macos: bool) -> PathBuf {
+    if is_macos && !native.exists() {
+        if let Some(legacy) = legacy {
+            if legacy.join("gctrl.duckdb").exists() {
+                return legacy.to_path_buf();
+            }
+        }
+    }
+    native.to_path_buf()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -320,11 +348,24 @@ impl Default for SchedulerConfig {
     }
 }
 
+/// OS-native parent directory under which we place the `gctrl/` data
+/// folder. On macOS this is `~/Library/Application Support/` (Apple's File
+/// System Programming Guide: "Use Application Support for application
+/// data the user does not directly create"). On Linux it is
+/// `~/.local/share/` (XDG Base Directory). When `$HOME` is unset we fall
+/// back to `/tmp` rather than crashing on early-boot containers.
 fn dirs_default_data() -> PathBuf {
-    if let Some(home) = std::env::var_os("HOME") {
-        PathBuf::from(home).join(".local/share")
-    } else {
-        PathBuf::from("/tmp")
+    let Some(home) = std::env::var_os("HOME") else {
+        return PathBuf::from("/tmp");
+    };
+    let home = PathBuf::from(home);
+    #[cfg(target_os = "macos")]
+    {
+        home.join("Library/Application Support")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        home.join(".local/share")
     }
 }
 
@@ -407,5 +448,72 @@ mod tests {
         let parsed: SchedulerConfig = serde_json::from_str(legacy).unwrap();
         assert_eq!(parsed.run_retention_days, 90);
         assert_eq!(parsed.run_warn_row_count, 100_000);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_default_data_dir_is_application_support() {
+        let p = dirs_default_data();
+        assert!(
+            p.ends_with("Library/Application Support"),
+            "expected Application Support on macOS, got {p:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn non_macos_default_data_dir_is_xdg() {
+        let p = dirs_default_data();
+        assert!(
+            p.ends_with(".local/share"),
+            "expected XDG path on Linux, got {p:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_picks_native_when_native_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let native = dir.path().join("Library/Application Support/gctrl");
+        std::fs::create_dir_all(&native).unwrap();
+        let legacy = dir.path().join(".local/share/gctrl");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("gctrl.duckdb"), b"").unwrap();
+
+        assert_eq!(resolve_data_dir(&native, Some(&legacy), true), native);
+    }
+
+    #[test]
+    fn resolve_falls_back_to_legacy_on_macos_when_native_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let native = dir.path().join("Library/Application Support/gctrl");
+        let legacy = dir.path().join(".local/share/gctrl");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("gctrl.duckdb"), b"").unwrap();
+
+        assert_eq!(resolve_data_dir(&native, Some(&legacy), true), legacy);
+    }
+
+    #[test]
+    fn resolve_ignores_legacy_when_it_has_no_duckdb() {
+        // An empty stub directory must not count — distinguishes a real
+        // prior install from an accidentally-created empty path.
+        let dir = tempfile::tempdir().unwrap();
+        let native = dir.path().join("Library/Application Support/gctrl");
+        let legacy = dir.path().join(".local/share/gctrl");
+        std::fs::create_dir_all(&legacy).unwrap();
+
+        assert_eq!(resolve_data_dir(&native, Some(&legacy), true), native);
+    }
+
+    #[test]
+    fn resolve_never_falls_back_off_macos() {
+        // Linux must always use XDG, never reach for an alternate path.
+        let dir = tempfile::tempdir().unwrap();
+        let native = dir.path().join(".local/share/gctrl");
+        let alt = dir.path().join("Library/Application Support/gctrl");
+        std::fs::create_dir_all(&alt).unwrap();
+        std::fs::write(alt.join("gctrl.duckdb"), b"").unwrap();
+
+        assert_eq!(resolve_data_dir(&native, Some(&alt), false), native);
     }
 }

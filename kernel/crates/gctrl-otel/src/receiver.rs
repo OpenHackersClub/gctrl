@@ -390,6 +390,11 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/memory/{id}", get(memory_get).delete(memory_delete))
         // Health
         .route("/health", get(health))
+        // Eval substrate (M4 — POST /api/eval/*). Mounted before
+        // `.with_state(state)` so the score handler can resolve
+        // `State<Arc<AppState>>` against the same AppState as the rest of
+        // the router. Per-resource accessors are stubbed until storage lands.
+        .merge(crate::eval_routes::router())
         .with_state(state)
         // Google Calendar driver (LKM — read-by-default; writes gated by
         // GCAL_ALLOWED_SCOPES; no DELETE handler is mounted at all).

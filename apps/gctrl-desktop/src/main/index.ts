@@ -2,10 +2,11 @@
 // kernel sidecar (in packaged mode), and a narrow IPC surface exposed through
 // the preload bridge.
 
-import { app, BrowserWindow, Menu, ipcMain, shell } from "electron"
+import { app, BrowserWindow, dialog, Menu, ipcMain, shell } from "electron"
 import electronUpdater from "electron-updater"
 const { autoUpdater } = electronUpdater
 import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -18,6 +19,7 @@ import { createScheduler } from "./scheduler"
 import { createSpawner } from "./spawner"
 import { startAutoUpdater } from "./updater"
 import { handleGctrlUrl, type UrlHandlerDeps } from "./url-handler"
+import { resolveVaultDir, type VaultPicker } from "./vault-config"
 
 const KERNEL_PORT = 4318
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -30,7 +32,26 @@ let mainWindow: BrowserWindow | undefined
 // window is created). Drained on `did-finish-load`.
 const pendingUrls: string[] = []
 
-const createSidecar = (): KernelSidecar | undefined => {
+/**
+ * Native folder picker shown on first launch. Lets the user choose a vault
+ * root or create a new one. Mirrors Obsidian's "Open folder as vault"
+ * affordance — sandboxed file:// renderer can't do this from the web side,
+ * so it must happen in main.
+ */
+const nativeVaultPicker: VaultPicker = async () => {
+  const result = await dialog.showOpenDialog({
+    title: "Choose your gctrl vault",
+    message:
+      "Pick a folder where your projects, briefs, and tasks live. " +
+      "You can change this later in Settings.",
+    buttonLabel: "Use this folder",
+    properties: ["openDirectory", "createDirectory"],
+  })
+  if (result.canceled || result.filePaths.length === 0) return null
+  return result.filePaths[0] ?? null
+}
+
+const createSidecar = async (): Promise<KernelSidecar | undefined> => {
   // Only spawn the kernel sidecar in packaged mode. In dev, contributors run
   // `gctrld serve` separately. The singleton probe inside KernelSidecar would
   // catch the dev-mode case anyway (it'd defer to the contributor's daemon),
@@ -42,14 +63,22 @@ const createSidecar = (): KernelSidecar | undefined => {
     resourcesPath: process.resourcesPath,
     userDataPath: app.getPath("userData"),
     appRoot: __dirname,
+    homedir: os.homedir(),
+    platform: process.platform,
     devKernelPath: process.env.GCTRL_KERNEL_DEV_PATH,
   }
 
   const dataDir = resolveKernelDataDir(ctx)
-  // `GCTRL_BOARD_DIR` lets operators point the desktop kernel at an existing
-  // Obsidian vault (e.g. `~/workspaces/ohc/vault-gctrl/`) without symlinking.
-  // Falls back to the per-user default under Application Support.
-  const vaultDir = process.env.GCTRL_BOARD_DIR ?? resolveKernelVaultDir(ctx)
+  // Resolution order: GCTRL_BOARD_DIR env > persisted choice in
+  // `vault-config.json` > native folder picker > default fallback. On
+  // first launch the picker fires so the user lands on a real vault
+  // instead of an empty `<userData>/vault/` they didn't ask for.
+  const vaultDir = await resolveVaultDir({
+    userDataPath: ctx.userDataPath,
+    defaultVaultDir: resolveKernelVaultDir(ctx),
+    envOverride: process.env.GCTRL_BOARD_DIR,
+    picker: nativeVaultPicker,
+  })
 
   // Ensure both the kernel data dir and the vault root exist before the
   // sidecar starts — DuckDB's path must resolve, and the kernel's file
@@ -221,10 +250,13 @@ app.on("open-url", (event, url) => {
   void dispatchGctrlUrl(url)
 })
 
-void app.whenReady().then(() => {
+void app.whenReady().then(async () => {
   Menu.setApplicationMenu(buildAppMenu())
   registerLoginItem()
-  sidecar = createSidecar()
+  // Vault picker (when needed) blocks here on purpose — the kernel
+  // sidecar must know where to watch before it spawns. Subsequent
+  // launches read the persisted choice and skip the dialog entirely.
+  sidecar = await createSidecar()
   void sidecar?.start()
   mainWindow = createWindow()
 

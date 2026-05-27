@@ -2,6 +2,7 @@ pub mod browser_routes;
 pub mod comm_routes;
 pub mod recorder_routes;
 pub mod contributions;
+pub mod eval_routes;
 pub mod event_bus;
 pub mod gcal_routes;
 pub mod receiver;
