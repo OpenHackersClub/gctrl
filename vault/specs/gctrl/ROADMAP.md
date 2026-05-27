@@ -50,13 +50,15 @@ Sessions produce more than diffs — they produce *signal*. Insight, decision, s
 
 ### M2c: Personas & Team View
 
-The team — humans and agents — is the unit of management.
+The team — humans and agents — is the unit of management. This is also where the **human-side pillar (affordances over queries)** is most load-bearing: M2c is the primary surface a team lead reaches for. If the views here merely dump data, the pivot fails on the human side.
 
 | Task | Description | Priority | Depends On | Issue |
 |------|-------------|----------|------------|-------|
 | Persona table + CLI | `users` table (humans + agent personas); capability grants; `gctrl persona list/create/scope` | P0 | M1 Guardrails | TBD |
 | Per-persona guardrails | Cost budget, branch policy, command allowlist scoped to persona | P0 | Persona table, M1 Guardrails | TBD |
-| Team view | `gctrl status --team` — direction, in-flight, blocked, cost, eval trend at the team level | P0 | M1 Analytics, Persona table | TBD |
+| Per-persona affordance card | `gctrl persona show <name>` — current activity, scorecard trend, scope/guardrails, recent feedback, who's directing it. Highlights items needing action (declining score, budget near cap, expired direction) | P0 | Persona table, M2b Review feedback | TBD |
+| Team view (affordance-shaped) | `gctrl status --team` — direction, in-flight, blocked, cost, eval trend. **Highlights items needing action**, not a wall of raw rows. Acceptance: a lead returning after a weekend understands state + next move in one screen | P0 | M1 Analytics, Persona table, Per-persona affordance card | TBD |
+| Direction affordance | `gctrl direct list` surfaces expired / orphan / conflicting direction with an obvious next move | P0 | M2a Direction schema | TBD |
 | Standup view | `gctrl status --since 1d --team` — what shipped, what's stuck, what's queued | P1 | Team view | TBD |
 | Retro view | `gctrl review --since 1w` — feedback patterns, eval regressions, cost outliers | P1 | Team view, Review feedback capture | TBD |
 
