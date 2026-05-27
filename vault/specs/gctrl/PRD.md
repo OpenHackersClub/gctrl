@@ -51,7 +51,9 @@ Both shapes are legitimate. The pivot is not "Symphony is wrong"; it is "we're o
 
 The pivot rests on a pair of symmetric design pillars — one per side of the team:
 
-1. **Agent-side: agents improve themselves.** Eval scores, judge metrics, and review feedback close back into the harness (prompts, skill selection, scope). Improvement is in-loop, not a human prompt-editing ritual.
+1. **Agent-side: agents improve themselves and the system around them.** Two nested loops:
+   - **Inner loop (per session, fast, narrow blast radius).** Eval scores, judge metrics, and review feedback from a single session update *that persona's* harness (prompts, skill selection, scope, retry policy) for the next run. Signal-driven, automatic, no human prompt-editing ritual.
+   - **Outer loop (across sessions, slow, wider blast radius).** An agent runs on a schedule to observe the team's own operation — human prompts, workflows, recurring mistakes, results across personas, drift between specs and code — and *proposes or applies system-level improvements*: better defaults, new skills promoted to first-class, updated direction templates, missing guardrails, persona scope/binding changes. Auto-applies low-blast-radius changes; proposes-to-human for high-blast-radius ones. The agent improves the system the team operates on, not just itself.
 2. **Human-side: reduce human cognitive load by giving affordances on agents and tasks.** Humans should never have to mentally reconstruct what the team is doing. State that *exists* in the system MUST be made *perceivable* — at a glance, with the right action implied.
 
 A team of 3 humans and 30 agents is unmanageable if the human has to query for everything; it is manageable when the system *surfaces what matters and suggests the next move*. Concretely, gctrl is responsible for making these things first-class affordances:
@@ -64,6 +66,25 @@ A team of 3 humans and 30 agents is unmanageable if the human has to query for e
 The test: a team lead opening `gctrl status --team` after a weekend should understand the team's state and know what to do next, without writing a single SQL query, scrolling through traces, or asking an agent. If the system has the data but the human has to reconstruct it, that is a kernel-level bug, not a UX nice-to-have.
 
 These two pillars are designed to compose: the agent side compounds capability over time; the human side keeps a human in the loop without keeping them in the inner loop.
+
+### What the outer loop notices and changes
+
+The inner loop touches one persona based on one session's signal. The outer loop sees *the team using the team* and proposes changes a single session can never propose. Examples:
+
+| The outer-loop observer notices | And proposes / applies |
+|---|---|
+| The same review-feedback constraint ("don't suggest force-push") appears against 5 personas | Promote to a **global guardrail** so it's enforced, not re-corrected every time |
+| Direction files all happen to follow a similar structure | Propose a **direction template** that captures the convention; new direction starts from it |
+| Sessions running against direction tagged `migration` consistently overrun budget | Raise the **default budget** for `migration`-tagged direction, or route those to a different persona |
+| Humans frequently re-prompt to clarify scope in the first turn | Add "ask for scope upfront" to the **default starter prompt** for the persona |
+| A pattern (sequence of tool calls, prompt phrasing) shows up in N high-scoring sessions | Promote to a **first-class skill** in the registry, auto-attach to relevant personas |
+| Code referenced in PRs has drifted from the ROADMAP spec rows | Flag the drift, file inbox entries, surface as action-needed on the team view |
+| Persona X consistently scores lower than persona Y on the same direction | Propose **re-binding** direction to Y (or **narrowing X's scope**) |
+| A `WORKFLOW.md` says "use bare gh" but the kernel now wraps GitHub | Propose updating the team convention to route through `gctrl gh` |
+
+The outer loop is *dogfood-shaped*: the agent operating the system improves the system. Its cadence is the kernel scheduler (daily / weekly), not per-session. Its outputs go through approval gates by default — auto-applied only when blast radius is narrow (one persona's prompt addition), proposed-to-human when blast radius is wide (defaults, templates, global guardrails). Every proposal is persisted with rationale and evidence so the team can review *why* the system changed itself, not just *what* changed.
+
+Existing utility primitives (`/project-pulse`, `/pulse-drift`, `/pulse-opportunity`, `/pulse-audit`, `/pulse-prs`) are **early external instances of this loop**. The pivot makes the loop a first-class kernel concern with a contract, an approval model, and an audit log — instead of one-off skills.
 
 **The kernel is small and always present.** `gctrl serve` gives a solo developer their own AI-native team in one command — telemetry, storage, guardrails, vault, and the direction surface. No config, no cloud, no Docker.
 
@@ -255,7 +276,7 @@ See [ROADMAP.md](ROADMAP.md) for milestones, slice tables, and open questions.
 
 ## Success Criteria
 
-**Headline metric (the scoreboard for the pivot):** team-defined eval scores improve month-over-month from **harness updates alone** — no model swap, no manual prompt edit. If we cannot move this number, the rest of the pivot is decoration.
+**Headline metric (the scoreboard for the pivot):** team-defined eval scores improve month-over-month from **harness updates alone** — no model swap, no manual prompt edit. The improvement is driven by both loops: inner (per-session signal → that persona's next run) and outer (the system observing the team and changing its own defaults). If we cannot move this number, the rest of the pivot is decoration.
 
 Supporting criteria:
 
@@ -263,6 +284,7 @@ Supporting criteria:
 2. **Team is legible in one CLI call** — `gctrl status --team` shows direction, in-flight work, cost trend, eval trend, blocked items **with action-needed items highlighted**, not as a raw dump. A lead returning after a weekend understands state + next move from one screen. This is the human-side pillar's acceptance test.
 3. **Guardrails work** — destructive ops blocked, budget overruns halted in <30s. (Inherited from M1; still load-bearing.)
 4. **Per-persona scorecards drive scope changes** — at least one team makes a scope/harness change off a scorecard trend (not gut feel) within the first 90 days of adoption.
+5. **The system changes itself, auditably** — the outer loop applies at least one narrow change automatically and proposes at least one wide change that a human accepts. `gctrl review --self-changes` answers "what did the system change about itself this week, and why" from one CLI call. This is the outer-loop's acceptance test.
 
 ---
 

@@ -128,7 +128,23 @@ Observe & Eval owns both the **substrate** (metrics, prompts, judges, datasets, 
 | NL → SQL query | Natural-language → guardrailed SQL for agent self-inspection | P2 | M1 Query engine | TBD |
 | Direction → board surface | Materialize direction-level work into board cards for cross-org visibility | P1 | M2a, gctrl-board | TBD |
 
-**Done when:** A team-defined eval metric improves month-over-month from harness updates alone (no model swap, no manual prompt edit). A team lead asks "is direction X on track" and gets a forecast. An agent asks "my cost this session" and gets an answer.
+### M4c: Outer-Loop Self-Improvement
+
+> M4a closes the *inner* loop (one session → that persona's next run). M4c closes the *outer* loop: an agent observes the team's own operation — human prompts, workflows, recurring mistakes, cross-persona patterns, spec/code drift — and proposes or applies system-level improvements (defaults, templates, global guardrails, skill promotions, persona scope/binding changes). Cadence is the kernel scheduler, not per-session.
+>
+> Existing utility skills (`/project-pulse`, `/pulse-drift`, `/pulse-opportunity`, `/pulse-audit`, `/pulse-prs`) are external precursors; M4c lifts the pattern into a first-class kernel concern with a contract, approval gates, and an audit log.
+
+| Task | Description | Priority | Depends On | Issue |
+|------|-------------|----------|------------|-------|
+| Pattern observer service | Periodic agent that reads telemetry, eval scores, review feedback, direction, and code/spec state — surfaces recurring patterns the inner loop cannot see | P1 | M4a Per-persona scorecard, M2b Review feedback, M1 Scheduler | TBD |
+| Improvement proposal contract | Structured proposal type: `{ target, rationale, evidence (links to spans/scores/feedback), blast_radius, suggested_change }`. Persisted to DuckDB + vault | P1 | Pattern observer | TBD |
+| Approval gates (blast-radius-aware) | Auto-apply for **narrow** changes (one persona's prompt addition, one skill auto-attach); propose-to-human for **wide** changes (defaults, templates, global guardrails, persona re-binding). Default policy is configurable per kind | P1 | Improvement proposal contract | TBD |
+| Outer-loop schedule binding | Cron the observer at a sensible cadence (daily for narrow, weekly for wide); split via the scheduler | P1 | Pattern observer, M1 Scheduler | TBD |
+| Audit log of self-changes | Every proposal — applied, rejected, or pending — persisted with rationale + evidence. `gctrl review --self-changes` surfaces them for retrospective review | P1 | Improvement proposal contract | TBD |
+| Migrate existing pulse-* skills | Re-implement `/project-pulse` family as outer-loop observers running under the contract, not as ad-hoc skills | P2 | Pattern observer, Approval gates | TBD |
+| Drift-as-proposal | Existing `/pulse-drift` becomes proposals (e.g. "ROADMAP row X has no issue / PR — propose creating one or archiving") instead of advisory reports | P2 | Migrate existing pulse-* | TBD |
+
+**Done when:** A team-defined eval metric improves month-over-month from harness updates alone (no model swap, no manual prompt edit). The outer loop has applied at least one narrow change automatically and proposed at least one wide change that a human accepted. A team lead can answer "what did the system change about itself this week, and why" from `gctrl review --self-changes`.
 
 ## Backlog (unprioritized)
 
@@ -148,5 +164,8 @@ Observe & Eval owns both the **substrate** (metrics, prompts, judges, datasets, 
 - [ ] **Skill promotion criteria** — When does a pattern become a first-class skill? Manual-only (P1) is safe; automatic (P2) needs a quality bar.
 - [ ] **Persona vs. skill** — Persona = scope + guardrails; Skill = reusable how-to. Confirm the boundary holds in real use.
 - [ ] **Dispatcher fallback** — Is M2d's lightweight dispatcher enough, or do teams that *want* a queue need more? Defer until at least one team complains.
+- [ ] **Outer-loop blast-radius taxonomy** — What counts as "narrow" (auto-apply) vs "wide" (propose-to-human)? Default cuts: narrow = one persona's prompt addition, one skill attachment; wide = anything touching defaults, templates, global guardrails, or persona re-binding. Needs at least one real outer-loop run to validate the cut. Gates M4c approval gates.
+- [ ] **Outer-loop / inner-loop overlap** — When the outer loop proposes "attach skill X to persona Y", and the inner loop independently decides the same on next session, who wins? Probably: outer loop sets *defaults*; inner loop sets *per-session* overrides. Confirm.
+- [ ] **Outer-loop cadence** — Daily? Weekly? Per direction-change event? Probably split: narrow observations run on event triggers; wide observations run on a slower cron.
 - [ ] **Protobuf vs JSON-only for OTLP** — Needed by M3.
 - [ ] **DuckDB WASM for Workers dashboard** — Needed by M3.
