@@ -7,6 +7,15 @@
 **Status:** design decision locked, implementation pending.
 See `gctrl/ROADMAP.md` for the issue tracking implementation slices.
 
+> **This is more than a security feature.** Credential injection is the
+> enabling substrate for **agent-authored userspace tools** — the missing
+> extension tier. A tool the agent wrote is untrusted code you cannot hand a
+> raw token; routing its egress through this proxy (creds injected, responses
+> scanned) is what makes "the agent wrote this code" compatible with "secrets
+> are never exposed." See
+> [extension-tiers.md](../extension-tiers.md) for the composed capability-growth
+> system this unlocks.
+
 ---
 
 ## Problem

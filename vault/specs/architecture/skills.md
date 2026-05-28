@@ -12,8 +12,11 @@ This document covers the skill format, discovery, enforcement, and how skills co
 > **hot-reloads** skills on file-system changes. The orchestrator dispatch path
 > (§ 3.2) should adopt the same: flush the skill catalog cache when a file-system
 > event fires on a skill directory, so an in-progress session gets updated skill
-> listings without restarting the daemon. See also `vault/specs/comparison.md §
-> gctrl vs. Centaur`.
+> listings without restarting the daemon. This hot-reload is connector **C3** of
+> the capability-growth system in [extension-tiers.md](extension-tiers.md): a
+> skill bundling proxied `scripts/` is an agent-authorable *userspace tool*, and
+> hot-reload is what lets an agent-authored tool go live without a daemon
+> restart. See also `vault/specs/comparison.md § gctrl vs. Centaur`.
 
 ## Goals
 

@@ -10,6 +10,15 @@ This document specifies the outer loop's scope, auto-apply boundary, and
 structural safeguards. For the inner loop (per-session harness update) see
 `vault/specs/gctrl/PRD.md § inner loop`.
 
+> **The outer loop is the promotion stage of the capability-growth system.** An
+> agent can cheaply author a userspace tool (see
+> [extension-tiers.md](extension-tiers.md)); the outer loop is what observes
+> which agent-authored tools prove valuable across sessions and either promotes
+> them to first-class skills (auto-apply) or proposes hardening them into a
+> human-authored driver (propose-to-human). Without the missing userspace tier,
+> the outer loop can only *retune* existing capability; with it, the loop
+> actually *grows* capability while keeping the kernel-invariant boundary intact.
+
 ---
 
 ## Two loops, two cadences
@@ -60,6 +69,7 @@ vault diff).
 |---|---|
 | The same review-feedback constraint appears ≥ 3 times against one persona | Append constraint to that persona's `system_prompt` in `vault/specs/team/personas.md` |
 | A sequence of tool calls appears in ≥ 5 high-scoring sessions and has no corresponding skill | Create a new `SKILL.md` in `apps/utils/skills/<name>/` with the pattern extracted |
+| An agent-authored userspace tool (skill + proxied `scripts/`) is reused across ≥ 5 sessions with a high score | Promote it to a first-class shipped skill under `apps/utils/skills/` (see [extension-tiers.md](extension-tiers.md)) |
 | Sessions tagged with a given direction label consistently over-run cost budget | Raise the `cost_limit_usd` for that direction's label in `vault/specs/team/personas.md` |
 | A direction template (`WORKFLOW.md`) is stale (last used > 60 days, no active sessions) | Mark it `status: archived` in frontmatter |
 | A skill's `allowed-tools` is consistently broader than what the sessions actually used | Narrow `allowed-tools` in the skill's `SKILL.md` |
@@ -84,6 +94,7 @@ Changes in this zone are: **wide in scope**, **affect security posture**, or
 | A prompt pattern from a high-scoring session looks like a good default starter | `review_request` — "add to default starter prompt?" | Starter prompts affect every future session for that persona |
 | New direction type appears frequently with no matching WORKFLOW template | `review_request` — "create direction template for X?" | Requires human to validate the pattern is intentional |
 | A driver or tool is called by ≥ 3 personas but has no skill wrapping it | `review_request` — "extract into a first-class skill?" | Promotes something to the skill registry; others may disagree |
+| A proxied agent-authored script pattern recurs across ≥ N sessions and would benefit from typed/kernel integration | `review_request` — "harden into a human-authored `driver-foo`?" | A driver is kernel-integrated and human-only ([extension-tiers.md § 4](extension-tiers.md)); the userspace tool is the *evidence* a driver is warranted |
 | Any change to a guardrail rule, persona capability grant, or cost quota | Blocked entirely — outer agent must not auto-apply | Security/cost posture is always human-gated |
 
 Inbox messages from the outer loop use:

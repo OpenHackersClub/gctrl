@@ -194,72 +194,99 @@ graph TB
 
 Centaur was open-sourced by Paradigm and Tempo in May 2026 under Apache 2.0.
 It is the closest published architectural peer to gctrl: self-hosted, team-scoped,
-with a small auditable kernel and an extensible userspace. Key comparison:
+with a small auditable kernel and an extensible userspace. The value of the
+comparison is not a feature checklist — it is what Centaur's design *reveals*
+about gctrl's own architecture, including two tensions the pivot left implicit.
 
-### Where Centaur is ahead of gctrl today
+### The headline: gctrl's extension model has a missing tier
 
-**1. Credential injection at the network layer (iron-proxy)**
+Centaur's "tool" is a Python class dropped in `tools/`, auto-discovered,
+hot-reloaded, declaring its required hosts/creds — **userspace capability the
+agent can author itself.** gctrl has no equivalent:
 
-Centaur's most novel design: API secrets live in an isolated secrets manager.
-A network-level firewall (iron-proxy) intercepts all agent egress and injects
-credentials into outbound requests in-flight. The agent never holds the secret —
-it routes through the proxy to reach external APIs. LLM API response bodies are
-also scanned for leaked secrets and redacted before reaching the agent.
+| | New I/O capability? | Author | Lands live by |
+|---|---|---|---|
+| gctrl **skill** | No — knowledge only | Agent or human | Drop markdown |
+| gctrl **driver** | Yes | **Human only** | Rust → compile → ship kernel |
+| Centaur **tool** | **Yes** | **Agent or human** | Drop file → hot-reload |
 
-gctrl's proxy (`gctrl-proxy`) is today a traffic logger. **Design update:**
-elevate it to the credential injection plane. See
-`vault/specs/architecture/kernel/proxy-credential-injection.md`.
+This is *why* Centaur's nightly reflection can ship a genuinely new integration
+while gctrl's outer loop can only retune existing capability — an agent can
+change *how it uses* what it has, but cannot grant itself a new integration. The
+deep synthesis: **credential injection is not primarily a security feature — it
+is the substrate that makes agent-authored tools safe** (untrusted agent code
+can have network access without ever seeing a secret). gctrl is three connectors
+away, not a subsystem away: skills already bundle `scripts/`, the proxy can
+inject creds, the outer loop can promote winners. See
+[extension-tiers.md](architecture/extension-tiers.md) for the composed
+capability-growth system and
+[kernel/proxy-credential-injection.md](architecture/kernel/proxy-credential-injection.md)
+for the substrate.
 
-**2. Warm container pool**
+### Two tensions Centaur exposes (named, not yet resolved)
 
-Centaur pre-spawns sandbox containers so agent sessions start without cold-start
-delays. gctrl's compute spec (`compute-cf-containers.md`) is a stub. The warm
-pool principle (keep N containers ready; replenish after claim) belongs there.
+**1. Stateful singleton kernel vs. the multiplayer vision.** Centaur: every
+service stateless, Postgres the single source of truth. gctrl: a stateful
+singleton daemon holding the DuckDB single-writer lock. Correct for local-first;
+a write-path ceiling for "3 humans + 30 agents," which the D1/R2 sync layer
+(read-scale-out) does not lift. Forces the honest question: personal agent-OS
+that syncs, or team agent-server?
+
+**2. Agent-agnosticism caps durability.** Centaur owns the runtime, so it
+checkpoints every workflow step and resumes after a crash. gctrl observes via
+OTel and cannot checkpoint agent-internal state — a crash mid-session loses the
+work (scheduler reaps as failed, `runner.rs:70`). Portability bought at the cost
+of resumability; the ceiling is at the orchestration layer.
+
+Both are captured in [adr-deployment-topology.md](architecture/adr-deployment-topology.md).
 
 ### Where gctrl and Centaur independently converged
 
-**Skills as `.agents/skills/` markdown** — Centaur's skills are markdown files
-in `.agents/skills/`, hot-reloaded on change. gctrl's skills spec
-(`vault/specs/architecture/skills.md`) reached the same path convention and
-progressive-disclosure protocol independently. Convergent external validation.
-Difference: gctrl's orchestrator does lazy scan on dispatch; Centaur's API
-server watches for file changes and hot-reloads. Hot-reload consideration added
-to skills.md.
-
-**Bounded kernel + extensible userspace** — both projects explicitly protect the
-kernel from agent modification. Centaur: "the agent reviews its own performance,
-identifies gaps, and ships fixes to its own skills and tools without touching the
-kernel." gctrl's outer improvement loop (PRD § outer loop) has the same
-principle but doesn't yet specify the structural boundary. See
-`vault/specs/architecture/outer-improvement-loop.md`.
-
-**Durable workflow checkpointing** — Centaur checkpoints every workflow step to
-Postgres so the agent can resume after a crash. gctrl's scheduler already reaps
-interrupted runs on restart (`runner.rs:70`) but doesn't checkpoint mid-workflow
-step state. A follow-up.
+- **Skills as `.agents/skills/` markdown** — same path, same progressive-disclosure
+  protocol, reached independently. Centaur additionally hot-reloads on FS change;
+  gctrl's dispatch path should too ([skills.md §3.2](architecture/skills.md)).
+- **Bounded kernel + extensible userspace** — both structurally protect the
+  kernel from agent modification. Centaur: "ships fixes to its own skills and
+  tools without touching the kernel." gctrl's
+  [outer-improvement-loop.md](architecture/outer-improvement-loop.md) makes the
+  blast-radius boundary explicit.
+- **Warm container pool** — Centaur pre-spawns sandboxes; gctrl's
+  [compute-cf-containers.md](implementation/kernel/compute-cf-containers.md)
+  should keep N ready and replenish after claim.
 
 ### Where gctrl takes a different approach
 
 | Dimension | Centaur | gctrl |
 |---|---|---|
-| **Primary interface** | Slack (one thread = one session) | Board + inbox + CLI — Slack is an optional driver |
+| **Primary interface** | Slack (one thread = session = sandbox, fused) | Board + inbox + CLI; session/issue/thread/compute decoupled |
 | **Storage** | Postgres (single source of truth) | DuckDB + SQLite — local-first, Parquet export, edge sync via D1 |
-| **Tool model** | Python classes dropped in `tools/`, auto-discovered, REST-exposed | Rust LKMs (drivers) — type-safe, kernel-integrated, not hot-reloadable today |
-| **Self-improvement cadence** | Nightly scheduled reflection | Inner loop (per session) + outer loop (cross-session, scheduled) — more granular |
-| **Multi-team** | Organization-wide shared agent | Per-persona scope + guardrails; team-level view via `gctrl status --team` |
-| **Compute isolation** | Container per conversation | CF containers per session (spec stage); kernel-managed pool |
+| **Extension** | Userspace tools (agent-authored) | Skills (knowledge) + drivers (human, kernel) — missing the middle tier |
+| **Self-improvement cadence** | Nightly reflection | Inner loop (per session) + outer loop (cross-session) — finer granularity |
+| **Direction** | Conversation/task-driven | Durable, versioned, team-level *direction* — no Centaur equivalent |
+| **Accumulation substrate** | Postgres (opaque) | Vault (human-editable, Obsidian-graphed, cross-project) |
+
+Note the interface row: Centaur *fuses* conversation+session+sandbox into one
+object, so it needs no grouping — the thread *is* the context. gctrl deliberately
+*decouples* them, which is why the inbox needs **context-first grouping** (by
+issue/session/project/agent) to re-assemble the human view. Grouping is the tax
+of decoupling — and also its strength (one session spans many threads; one issue
+many sessions). It generalizes: with SQLite as truth, the board UI, the Obsidian
+mirror, and a future **Slack driver** are all bidirectional *projections* of the
+same inbox state.
 
 ### Net assessment
 
-Centaur is the best published production architecture for the same design space.
-The credential injection model is the strongest novel idea to import. The
-warm-pool and hot-reload are operational details worth capturing. The structural
-bounded-kernel principle reinforces the outer loop design.
+Centaur is the best published production architecture for the same design space,
+and its sharpest lesson is structural, not a feature: the **userspace-tool tier**
+is what turns a self-improvement loop from "retune" into "grow," and gctrl's own
+credential proxy is the thing that makes it safe. Adopt that; name the topology
+and durability tensions honestly ([ADR](architecture/adr-deployment-topology.md)).
 
-What gctrl does that Centaur doesn't: local-first without Postgres/Slack
-dependencies, in-loop improvement at session granularity (not just nightly), and
-an OS-level accumulation model (vault, context, sessions, personas) that survives
-across projects and teams.
+What gctrl keeps that Centaur deliberately doesn't have — and must not dilute
+chasing server-shaped polish: local-first with no Postgres/Slack dependency, the
+**direction surface** (the actual pivot thesis, with no Centaur analog), in-loop
+improvement at *session* granularity, and a human-legible **vault** accumulation
+substrate rather than an opaque DB.
 
 ---
 
