@@ -253,7 +253,7 @@ export const api = {
       action_type: string
       reason?: string
     }) =>
-      request<InboxAction[]>("/api/inbox/actions/batch", {
+      request<InboxAction[]>("/api/inbox/batch-action", {
         method: "POST",
         body: JSON.stringify(body),
       }),
