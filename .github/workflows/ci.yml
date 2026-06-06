@@ -163,8 +163,32 @@ jobs:
       - name: Setup Node.js + pnpm
         uses: ./.github/actions/setup-node
 
+      # The browser download from cdn.playwright.dev intermittently hangs
+      # after reaching 100% (observed on main and PR branches; the job then
+      # burns its full 20-min timeout in this step). Cache the browsers so
+      # most runs skip the download entirely, and bound each install attempt
+      # so a hang costs 4 minutes, not the whole job.
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
       - name: Install Playwright browsers
-        run: pnpm exec playwright install --with-deps chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 10
+        run: |
+          for attempt in 1 2; do
+            timeout 240 pnpm exec playwright install chromium && exit 0
+            echo "::warning::playwright install attempt ${attempt} hung; retrying"
+          done
+          exit 1
+        working-directory: apps/gctrl-board
+
+      # OS deps are not cached with the browsers; install them every run.
+      - name: Install Playwright system dependencies
+        run: pnpm exec playwright install-deps chromium
         working-directory: apps/gctrl-board
 
       - name: Download kernel binary
