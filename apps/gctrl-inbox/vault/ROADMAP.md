@@ -11,6 +11,7 @@
 | Kernel inbox intake | `inbox_*` tables + `/api/inbox/*` routes on the kernel | P0 | — | Shipped |
 | mac-comm focus driver | `gctrl://focus/...` deeplink + `/api/comm/focus` (see `vault/specs/architecture/kernel/mac-comm.md`) | P0 | Kernel inbox intake | Shipped (PR-1) |
 | CC observe capture hook | `Notification` + `AskUserQuestion` hooks → fire-and-forget POST to `/api/inbox/messages` with `context.terminal` | P0 | Kernel inbox intake | [#215](https://github.com/OpenHackersClub/gctrl/issues/215) |
+| Project grouping | Hook stamps git-derived `project_key`; web inbox gains project sections + filter | P1 | CC observe capture hook | [#220](https://github.com/OpenHackersClub/gctrl/issues/220) |
 | CC blocking permission hook (act mode) | `PreToolUse` hook polls the inbox message; approve/deny from the inbox resumes/blocks Claude Code | P1 | CC observe capture hook, mac-comm focus driver | TBD |
 | Transcript enrichment | Kernel one-shot read of `payload.transcript_path` at message creation to enrich the inbox card | P2 | CC observe capture hook | TBD |
 | Desktop hook install | gctrl-desktop first-run copies `shell/hooks/*.sh` into `~/.local/share/gctrl/hooks/` | P2 | CC observe capture hook | TBD |

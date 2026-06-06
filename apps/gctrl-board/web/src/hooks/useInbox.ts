@@ -6,6 +6,7 @@ interface UseInboxFilters {
   status?: string
   urgency?: string
   kind?: string
+  project?: string
 }
 
 interface UseInboxResult {
@@ -35,10 +36,13 @@ export function useInbox(filters?: UseInboxFilters): UseInboxResult {
     if (filters?.status) params.status = filters.status
     if (filters?.urgency) params.urgency = filters.urgency
     if (filters?.kind) params.kind = filters.kind
+    if (filters?.project) params.project = filters.project
 
     Promise.all([
       api.inbox.messages(params),
-      api.inbox.threads(params),
+      // Threads stay unfiltered by project: they feed the message→project
+      // join and the project filter options, which need the full set.
+      api.inbox.threads(),
       api.inbox.stats(),
     ])
       .then(([msgs, thrds, st]) => {
@@ -57,7 +61,7 @@ export function useInbox(filters?: UseInboxFilters): UseInboxResult {
     return () => {
       cancelled = true
     }
-  }, [filters?.status, filters?.urgency, filters?.kind, revision])
+  }, [filters?.status, filters?.urgency, filters?.kind, filters?.project, revision])
 
   const createAction = useCallback(
     async (messageId: string, actionType: string, reason?: string) => {
