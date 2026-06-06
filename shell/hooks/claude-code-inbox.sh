@@ -17,6 +17,7 @@
 #   GCTRL_INBOX_HOOK_TTL     expires_at offset in seconds for permission
 #                            prompts (default 3600; 0 disables expiry)
 #   GCTRL_INBOX_HOOK_DISABLE set to 1 to no-op the hook entirely
+#   GCTRL_PROJECT_KEY        override the derived project key
 
 set -u
 
@@ -86,6 +87,22 @@ esac
 
 CAPTURED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
+# ── Project key: env override → git remote slug → repo dir → cwd basename ─
+# Worktrees and clones with different dir names map to one project via the
+# origin remote slug (e.g. checkouts "2acme" and "acme" both → "acme").
+PROJECT_KEY="${GCTRL_PROJECT_KEY:-}"
+if [ -z "$PROJECT_KEY" ] && [ -d "$CWD" ] && command -v git >/dev/null 2>&1; then
+  REMOTE_URL=$(git -C "$CWD" remote get-url origin 2>/dev/null) || REMOTE_URL=""
+  if [ -n "$REMOTE_URL" ]; then
+    PROJECT_KEY=$(basename "$REMOTE_URL" .git)
+  else
+    TOPLEVEL=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null) || TOPLEVEL=""
+    [ -n "$TOPLEVEL" ] && PROJECT_KEY=$(basename "$TOPLEVEL")
+  fi
+fi
+[ -z "$PROJECT_KEY" ] && [ -n "$CWD" ] && PROJECT_KEY=$(basename "$CWD")
+PROJECT_KEY=$(printf '%s' "$PROJECT_KEY" | tr -cd 'A-Za-z0-9._-' | cut -c1-64)
+
 # ── Optional expiry: stale permission prompts auto-expire ────────────────
 EXPIRES_AT=""
 TTL="${GCTRL_INBOX_HOOK_TTL:-3600}"
@@ -117,6 +134,7 @@ REQUEST_BODY=$(jq -n \
   --arg term_program_version "${TERM_PROGRAM_VERSION:-}" \
   --arg captured_at "$CAPTURED_AT" \
   --arg expires_at "$EXPIRES_AT" \
+  --arg project_key "$PROJECT_KEY" \
   '{
     source: "agent",
     kind: $kind,
@@ -125,7 +143,7 @@ REQUEST_BODY=$(jq -n \
     title: $title,
     context_type: "session",
     context_ref: $session_id,
-    context: {
+    context: ({
       session_id: $session_id,
       agent_name: "claude-code",
       terminal: ({
@@ -140,7 +158,7 @@ REQUEST_BODY=$(jq -n \
         term_program_version: $term_program_version,
         captured_at: $captured_at
       } | with_entries(select(.value != "")))
-    },
+    } + (if $project_key != "" then { project_key: $project_key } else {} end)),
     payload: ({
       hook_event: $event,
       notification_type: $notification_type,
@@ -150,7 +168,8 @@ REQUEST_BODY=$(jq -n \
     } | with_entries(select(.value != "")))
   }
   + (if $body != "" then { body: $body } else {} end)
-  + (if $expires_at != "" then { expires_at: $expires_at } else {} end)') || exit 0
+  + (if $expires_at != "" then { expires_at: $expires_at } else {} end)
+  + (if $project_key != "" then { project_key: $project_key } else {} end)') || exit 0
 
 PORT="${GCTRL_KERNEL_PORT:-4318}"
 curl -fsS --connect-timeout 1 --max-time 3 \

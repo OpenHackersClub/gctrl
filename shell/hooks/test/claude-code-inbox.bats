@@ -125,6 +125,53 @@ notification_event() { # $1 = notification_type
   [ ! -s "$CAPTURE_FILE" ]
 }
 
+@test "project_key derived from git origin remote slug (worktree-safe)" {
+  repo="$BATS_TEST_TMPDIR/2widget-checkout"
+  mkdir -p "$repo"
+  git -C "$repo" init -q
+  git -C "$repo" remote add origin "git@github.com:acme/widget.git"
+  event=$(jq -n --arg cwd "$repo" '{
+    hook_event_name: "Notification", notification_type: "permission_prompt",
+    message: "perm", session_id: "sess-proj-1", cwd: $cwd
+  }')
+  run bash -c "echo '$event' | '$HOOK'"
+  [ "$status" -eq 0 ]
+  body=$(last_capture)
+  [ "$(jq -r .project_key <<<"$body")" = "widget" ]
+  [ "$(jq -r .context.project_key <<<"$body")" = "widget" ]
+}
+
+@test "project_key falls back to git toplevel basename without a remote" {
+  repo="$BATS_TEST_TMPDIR/widget-local"
+  mkdir -p "$repo/sub/dir"
+  git -C "$repo" init -q
+  event=$(jq -n --arg cwd "$repo/sub/dir" '{
+    hook_event_name: "Notification", notification_type: "permission_prompt",
+    message: "perm", session_id: "sess-proj-2", cwd: $cwd
+  }')
+  run bash -c "echo '$event' | '$HOOK'"
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .project_key < "$CAPTURE_FILE")" = "widget-local" ]
+}
+
+@test "project_key falls back to cwd basename outside git" {
+  plain="$BATS_TEST_TMPDIR/plain-dir"
+  mkdir -p "$plain"
+  event=$(jq -n --arg cwd "$plain" '{
+    hook_event_name: "Notification", notification_type: "permission_prompt",
+    message: "perm", session_id: "sess-proj-3", cwd: $cwd
+  }')
+  run bash -c "echo '$event' | '$HOOK'"
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .project_key < "$CAPTURE_FILE")" = "plain-dir" ]
+}
+
+@test "GCTRL_PROJECT_KEY env overrides derivation" {
+  run bash -c "echo '$(notification_event permission_prompt)' | GCTRL_PROJECT_KEY=my-project '$HOOK'"
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .project_key < "$CAPTURE_FILE")" = "my-project" ]
+}
+
 @test "TERM_PROGRAM → terminal.app mapping table" {
   # "TERM_PROGRAM=expected_app" pairs (bash 3.2 compatible — no declare -A)
   pairs="iTerm.app=iterm2 Apple_Terminal=terminal ghostty=ghostty vscode=vscode WarpTerminal=warp SomeGarbage=unknown"

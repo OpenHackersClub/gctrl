@@ -391,6 +391,8 @@ Then wire it in `~/.claude/settings.json`:
 
 Messages group into one thread per Claude Code session and carry `context.terminal` for the mac-comm Focus deeplink.
 
+Each message is also stamped with a **project key** so the inbox can group and filter by project (`gctrl inbox list --project <key>`; project sections + filter in the web UI). Derivation, in priority order: `GCTRL_PROJECT_KEY` env → origin remote slug (`git remote get-url origin`, so worktrees like `2acme/` map to `acme`) → git toplevel basename → cwd basename.
+
 ### Knobs
 
 | Env | Default | Meaning |
@@ -398,6 +400,7 @@ Messages group into one thread per Claude Code session and carry `context.termin
 | `GCTRL_KERNEL_PORT` | `4318` | Kernel HTTP port |
 | `GCTRL_INBOX_HOOK_TTL` | `3600` | `expires_at` offset (seconds) for permission prompts; `0` disables |
 | `GCTRL_INBOX_HOOK_DISABLE` | unset | `1` = kill switch, hook no-ops |
+| `GCTRL_PROJECT_KEY` | unset | Override the derived project key |
 
 If the kernel daemon is offline the hook fails open (exit 0, message dropped, stderr warning) — it never blocks or breaks Claude Code.
 

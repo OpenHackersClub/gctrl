@@ -1,7 +1,8 @@
-import { useState, useCallback } from "react"
+import { useState, useCallback, useMemo } from "react"
 import { useInbox } from "../hooks/useInbox"
 import { MessageCard } from "../components/MessageCard"
 import { MessageDetail } from "../components/MessageDetail"
+import { groupMessagesByProject, projectOptions } from "../lib/inbox-group"
 import type { InboxMessage } from "../types"
 
 const URGENCY_OPTIONS = [
@@ -33,15 +34,29 @@ export function InboxPage() {
   const [urgencyFilter, setUrgencyFilter] = useState("")
   const [kindFilter, setKindFilter] = useState("")
   const [statusFilter, setStatusFilter] = useState("")
+  const [projectFilter, setProjectFilter] = useState("")
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
   const filters = {
     urgency: urgencyFilter || undefined,
     kind: kindFilter || undefined,
     status: statusFilter || undefined,
+    project: projectFilter || undefined,
   }
 
-  const { messages, stats, loading, createAction } = useInbox(filters)
+  const { messages, threads, stats, loading, createAction } = useInbox(filters)
+
+  const projectGroups = useMemo(
+    () => groupMessagesByProject(messages, threads),
+    [messages, threads]
+  )
+  const projectFilterOptions = useMemo(
+    () => [
+      { value: "", label: "All projects" },
+      ...projectOptions(threads).map((p) => ({ value: p, label: p })),
+    ],
+    [threads]
+  )
 
   const selectedMessage = messages.find((m) => m.id === selectedId) ?? null
 
@@ -108,6 +123,11 @@ export function InboxPage() {
             value={statusFilter}
             onChange={setStatusFilter}
           />
+          <FilterSelect
+            options={projectFilterOptions}
+            value={projectFilter}
+            onChange={setProjectFilter}
+          />
         </div>
       </div>
 
@@ -131,13 +151,28 @@ export function InboxPage() {
             </div>
           ) : (
             <div className="flex flex-col">
-              {messages.map((msg) => (
-                <MessageCard
-                  key={msg.id}
-                  message={msg}
-                  selected={msg.id === selectedId}
-                  onClick={() => handleSelectMessage(msg)}
-                />
+              {projectGroups.map((group) => (
+                <div key={group.project}>
+                  <div
+                    data-testid="project-group-header"
+                    className="sticky top-0 z-10 flex items-center justify-between px-4 py-1.5 bg-zinc-900/95 backdrop-blur-sm border-b border-zinc-800/60"
+                  >
+                    <span className="text-[11px] font-mono font-medium tracking-wider text-emerald-400/70 uppercase">
+                      {group.project}
+                    </span>
+                    <span className="text-[11px] font-mono text-zinc-600">
+                      {group.messages.length}
+                    </span>
+                  </div>
+                  {group.messages.map((msg) => (
+                    <MessageCard
+                      key={msg.id}
+                      message={msg}
+                      selected={msg.id === selectedId}
+                      onClick={() => handleSelectMessage(msg)}
+                    />
+                  ))}
+                </div>
               ))}
             </div>
           )}

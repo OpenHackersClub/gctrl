@@ -84,6 +84,15 @@ Observe mode honors inbox Principle 3 (agents MUST NOT block on the inbox) with 
 
 All messages POST with `source=agent`, `context.agent_name=claude-code`, `context_type=session`, `context_ref=<claude session_id>` — so messages from one Claude Code session group into one inbox thread. `payload` carries `hook_event`, `notification_type`, `transcript_path`, `permission_mode`, `cwd`.
 
+Messages also carry a **`project_key`** (top-level for thread stamping + `context.project_key`) so the inbox can group/filter by project. Derivation, in priority order:
+
+1. `GCTRL_PROJECT_KEY` env override
+2. origin remote slug (`git -C "$cwd" remote get-url origin`, basename minus `.git`) — worktrees and renamed checkouts of the same repo map to one project
+3. git toplevel basename (local repo without a remote)
+4. cwd basename (outside git)
+
+The key is sanitized to `[A-Za-z0-9._-]{1,64}`.
+
 ### Behavior
 
 1. Read hook-event JSON from stdin (`session_id`, `transcript_path`, `cwd`, `permission_mode`, plus event-specific fields).
