@@ -20,12 +20,19 @@ import { createSpawner } from "./spawner"
 import { startAutoUpdater } from "./updater"
 import { handleGctrlUrl, type UrlHandlerDeps } from "./url-handler"
 import { resolveVaultDir, type VaultPicker } from "./vault-config"
+import { createWindowRegistry } from "./window-registry"
+import { sanitizeWindowRoute } from "./window-route"
 
 const KERNEL_PORT = 4318
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 let sidecar: KernelSidecar | undefined
-let mainWindow: BrowserWindow | undefined
+
+// All open windows in most-recently-focused order. Deep links and the
+// `gctrl-navigate` IPC target `windows.mostRecentlyFocused()` —
+// `BrowserWindow.getFocusedWindow()` is null whenever the app is in the
+// background, which is exactly the deep-link case.
+const windows = createWindowRegistry<BrowserWindow>()
 
 // Buffer URLs that arrive before the BrowserWindow is ready (cold-launch
 // path: `open gctrl://...` starts the app, fires `open-url`, then the
@@ -132,7 +139,11 @@ const registerLoginItem = (): void => {
   })
 }
 
-const createWindow = (): BrowserWindow => {
+const createWindow = (initialRoute?: string): BrowserWindow => {
+  // Cascade new windows from the most recent one so a second project window
+  // doesn't land pixel-perfect on top of the first.
+  const previous = windows.mostRecentlyFocused()
+
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -154,9 +165,24 @@ const createWindow = (): BrowserWindow => {
       // Pass the kernel sidecar's base URL into preload's argv so the SPA
       // (loaded from `file://` in packaged mode) can reach the loopback API
       // instead of resolving relative `/api/...` paths against `file:///`.
-      additionalArguments: [`--gctrl-api-base=http://127.0.0.1:${KERNEL_PORT}`],
+      // The per-window initial route rides the same channel — in packaged
+      // mode `location.pathname` is the bundle path, so the SPA reads its
+      // boot route from the preload bridge instead.
+      additionalArguments: [
+        `--gctrl-api-base=http://127.0.0.1:${KERNEL_PORT}`,
+        ...(initialRoute ? [`--gctrl-initial-route=${initialRoute}`] : []),
+      ],
     },
   })
+
+  if (previous && !previous.isDestroyed()) {
+    const [x, y] = previous.getPosition()
+    win.setPosition(x + 24, y + 24)
+  }
+
+  windows.add(win)
+  win.on("focus", () => windows.noteFocused(win))
+  win.on("closed", () => windows.remove(win))
 
   if (app.isPackaged) {
     void win.loadFile(path.join(__dirname, "../renderer/index.html"))
@@ -164,8 +190,10 @@ const createWindow = (): BrowserWindow => {
     // Dev mode: point at the gctrl-board Vite dev server. The default
     // matches gctrl-board's `web/vite.config.ts` (port 4200); override
     // via GCTRL_DESKTOP_DEV_URL when running an alternate renderer.
+    // The initial route also lands in the URL here so a plain browser
+    // reload of the dev window stays on the same view.
     const devUrl = process.env.GCTRL_DESKTOP_DEV_URL ?? "http://localhost:4200"
-    void win.loadURL(devUrl)
+    void win.loadURL(`${devUrl}${initialRoute ?? ""}`)
   }
 
   // Reserve space for macOS traffic-light buttons. Injected from main so it
@@ -202,6 +230,12 @@ ipcMain.handle("show-in-finder", (_event, p: string) => {
   shell.showItemInFolder(p)
 })
 ipcMain.handle("app-version", () => app.getVersion())
+// Renderer-initiated window creation ("open project X in a new window").
+// The route is renderer-supplied, so it goes through the sanitizer — an
+// invalid route still opens a window, just at the default view.
+ipcMain.handle("open-window", (_event, route: unknown) => {
+  createWindow(sanitizeWindowRoute(route))
+})
 
 // --- gctrl:// URL scheme ----------------------------------------------------
 
@@ -222,14 +256,16 @@ const urlHandlerDeps = (): UrlHandlerDeps => ({
     return { ok: res.ok, status: res.status, bodyText: await res.text() }
   },
   bringToFront: () => {
-    if (!mainWindow) return
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.show()
-    mainWindow.focus()
+    const win = windows.mostRecentlyFocused()
+    if (!win) return
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.focus()
   },
   navigateSpa: (route) => {
-    // Renderer subscribes to `gctrl-navigate` via the preload bridge.
-    if (mainWindow) mainWindow.webContents.send("gctrl-navigate", route)
+    // Renderer subscribes to `gctrl-navigate` via the preload bridge. Deep
+    // links land in the most recently focused window, not every window.
+    windows.mostRecentlyFocused()?.webContents.send("gctrl-navigate", route)
   },
   logger: console,
 })
@@ -241,9 +277,10 @@ async function dispatchGctrlUrl(url: string): Promise<void> {
 
 app.on("open-url", (event, url) => {
   event.preventDefault()
-  // If the BrowserWindow isn't ready yet, buffer the URL — the cold-launch
+  // If no BrowserWindow is ready yet, buffer the URL — the cold-launch
   // path fires `open-url` before any window exists.
-  if (!mainWindow?.webContents || mainWindow.webContents.isLoading()) {
+  const target = windows.mostRecentlyFocused()
+  if (!target || target.webContents.isLoading()) {
     pendingUrls.push(url)
     return
   }
@@ -251,14 +288,19 @@ app.on("open-url", (event, url) => {
 })
 
 void app.whenReady().then(async () => {
-  Menu.setApplicationMenu(buildAppMenu())
+  Menu.setApplicationMenu(buildAppMenu({ onNewWindow: () => createWindow() }))
+  if (process.platform === "darwin") {
+    app.dock?.setMenu(
+      Menu.buildFromTemplate([{ label: "New Window", click: () => createWindow() }]),
+    )
+  }
   registerLoginItem()
   // Vault picker (when needed) blocks here on purpose — the kernel
   // sidecar must know where to watch before it spawns. Subsequent
   // launches read the persisted choice and skip the dialog entirely.
   sidecar = await createSidecar()
   void sidecar?.start()
-  mainWindow = createWindow()
+  createWindow()
 
   startAutoUpdater({
     isPackaged: app.isPackaged,
@@ -271,7 +313,7 @@ void app.whenReady().then(async () => {
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      mainWindow = createWindow()
+      createWindow()
     }
   })
 })

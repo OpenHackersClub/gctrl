@@ -5,7 +5,12 @@
 
 import { Menu, type MenuItemConstructorOptions, app } from "electron"
 
-export const buildAppMenu = (): Menu => {
+export interface AppMenuDeps {
+  /** Open a fresh window at the default view (File → New Window, ⌘N). */
+  readonly onNewWindow: () => void
+}
+
+export const buildAppMenu = (deps: AppMenuDeps): Menu => {
   const isMac = process.platform === "darwin"
 
   const template: MenuItemConstructorOptions[] = [
@@ -27,6 +32,20 @@ export const buildAppMenu = (): Menu => {
           } satisfies MenuItemConstructorOptions,
         ]
       : []),
+    {
+      label: "File",
+      submenu: [
+        {
+          label: "New Window",
+          accelerator: "CmdOrCtrl+N",
+          click: () => deps.onNewWindow(),
+        },
+        { type: "separator" },
+        ...(isMac
+          ? ([{ role: "close" }] satisfies MenuItemConstructorOptions[])
+          : ([{ role: "quit" }] satisfies MenuItemConstructorOptions[])),
+      ],
+    },
     {
       label: "Edit",
       submenu: [

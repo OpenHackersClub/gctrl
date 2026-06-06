@@ -12,6 +12,7 @@
 import { contextBridge, ipcRenderer } from "electron"
 
 import { parseApiBase } from "./api-base"
+import { parseInitialRoute } from "./initial-route"
 
 declare global {
   // Surface this in TS when consumers (the bundled SPA) want to opt into
@@ -20,9 +21,19 @@ declare global {
   interface Window {
     desktop?: {
       readonly apiBase?: string
+      /**
+       * SPA route this window should boot on (`/projects/BACK`, ...). Set
+       * when the window was opened for a specific view (File → New Window
+       * for a project, `open-window` IPC). In packaged mode the SPA must
+       * prefer this over `location.pathname`, which is the `file://`
+       * bundle path.
+       */
+      readonly initialRoute?: string
       readonly openExternal: (url: string) => Promise<void>
       readonly showInFinder: (path: string) => Promise<void>
       readonly appVersion: () => Promise<string>
+      /** Open a new desktop window, optionally at a specific SPA route. */
+      readonly openWindow: (route?: string) => Promise<void>
       /**
        * Subscribe to `gctrl://inbox/...` deep-link navigation events. The
        * main process emits these when LaunchServices delivers a deep link
@@ -33,16 +44,21 @@ declare global {
   }
 }
 
-// Main injects `--gctrl-api-base=http://127.0.0.1:<port>` via
-// `webPreferences.additionalArguments`. Without it the SPA's relative
-// `/api/...` paths resolve against the `file://` document origin and fail.
+// Main injects `--gctrl-api-base=http://127.0.0.1:<port>` (and, for windows
+// opened onto a specific view, `--gctrl-initial-route=<path>`) via
+// `webPreferences.additionalArguments`. Without the api base the SPA's
+// relative `/api/...` paths resolve against the `file://` document origin
+// and fail.
 const apiBase = parseApiBase(process.argv)
+const initialRoute = parseInitialRoute(process.argv)
 
 contextBridge.exposeInMainWorld("desktop", {
   apiBase,
+  initialRoute,
   openExternal: (url: string) => ipcRenderer.invoke("open-external", url),
   showInFinder: (path: string) => ipcRenderer.invoke("show-in-finder", path),
   appVersion: () => ipcRenderer.invoke("app-version"),
+  openWindow: (route?: string) => ipcRenderer.invoke("open-window", route),
   onNavigate: (cb: (route: string) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, route: string): void => {
       cb(route)

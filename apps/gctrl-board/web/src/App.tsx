@@ -14,7 +14,12 @@ import { AnalyticsPage } from "./pages/AnalyticsPage"
 import { SchedulePage } from "./pages/SchedulePage"
 import { MacosSpacesPage } from "./pages/MacosSpacesPage"
 import { api } from "./api/client"
+import type { DesktopShim } from "./lib/desktop-env"
 import type { Issue, InboxStats } from "./types"
+
+// Desktop-only: the preload bridge's window factory. Undefined on the web,
+// where the ProjectSelector simply doesn't render the affordance.
+const desktopOpenWindow = (globalThis as { desktop?: DesktopShim }).desktop?.openWindow
 
 interface Toast {
   id: string
@@ -266,6 +271,11 @@ export function App() {
                   onSelect={setSelectedProjectId}
                   onCreate={handleCreateProject}
                   loading={projectsLoading}
+                  onOpenInNewWindow={
+                    desktopOpenWindow
+                      ? (p) => void desktopOpenWindow(`/projects/${p.key}`)
+                      : undefined
+                  }
                 />
                 {selectedProject && (
                   <>

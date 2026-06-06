@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { applyDesktopClass, isDesktopHost } from "../desktop-env"
+import { applyDesktopClass, isDesktopHost, resolveInitialPath } from "../desktop-env"
 
 const fakeRoot = () => {
   const classes = new Set<string>()
@@ -28,6 +28,32 @@ describe("isDesktopHost", () => {
 
   it("is false when apiBase is empty", () => {
     expect(isDesktopHost({ desktop: { apiBase: "" } })).toBe(false)
+  })
+})
+
+describe("resolveInitialPath", () => {
+  it("prefers the bridge's initialRoute over the document pathname", () => {
+    expect(
+      resolveInitialPath(
+        { desktop: { apiBase: "http://127.0.0.1:4318", initialRoute: "/projects/BACK" } },
+        "/Applications/gctrl.app/Contents/Resources/renderer/index.html",
+      ),
+    ).toBe("/projects/BACK")
+  })
+
+  it("falls back to the pathname when no initialRoute is set", () => {
+    expect(resolveInitialPath({ desktop: { apiBase: "x" } }, "/projects/FRONT")).toBe(
+      "/projects/FRONT",
+    )
+    expect(resolveInitialPath({}, "/inbox")).toBe("/inbox")
+  })
+
+  it("ignores initialRoute values that are not app paths", () => {
+    expect(
+      resolveInitialPath({ desktop: { initialRoute: "https://evil.example" } }, "/"),
+    ).toBe("/")
+    expect(resolveInitialPath({ desktop: { initialRoute: "//evil.example" } }, "/")).toBe("/")
+    expect(resolveInitialPath({ desktop: { initialRoute: "" } }, "/")).toBe("/")
   })
 })
 
