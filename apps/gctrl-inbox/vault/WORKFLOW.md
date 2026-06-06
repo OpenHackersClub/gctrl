@@ -345,6 +345,62 @@ CREATE INDEX IF NOT EXISTS idx_inbox_actions_actor ON inbox_actions(actor_id);
 CREATE INDEX IF NOT EXISTS idx_inbox_subscriptions_user ON inbox_subscriptions(user_id);
 ```
 
+## Claude Code Capture Hook (observe)
+
+Claude Code's requests-to-user (permission prompts, questions, idle waits) post into the inbox via `shell/hooks/claude-code-inbox.sh` — fire-and-forget, never blocks the agent. Spec: `vault/specs/architecture/apps/cc-permission-hook.md`.
+
+### Install
+
+```sh
+mkdir -p ~/.local/share/gctrl/hooks
+cp shell/hooks/claude-code-inbox.sh ~/.local/share/gctrl/hooks/
+```
+
+Then wire it in `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [{ "type": "command", "command": "$HOME/.local/share/gctrl/hooks/claude-code-inbox.sh", "timeout": 10 }]
+      },
+      {
+        "matcher": "idle_prompt",
+        "hooks": [{ "type": "command", "command": "$HOME/.local/share/gctrl/hooks/claude-code-inbox.sh", "timeout": 10 }]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [{ "type": "command", "command": "$HOME/.local/share/gctrl/hooks/claude-code-inbox.sh", "timeout": 10 }]
+      }
+    ]
+  }
+}
+```
+
+### What lands in the inbox
+
+| Claude Code event | Inbox kind | Urgency | Requires action |
+|---|---|---|---|
+| Permission prompt | `permission_request` | `high` | Yes (answered in the terminal; expires after `GCTRL_INBOX_HOOK_TTL`, default 1 h) |
+| Waiting for input (idle) | `agent_question` | `medium` | No |
+| `AskUserQuestion` | `agent_question` (question text as title/body) | `medium` | Yes |
+
+Messages group into one thread per Claude Code session and carry `context.terminal` for the mac-comm Focus deeplink.
+
+### Knobs
+
+| Env | Default | Meaning |
+|---|---|---|
+| `GCTRL_KERNEL_PORT` | `4318` | Kernel HTTP port |
+| `GCTRL_INBOX_HOOK_TTL` | `3600` | `expires_at` offset (seconds) for permission prompts; `0` disables |
+| `GCTRL_INBOX_HOOK_DISABLE` | unset | `1` = kill switch, hook no-ops |
+
+If the kernel daemon is offline the hook fails open (exit 0, message dropped, stderr warning) — it never blocks or breaks Claude Code.
+
 ## Project Key
 
 `INBOX` — for tracking gctrl-inbox's own development issues on gctrl-board.
