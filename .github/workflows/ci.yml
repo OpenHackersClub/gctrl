@@ -163,50 +163,14 @@ jobs:
       - name: Setup Node.js + pnpm
         uses: ./.github/actions/setup-node
 
-      # `playwright install --with-deps` hangs after the chromium download
-      # completes (main red since 2026-05-27; no repo diff between the last
-      # green and first hung run, so the cause is runner-side). Split the
-      # opaque combined install into attributable steps with tight timeouts
-      # so a hang fails fast and names its culprit, and cache the browsers
-      # so one green run immunizes subsequent ones from the download path.
-      - name: Resolve Playwright version
-        id: playwright-version
-        run: echo "version=$(pnpm exec playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
-        working-directory: apps/gctrl-board
-
-      - name: Cache Playwright browsers
-        id: playwright-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
-
-      - name: Install Playwright system deps
-        run: pnpm exec playwright install-deps chromium
-        working-directory: apps/gctrl-board
-        timeout-minutes: 5
-        env:
-          DEBIAN_FRONTEND: noninteractive
-
-      # The cdn.playwright.dev download stalls at arbitrary points (observed
-      # at 0% and after 100%) and playwright's downloader has no socket
-      # timeout — its mirror fallback only fires on errors, never on stalls.
-      # So: bound each attempt with `timeout` (healthy install ≈ 20s) and
-      # retry, last attempt via the Microsoft mirror. `--no-shell` halves the
-      # download surface; tests pin `channel: "chromium"` in
-      # playwright.config.ts so the headless shell is never needed.
-      - name: Install Playwright browsers
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        working-directory: apps/gctrl-board
-        timeout-minutes: 9
-        run: |
-          install() { timeout -k 10 150 pnpm exec playwright install --no-shell chromium; }
-          install && exit 0
-          echo "::warning::playwright install stalled; retrying"
-          install && exit 0
-          echo "::warning::playwright install stalled twice; retrying via download mirror"
-          PLAYWRIGHT_DOWNLOAD_HOST=https://playwright.download.prss.microsoft.com install
-
+      # No `playwright install` here on purpose: cdn.playwright.dev stalls
+      # from GitHub runners at arbitrary download points (main red since
+      # 2026-05-27 — runs 27066616157 / 27067288096 / 27067673190 bisected
+      # it), playwright's downloader has no socket timeout, and the MS
+      # mirror 403s on Chrome-for-Testing artifacts. Instead the tests
+      # drive the runner image's preinstalled Chrome stable via
+      # PLAYWRIGHT_CHANNEL=chrome (see playwright.config.ts), which needs
+      # no download at all.
       - name: Download kernel binary
         uses: actions/download-artifact@v4
         with:
@@ -221,6 +185,7 @@ jobs:
         working-directory: apps/gctrl-board
         env:
           CI: "true"
+          PLAYWRIGHT_CHANNEL: chrome
           GCTRL_KERNEL_PORT: "14318"
           GCTRL_VITE_PORT: "14200"
           GCTRL_KERNEL_BIN: ${{ github.workspace }}/target/debug/gctrld

@@ -101,11 +101,13 @@ export default defineConfig({
         ...(isRemoteCDP
           ? {}
           : {
-              // Full-browser new headless instead of chromium-headless-shell:
-              // CI installs with `--no-shell` because the shell's download
-              // stalls on GitHub runners (see ci.yml). Locally both work;
-              // pinning the channel keeps the two environments identical.
-              channel: "chromium",
+              // Full-browser new headless instead of chromium-headless-shell.
+              // CI sets PLAYWRIGHT_CHANNEL=chrome to drive the runner's
+              // preinstalled Chrome stable — cdn.playwright.dev stalls from
+              // GitHub runners and the MS mirror 403s on CFT artifacts (see
+              // ci.yml), so CI avoids browser downloads entirely. Locally
+              // defaults to the playwright-managed chromium build.
+              channel: process.env.PLAYWRIGHT_CHANNEL ?? "chromium",
               launchOptions: {
                 args: ["--remote-debugging-port=0"],
               },
