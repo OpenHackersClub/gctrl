@@ -149,6 +149,27 @@ jobs:
           retention-days: 1
 
   # ──────────────────────────────────────────────
+  # Agent hooks — shellcheck + bats
+  # ──────────────────────────────────────────────
+  hooks:
+    name: Hooks (shellcheck + bats)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bats
+        run: sudo apt-get update -q && sudo apt-get install -y -q bats
+
+      - name: Shellcheck
+        run: shellcheck shell/hooks/*.sh
+
+      - name: Bats
+        run: bats shell/hooks/test/
+
+  # ──────────────────────────────────────────────
   # Playwright acceptance tests
   # ──────────────────────────────────────────────
   playwright:
