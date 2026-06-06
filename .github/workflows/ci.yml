@@ -188,9 +188,15 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
 
+      # `--no-shell` skips the chromium-headless-shell artifact — its
+      # download is the precise stall point (full chromium downloads fine,
+      # then the install goes silent; confirmed by the split steps above).
+      # Tests opt into the full browser's new headless mode via
+      # `channel: "chromium"` in playwright.config.ts, so the shell is
+      # never needed.
       - name: Install Playwright browsers
         if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: pnpm exec playwright install chromium
+        run: pnpm exec playwright install --no-shell chromium
         working-directory: apps/gctrl-board
         timeout-minutes: 8
 

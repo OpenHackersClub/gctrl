@@ -101,6 +101,11 @@ export default defineConfig({
         ...(isRemoteCDP
           ? {}
           : {
+              // Full-browser new headless instead of chromium-headless-shell:
+              // CI installs with `--no-shell` because the shell's download
+              // stalls on GitHub runners (see ci.yml). Locally both work;
+              // pinning the channel keeps the two environments identical.
+              channel: "chromium",
               launchOptions: {
                 args: ["--remote-debugging-port=0"],
               },
