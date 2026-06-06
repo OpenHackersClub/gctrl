@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react"
 import type { Project } from "../types"
+import { resolveInitialPath, type DesktopShim } from "../lib/desktop-env"
 
 /**
  * SPA routing for projects: syncs URL <-> selected project.
@@ -11,7 +12,13 @@ import type { Project } from "../types"
  */
 export function useProjectRoute(projects: Project[]) {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
-  const [initialKey] = useState(() => parseProjectKey(window.location.pathname))
+  // Same initial-path resolution as useRoute: desktop windows opened onto a
+  // project boot from the preload bridge, not the `file://` pathname.
+  const [initialKey] = useState(() =>
+    parseProjectKey(
+      resolveInitialPath(globalThis as { desktop?: DesktopShim }, window.location.pathname),
+    ),
+  )
 
   // Resolve initial URL -> project ID once projects load
   useEffect(() => {

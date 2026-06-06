@@ -423,7 +423,7 @@ The implementation is intentionally narrow. The following are explicit non-goals
 - Mac App Store target (separate provisioning profile, sandbox entitlements, and the localhost-kernel review risk)
 - Windows / Linux build targets
 - Custom IPC bridge for kernel data (`fetch` to localhost is sufficient and keeps cloud + desktop unified)
-- Multi-window / multi-tab UI (the React SPA is single-window today)
+- Multi-tab UI (multi-**window** shipped: `src/main/window-registry.ts` tracks windows in focus order; File → New Window / ⌘N, dock menu, and the `open-window` IPC open additional windows, each bootable on its own SPA route via `--gctrl-initial-route` in the preload argv — tabs within a window remain out of scope)
 - Native macOS menu bar / status bar (tray) UX (post-v1; possible to add via `Tray` API without architectural changes)
 
 ## Related

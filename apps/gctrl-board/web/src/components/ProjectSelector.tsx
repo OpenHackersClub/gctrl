@@ -7,9 +7,22 @@ interface Props {
   onSelect: (id: string | null) => void
   onCreate: (name: string, key: string) => Promise<Project>
   loading: boolean
+  /**
+   * Desktop-only: open the project in a new app window. When set, each row
+   * grows a hover affordance; on the web this stays undefined and nothing
+   * renders.
+   */
+  onOpenInNewWindow?: (project: Project) => void
 }
 
-export function ProjectSelector({ projects, selectedId, onSelect, onCreate, loading }: Props) {
+export function ProjectSelector({
+  projects,
+  selectedId,
+  onSelect,
+  onCreate,
+  loading,
+  onOpenInNewWindow,
+}: Props) {
   const [open, setOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState("")
@@ -73,22 +86,44 @@ export function ProjectSelector({ projects, selectedId, onSelect, onCreate, load
           )}
 
           {projects.map((p) => (
-            <button
-              key={p.id}
-              onClick={() => {
-                onSelect(p.id)
-                setOpen(false)
-              }}
-              className={`w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-zinc-800/80 transition-colors cursor-pointer ${
-                p.id === selectedId ? "bg-zinc-800/50" : ""
-              }`}
-            >
-              <span className="font-mono text-xs text-emerald-400/70 w-12 shrink-0">{p.key}</span>
-              <span className="text-sm text-zinc-300 truncate">{p.name}</span>
-              {p.github_repo && (
-                <span className="ml-auto text-[10px] font-mono text-zinc-600">GH</span>
+            <div key={p.id} className="relative group">
+              <button
+                onClick={() => {
+                  onSelect(p.id)
+                  setOpen(false)
+                }}
+                className={`w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-zinc-800/80 transition-colors cursor-pointer ${
+                  onOpenInNewWindow ? "pr-9" : ""
+                } ${p.id === selectedId ? "bg-zinc-800/50" : ""}`}
+              >
+                <span className="font-mono text-xs text-emerald-400/70 w-12 shrink-0">{p.key}</span>
+                <span className="text-sm text-zinc-300 truncate">{p.name}</span>
+                {p.github_repo && (
+                  <span className="ml-auto text-[10px] font-mono text-zinc-600">GH</span>
+                )}
+              </button>
+              {onOpenInNewWindow && (
+                <button
+                  onClick={() => {
+                    onOpenInNewWindow(p)
+                    setOpen(false)
+                  }}
+                  title="Open in new window"
+                  data-testid={`open-new-window-${p.key}`}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 text-zinc-500
+                    hover:text-emerald-400 opacity-0 group-hover:opacity-100
+                    transition-opacity cursor-pointer"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path
+                      strokeLinecap="square"
+                      strokeWidth={2}
+                      d="M14 5h5v5M19 5l-7 7M9 5H5v14h14v-4"
+                    />
+                  </svg>
+                </button>
               )}
-            </button>
+            </div>
           ))}
 
           <div className="border-t border-zinc-800">

@@ -1,5 +1,7 @@
 import { useState, useCallback, useEffect } from "react"
 
+import { resolveInitialPath, type DesktopShim } from "../lib/desktop-env"
+
 export type BoardView = "kanban" | "gantt"
 
 export type AnalyticsTab =
@@ -84,7 +86,14 @@ export function parseRoute(pathname: string): Route {
 }
 
 export function useRoute(): { route: Route; navigate: (path: string) => void } {
-  const [route, setRoute] = useState<Route>(() => parseRoute(window.location.pathname))
+  // Desktop windows opened onto a specific view boot from the preload
+  // bridge's initialRoute — packaged Electron loads from `file://`, where
+  // the document pathname is the bundle path, not an app route.
+  const [route, setRoute] = useState<Route>(() =>
+    parseRoute(
+      resolveInitialPath(globalThis as { desktop?: DesktopShim }, window.location.pathname),
+    ),
+  )
 
   const navigate = useCallback((path: string) => {
     window.history.pushState(null, "", path)
