@@ -183,22 +183,51 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The TS suite (and its web build) now runs offloaded on FlareDispatch,
+      # which reports a check-run, not a GHA artifact — so the deploy can no
+      # longer download `board-web-dist` from the CI run. Gate on that
+      # check-run instead: CI's dispatch step is fire-and-forget, so the CI
+      # workflow can conclude green while the offloaded suite is still
+      # running. Poll until the `flare-dispatch/offload-test` check-run on
+      # this SHA concludes; deploy only on success. Manual workflow_dispatch
+      # skips the gate (same no-CI-gate semantics as before).
+      - name: Gate on FlareDispatch check-run
+        if: github.event_name == 'workflow_run'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const sha = context.payload.workflow_run.head_sha;
+            const checkName = "flare-dispatch/offload-test";
+            const deadline = Date.now() + 25 * 60 * 1000;
+            for (;;) {
+              const { data } = await github.rest.checks.listForRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: sha,
+                check_name: checkName,
+                filter: "latest",
+              });
+              const run = data.check_runs[0];
+              if (run?.conclusion === "success") {
+                core.info(`${checkName} succeeded: ${run.html_url}`);
+                return;
+              }
+              if (run?.conclusion) {
+                core.setFailed(`${checkName} concluded '${run.conclusion}': ${run.html_url}`);
+                return;
+              }
+              if (Date.now() > deadline) {
+                core.setFailed(`${checkName} did not conclude within 25 minutes (status: ${run?.status ?? "not created"})`);
+                return;
+              }
+              core.info(`${checkName}: ${run?.status ?? "not created yet"} — retrying in 30s`);
+              await new Promise((r) => setTimeout(r, 30_000));
+            }
+
       - name: Setup Node.js + pnpm
         uses: ./.github/actions/setup-node
 
-      # Reuse board-web-dist artifact from CI when triggered by workflow_run
-      - name: Download board web assets from CI
-        if: github.event_name == 'workflow_run'
-        uses: actions/download-artifact@v4
-        with:
-          name: board-web-dist
-          path: apps/gctrl-board/dist-web/
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      # Build from scratch only on manual dispatch (no CI artifact available)
       - name: Build board web assets
-        if: github.event_name == 'workflow_dispatch'
         run: pnpm build:web
         working-directory: apps/gctrl-board
 
