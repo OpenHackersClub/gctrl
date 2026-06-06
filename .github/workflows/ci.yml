@@ -188,17 +188,24 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
 
-      # `--no-shell` skips the chromium-headless-shell artifact — its
-      # download is the precise stall point (full chromium downloads fine,
-      # then the install goes silent; confirmed by the split steps above).
-      # Tests opt into the full browser's new headless mode via
-      # `channel: "chromium"` in playwright.config.ts, so the shell is
-      # never needed.
+      # The cdn.playwright.dev download stalls at arbitrary points (observed
+      # at 0% and after 100%) and playwright's downloader has no socket
+      # timeout — its mirror fallback only fires on errors, never on stalls.
+      # So: bound each attempt with `timeout` (healthy install ≈ 20s) and
+      # retry, last attempt via the Microsoft mirror. `--no-shell` halves the
+      # download surface; tests pin `channel: "chromium"` in
+      # playwright.config.ts so the headless shell is never needed.
       - name: Install Playwright browsers
         if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: pnpm exec playwright install --no-shell chromium
         working-directory: apps/gctrl-board
-        timeout-minutes: 8
+        timeout-minutes: 9
+        run: |
+          install() { timeout -k 10 150 pnpm exec playwright install --no-shell chromium; }
+          install && exit 0
+          echo "::warning::playwright install stalled; retrying"
+          install && exit 0
+          echo "::warning::playwright install stalled twice; retrying via download mirror"
+          PLAYWRIGHT_DOWNLOAD_HOST=https://playwright.download.prss.microsoft.com install
 
       - name: Download kernel binary
         uses: actions/download-artifact@v4
