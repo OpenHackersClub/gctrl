@@ -163,9 +163,36 @@ jobs:
       - name: Setup Node.js + pnpm
         uses: ./.github/actions/setup-node
 
-      - name: Install Playwright browsers
-        run: pnpm exec playwright install --with-deps chromium
+      # `playwright install --with-deps` hangs after the chromium download
+      # completes (main red since 2026-05-27; no repo diff between the last
+      # green and first hung run, so the cause is runner-side). Split the
+      # opaque combined install into attributable steps with tight timeouts
+      # so a hang fails fast and names its culprit, and cache the browsers
+      # so one green run immunizes subsequent ones from the download path.
+      - name: Resolve Playwright version
+        id: playwright-version
+        run: echo "version=$(pnpm exec playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
         working-directory: apps/gctrl-board
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+
+      - name: Install Playwright system deps
+        run: pnpm exec playwright install-deps chromium
+        working-directory: apps/gctrl-board
+        timeout-minutes: 5
+        env:
+          DEBIAN_FRONTEND: noninteractive
+
+      - name: Install Playwright browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install chromium
+        working-directory: apps/gctrl-board
+        timeout-minutes: 8
 
       - name: Download kernel binary
         uses: actions/download-artifact@v4
