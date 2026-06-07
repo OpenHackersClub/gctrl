@@ -15,14 +15,14 @@ main = "src/worker.ts"
 [triggers]
 crons = ["*/2 * * * *"]
 
-# Workers Static Assets — serves the Vite SPA build output
+# Workers Static Assets — serves the Vite SPA build output.
+# not_found_handling must sit on [assets] — a [assets.serving] subtable is
+# silently ignored by wrangler.
 [assets]
 directory = "dist-web"
 binding = "ASSETS"
-
 # SPA routing: serve index.html for all unmatched paths
 # so client-side routing (e.g. /projects/*) works correctly
-[assets.serving]
 not_found_handling = "single-page-application"
 
 # D1 database for board state (projects, issues, comments, events)

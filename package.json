@@ -12,7 +12,7 @@
     "@monodon/rust": "^2.3.0",
     "nx": "^21",
     "typescript": "^5.7",
-    "wrangler": "^4.80.0"
+    "wrangler": "^4.98.0"
   },
   "engines": {
     "node": ">=24"
