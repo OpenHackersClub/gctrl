@@ -105,69 +105,59 @@ jobs:
           retention-days: 1
 
   # ──────────────────────────────────────────────
-  # TypeScript — install, lint, test, build
+  # TypeScript + hooks — offloaded to FlareDispatch
+  #
+  # The whole non-Rust suite (biome lint, shell tests, board tests, web
+  # build, Workers-runtime tests, shellcheck + bats) executes in a CF Sandbox
+  # container on the hosted Dispatcher, not on a GHA runner. This step is
+  # fire-and-forget: it exits in seconds on HTTP 202 and is NOT the pass/fail
+  # signal — the real verdict is the `flare-dispatch/offload-test` check-run
+  # the Dispatcher posts back to this SHA via the FlareDispatch GitHub App.
+  # Require that check-run in branch protection; it is the merge gate.
+  #
+  # ONE combined dispatch, not one per concern: the Action's idempotency key
+  # is `{run}-{repo}-{sha}` (inputs are not hashed) and the check-run name is
+  # not yet overridable, so two `offload-test` dispatches on the same SHA
+  # would collapse into a single execution upstream.
+  #
+  # Rust stays on GHA: the sandbox image carries no Rust toolchain, and the
+  # workspace build (libduckdb-sys) would not fit the run's 1800 s ceiling.
   # ──────────────────────────────────────────────
-  typescript:
-    name: TypeScript (lint + test + build)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js + pnpm
-        uses: ./.github/actions/setup-node
-
-      - name: Biome lint
-        run: pnpm exec biome lint shell/*/src/ apps/*/src/
-
-      - name: Test — shell
-        run: pnpm test
-        working-directory: shell/gctrl-shell
-
-      - name: Test — board
-        run: pnpm test
-        working-directory: apps/gctrl-board
-
-      # Build web assets first: wrangler.toml references dist-web/ for [assets],
-      # and the Workers runtime test harness loads that config.
-      - name: Build — board web
-        run: pnpm build:web
-        working-directory: apps/gctrl-board
-
-      - name: Test — board Workers runtime
-        run: pnpm test:workers
-        working-directory: apps/gctrl-board
-
-      # Upload web assets for deploy and Playwright jobs
-      - name: Upload board web assets
-        uses: actions/upload-artifact@v4
-        with:
-          name: board-web-dist
-          path: apps/gctrl-board/dist-web/
-          retention-days: 1
-
-  # ──────────────────────────────────────────────
-  # Agent hooks — shellcheck + bats
-  # ──────────────────────────────────────────────
-  hooks:
-    name: Hooks (shellcheck + bats)
+  dispatch:
+    name: Dispatch TS + hooks (FlareDispatch)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     needs: changes
     if: needs.changes.outputs.code == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - name: FlareDispatch not configured — skipping
+        if: vars.FLAREDISPATCH_ENDPOINT == ''
+        run: |
+          echo "::notice::dispatch skipped — FLAREDISPATCH_ENDPOINT is not set."
+          echo "Set repo variable FLAREDISPATCH_ENDPOINT and secret FLAREDISPATCH_HMAC to enable."
 
-      - name: Install bats
-        run: sudo apt-get update -q && sudo apt-get install -y -q bats
-
-      - name: Shellcheck
-        run: shellcheck shell/hooks/*.sh
-
-      - name: Bats
-        run: bats shell/hooks/test/
+      - name: Dispatch offload-test
+        if: vars.FLAREDISPATCH_ENDPOINT != ''
+        uses: OpenHackersClub/flare-dispatch/actions/flare-dispatch-action@ba0e2e2c09b35e4096b70f557bb138df071624a0
+        with:
+          run: offload-test
+          endpoint: ${{ vars.FLAREDISPATCH_ENDPOINT }}
+          hmac-secret: ${{ secrets.FLAREDISPATCH_HMAC }}
+          # Org-wide FlareDispatch App installation — lets the Dispatcher mint
+          # the installation token for the check-run callback on first contact.
+          installation-id: "134414514"
+          # PR events: clone the PR head from the head repo (handles fork PRs).
+          # push events: clone the pushed SHA from this repo.
+          # Hooks deps (shellcheck + bats) install first — cheap, fails fast on
+          # an image/env problem before the long pnpm install.
+          inputs: |
+            {
+              "repo": "${{ github.event.pull_request.head.repo.full_name || github.repository }}",
+              "sha": "${{ github.event.pull_request.head.sha || github.sha }}",
+              "command": "apt-get update -q && apt-get install -y -q shellcheck bats && shellcheck shell/hooks/*.sh && bats shell/hooks/test/ && pnpm install --no-frozen-lockfile && pnpm exec biome lint shell/*/src/ apps/*/src/ && cd shell/gctrl-shell && pnpm test && cd ../../apps/gctrl-board && pnpm test && pnpm build:web && pnpm test:workers",
+              "timeoutSec": 1500
+            }
+          mode: fire-and-forget
 
   # ──────────────────────────────────────────────
   # Playwright acceptance tests
@@ -176,7 +166,7 @@ jobs:
     name: Playwright acceptance tests
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    needs: [changes, rust, typescript]
+    needs: [changes, rust]
     if: needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@v4

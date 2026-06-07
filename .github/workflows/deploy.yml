@@ -183,22 +183,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The TS suite (and its web build) now runs offloaded on FlareDispatch,
+      # which reports the `flare-dispatch/offload-test` check-run, not a GHA
+      # artifact — so the deploy builds web assets from source instead of
+      # downloading `board-web-dist`. The TS verdict gates the MERGE (require
+      # the check-run in branch protection), not the deploy: polling it here
+      # would burn runner minutes waiting on the container, which is exactly
+      # what the offload avoids.
       - name: Setup Node.js + pnpm
         uses: ./.github/actions/setup-node
 
-      # Reuse board-web-dist artifact from CI when triggered by workflow_run
-      - name: Download board web assets from CI
-        if: github.event_name == 'workflow_run'
-        uses: actions/download-artifact@v4
-        with:
-          name: board-web-dist
-          path: apps/gctrl-board/dist-web/
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      # Build from scratch only on manual dispatch (no CI artifact available)
       - name: Build board web assets
-        if: github.event_name == 'workflow_dispatch'
         run: pnpm build:web
         working-directory: apps/gctrl-board
 

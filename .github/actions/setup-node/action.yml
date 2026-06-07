@@ -4,10 +4,11 @@ description: Install pnpm, Node.js, and workspace dependencies
 runs:
   using: composite
   steps:
+    # pnpm version comes from the root package.json `packageManager` field —
+    # the same source corepack resolves inside FlareDispatch sandbox
+    # containers, so GHA and offloaded runs use an identical pnpm.
     - name: Install pnpm
       uses: pnpm/action-setup@v4
-      with:
-        version: 9
 
     - name: Setup Node.js
       uses: actions/setup-node@v4
