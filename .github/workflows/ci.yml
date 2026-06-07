@@ -113,7 +113,7 @@ jobs:
   # fire-and-forget: it exits in seconds on HTTP 202 and is NOT the pass/fail
   # signal — the real verdict is the `flare-dispatch/offload-test` check-run
   # the Dispatcher posts back to this SHA via the FlareDispatch GitHub App.
-  # The production deploy gate (deploy.yml) polls that check-run.
+  # Require that check-run in branch protection; it is the merge gate.
   #
   # ONE combined dispatch, not one per concern: the Action's idempotency key
   # is `{run}-{repo}-{sha}` (inputs are not hashed) and the check-run name is
