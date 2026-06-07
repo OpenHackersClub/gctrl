@@ -719,7 +719,14 @@ export default {
     const assetResponse = await env.ASSETS.fetch(request)
     if (assetResponse.status !== 404) return assetResponse
 
-    // SPA fallback
+    // SPA fallback (defense-in-depth). In production wrangler.toml sets
+    // `not_found_handling = "single-page-application"` on [assets], so the
+    // ASSETS binding above already returns index.html (200) for unmatched
+    // paths — that layer wins and this block rarely fires there. It still
+    // covers local/miniflare contexts where that config may differ or be
+    // absent. The /assets/ guard below keeps this Worker-level fallback from
+    // rewriting a missing hashed asset to the app shell; in production the
+    // assets layer already decides /assets/ resolution before we run.
     if (!url.pathname.startsWith("/assets/")) {
       return env.ASSETS.fetch(new Request(new URL("/", request.url), request))
     }
