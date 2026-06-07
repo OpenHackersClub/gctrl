@@ -16,9 +16,8 @@ main = "src/worker.ts"
 crons = ["*/2 * * * *"]
 
 # Workers Static Assets — serves the Vite SPA build output.
-# `not_found_handling` lives directly on [assets] — it was previously under
-# a nonexistent [assets.serving] table, which wrangler warned about and
-# silently ignored, so the SPA fallback was never actually deployed.
+# not_found_handling must sit on [assets] — a [assets.serving] subtable is
+# silently ignored by wrangler.
 [assets]
 directory = "dist-web"
 binding = "ASSETS"
