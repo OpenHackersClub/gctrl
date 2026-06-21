@@ -6,8 +6,48 @@
 // is integration-tested implicitly when the Electron app launches.
 
 import { spawn, type ChildProcess } from "node:child_process"
+import { homedir } from "node:os"
+import { delimiter, join } from "node:path"
 
 import type { SidecarConfig, SpawnedProcess, Spawner } from "./kernel-sidecar"
+
+/**
+ * Directories where user-installed CLIs (`gh`, `wrangler`, …) live but that a
+ * macOS GUI launch does not put on `PATH`. When the app is opened from Finder
+ * / LaunchServices its `PATH` is the bare `/usr/bin:/bin:/usr/sbin:/sbin`, so
+ * the kernel sidecar inherits that and its GitHub/Cloudflare drivers fail to
+ * spawn `gh` / `wrangler` (ENOENT → 502 → callers fall back to bare CLIs).
+ */
+const STANDARD_BIN_DIRS = (home: string): readonly string[] => [
+  "/opt/homebrew/bin",
+  "/opt/homebrew/sbin",
+  "/usr/local/bin",
+  join(home, ".local/bin"),
+  join(home, ".cargo/bin"),
+  join(home, ".bun/bin"),
+]
+
+/**
+ * Augment `PATH` with the standard user-CLI bin dirs so the kernel sidecar can
+ * resolve `gh`/`wrangler` regardless of how the app was launched. Existing
+ * entries are preserved and take precedence; standard dirs are appended and
+ * deduped. Pure for testability.
+ */
+export const augmentPath = (
+  env: Readonly<Record<string, string | undefined>>,
+  home: string = homedir(),
+): string => {
+  const existing = (env.PATH ?? "").split(delimiter).filter(Boolean)
+  const seen = new Set(existing)
+  const merged = [...existing]
+  for (const dir of STANDARD_BIN_DIRS(home)) {
+    if (!seen.has(dir)) {
+      seen.add(dir)
+      merged.push(dir)
+    }
+  }
+  return merged.join(delimiter)
+}
 
 /** CLI args passed to the kernel binary. Pure for testability. */
 export const buildKernelArgs = (config: SidecarConfig): readonly string[] => {
@@ -64,8 +104,12 @@ const wrap = (child: ChildProcess): SpawnedProcess => {
 }
 
 export const createSpawner = (): Spawner => (config) => {
+  const env = { ...process.env, ...(config.env ?? {}) }
   const child = spawn(config.binPath, [...buildKernelArgs(config)], {
-    env: { ...process.env, ...(config.env ?? {}) },
+    // Augment PATH last so it reflects any config.env override merged above,
+    // ensuring the kernel's gh/wrangler drivers resolve even on a bare
+    // LaunchServices PATH.
+    env: { ...env, PATH: augmentPath(env) },
     stdio: ["ignore", "pipe", "pipe"],
   })
   return wrap(child)
