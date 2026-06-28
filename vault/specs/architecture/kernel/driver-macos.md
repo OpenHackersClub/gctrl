@@ -114,10 +114,31 @@ pub struct Space {
 |---|---|---|
 | `NotificationsPort` | Native banner notifications with a stable identifier so kernel events can update/dismiss prior banners | `UNUserNotificationCenter` |
 | `LoginItemsPort` | "Start gctrl on login" toggle, used by `gctrl serve --install` | `SMAppService` |
-| `PowerPort` | Sleep/wake + thermal-pressure observation, fed into `driver-llm` for local-model heat throttling | `IOPMrootDomain`, `NSProcessInfo.thermalState` |
+| `PowerPort` (thermal/observation half — planned) | Sleep/wake + thermal-pressure observation, fed into `driver-llm` for local-model heat throttling | `IOPMrootDomain`, `NSProcessInfo.thermalState` |
 | `ScreenCapturePort` | One-shot screenshots for session evidence (the existing browser driver covers full-page web capture) | `ScreenCaptureKit` |
 
-These appear on the roadmap but are out of scope for the v1 spec; the trait split exists so they can land independently without churning consumers of `SpacesPort`.
+These appear on the roadmap but are out of scope for the v1 spec; the trait split exists so they can land independently without churning consumers of `SpacesPort`. The **prevent-sleep half of `PowerPort` ships now** — see below; only the thermal-pressure / sleep-wake *observation* surface remains planned.
+
+### `PowerPort` — prevent sleep ("caffeinate")
+
+`PowerPort`'s first capability is **prevent idle sleep**, a drop-in replacement for the Caffeine menu-bar app: *whenever gctrl is running, the Mac won't sleep.* The kernel daemon holds an IOKit power assertion for its whole lifetime by default, and exposes a toggle so the gctrl-desktop menu-bar tray (and any HTTP consumer) can turn it on/off.
+
+```rust
+pub trait PowerPort: Send + Sync {
+    fn status(&self) -> PowerStatus;
+    fn set_prevent_sleep(
+        &self,
+        enable: bool,
+        kind: SleepPreventionKind,   // Display (default) | System
+        reason: &str,
+    ) -> Result<PowerStatus, PlatformError>;
+}
+```
+
+- **Default-on.** `FfiDriver::new` holds a `PreventUserIdleDisplaySleep` assertion at boot (full Caffeine parity: no screen dimming, no screensaver, no system sleep). `GCTRL_PREVENT_SLEEP=off` disables it; `=system` downgrades to `PreventUserIdleSystemSleep` (display may still sleep).
+- **Released on exit.** The OS drops the assertion when the daemon process exits, so a crash or `kill` can't leave the Mac permanently awake; `MacPower`'s `Drop` is belt-and-suspenders for graceful stop.
+- **Capability advertisement.** `capabilities.power` is `true` only on `ffi` + macOS builds; on every other target the port is a no-op stub that reports `supported: false` so consumers feature-detect off `/api/macos/health`.
+- **IOKit is the only new framework link** (`build.rs`, under `ffi`) — consistent with the "driver is the only crate that links Apple frameworks" rule.
 
 ## Headline Feature: Named Mission Control Spaces
 
@@ -164,7 +185,11 @@ POST /api/macos/spaces/{id}/name            { name: string }   → 204
 DELETE /api/macos/spaces/{id}/name                              → 204
 POST /api/macos/spaces/{id}/switch                              → 204
 GET  /api/macos/spaces/stream               → SSE: SpaceEvent
+GET  /api/macos/power                        → PowerStatus { supported, active, kind, reason }
+POST /api/macos/power                        { enable: bool, kind?: "display"|"system", reason?: string } → PowerStatus
 ```
+
+`GET /api/macos/power` is always 200 (reports `supported: false` on builds without the capability); `POST` returns `501` when the power capability is absent. See [`PowerPort` — prevent sleep](#powerport--prevent-sleep-caffeinate).
 
 All write routes invalidate the `GET /api/macos/spaces` cache, mirroring [`gh pr create`'s cache invalidation in driver-github](../../implementation/dogfood-drivers.md#ccli-gh--typed-gap-fill).
 

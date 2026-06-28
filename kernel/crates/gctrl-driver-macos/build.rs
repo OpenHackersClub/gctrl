@@ -11,6 +11,9 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=CoreGraphics");
         // AppKit for NSWindow / NSScreen used by the overlay renderer.
         println!("cargo:rustc-link-lib=framework=AppKit");
+        // IOKit for IOPMAssertionCreateWithName / IOPMAssertionRelease — the
+        // power (prevent-sleep / "caffeinate") capability.
+        println!("cargo:rustc-link-lib=framework=IOKit");
         // SkyLight is loaded at runtime via libloading; no link directive
         // needed (and emitting one would refuse to link on systems where
         // the private framework path moves between major releases).

@@ -2,7 +2,7 @@
 // kernel sidecar (in packaged mode), and a narrow IPC surface exposed through
 // the preload bridge.
 
-import { app, BrowserWindow, dialog, Menu, ipcMain, shell } from "electron"
+import { app, BrowserWindow, dialog, Menu, Tray, ipcMain, powerSaveBlocker, shell } from "electron"
 import electronUpdater from "electron-updater"
 const { autoUpdater } = electronUpdater
 import { existsSync, mkdirSync, writeFileSync } from "node:fs"
@@ -15,8 +15,11 @@ import { KernelSidecar } from "./kernel-sidecar"
 import { ensureLoginItemRegistered } from "./login-item"
 import { buildAppMenu } from "./menu"
 import { resolveKernelBinPath, resolveKernelDataDir, resolveKernelVaultDir } from "./paths"
+import { fetchPowerStatus, setPreventSleep } from "./power-client"
 import { createScheduler } from "./scheduler"
 import { createSpawner } from "./spawner"
+import { createTrayImage } from "./tray-icon"
+import { buildTrayMenuTemplate, trayTooltip } from "./tray-menu"
 import { startAutoUpdater } from "./updater"
 import { handleGctrlUrl, type UrlHandlerDeps } from "./url-handler"
 import { resolveVaultDir, type VaultPicker } from "./vault-config"
@@ -24,6 +27,7 @@ import { createWindowRegistry } from "./window-registry"
 import { sanitizeWindowRoute } from "./window-route"
 
 const KERNEL_PORT = 4318
+const KERNEL_API_BASE = `http://127.0.0.1:${KERNEL_PORT}`
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 let sidecar: KernelSidecar | undefined
@@ -287,6 +291,131 @@ app.on("open-url", (event, url) => {
   void dispatchGctrlUrl(url)
 })
 
+// --- menu-bar tray: "keep Mac awake" (Caffeine replacement) -----------------
+//
+// The kernel daemon already holds a prevent-sleep assertion for its whole
+// lifetime by default (driver-macos `PowerPort`), so the Mac won't idle-sleep
+// while gctrl runs. This tray is the user-facing toggle for that assertion —
+// it POSTs to `/api/macos/power`. When the kernel is unreachable or lacks the
+// capability (dev, cold start), it falls back to Electron's local
+// `powerSaveBlocker` so the menu-bar control still works standalone.
+
+let tray: Tray | undefined
+let trayAwake = false
+let traySupported = false
+let trayTimedLabel: string | null = null
+let trayTimedHandle: ReturnType<typeof setTimeout> | undefined
+let localBlockerId: number | null = null
+
+const localBlockerActive = (): boolean =>
+  localBlockerId !== null && powerSaveBlocker.isStarted(localBlockerId)
+
+const startLocalBlocker = (): void => {
+  if (!localBlockerActive()) localBlockerId = powerSaveBlocker.start("prevent-display-sleep")
+}
+
+const stopLocalBlocker = (): void => {
+  if (localBlockerActive()) powerSaveBlocker.stop(localBlockerId as number)
+  localBlockerId = null
+}
+
+const clearTrayTimer = (): void => {
+  if (trayTimedHandle !== undefined) {
+    clearTimeout(trayTimedHandle)
+    trayTimedHandle = undefined
+  }
+  trayTimedLabel = null
+}
+
+const openMainWindow = (): void => {
+  const win = windows.mostRecentlyFocused()
+  if (win && !win.isDestroyed()) {
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.focus()
+  } else {
+    createWindow()
+  }
+}
+
+const rebuildTrayMenu = (): void => {
+  if (!tray) return
+  const state = { awake: trayAwake, supported: traySupported, timedLabel: trayTimedLabel }
+  tray.setToolTip(trayTooltip(state))
+  tray.setContextMenu(
+    Menu.buildFromTemplate(
+      buildTrayMenuTemplate(state, {
+        onToggle: () => void applyAwake(!trayAwake),
+        onTimed: (ms, label) => void applyTimedAwake(ms, label),
+        onOpen: () => openMainWindow(),
+        onQuit: () => app.quit(),
+      }),
+    ),
+  )
+}
+
+// Toggle the assertion. Prefers the kernel; falls back to the local blocker.
+const applyAwake = async (enable: boolean): Promise<void> => {
+  if (!enable) clearTrayTimer()
+  const result = await setPreventSleep(KERNEL_API_BASE, {
+    enable,
+    kind: "display",
+    reason: "gctrl tray",
+  })
+  if (result.ok && result.status.supported) {
+    // Kernel is authoritative — never double up with the local blocker.
+    stopLocalBlocker()
+    trayAwake = result.status.active
+    traySupported = true
+  } else {
+    traySupported = false
+    if (enable) startLocalBlocker()
+    else stopLocalBlocker()
+    trayAwake = enable
+  }
+  rebuildTrayMenu()
+}
+
+const applyTimedAwake = async (ms: number, label: string): Promise<void> => {
+  await applyAwake(true)
+  clearTrayTimer()
+  trayTimedLabel = label
+  trayTimedHandle = setTimeout(() => {
+    trayTimedHandle = undefined
+    void applyAwake(false)
+  }, ms)
+  rebuildTrayMenu()
+}
+
+// Reconcile the tray with the kernel's actual state (external CLI/API toggles,
+// kernel restart). Leaves any user-set timed label intact.
+const refreshTrayFromKernel = async (): Promise<void> => {
+  const result = await fetchPowerStatus(KERNEL_API_BASE)
+  if (result.ok && result.status.supported) {
+    stopLocalBlocker()
+    traySupported = true
+    trayAwake = result.status.active
+  } else {
+    traySupported = false
+    trayAwake = localBlockerActive()
+  }
+  rebuildTrayMenu()
+}
+
+const setupPowerTray = (): void => {
+  tray = new Tray(createTrayImage())
+  rebuildTrayMenu()
+  void refreshTrayFromKernel()
+  // Poll so the checkbox reflects external changes. 20s is responsive without
+  // being chatty on the loopback API.
+  const poll = globalThis.setInterval(() => void refreshTrayFromKernel(), 20_000)
+  app.on("before-quit", () => {
+    globalThis.clearInterval(poll)
+    clearTrayTimer()
+    stopLocalBlocker()
+  })
+}
+
 void app.whenReady().then(async () => {
   Menu.setApplicationMenu(buildAppMenu({ onNewWindow: () => createWindow() }))
   if (process.platform === "darwin") {
@@ -301,6 +430,10 @@ void app.whenReady().then(async () => {
   sidecar = await createSidecar()
   void sidecar?.start()
   createWindow()
+
+  // Menu-bar "keep Mac awake" toggle. macOS only — the kernel power
+  // capability and Caffeine itself are macOS-specific.
+  if (process.platform === "darwin") setupPowerTray()
 
   startAutoUpdater({
     isPackaged: app.isPackaged,

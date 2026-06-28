@@ -160,6 +160,11 @@ pub trait PlatformPort: Send + Sync {
     fn spaces(&self) -> Option<&dyn SpacesPort> {
         None
     }
+    /// Power capability sub-port: prevent (and observe) host idle sleep.
+    /// Returns `None` when this build can't hold a power assertion.
+    fn power(&self) -> Option<&dyn PowerPort> {
+        None
+    }
 }
 
 /// Persisted Space-label row matching the `macos_space_labels` schema.
@@ -185,4 +190,60 @@ pub trait SpacesPort: Send + Sync {
     fn name(&self, space_id: SpaceId, name: &str) -> Result<(), PlatformError>;
     fn unname(&self, space_id: SpaceId) -> Result<(), PlatformError>;
     fn switch_to(&self, space_id: SpaceId) -> Result<(), PlatformError>;
+}
+
+/// What kind of idle sleep the prevent-sleep ("caffeinate") assertion blocks.
+/// Mirrors the two IOKit assertion types the macOS driver uses to keep the
+/// host awake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SleepPreventionKind {
+    /// Keep the display awake — no screen dimming, no screensaver, and the
+    /// system never idle-sleeps. Maps to
+    /// `kIOPMAssertionTypePreventUserIdleDisplaySleep`. This is the default:
+    /// full parity with the Caffeine menu-bar app.
+    Display,
+    /// Keep the system awake but let the display dim/sleep to save power.
+    /// Maps to `kIOPMAssertionTypePreventUserIdleSystemSleep`.
+    System,
+}
+
+impl Default for SleepPreventionKind {
+    fn default() -> Self {
+        Self::Display
+    }
+}
+
+/// Snapshot of the host's prevent-sleep state, returned by
+/// `GET /api/macos/power` and from every `set_prevent_sleep` call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PowerStatus {
+    /// Whether this build can actually hold a power assertion. `false` on
+    /// non-macOS / non-FFI builds, where the toggle is a no-op.
+    pub supported: bool,
+    /// Whether an assertion is currently held (the host will not idle-sleep).
+    pub active: bool,
+    /// Which assertion type is held, or would be held when next enabled.
+    pub kind: SleepPreventionKind,
+    /// Human-readable reason surfaced in `pmset -g assertions`.
+    pub reason: String,
+}
+
+/// Power capability sub-port: prevent (and observe) host idle sleep. The
+/// kernel daemon holds a prevent-sleep assertion for its whole lifetime by
+/// default, so "whenever gctrl is running, the Mac won't sleep" — a drop-in
+/// replacement for the Caffeine menu-bar app. The assertion is released
+/// automatically when the daemon process exits.
+pub trait PowerPort: Send + Sync {
+    /// Current prevent-sleep state.
+    fn status(&self) -> PowerStatus;
+    /// Enable or disable the prevent-sleep assertion. Switching `kind` while
+    /// already active re-creates the assertion under the new type. Returns
+    /// the resulting state. `reason` is surfaced in `pmset -g assertions`.
+    fn set_prevent_sleep(
+        &self,
+        enable: bool,
+        kind: SleepPreventionKind,
+        reason: &str,
+    ) -> Result<PowerStatus, PlatformError>;
 }
