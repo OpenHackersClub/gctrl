@@ -2508,9 +2508,63 @@ fn default_gh_limit() -> usize {
     10
 }
 
+/// Build a `PATH` augmented with the directories where user-installed CLIs
+/// (`gh`, `wrangler`, …) commonly live but that a GUI/LaunchServices-spawned
+/// process does not inherit.
+///
+/// When the kernel runs as the desktop sidecar it is launched by `gctrl.app`
+/// via macOS LaunchServices, whose child `PATH` is the bare
+/// `/usr/bin:/bin:/usr/sbin:/sbin` — so Homebrew (`/opt/homebrew/bin`), Cargo
+/// (`~/.cargo/bin`), and `~/.local/bin` are absent and bare-name resolution of
+/// `gh` fails with ENOENT. Existing `PATH` entries come first so an operator
+/// override always wins; the standard dirs are appended (deduped) as fallback.
+fn augmented_path() -> std::ffi::OsString {
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(existing) = std::env::var_os("PATH") {
+        dirs.extend(std::env::split_paths(&existing));
+    }
+    let mut extra: Vec<std::path::PathBuf> = vec![
+        "/opt/homebrew/bin".into(),
+        "/opt/homebrew/sbin".into(),
+        "/usr/local/bin".into(),
+    ];
+    if let Some(home) = dirs::home_dir() {
+        extra.push(home.join(".local/bin"));
+        extra.push(home.join(".cargo/bin"));
+        extra.push(home.join(".bun/bin"));
+    }
+    for d in extra {
+        if !dirs.contains(&d) {
+            dirs.push(d);
+        }
+    }
+    std::env::join_paths(&dirs)
+        .unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default())
+}
+
+/// Build a `Command` for a CLI driver binary, resolving it against the
+/// augmented `PATH` (see [`augmented_path`]) instead of relying on the
+/// inherited `PATH`.
+///
+/// The binary is resolved to an absolute path so the spawn succeeds regardless
+/// of how the kernel was launched; the augmented `PATH` is also set on the
+/// child env so the tool's own subprocesses (e.g. `gh` shelling out to `git`)
+/// resolve too. Falls back to the bare name when resolution fails, preserving
+/// prior behavior where the binary is genuinely on `PATH`.
+fn cli_command(name: &str) -> tokio::process::Command {
+    let path = augmented_path();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let resolved = which::which_in(name, Some(&path), cwd)
+        .map(std::path::PathBuf::into_os_string)
+        .unwrap_or_else(|_| name.into());
+    let mut cmd = tokio::process::Command::new(resolved);
+    cmd.env("PATH", path);
+    cmd
+}
+
 /// Run `gh` CLI and return stdout as JSON Value.
 async fn gh_exec(args: &[&str]) -> Result<serde_json::Value, (StatusCode, String)> {
-    let output = tokio::process::Command::new("gh")
+    let output = cli_command("gh")
         .args(args)
         .output()
         .await
@@ -2614,10 +2668,7 @@ async fn gh_create_issue(
     // Actually: we need to capture the created issue. Use `gh issue create` then parse.
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
-    let output = tokio::process::Command::new("gh")
-        .args(&arg_refs)
-        .output()
-        .await;
+    let output = cli_command("gh").args(&arg_refs).output().await;
 
     match output {
         Ok(out) if out.status.success() => {
@@ -3145,7 +3196,7 @@ struct CliExecBody {
 /// launched at all.
 async fn cli_exec(bin: &str, body: CliExecBody) -> axum::response::Response {
     let start = std::time::Instant::now();
-    let mut cmd = tokio::process::Command::new(bin);
+    let mut cmd = cli_command(bin);
     cmd.args(&body.args);
     if let Some(cwd) = body.cwd.as_ref() {
         cmd.current_dir(cwd);
@@ -3180,10 +3231,7 @@ async fn gh_exec_passthrough(Json(body): Json<CliExecBody>) -> impl IntoResponse
 // --- Wrangler Driver Handlers (LKM — delegates to native `wrangler` CLI) ---
 
 async fn wrangler_whoami() -> impl IntoResponse {
-    let output = tokio::process::Command::new("wrangler")
-        .arg("whoami")
-        .output()
-        .await;
+    let output = cli_command("wrangler").arg("whoami").output().await;
 
     match output {
         Ok(out) if out.status.success() => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import type { SidecarConfig } from "../kernel-sidecar"
-import { buildKernelArgs } from "../spawner"
+import { augmentPath, buildKernelArgs } from "../spawner"
 
 const baseConfig: SidecarConfig = {
   binPath: "/abs/gctrl-kernel",
@@ -49,5 +49,33 @@ describe("buildKernelArgs", () => {
 
   it("stringifies the port", () => {
     expect(buildKernelArgs({ ...baseConfig, port: 9999 })).toContain("9999")
+  })
+})
+
+describe("augmentPath", () => {
+  const HOME = "/Users/test"
+
+  it("appends Homebrew + user CLI dirs to a bare LaunchServices PATH", () => {
+    const result = augmentPath({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin" }, HOME).split(":")
+    expect(result).toContain("/opt/homebrew/bin")
+    expect(result).toContain("/usr/local/bin")
+    expect(result).toContain(`${HOME}/.local/bin`)
+    expect(result).toContain(`${HOME}/.cargo/bin`)
+  })
+
+  it("preserves existing entries first (operator PATH wins)", () => {
+    const result = augmentPath({ PATH: "/usr/bin:/bin" }, HOME).split(":")
+    expect(result.slice(0, 2)).toEqual(["/usr/bin", "/bin"])
+  })
+
+  it("does not duplicate a dir already on PATH", () => {
+    const result = augmentPath({ PATH: "/opt/homebrew/bin:/usr/bin" }, HOME).split(":")
+    expect(result.filter((d) => d === "/opt/homebrew/bin")).toHaveLength(1)
+  })
+
+  it("handles an empty/unset PATH", () => {
+    const result = augmentPath({}, HOME).split(":")
+    expect(result).toContain("/opt/homebrew/bin")
+    expect(result).not.toContain("")
   })
 })
