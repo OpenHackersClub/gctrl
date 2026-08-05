@@ -21,7 +21,8 @@ use axum::{
 };
 use futures_core::Stream;
 use gctrl_core::platform::{
-    PermissionStatus, PlatformError, PlatformHealth, PlatformPort, Space, SpaceEvent, SpaceId,
+    PermissionStatus, PlatformError, PlatformHealth, PlatformPort, PowerStatus,
+    SleepPreventionKind, Space, SpaceEvent, SpaceId,
 };
 use gctrl_storage::DuckDbStore;
 use serde::Deserialize;
@@ -56,11 +57,62 @@ pub fn router(state: DriverState) -> Router {
             "/api/macos/permissions/accessibility/prompt",
             post(prompt_accessibility_handler),
         )
+        // Power (prevent-sleep / "caffeinate"): GET status, POST to toggle.
+        .route(
+            "/api/macos/power",
+            get(power_status_handler).post(set_power_handler),
+        )
         .with_state(state)
 }
 
 async fn health_handler(State(state): State<DriverState>) -> Json<PlatformHealth> {
     Json(state.driver.health())
+}
+
+/// `GET /api/macos/power` — current prevent-sleep state. Always 200: on
+/// builds without the capability it reports `supported: false`.
+async fn power_status_handler(State(state): State<DriverState>) -> Json<PowerStatus> {
+    let status = match state.driver.power() {
+        Some(p) => p.status(),
+        None => PowerStatus {
+            supported: false,
+            active: false,
+            kind: SleepPreventionKind::default(),
+            reason: String::new(),
+        },
+    };
+    Json(status)
+}
+
+#[derive(Deserialize)]
+struct SetPowerBody {
+    /// Hold the assertion (`true`) or release it (`false`).
+    enable: bool,
+    /// Assertion type. Defaults to `display` (full Caffeine parity).
+    #[serde(default)]
+    kind: Option<SleepPreventionKind>,
+    /// Reason surfaced in `pmset -g assertions`.
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// `POST /api/macos/power` — toggle the prevent-sleep assertion. Returns the
+/// new state, or `501` on builds without the power capability.
+async fn set_power_handler(
+    State(state): State<DriverState>,
+    Json(body): Json<SetPowerBody>,
+) -> impl IntoResponse {
+    let Some(power) = state.driver.power() else {
+        return map_error(PlatformError::Unsupported {
+            what: "power capability unavailable".into(),
+        });
+    };
+    let kind = body.kind.unwrap_or_default();
+    let reason = body.reason.unwrap_or_default();
+    match power.set_prevent_sleep(body.enable, kind, &reason) {
+        Ok(status) => Json(status).into_response(),
+        Err(err) => map_error(err),
+    }
 }
 
 async fn list_spaces_handler(State(state): State<DriverState>) -> impl IntoResponse {
@@ -474,5 +526,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn power_status_reports_unsupported_on_stub() {
+        // StubDriver advertises no power capability, so the route reports the
+        // shape with supported:false rather than erroring.
+        let app = app_no_store();
+        let res = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/macos/power")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["supported"], false);
+        assert_eq!(v["active"], false);
+        assert_eq!(v["kind"], "display");
+    }
+
+    #[tokio::test]
+    async fn set_power_returns_not_implemented_on_stub() {
+        let app = app_no_store();
+        let res = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/macos/power")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(r#"{"enable":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_IMPLEMENTED);
     }
 }

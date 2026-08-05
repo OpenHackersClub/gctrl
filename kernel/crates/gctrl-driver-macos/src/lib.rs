@@ -14,11 +14,12 @@ use std::sync::Arc;
 
 use gctrl_core::platform::{
     CapabilitySet, Os, PermissionStates, PermissionStatus, PlatformError, PlatformHealth,
-    PlatformPort, Space, SpaceId, SpaceKind, SpacesPort,
+    PlatformPort, PowerPort, Space, SpaceId, SpaceKind, SpacesPort,
 };
 use gctrl_storage::DuckDbStore;
 
 pub mod permissions;
+pub mod power;
 pub mod routes;
 pub mod spaces;
 
@@ -106,6 +107,8 @@ pub struct FfiDriver {
     port: Option<Box<dyn SpacesPort>>,
     spaces_capable: bool,
     version_skew: bool,
+    power: Box<dyn PowerPort>,
+    power_capable: bool,
 }
 
 impl FfiDriver {
@@ -117,11 +120,42 @@ impl FfiDriver {
         // The storage-only port still works (label persistence, list)
         // but we don't advertise the capability without the renderer.
         let spaces_capable = ax_ok && port.is_some();
+
+        // Power (prevent-sleep / "caffeinate") capability. Default-on: hold a
+        // prevent-sleep assertion for the daemon's whole lifetime unless
+        // GCTRL_PREVENT_SLEEP disables it — "whenever gctrl is running, the
+        // Mac won't sleep". The OS releases the assertion when the process
+        // exits; `MacPower`'s Drop is belt-and-suspenders for graceful stop.
+        let power = power::make_power();
+        let power_capable = power::is_supported();
+        if power_capable {
+            match power::default_from_env(
+                std::env::var("GCTRL_PREVENT_SLEEP").ok().as_deref(),
+            ) {
+                Some(kind) => {
+                    match power.set_prevent_sleep(true, kind, power::DEFAULT_REASON) {
+                        Ok(s) => tracing::info!(
+                            kind = ?s.kind,
+                            "driver-macos: prevent-sleep ON (Mac will not idle-sleep while gctrl runs)"
+                        ),
+                        Err(e) => tracing::warn!(
+                            "driver-macos: prevent-sleep default-on failed: {e}"
+                        ),
+                    }
+                }
+                None => tracing::info!(
+                    "driver-macos: prevent-sleep disabled via GCTRL_PREVENT_SLEEP"
+                ),
+            }
+        }
+
         Self {
             state,
             port,
             spaces_capable,
             version_skew: false,
+            power,
+            power_capable,
         }
     }
 
@@ -137,6 +171,7 @@ impl PlatformPort for FfiDriver {
     fn capabilities(&self) -> CapabilitySet {
         CapabilitySet {
             spaces: self.spaces_capable,
+            power: self.power_capable,
             ..Default::default()
         }
     }
@@ -155,6 +190,9 @@ impl PlatformPort for FfiDriver {
     }
     fn spaces(&self) -> Option<&dyn SpacesPort> {
         self.port.as_deref()
+    }
+    fn power(&self) -> Option<&dyn PowerPort> {
+        Some(self.power.as_ref())
     }
 }
 

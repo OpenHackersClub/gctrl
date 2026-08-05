@@ -90,7 +90,10 @@ describe.skipIf(!KERNEL_AVAILABLE)(
         ],
         {
           stdio: ["ignore", "pipe", "pipe"],
-          env: { ...process.env, RUST_LOG: "warn" },
+          // Disable the default-on prevent-sleep assertion so the power
+          // tests below control the state deterministically (and the test
+          // daemon doesn't hold a system assertion for its whole lifetime).
+          env: { ...process.env, RUST_LOG: "warn", GCTRL_PREVENT_SLEEP: "off" },
         },
       )
       // Surface daemon failures (port already bound, missing migrations,
@@ -207,6 +210,57 @@ describe.skipIf(!KERNEL_AVAILABLE)(
         { method: "DELETE" },
       )
       expect(del.status).toBe(204)
+    })
+
+    it("/api/macos/power reports the prevent-sleep state shape", async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/macos/power`)
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as {
+        supported: boolean
+        active: boolean
+        kind: string
+        reason: string
+      }
+      expect(typeof body.supported).toBe("boolean")
+      expect(typeof body.active).toBe("boolean")
+      expect(["display", "system"]).toContain(body.kind)
+      // GCTRL_PREVENT_SLEEP=off in beforeAll → no assertion held at boot.
+      expect(body.active).toBe(false)
+    })
+
+    it("/api/macos/power toggles when the capability is present", async () => {
+      const powerUrl = `http://127.0.0.1:${port}/api/macos/power`
+      const status = (await (await fetch(powerUrl)).json()) as {
+        supported: boolean
+      }
+
+      if (!status.supported) {
+        // Linux CI / non-FFI build: toggling is unsupported → 501.
+        const res = await fetch(powerUrl, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ enable: true }),
+        })
+        expect(res.status).toBe(501)
+        return
+      }
+
+      // macOS + FFI: enable holds a real IOPMAssertion, disable releases it.
+      const on = await fetch(powerUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enable: true, kind: "display" }),
+      })
+      expect(on.status).toBe(200)
+      expect(((await on.json()) as { active: boolean }).active).toBe(true)
+
+      const off = await fetch(powerUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enable: false }),
+      })
+      expect(off.status).toBe(200)
+      expect(((await off.json()) as { active: boolean }).active).toBe(false)
     })
   },
 )

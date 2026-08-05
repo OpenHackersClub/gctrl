@@ -134,13 +134,24 @@ pub fn router(state: DriverState) -> axum::Router {
         .route("/spaces/:id/name",            post(spaces::name_handler).delete(spaces::unname_handler))
         .route("/spaces/:id/switch",          post(spaces::switch_handler))
         .route("/spaces/stream",              get(spaces::stream_handler))
+        .route("/power",                      get(power_status_handler).post(set_power_handler))
         .with_state(state)
 }
 ```
 
 `health::handler` is the only route that does NOT require the `ffi` feature; it always returns `{ os: "macos", capabilities: [], permissions: { ... } }` when ffi is disabled, so consumers can feature-detect even on a stripped build.
 
-The kernel's existing TTL cache wraps `GET /api/macos/spaces` with a 5 s TTL; write routes (`/name`, `/unname`, `/switch`) call `cache.invalidate("/api/macos/spaces*")` on success, mirroring [`driver-github`'s pattern](../dogfood-drivers.md).
+The kernel's existing TTL cache wraps `GET /api/macos/spaces` with a 5 s TTL; write routes (`/name`, `/unname`, `/switch`) call `cache.invalidate("/api/macos/spaces*")` on success, mirroring [`driver-github`'s pattern](../dogfood-drivers.md). The `/power` routes are not cached — status is read straight off the in-process assertion handle.
+
+## Power Assertion (prevent sleep)
+
+`src/power.rs` implements the [`PowerPort` prevent-sleep capability](../../architecture/kernel/driver-macos.md#powerport--prevent-sleep-caffeinate) — the Caffeine replacement.
+
+- **IOKit FFI** (`#[cfg(all(feature = "ffi", target_os = "macos"))]`): two `extern "C"` symbols, `IOPMAssertionCreateWithName(type, level=255, name, &id)` and `IOPMAssertionRelease(id)`, linked via `cargo:rustc-link-lib=framework=IOKit` in `build.rs`. The assertion *type* is the IOKit string `PreventUserIdleDisplaySleep` (default) or `PreventUserIdleSystemSleep`; the *name* is the reason surfaced in `pmset -g assertions`.
+- **One assertion at a time.** `MacPower` holds `Mutex<Option<assertion_id>>`. `set_prevent_sleep` releases any existing id before creating a new one, so toggling off and switching `kind` are the same code path and ids never leak or double-release.
+- **Default-on.** `FfiDriver::new` calls `power::default_from_env(GCTRL_PREVENT_SLEEP)` → `Some(Display)` by default and immediately enables the assertion, so the headline "Mac won't sleep while gctrl runs" holds with zero user action. `off`/`0`/`false` disables; `system` selects the system-only type.
+- **Stub on every other target.** `NoopPower` reports `supported: false` and returns `PlatformError::Unsupported` from `set_prevent_sleep`, so Linux/Windows builds and `cargo build` without `ffi` keep compiling and the route returns `501` on POST.
+- **Cleanup.** The OS releases the assertion on process exit; `MacPower`'s `Drop` releases it explicitly for graceful shutdown.
 
 ### Cache & Telemetry
 
