@@ -94,6 +94,14 @@ Observe & Eval owns both the **substrate** (metrics, prompts, judges, datasets, 
 
 **Done when:** An app can call `POST /api/eval/score` with `{ metric: "faithfulness", input, output }` from its own dev loop, *and* `gctrl eval run <suite> --baseline <run-id>` exits non-zero on regression in CI — both writing to the same `scores` table queryable as one trend. An agent can run `gctrl query "my cost this session"` and get an answer. A team lead can run `gctrl capacity forecast --milestone v2` and get a date estimate.
 
+## Platform Drivers (driver-macos) — In Progress
+
+**Goal:** Absorb the single-purpose macOS menu-bar utilities into kernel capabilities behind `/api/macos/*`.
+
+| Task | Description | Priority | Depends On | Issue |
+|------|-------------|----------|------------|-------|
+| URL routing (system-wide link router) | gctrl-desktop as default browser; kernel rewrites + routes every out-of-browser link to an explicit browser/profile/app target. Spec: [url-routing.md](../architecture/kernel/url-routing.md) | P1 | driver-macos `PlatformPort` | [#228](https://github.com/OpenHackersClub/gctrl/issues/228) |
+
 ## Backlog (unprioritized)
 
 - Protobuf OTLP support (currently JSON only)
