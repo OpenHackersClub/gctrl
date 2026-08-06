@@ -77,6 +77,7 @@ fn cat_config() -> OrchConfig {
     OrchConfig {
         agent_cmd: vec!["cat".into()],
         working_dir: std::env::current_dir().unwrap(),
+        env_passthrough: vec![],
         poll_interval: Duration::from_millis(10),
         max_per_pass: 4,
         task_timeout: Duration::from_secs(5),

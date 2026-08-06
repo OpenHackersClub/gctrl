@@ -116,10 +116,14 @@ impl Worker {
         // Spawn first, *then* transition Claimed → Running. This matches the
         // Lean spec: `dispatchFailed` (Claimed → Released) vs `agentLaunched`
         // (Claimed → Running) vs `agentExitAbnormal` (Running → RetryQueued).
-        let child =
-            match agent::spawn_agent(&self.config.agent_cmd, &self.config.working_dir, &prompt)
-                .await
-            {
+        let child = match agent::spawn_agent(
+            &self.config.agent_cmd,
+            &self.config.working_dir,
+            &prompt,
+            &agent::resolve_env(&self.config.env_passthrough),
+        )
+        .await
+        {
                 Ok(c) => c,
                 Err(e) => {
                     let body = format!("## Agent run failed (spawn)\n\n{e}");

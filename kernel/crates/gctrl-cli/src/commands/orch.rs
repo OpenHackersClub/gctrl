@@ -15,8 +15,25 @@ pub async fn run(
     timeout_secs: u64,
     agent: Vec<String>,
     working_dir: Option<PathBuf>,
+    env_passthrough: Vec<String>,
     dry_run: bool,
 ) -> Result<()> {
+    // Flag wins; otherwise take the LaunchAgent-friendly env form. Same shape
+    // as GCTRL_SCHEDULER_EXEC_ALLOWED_PROGRAMS.
+    let env_passthrough = if env_passthrough.is_empty() {
+        std::env::var("GCTRL_ORCH_ENV_PASSTHROUGH")
+            .map(|s| {
+                s.split(',')
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        env_passthrough
+    };
+
     let sqlite_path = if db_path == ":memory:" {
         ":memory:".to_string()
     } else {
@@ -29,6 +46,7 @@ pub async fn run(
         working_dir: working_dir
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from(".")),
+        env_passthrough,
         poll_interval: Duration::from_secs(interval_secs),
         max_per_pass,
         task_timeout: Duration::from_secs(timeout_secs),
