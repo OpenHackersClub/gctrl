@@ -255,6 +255,11 @@ enum OrchCmd {
         /// Working directory for the agent (default: current dir)
         #[arg(long)]
         working_dir: Option<std::path::PathBuf>,
+        /// Extra env vars to forward to the agent, on top of the process
+        /// baseline (PATH, HOME, …). Everything else is cleared. Repeat or
+        /// comma-separate; falls back to GCTRL_ORCH_ENV_PASSTHROUGH.
+        #[arg(long = "env-passthrough", value_delimiter = ',')]
+        env_passthrough: Vec<String>,
         /// Don't spawn anything — log what would happen, then release the claim
         #[arg(long)]
         dry_run: bool,
@@ -693,8 +698,8 @@ async fn run_dispatch(cli: Cli) -> Result<()> {
             PersonasCmd::List => commands::personas::list(&db_path),
         },
         Commands::Orch(cmd) => match cmd {
-            OrchCmd::Run { once, interval, max_per_pass, timeout, agent, working_dir, dry_run } => {
-                commands::orch::run(&db_path, once, interval, max_per_pass, timeout, agent, working_dir, dry_run).await
+            OrchCmd::Run { once, interval, max_per_pass, timeout, agent, working_dir, env_passthrough, dry_run } => {
+                commands::orch::run(&db_path, once, interval, max_per_pass, timeout, agent, working_dir, env_passthrough, dry_run).await
             }
         },
         Commands::Net(cmd) => match cmd {

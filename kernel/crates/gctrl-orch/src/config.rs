@@ -12,6 +12,13 @@ pub struct OrchConfig {
     /// outside the project root.
     pub working_dir: PathBuf,
 
+    /// Extra environment variables forwarded to the agent, on top of
+    /// `agent::BASE_ENV_KEYS`. The agent's environment is otherwise cleared,
+    /// so a credential the daemon holds does not reach the child unless it is
+    /// named here — this is where an agent's model credential
+    /// (`ANTHROPIC_API_KEY`, `AWS_PROFILE`, …) gets declared.
+    pub env_passthrough: Vec<String>,
+
     /// Poll interval between queue drains. Short is fine — the query is
     /// indexed and cheap.
     pub poll_interval: Duration,
