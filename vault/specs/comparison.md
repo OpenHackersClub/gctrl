@@ -6,10 +6,12 @@
 
 | Project | What It Is |
 |---------|-----------|
-| **gctrl (GroundCtrl)** | Local-first OS for human+agent teams — Unix-inspired kernel (Rust) + shell (Effect-TS) providing telemetry, storage, guardrails, and orchestration as infrastructure. |
+| **gctrl (GroundCtrl)** | Local-first OS for **AI-native teams** — humans give direction, agents pick up work and improve themselves. Unix-inspired kernel (Rust) + shell (Effect-TS) providing direction surface, accumulation, telemetry, guardrails, and an in-loop improvement substrate. |
 | **Ruflo** (ruvnet/ruflo) | Enterprise multi-agent orchestration platform — 100+ specialized agents in coordinated swarms with self-learning, consensus protocols, and multi-LLM routing. |
 | **oh-my-claudecode** (OMC) | Claude Code plugin adding multi-agent orchestration, natural-language task dispatch, and persistent execution modes on top of the existing Claude Code runtime. |
 | **Symphony** (openai/symphony) | Issue-tracker-driven daemon that polls Linear for work, creates isolated workspaces, and dispatches coding agents (Codex) — spec-first, language-agnostic. |
+
+> **Where gctrl is explicitly *not* heading:** Symphony's "issue → dispatch → run → exit" loop is a great job runner; gctrl is not trying to be a better one. We optimize for the *opposite* end of the operating model — durable direction, accumulated context, in-loop agent improvement, and team-level visibility — and leave dispatch as an opt-in surface (M2d in the [roadmap](gctrl/ROADMAP.md)).
 
 ---
 
@@ -53,7 +55,9 @@ graph TB
 
 | Dimension | gctrl | Ruflo | OMC | Symphony |
 |-----------|------|-------|-----|----------|
-| **Metaphor** | Operating system (Unix) | Enterprise platform | Plugin / framework | Daemon / service |
+| **Metaphor** | OS for AI-native teams (humans+agents as colleagues) | Enterprise platform | Plugin / framework | Daemon / service |
+| **Primary input** | Direction (intent, goals, feedback) | Swarm spec + entry prompt | Natural-language conversation | Linear issue |
+| **Improvement loop** | In-loop: eval + review feedback → harness update | RuVector RL/SONA on the model side | Skill extraction from sessions (file-based) | None (each run is independent) |
 | **Core lang** | Rust kernel + Effect-TS apps | TypeScript + WASM (Rust-compiled policy engine, embeddings) | TypeScript (Claude Code plugin, .mjs hooks) | Spec-agnostic (reference impl: Elixir/OTP) |
 | **Agent model** | Agent-agnostic — any agent that emits OTel spans | 100+ built-in specialized agents | 32 built-in agents + multi-model (Claude, Codex, Gemini) | Single coding agent per issue (Codex app-server) |
 | **Separation of concerns** | Kernel (mechanism) vs. Shell (policy) vs. Apps (domain) | Layered: entry → routing → swarm → agents → memory | Skills + hooks + orchestration modes stacked on Claude Code | Policy (WORKFLOW.md) vs. coordination (orchestrator) vs. execution (agent subprocess) |
@@ -75,7 +79,8 @@ graph TB
 | **Browser control** | CDP daemon with ref system, tab management | N/A | N/A | N/A |
 | **Cloud sync** | Cloudflare R2 (opt-in), Parquet-based | N/A | N/A | N/A (local workspaces only) |
 | **Workspace isolation** | Per-agent sessions tracked via telemetry | Per-swarm agent isolation | Per-team execution | Per-issue workspace directories with lifecycle hooks |
-| **Self-learning** | N/A | RuVector: SONA, EWC++, LoRA, 9 RL algorithms, reasoning bank | Skill learning: extracts reusable patterns from sessions | N/A |
+| **Self-learning** | In-loop harness improvement: eval scores + review feedback update prompts / skill selection / scope per persona; skill registry promotes reusable patterns (M2b/M4a in roadmap). Does not train models. | RuVector: SONA, EWC++, LoRA, 9 RL algorithms, reasoning bank | Skill learning: extracts reusable patterns from sessions | N/A |
+| **Direction surface** | Vault-resident, watched, versioned, propagated to sessions | N/A (swarm spec is per-invocation) | CLAUDE.md edits + skills | WORKFLOW.md frontmatter (per-repo, not team-direction) |
 | **CI/CD integration** | Kernel driver (driver-github) for GitHub Actions via TrackerPort | N/A | N/A | Agent handles CI via tools; Symphony tracks proof-of-work (CI status, PR review) |
 | **License** | MIT | MIT | MIT | Apache 2.0 |
 
@@ -83,20 +88,23 @@ graph TB
 
 ## Design Trade-offs
 
-### gctrl: Infrastructure-first, agent-agnostic
+### gctrl: AI-native team OS — direction + in-loop improvement
 
 **Strengths:**
-1. Unix-inspired layered architecture provides clean separation — kernel never assumes which agents or apps are present
-2. Agent-agnostic: works with Claude Code, Aider, Codex, or any agent that emits OTel spans
-3. Local-first with zero config (`gctrl serve` gives you telemetry + storage + guardrails immediately)
-4. DuckDB storage provides SQL queryability, Parquet export, and structured analytics
-5. Built-in web scraping, browser control, and context management — comprehensive toolbox
-6. Guardrails as a kernel primitive — not an afterthought
+1. Direction is the primary input — humans steer at the level they actually think at (goals, priorities, constraints), not by writing tickets
+2. Every session writes back to a durable vault — insights, decisions, review feedback, skills compound over time
+3. In-loop improvement: eval scores + structured review feedback update the agent harness (prompts, skill selection, scope) without manual prompt edits
+4. Personas are long-lived: cost budget, branch policy, command allowlist, and direction attach to personas (not to one-off task rows). Agents accumulate a performance record like employees
+5. Agent-agnostic: works with Claude Code, Aider, Codex, or any agent that emits OTel spans
+6. Local-first with zero config (`gctrl serve` gives telemetry + storage + guardrails + direction surface immediately); DuckDB + Parquet means no vendor lock-in
+7. Guardrails are a kernel primitive, not an afterthought
 
 **Trade-offs:**
-1. No built-in self-learning or ML-based routing — agents are external, not orchestrated internally
-2. Requires running a daemon (`gctrl serve`) for full functionality
-3. Rust kernel + Effect-TS apps is a dual-language stack that requires both ecosystems
+1. Not optimized for the "fastest dispatcher" use case — teams that want a pure issue-runner are better served by Symphony or a CI runner
+2. Direction surface and in-loop improvement loop are still maturing (M2/M4 in [roadmap](gctrl/ROADMAP.md)); teams adopting today get the kernel + telemetry + guardrails fully, but the headline improvement loop is in progress
+3. Requires running a daemon (`gctrl serve`) for full functionality
+4. Rust kernel + Effect-TS apps is a dual-language stack that requires both ecosystems
+5. Does not train or fine-tune models — improvement is at the harness level (prompts, skills, scope), not the weights
 
 ### Ruflo: Maximum agent capability, batteries-included
 

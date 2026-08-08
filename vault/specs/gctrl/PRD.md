@@ -1,225 +1,290 @@
 # GroundCtrl — Product Requirements Document
 
-> Tools and workflows for harness engineering — so agents work with the right context and guardrails, and humans deep-think on what matters and review work.
+> The operating system for AI-native teams. Humans set direction and review outcomes. Agents pick up the work, learn from their own runs, and get better — like employees, not like job-queue workers.
 >
 > Instantiates the [PRD template](../../apps/gctrl-board/vault/specs/workflows/prd-template.md) for gctrl itself.
 
 ## The Problem
 
-Coding agents are powerful but unmanaged. Today's developer using Claude Code, Codex, Aider, or custom agents faces a set of compounding problems that no single tool addresses:
+The dominant shape in agent tooling today is **issue-driven dispatch**: a human writes (or imports) a ticket, a runner picks it up, an agent ships a diff, the human reviews. Symphony, OMC's team pipeline, and CI-integrated coding agents are well-designed instances of that shape — and for "I have a backlog, please grind it down" they are the right tool. The shape stops working when the team has *more* agent capacity than a human can ticket-decompose, and when the agents involved would otherwise have learned from yesterday's session but don't.
 
-1. **No visibility.** You don't know what your agent did, how much it cost, or whether it's stuck in a loop — until the bill arrives or the PR is a mess. There's no `top` or `ps` for agent work.
+Teams trying to actually live with agents day-to-day run into a different set of problems:
 
-2. **No guardrails.** Agents can force-push to main, blow through token budgets, hammer APIs without rate limits, or produce 5,000-line diffs. There's no `ulimit` or `cgroup` equivalent.
+1. **Direction is bottlenecked on tickets.** Real work isn't a ticket — it's "ship this product line", "keep the build green this week", "investigate this regression". Tickets are an artifact humans write *for* dispatchers, not the natural unit of direction. Agents that need a fully-specified ticket to start can only consume what a human has the bandwidth to write.
 
-3. **No orchestration.** Dispatching work to agents is manual. There's no job queue, no dependency graph, no retry logic, no concurrency control. You can't say "work on these 5 issues in priority order, max 2 at a time."
+2. **Agents don't accumulate.** Every session starts cold. Yesterday's debugging insights, last week's "we tried X and it failed because Y", the convention the reviewer pushed back on three PRs ago — none of it carries forward. The agent is fluent; the *team's agent* is amnesiac.
 
-4. **No shared context.** Agents start every session from scratch. Team knowledge — conventions, architecture docs, past decisions, crawled documentation — isn't systematically available. There's no shared filesystem for agent context.
+3. **No performance loop.** When a human employee underperforms, you have signal (review feedback, missed goals, peer comments) and a process (1:1s, written feedback, change of scope). For agents the team has *neither* the signal in a structured form nor a process to act on it. Bad runs go in the trash; good runs go un-mined.
 
-5. **No capacity planning.** You can't answer "how many issues can our agent team close per week?" or "are we on track to ship this milestone?" Agent work is invisible to project planning.
+4. **Steering is ad-hoc.** "Stop doing X", "do more Y", "this PR template is wrong" lives in Slack threads, scattered CLAUDE.md edits, and one-off prompt tweaks. There's no shared, durable surface where the team's direction to agents is the artifact — versioned, reviewable, and applied uniformly.
 
-6. **Tool fragmentation.** Observability (Langfuse), project tracking (Linear), knowledge bases (Obsidian), infrastructure (AWS/Cloudflare) — each is a separate silo. Agents can't reason across them. Humans context-switch between them.
+5. **No visibility on the team as a team.** You can read one session's trace. You cannot ask "what is the team working on this week, what's stuck, where is cost going, which directions are paying off." Agent work is invisible to the *team's* operating cadence — standups, reviews, retros.
 
-These problems compound: without visibility you can't set guardrails, without guardrails you can't trust agents with orchestration, without orchestration you can't plan capacity, without capacity planning you can't staff projects.
+6. **Tool sprawl.** Observability (Langfuse), tracking (Linear), knowledge (Obsidian), infra (AWS/Cloudflare) — each siloed. Agents can't reason across them. The human cost of stitching them is the team's biggest hidden tax.
 
-## Our Take: Harness Engineering
+These compound: without a durable steering surface you can't accumulate context; without accumulated context agents don't improve; without improvement humans stay in the dispatcher seat instead of doing the deep-thinking work that's actually scarce.
 
-**The fundamental insight is that the bottleneck is not agent capability — it's the harness.** Agents are already powerful enough to ship real work. What's missing is the engineering around them: the context they receive, the guardrails that keep them safe, the orchestration that assigns them work, and the workflows that let humans focus on the decisions that actually matter.
+## Our Take: An OS for AI-Native Teams
 
-**Harness engineering** is the discipline of building this infrastructure. The goal: agents operate with the right context and within safe boundaries, while humans spend their time on deep thinking — architecture, priorities, trade-offs, review — instead of babysitting agents, copy-pasting prompts, or manually dispatching work.
+**The bottleneck is not agent capability and it is not dispatch latency — it is the team operating model.** A team in 2026 has 3 humans and 30 agent sessions in flight; treating those 30 sessions as a job queue under-uses them and burns out the humans. The right shape is closer to **a team where humans manage and agents are employees**: humans set direction, agents own the work, both sides learn over time.
 
-Unix solved the analogous problem for human computing: processes need scheduling, resource limits, a filesystem, IPC, and observability (`/proc`, `top`, `ps`). These are OS-level concerns — not application concerns. When every application reinvents process management, you get Windows 3.1. When the OS handles it, you get Unix.
+gctrl is the operating system for that team. It is **not** an issue-task dispatcher. It is **not** a swarm orchestrator. It is the layer that lets a team:
 
-gctrl applies the Unix model to harness engineering:
+- **Give direction at the level the team actually thinks at** — strategic intent, product cuts, "do more of this, less of that" — not pre-decomposed tickets.
+- **Make agents accumulate** — every session writes back to a shared, durable context. Yesterday's insight is tomorrow's prompt.
+- **Run a performance loop** — eval, trace, review feedback, and human signal feed a closed loop that updates agent prompts, skills, and scope automatically.
+- **See and steer the team** — the team's work is a first-class object, not a sum of disconnected sessions.
 
-| Problem | Unix Solution | gctrl Solution |
-|---------|--------------|---------------|
-| No visibility | `/proc`, `top`, `ps`, `strace` | OTel telemetry, trace trees, cost analytics |
-| No guardrails | `ulimit`, `cgroups`, `seccomp` | Policy engine: budgets, loop detection, command allowlists |
-| No orchestration | `init`, `systemd`, job queues | Orchestrator: dispatch, retry, dependency DAG, concurrency slots |
-| No shared context | Filesystem (`/home`, `/etc`, NFS) | Context manager: docs, configs, snapshots — local-first, sync to cloud |
-| No capacity planning | Resource accounting, `sar` | Throughput metrics, forecasts from telemetry data |
-| Tool fragmentation | Everything is a file, pipes, sockets | Drivers for Linear/GitHub/Notion/Phoenix, kernel IPC, unified CLI |
+We keep the Unix metaphor because it's the right one — a small kernel, composable utilities, agents as first-class shell users — but the *load* on that OS is fundamentally different from a job-runner OS.
 
-**The kernel is small and always present.** You get telemetry, storage, guardrails, and orchestration by running `gctrl serve` — no config, no cloud, no Docker. Everything else is optional: applications, drivers, cloud sync, browser control. Complexity is opt-in.
+| Issue-driven dispatch (Symphony-shaped) | AI-native team OS (gctrl) |
+|---|---|
+| Ticket → dispatcher → agent runs → human reviews | Direction → agents pick up work → agents learn → humans review outcomes |
+| Agent is a stateless function | Persona is long-lived, scoped, scored |
+| Improvement happens out-of-band (humans edit prompts) | Improvement is in-loop: eval + review feedback update the harness automatically |
+| Unit of management is the *task* | Unit of management is the *persona's direction and growth* |
+| Telemetry is for billing / blame | Telemetry is for learning — what worked, what didn't, why |
 
-**Agents work with context, not from scratch.** The context manager, crawled docs, and project snapshots mean every agent session starts with the knowledge it needs — conventions, architecture, past decisions. Humans invest once in curating context; every agent session benefits.
+Both shapes are legitimate. The pivot is not "Symphony is wrong"; it is "we're optimizing for a different operating model and shouldn't keep packaging ourselves as a broader Symphony."
 
-**Humans review, not babysit.** Guardrails and orchestration handle the operational concerns (budgets, retries, concurrency, safety) so humans can focus on what only they can do: setting direction, making architectural trade-offs, and reviewing output. The human role shifts from dispatcher to decision-maker.
+### The two load-bearing pillars
 
-**Local-first, cloud-optional.** Everything works offline on your laptop. Cloud sync (Cloudflare R2) layers on when you need team visibility or cross-device access. No vendor lock-in — the data is Parquet and markdown.
+The pivot rests on a pair of symmetric design pillars — one per side of the team:
 
-**Adapt, don't replace.** gctrl connects to tools you already use (Linear, Notion, Obsidian, Phoenix) via drivers. It provides the kernel underneath, not a replacement for your workflow.
+1. **Agent-side: agents improve themselves and the system around them.** Two nested loops:
+   - **Inner loop (per session, fast, narrow blast radius).** Eval scores, judge metrics, and review feedback from a single session update *that persona's* harness (prompts, skill selection, scope, retry policy) for the next run. Signal-driven, automatic, no human prompt-editing ritual.
+   - **Outer loop (across sessions, slow, wider blast radius).** An agent runs on a schedule to observe the team's own operation — human prompts, workflows, recurring mistakes, results across personas, drift between specs and code — and *proposes or applies system-level improvements*: better defaults, new skills promoted to first-class, updated direction templates, missing guardrails, persona scope/binding changes. Auto-applies low-blast-radius changes; proposes-to-human for high-blast-radius ones. The agent improves the system the team operates on, not just itself.
+2. **Human-side: reduce human cognitive load by giving affordances on agents and tasks.** Humans should never have to mentally reconstruct what the team is doing. State that *exists* in the system MUST be made *perceivable* — at a glance, with the right action implied.
+
+A team of 3 humans and 30 agents is unmanageable if the human has to query for everything; it is manageable when the system *surfaces what matters and suggests the next move*. Concretely, gctrl is responsible for making these things first-class affordances:
+
+- **Per agent (persona):** what it's doing now, its scorecard trend, its scope/guardrails, recent review feedback, who/what is directing it.
+- **Per task / work-in-flight:** state, blockers, last-touched, cost-to-date, which session(s) and persona(s) own it, what changed since the human last looked.
+- **Per direction:** what's currently steering the team, what's expired, what conflicts with what, what's covered vs. orphaned.
+- **At the team level:** one screen / one CLI call that shows the team's state with the items the human should *act on* highlighted — not a wall of raw data the human is expected to filter.
+
+The test: a team lead opening `gctrl status --team` after a weekend should understand the team's state and know what to do next, without writing a single SQL query, scrolling through traces, or asking an agent. If the system has the data but the human has to reconstruct it, that is a kernel-level bug, not a UX nice-to-have.
+
+These two pillars are designed to compose: the agent side compounds capability over time; the human side keeps a human in the loop without keeping them in the inner loop.
+
+### What the outer loop notices and changes
+
+The inner loop touches one persona based on one session's signal. The outer loop sees *the team using the team* and proposes changes a single session can never propose. Examples:
+
+| The outer-loop observer notices | And proposes / applies |
+|---|---|
+| The same review-feedback constraint ("don't suggest force-push") appears against 5 personas | Promote to a **global guardrail** so it's enforced, not re-corrected every time |
+| Direction files all happen to follow a similar structure | Propose a **direction template** that captures the convention; new direction starts from it |
+| Sessions running against direction tagged `migration` consistently overrun budget | Raise the **default budget** for `migration`-tagged direction, or route those to a different persona |
+| Humans frequently re-prompt to clarify scope in the first turn | Add "ask for scope upfront" to the **default starter prompt** for the persona |
+| A pattern (sequence of tool calls, prompt phrasing) shows up in N high-scoring sessions | Promote to a **first-class skill** in the registry, auto-attach to relevant personas |
+| Code referenced in PRs has drifted from the ROADMAP spec rows | Flag the drift, file inbox entries, surface as action-needed on the team view |
+| Persona X consistently scores lower than persona Y on the same direction | Propose **re-binding** direction to Y (or **narrowing X's scope**) |
+| A `WORKFLOW.md` says "use bare gh" but the kernel now wraps GitHub | Propose updating the team convention to route through `gctrl gh` |
+
+The outer loop is *dogfood-shaped*: the agent operating the system improves the system. Its cadence is the kernel scheduler (daily / weekly), not per-session. Its outputs go through approval gates by default — auto-applied only when blast radius is narrow (one persona's prompt addition), proposed-to-human when blast radius is wide (defaults, templates, global guardrails). Every proposal is persisted with rationale and evidence so the team can review *why* the system changed itself, not just *what* changed.
+
+Existing utility primitives (`/project-pulse`, `/pulse-drift`, `/pulse-opportunity`, `/pulse-audit`, `/pulse-prs`) are **early external instances of this loop**. The pivot makes the loop a first-class kernel concern with a contract, an approval model, and an audit log — instead of one-off skills.
+
+**The kernel is small and always present.** `gctrl serve` gives a solo developer their own AI-native team in one command — telemetry, storage, guardrails, vault, and the direction surface. No config, no cloud, no Docker.
+
+**Direction is the primary input.** Tickets, queues, and dispatchers still exist where they're useful (gctrl-board, driver-github), but they are *outputs* of direction, not the input. The team writes intent; the kernel materializes work.
+
+**Agents close their own loop.** Observe & Eval captures performance signal; the context manager owns shared skill/knowledge; review feedback is structured and replayable. The kernel doesn't train models — it curates the *harness* (context, prompts, skills, scope) that determines how agents perform, and updates that harness from outcomes.
+
+**Humans review outcomes, not output.** Guardrails handle the operational concerns. The human role shifts from "approve every diff" to "set direction, watch trends, intervene on the things only a human can decide."
+
+**Local-first, cloud-optional.** Everything works offline. Cloud sync layers on for team visibility. Data is Parquet and markdown — no lock-in.
+
+**Adapt, don't replace.** Connect to Linear, GitHub, Notion, Obsidian, Phoenix via drivers. gctrl is the team's OS layer, not a workflow replacement.
 
 ## Design Principles
 
-1. **Human time on what matters.** Every feature MUST reduce human time spent on operational mechanics (dispatching, monitoring, copy-pasting context) and increase human time available for deep thinking (architecture, priorities, trade-offs, review).
-2. **Context is infrastructure, not manual labor.** Agents MUST receive the right context automatically — conventions, docs, project state. Humans curate context once; the harness delivers it to every session.
-3. **Usable out of the box by one person.** `cargo install gctrl && gctrl serve` — no config files, no cloud accounts, no Docker. A solo developer gets telemetry, storage, guardrails, and orchestration immediately.
-4. **Small kernel, optional everything else.** The kernel has four core primitives. Network control, browser control, cloud sync, and the scheduler are extensions. All applications and drivers are optional.
-5. **Adapt, don't replace.** Connect to tools you already use via drivers. Shipped applications (gctrl-board, Observe & Eval) are defaults, not mandates.
-6. **OS layer is stable; applications evolve fast.** The telemetry format, storage schema, and CLI change rarely. Applications ship, iterate, and break independently.
-7. **Applications share primitives, not state.** Apps use the same storage but own their table namespaces. Cross-app data flows through kernel events, not direct table joins.
-8. **Agents are first-class consumers.** Every feature is CLI/API-first and automatable. No browser-only UIs.
-9. **Local-first, cloud-optional.** The kernel works fully offline. Cloud sync is opt-in.
+The pivot-specific invariants (affordance-over-query, direction-as-input, write-back, in-loop improvement, harness-not-model, personas-as-employees, team-as-first-class-object) live in [principles.md → AI-Native Team Operation](../principles.md#ai-native-team-operation). The principles below are the cross-cutting ones that apply to every gctrl feature.
+
+1. **Reduce human cognitive load via affordances on agents and tasks.** Every kernel feature has a human-facing question: *does this make the team state perceivable and the next move obvious, or does it dump data and ask the human to reconstruct?* Features that answer "dumps data" are not done. State the kernel knows MUST become a surfaceable affordance, not a SQL query the human writes.
+2. **Usable out of the box by one person.** `cargo install gctrl && gctrl serve` — a solo developer with one agent gets direction, write-back, observation, and guardrails immediately.
+3. **Small kernel, optional everything else.** Direction surface, write-back, observation, and guardrails are kernel concerns. Applications (board, eval-runner, capacity engine) are optional defaults.
+4. **OS layer is stable; applications evolve fast.** Telemetry format, vault schema, port surface change rarely. Applications ship and iterate independently.
+5. **Agents are first-class consumers.** Every feature is CLI/API-first and automatable. Agents drive gctrl as much as humans do.
+6. **Local-first, cloud-optional.** Kernel works fully offline. Cloud sync is opt-in.
+7. **Adapt, don't replace.** Connect to existing tools via drivers. Shipped applications are defaults, not mandates.
 
 ## Target Users
 
-### Primary: Individual Developer with Agents
+### Primary: Developer Living With Agents
 
-A solo developer running one or more coding agents. Wants to know what agents are doing, how much they cost, and stop them from breaking things.
+A developer (solo or in a small team) whose day is a mix of their own work and 5–30 agent sessions. They are past the "what is an agent" stage; they want their agents to *get better* and to spend less of their day in the dispatcher seat.
 
-**Day-one value (zero config):**
-
-| Need | What They Use |
-|------|-------------|
-| "What did my agent do and how much did it cost?" | Telemetry + analytics |
-| "Prevent my agent from force-pushing to main" | Guardrails |
-| "Dispatch work to my agent and track progress" | Orchestrator + gctrl-board |
-| "What should my agent work on next?" | gctrl-board |
-| "Crawl these docs and make them agent-ready" | Net utilities + context manager |
-| "Share project conventions with my agent" | Context manager (configs) |
-
-### Secondary: Small Team with Multiple Agents
-
-A team of 2-10 developers, each with their own agents, working on a shared codebase.
-
-**Added value (add drivers as needed):**
+**What they get on day one:**
 
 | Need | What They Use |
 |------|-------------|
-| "Sync our Linear/GitHub issues to gctrl orchestration" | Drivers (driver-linear, driver-github) |
-| "View and edit specs in Obsidian" | Driver-obsidian |
-| "Export traces to Phoenix for LLM analysis" | Driver-phoenix |
-| "How is our team's agent adoption trending?" | Observe & Eval |
-| "Can we ship this milestone on time?" | Capacity Engine |
-| "Orchestrate 5 agents across 20 issues" | Orchestrator with concurrency config |
-| "Share crawled docs and conventions across the team" | Context manager + cloud sync (R2) |
+| "Let me write team direction once and have every agent pick it up" | Direction vault (CLAUDE.md / AGENTS.md / WORKFLOW.md, watched + propagated) |
+| "Don't make me write a ticket for every little thing" | Intent → work expansion (board issues optional; agents start from goals) |
+| "Carry insights and decisions across sessions" | Context manager + vault, watched and synced |
+| "Show me what the agent did, what it cost, what worked" | Telemetry + analytics + Observe & Eval |
+| "Prevent agents from doing destructive things" | Guardrails |
+| "Score agent runs and feed that back into their prompts" | Observe & Eval + skill registry |
+| "When I tell an agent 'don't do X', remember it" | Review-feedback capture → context surface |
+
+### Secondary: AI-Native Team (2–10 humans, 10–100 agent sessions/day)
+
+A team that already runs more agent work than human work. They need the *team* to be legible — not just individual sessions.
+
+**Added value (drivers + sync as needed):**
+
+| Need | What They Use |
+|------|-------------|
+| "Show me the team's work this week — what's in flight, stuck, done" | Team view (board + telemetry roll-up) |
+| "Make agent skill/context shared across the team" | Vault sync (R2) + skill registry |
+| "Trend our agents' eval scores — are they improving?" | Observe & Eval longitudinal view |
+| "Sync to Linear / GitHub Issues for cross-team visibility" | driver-linear, driver-github |
+| "Forecast whether direction X is on track" | Capacity Engine (throughput + direction tracking) |
+| "Standardize agent harness across the team" | Direction vault + skill registry, versioned |
+| "Local Langfuse — never send prompts off-laptop" | Observe & Eval (local-first observability) |
 
 ## What We're Building
 
 ### The Kernel (Always Present)
 
-Four core primitives that every agent team needs:
+Five core primitives every AI-native team needs:
 
-**Telemetry** — The `/proc` of agent work. Ingests OpenTelemetry spans, tracks sessions, attributes costs. Every agent operation is observable. You can always answer "what happened, how long, how much."
+**Direction Surface** — The primary input. Vault-resident, watched, versioned. Intent, goals, priorities, conventions, and review feedback live here as markdown with frontmatter. The kernel propagates direction to agent sessions automatically; it does not require pre-decomposed tickets. See the [direction example](#direction-example) below for the shape.
 
-**Storage** — The filesystem. Embedded DuckDB for structured data (sessions, spans, tasks). Filesystem for content (crawled docs, configs, snapshots). Works offline, syncs to cloud when needed.
+**Telemetry** — The `/proc` of agent work. OpenTelemetry ingestion, session tracking, cost attribution.
 
-**Guardrails** — The `ulimit` + `cgroups`. Policy engine that enforces cost limits, detects error loops, gates commands, protects branches. Attached to user personas, not individual sessions.
+**Storage + Vault** — DuckDB for structured signal (sessions, spans, scores, eval runs); filesystem-resident vault for human-readable direction, decisions, and skills. Markdown + Parquet — no lock-in. The vault is the team memory; the DB is the index.
 
-**Orchestrator** — The `init`/`systemd`. Dispatches agent sessions to work on tasks. Manages retry with backoff, dependency DAGs, concurrency slots. Agent-agnostic — works with any agent that accepts a prompt.
+**Guardrails** — The `ulimit` + `cgroups`. Cost budgets, loop detection, command allowlists, branch protection. Attached to personas, applied per session.
+
+**Feedback Loop** — Observe & Eval captures performance signal (eval scores, judge metrics, review feedback); the kernel feeds that signal back into the harness (prompts, skill selection, scope, retry policy) on the next session.
+
+### Direction Example
+
+A `direction.md` in the vault looks like:
+
+```markdown
+---
+id: dir-2026-q2-onboarding
+kind: goal
+scope: { project: gctrl-board, persona: "*" }
+priority: high
+expires: 2026-06-30
+---
+
+Improve first-session retention for new users of gctrl-board.
+
+**What "good" looks like:** A user who runs `gctrl serve` for the
+first time can create their first issue, assign an agent, and see a
+session start in <5 minutes, without reading the README.
+
+**Out of scope:** Visual redesign, mobile.
+
+**Avoid:** Adding new dependencies. Touching the kanban schema.
+```
+
+Direction files are markdown so non-developers can edit them in Obsidian; the frontmatter is the machine-readable contract the kernel reads. See [ROADMAP M2a](ROADMAP.md#m2a-direction-surface-vault-first) for the slice plan locking the schema.
 
 ### Kernel Extensions (Optional)
 
 | Extension | What It Solves |
 |-----------|---------------|
-| **Context Manager** | Agents and humans need shared access to docs, configs, and project snapshots. Stores content as markdown, indexes in DuckDB, syncs to R2. |
-| **Scheduler** | Deferred and recurring tasks. Platform adapters: tokio (local), launchd (macOS), Durable Object Alarms (Cloudflare). |
+| **Skill Registry** | Reusable agent skills extracted from successful runs. Versioned, scored, attachable to personas. The unit of accumulated capability. |
+| **Scheduler** | Deferred and recurring work — review cadences, eval runs, sync. tokio (local) / launchd (macOS) / DO Alarms (Cloudflare). |
+| **Lightweight Dispatcher** | For teams that still want a queue: orchestrator with retry, concurrency, dependency DAG. Opt-in. Not the primary input. |
 | **Network Control** | MITM proxy for traffic visibility, domain allowlists, rate limiting. |
-| **Browser Control** | CDP daemon for browser automation. Persistent Chromium with ref system. |
-| **Cloud Sync** | R2 Parquet export for analytics, markdown sync for knowledge. Device-partitioned, conflict-free. |
+| **Browser Control** | CDP daemon for browser automation (`driver-browser`). |
+| **Cloud Sync** | R2 Parquet for analytics, markdown sync for vault. Device-partitioned. |
 
 ### Applications (All Optional)
 
-**gctrl-board** — Lightweight project management and kanban. Issues with status lifecycle, dependency graph, agent assignment, auto-transitions from kernel events. The first application built on gctrl.
+**gctrl-board** — A team's view of the team. Not a Jira clone. Issues exist for cross-org visibility and human-facing tracking, but the natural unit is *direction* (a goal, a priority, a thread of work). Agents materialize work from direction; humans see flow, cost, and progress at the team level.
 
-**Observe & Eval** — Lifecycle eval substrate and harness, local-first. Owns metrics, judge prompts, datasets, eval runs, and the score store across dev → CI → staging → prod. Both an embeddable API/SDK applications call from their own loops (substrate) and a `gctrl eval run` runner that owns the loop end-to-end (harness) — same primitives, same metric names, same store. Plus Langfuse-grade observability: cost/token analytics, latency percentiles, trace exploration, prompt version management. Not a pytest plugin; not a single-phase test framework. See [Observe & Eval architecture](../architecture/apps/observe-eval.md).
+**Observe & Eval** — Lifecycle eval substrate and harness. Under the pivot, **its role grows**: it is no longer a sibling app, it is the *engine* of in-loop improvement. Eval scores, judge metrics, and structured review feedback all flow through its substrate API and into per-persona scorecards; the kernel reads from those scorecards to update the next session's harness. Still delivers Langfuse-grade local observability as a side effect of the substrate. See [Observe & Eval architecture](../architecture/apps/observe-eval.md).
 
-**Capacity Engine** — Throughput measurement and delivery forecasting. Answers "how many issues can our agents close per week?" and "are we on track for this milestone?" by correlating telemetry with project data.
+**Capacity Engine** — Direction-level throughput and forecasting. Answers "is direction X on track" — not "when will ticket Y close".
 
-### Utilities (Composable Tools)
+### Utilities
 
 | Utility | What It Does |
 |---------|-------------|
-| `gctrl net fetch` | Fetch a URL, convert to markdown |
-| `gctrl net crawl` | Crawl a site, extract readable content |
-| `gctrl net compact` | Compact crawled pages into LLM-ready context |
-| `gctrl context add/list/compact` | Manage agent context (docs, configs, snapshots) |
-| `gctrl browser goto/snapshot` | Browser automation |
+| `gctrl direct` | Write/edit team direction; propagate to sessions |
+| `gctrl review` | Capture structured review feedback that becomes harness context next run |
+| `gctrl skill list/score/attach` | Manage the skill registry |
+| `gctrl net fetch / crawl / compact` | Web → markdown → context |
+| `gctrl context add / list / compact` | Manage shared agent context |
+| `gctrl browser goto / snapshot` | Browser automation |
 | `gctrl query` | Guardrailed data access for agents |
 
 ### External App Integration (Drivers)
 
-gctrl does not replace your tools — it connects to them:
-
 | Category | Apps | What the Driver Does |
 |----------|------|---------------------|
-| **Project Tracking** | Linear, GitHub Issues, Notion | Bidirectional issue sync, dispatch from external issues |
-| **Knowledge & Docs** | Obsidian | Mount specs as vault, edit in Obsidian UI |
-| **Observability** | Arize Phoenix, Langfuse, SigNoz | Export traces/evals/scores |
-| **Agents** | Claude Code, Codex, Aider, custom | Orchestrator dispatches via CLI |
+| **Project Tracking** | Linear, GitHub Issues, Notion | Surface gctrl direction/work into existing trackers; pull external tickets where the team still uses them |
+| **Knowledge & Docs** | Obsidian | Mount vault as Obsidian vault for human editing |
+| **Observability** | Arize Phoenix, Langfuse, SigNoz | Export traces, evals, scores |
+| **Agents** | Claude Code, Codex, Aider, custom | Any agent that accepts a prompt and emits OTel spans is a first-class citizen |
 
-Zero drivers = gctrl works standalone. Add drivers as your workflow grows.
+Zero drivers = gctrl works standalone. Add drivers as the team grows.
 
 ## Business Use Cases
 
-### 1. Agent Cost Visibility & Control
+### 1. Direction-First Team Operation
 
-**Problem:** A team running 10 agent sessions/day has no idea what they're spending until the monthly bill. One runaway session can cost $50+.
+**Problem:** A 3-human, 30-agent team can't ticket-decompose fast enough to keep agents fed.
 
-**Solution:** Real-time cost tracking per session, per agent, per model. Budget guardrails pause or halt sessions that exceed thresholds. Daily/weekly cost trends. Per-issue cost attribution (via gctrl-board).
+**Solution:** Direction vault is the primary input. A goal like "improve onboarding conversion" or a constraint like "no new dependencies this sprint" propagates to every session. Agents materialize concrete work from direction + current state.
 
-**Metric:** Time-to-detect runaway session < 30 seconds (vs. end-of-month bill).
+### 2. In-Loop Agent Improvement
 
-### 2. Agent Safety & Compliance
+**Problem:** Agent quality plateaus because improvement happens out-of-band — a human notices a recurring failure and edits a prompt days later. Most failures never get noticed.
 
-**Problem:** Agents can execute destructive operations — force-push, delete branches, run arbitrary commands. In regulated environments, you need an audit trail of every agent action.
+**Solution:** Observe & Eval scores every run; review feedback is captured structurally; both feed back into harness updates on the next session. No prompt-editing ritual.
 
-**Solution:** Command allowlists, branch protection, diff size gates. Full audit trail in DuckDB (every span, every command, every cost). Loop detection catches agents stuck in retry spirals.
+### 3. Team-Level Visibility
 
-**Metric:** Zero unreviewed force-pushes to main. 100% audit coverage of agent actions.
+**Problem:** Standups, retros, and capacity planning are blind to agent work.
 
-### 3. Multi-Agent Orchestration
+**Solution:** Team view rolls up direction, work-in-flight, cost, eval trends, and review feedback. Standup = `gctrl status --team`. Retro = `gctrl review --since 1w`.
 
-**Problem:** Dispatching work to agents is manual copy-paste of issue descriptions into prompts. No retry on failure. No dependency ordering. No concurrency control.
+### 4. Performance Management of Agent Personas
 
-**Solution:** Orchestrator dispatches agents to tasks automatically, respects dependency DAGs, retries with exponential backoff, enforces per-user and global concurrency limits. Agent-agnostic — works with Claude Code, Codex, Aider, or any CLI agent.
+**Problem:** When an agent underperforms, the team has no structured signal and no process. Underperformance compounds silently.
 
-**Metric:** Human time spent dispatching agent work → near zero. Agent utilization → bounded by concurrency config, not by human availability.
+**Solution:** Eval scores, run outcomes, and review feedback form a per-persona performance record. Personas with declining metrics get scoped down or get harness updates — driven by signal, not by gut feel.
 
-### 4. Team Knowledge as Agent Context
+### 5. Local-First Observability and Safe Defaults
 
-**Problem:** Every agent session starts from scratch. Team conventions, architecture docs, crawled API references — agents don't have access unless you paste them manually.
+**Problem:** Cloud LLM observability requires sending prompts off-machine. Long-running agents can burn budget or force-push to main.
 
-**Solution:** Context manager stores docs, configs, and snapshots. Agents load context at session start. `gctrl context compact` produces a single LLM-ready document. Sync to R2 makes context available across devices.
-
-**Metric:** Agent "what is the project convention for X?" questions → answered from context, not from human.
-
-### 5. Capacity Planning with Agent Teams
-
-**Problem:** "Can we ship this milestone by Friday?" is unanswerable when half the work is done by agents whose throughput is unknown.
-
-**Solution:** Capacity engine correlates telemetry (how long tasks take, success rates, cost per issue) with project data (open issues, priorities, dependencies). Produces throughput forecasts.
-
-**Metric:** Delivery date predictions within 20% accuracy by week 4 of usage.
-
-### 6. Local-First Observability (Langfuse Alternative)
-
-**Problem:** Cloud-hosted LLM observability (Langfuse, Phoenix) requires sending all your prompts and completions to a third party. For security-conscious teams, this is a non-starter.
-
-**Solution:** Full Langfuse-grade observability running locally in DuckDB. Cost analytics, latency percentiles, trace exploration, scoring, prompt management. Data never leaves your machine unless you explicitly sync.
-
-**Metric:** Feature parity with Langfuse core (traces, scores, cost analytics, prompt management) at zero data-transfer cost.
+**Solution:** Full local observability in DuckDB (Langfuse-grade, zero data transfer). Persona-scoped guardrails halt budget overruns in <30s and block destructive ops.
 
 ## Roadmap
 
-See [ROADMAP.md](ROADMAP.md) for milestones, task breakdown, and open questions.
+See [ROADMAP.md](ROADMAP.md) for milestones, slice tables, and open questions.
 
 ## Non-Goals
 
-- **Not a cloud platform.** gctrl is local-first. Cloud sync is optional. We don't host dashboards or run agents in the cloud.
-- **Not an agent framework.** gctrl doesn't build agents — it manages them. It works with any agent that accepts a prompt and exits with a status code.
-- **Not a replacement for Linear/GitHub/Notion.** gctrl connects to these tools via drivers. It provides the kernel underneath, not a replacement.
-- **Not enterprise-first.** Designed for individuals and small teams. Enterprise features (SSO, RBAC, compliance) are future work, not core.
+- **Not a task dispatcher / job queue.** Symphony-style "issue → dispatch → run → exit" is a valid mode but not the primary input. We are not optimizing for shortest-path dispatch latency. Teams that want a pure dispatcher should use Symphony or a CI runner.
+- **Not a swarm orchestrator.** Ruflo-style 100-agent consensus swarms are out of scope. gctrl is for small teams of capable agents, not large fleets of narrow ones.
+- **Not an agent framework.** gctrl doesn't build agents — it runs the harness around them. Any agent that accepts a prompt and emits OTel spans works.
+- **Not a model trainer.** "Agents improve themselves" means the *harness* improves: prompts, skills, context, scope — not model weights. The kernel curates the harness.
+- **Not a replacement for Linear / GitHub / Notion.** gctrl connects to them via drivers.
+- **Not a cloud platform.** Local-first. Cloud sync optional.
+- **Not enterprise-first.** Individuals and small teams first. SSO/RBAC/compliance is future work.
 
 ## Success Criteria
 
-1. A solo developer can install gctrl, run `gctrl serve`, and get agent visibility + guardrails in < 5 minutes.
-2. A team of 5 can sync agent telemetry across devices via R2 in < 30 minutes of setup.
-3. An agent working on an issue has access to project context (conventions, docs, issue state) without human intervention.
-4. Cost overruns are detected and halted within 30 seconds.
-5. The orchestrator can dispatch and manage 10 concurrent agent sessions without human intervention.
+**Headline metric (the scoreboard for the pivot):** team-defined eval scores improve month-over-month from **harness updates alone** — no model swap, no manual prompt edit. The improvement is driven by both loops: inner (per-session signal → that persona's next run) and outer (the system observing the team and changing its own defaults). If we cannot move this number, the rest of the pivot is decoration.
+
+Supporting criteria:
+
+1. **One-command bootstrap** — install gctrl, `gctrl serve`, write a direction file, and the next agent session reads it. <5 minutes, cold.
+2. **Team is legible in one CLI call** — `gctrl status --team` shows direction, in-flight work, cost trend, eval trend, blocked items **with action-needed items highlighted**, not as a raw dump. A lead returning after a weekend understands state + next move from one screen. This is the human-side pillar's acceptance test.
+3. **Guardrails work** — destructive ops blocked, budget overruns halted in <30s. (Inherited from M1; still load-bearing.)
+4. **Per-persona scorecards drive scope changes** — at least one team makes a scope/harness change off a scorecard trend (not gut feel) within the first 90 days of adoption.
+5. **The system changes itself, auditably** — the outer loop applies at least one narrow change automatically and proposes at least one wide change that a human accepts. `gctrl review --self-changes` answers "what did the system change about itself this week, and why" from one CLI call. This is the outer-loop's acceptance test.
 
 ---
 
