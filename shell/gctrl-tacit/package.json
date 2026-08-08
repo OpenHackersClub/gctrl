@@ -1,0 +1,27 @@
+{
+  "name": "gctrl-tacit",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "TACIT — Tracked Agent Capabilities In Types. Capability-scoped guardrails for agent-generated code.",
+  "exports": {
+    ".": "./dist/index.js",
+    "./mcp": "./dist/mcp/server.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts src/mcp/server.ts --format esm --dts",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "biome lint src/"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.7",
+    "tsup": "^8.0.0",
+    "tsx": "^4.0.0",
+    "vitest": "^3.0.0"
+  }
+}
