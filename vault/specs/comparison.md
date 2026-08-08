@@ -1,6 +1,6 @@
-# Competitive Landscape: gctrl vs. Ruflo, oh-my-claudecode, Symphony
+# Competitive Landscape: gctrl vs. Ruflo, oh-my-claudecode, Symphony, Centaur
 
-> Comparison as of 2026-03-30. Sources: public GitHub READMEs, SPEC.md, and documentation.
+> Comparison as of 2026-05-28. Sources: public GitHub READMEs, SPEC.md, documentation, and open-source releases.
 
 ## One-Line Summaries
 
@@ -10,6 +10,7 @@
 | **Ruflo** (ruvnet/ruflo) | Enterprise multi-agent orchestration platform — 100+ specialized agents in coordinated swarms with self-learning, consensus protocols, and multi-LLM routing. |
 | **oh-my-claudecode** (OMC) | Claude Code plugin adding multi-agent orchestration, natural-language task dispatch, and persistent execution modes on top of the existing Claude Code runtime. |
 | **Symphony** (openai/symphony) | Issue-tracker-driven daemon that polls Linear for work, creates isolated workspaces, and dispatches coding agents (Codex) — spec-first, language-agnostic. |
+| **Centaur** (Paradigm / Tempo) | Self-hosted multiplayer agent runtime — one Slack thread = one isolated sandbox, credentials injected at the network layer (never held by the agent), nightly self-improvement that patches skills/tools without touching the kernel. Apache 2.0. |
 
 ---
 
@@ -189,17 +190,119 @@ graph TB
 
 ---
 
+## gctrl vs. Centaur: Self-hosted Team Agents (May 2026)
+
+Centaur was open-sourced by Paradigm and Tempo in May 2026 under Apache 2.0.
+It is the closest published architectural peer to gctrl: self-hosted, team-scoped,
+with a small auditable kernel and an extensible userspace. The value of the
+comparison is not a feature checklist — it is what Centaur's design *reveals*
+about gctrl's own architecture, including two tensions the pivot left implicit.
+
+### The headline: gctrl's extension model has a missing tier
+
+Centaur's "tool" is a Python class dropped in `tools/`, auto-discovered,
+hot-reloaded, declaring its required hosts/creds — **userspace capability the
+agent can author itself.** gctrl has no equivalent:
+
+| | New I/O capability? | Author | Lands live by |
+|---|---|---|---|
+| gctrl **skill** | No — knowledge only | Agent or human | Drop markdown |
+| gctrl **driver** | Yes | **Human only** | Rust → compile → ship kernel |
+| Centaur **tool** | **Yes** | **Agent or human** | Drop file → hot-reload |
+
+This is *why* Centaur's nightly reflection can ship a genuinely new integration
+while gctrl's outer loop can only retune existing capability — an agent can
+change *how it uses* what it has, but cannot grant itself a new integration. The
+deep synthesis: **credential injection is not primarily a security feature — it
+is the substrate that makes agent-authored tools safe** (untrusted agent code
+can have network access without ever seeing a secret). gctrl is three connectors
+away, not a subsystem away: skills already bundle `scripts/`, the proxy can
+inject creds, the outer loop can promote winners. See
+[extension-tiers.md](architecture/extension-tiers.md) for the composed
+capability-growth system and
+[kernel/proxy-credential-injection.md](architecture/kernel/proxy-credential-injection.md)
+for the substrate.
+
+### Two tensions Centaur exposes (named, not yet resolved)
+
+**1. Stateful singleton kernel vs. the multiplayer vision.** Centaur: every
+service stateless, Postgres the single source of truth. gctrl: a stateful
+singleton daemon holding the DuckDB single-writer lock. Correct for local-first;
+a write-path ceiling for "3 humans + 30 agents," which the D1/R2 sync layer
+(read-scale-out) does not lift. Forces the honest question: personal agent-OS
+that syncs, or team agent-server?
+
+**2. Agent-agnosticism caps durability.** Centaur owns the runtime, so it
+checkpoints every workflow step and resumes after a crash. gctrl observes via
+OTel and cannot checkpoint agent-internal state — a crash mid-session loses the
+work (scheduler reaps as failed, `runner.rs:70`). Portability bought at the cost
+of resumability; the ceiling is at the orchestration layer.
+
+Both are captured in [adr-deployment-topology.md](architecture/adr-deployment-topology.md).
+
+### Where gctrl and Centaur independently converged
+
+- **Skills as `.agents/skills/` markdown** — same path, same progressive-disclosure
+  protocol, reached independently. Centaur additionally hot-reloads on FS change;
+  gctrl's dispatch path should too ([skills.md §3.2](architecture/skills.md)).
+- **Bounded kernel + extensible userspace** — both structurally protect the
+  kernel from agent modification. Centaur: "ships fixes to its own skills and
+  tools without touching the kernel." gctrl's
+  [outer-improvement-loop.md](architecture/outer-improvement-loop.md) makes the
+  blast-radius boundary explicit.
+- **Warm container pool** — Centaur pre-spawns sandboxes; gctrl's
+  [compute-cf-containers.md](implementation/kernel/compute-cf-containers.md)
+  should keep N ready and replenish after claim.
+
+### Where gctrl takes a different approach
+
+| Dimension | Centaur | gctrl |
+|---|---|---|
+| **Primary interface** | Slack (one thread = session = sandbox, fused) | Board + inbox + CLI; session/issue/thread/compute decoupled |
+| **Storage** | Postgres (single source of truth) | DuckDB + SQLite — local-first, Parquet export, edge sync via D1 |
+| **Extension** | Userspace tools (agent-authored) | Skills (knowledge) + drivers (human, kernel) — missing the middle tier |
+| **Self-improvement cadence** | Nightly reflection | Inner loop (per session) + outer loop (cross-session) — finer granularity |
+| **Direction** | Conversation/task-driven | Durable, versioned, team-level *direction* — no Centaur equivalent |
+| **Accumulation substrate** | Postgres (opaque) | Vault (human-editable, Obsidian-graphed, cross-project) |
+
+Note the interface row: Centaur *fuses* conversation+session+sandbox into one
+object, so it needs no grouping — the thread *is* the context. gctrl deliberately
+*decouples* them, which is why the inbox needs **context-first grouping** (by
+issue/session/project/agent) to re-assemble the human view. Grouping is the tax
+of decoupling — and also its strength (one session spans many threads; one issue
+many sessions). It generalizes: with SQLite as truth, the board UI, the Obsidian
+mirror, and a future **Slack driver** are all bidirectional *projections* of the
+same inbox state.
+
+### Net assessment
+
+Centaur is the best published production architecture for the same design space,
+and its sharpest lesson is structural, not a feature: the **userspace-tool tier**
+is what turns a self-improvement loop from "retune" into "grow," and gctrl's own
+credential proxy is the thing that makes it safe. Adopt that; name the topology
+and durability tensions honestly ([ADR](architecture/adr-deployment-topology.md)).
+
+What gctrl keeps that Centaur deliberately doesn't have — and must not dilute
+chasing server-shaped polish: local-first with no Postgres/Slack dependency, the
+**direction surface** (the actual pivot thesis, with no Centaur analog), in-loop
+improvement at *session* granularity, and a human-legible **vault** accumulation
+substrate rather than an opaque DB.
+
+---
+
 ## Shared Concepts
 
 Several ideas appear across multiple projects, suggesting convergence in the space:
 
-| Concept | gctrl | Ruflo | OMC | Symphony |
-|---------|------|-------|-----|----------|
-| **WORKFLOW.md as config** | Prompt templates + YAML frontmatter for agent dispatch | N/A | N/A | YAML frontmatter + prompt body — identical concept |
-| **Orchestrator with concurrency control** | Dispatch, retry, dependency DAG, concurrency slots | Swarm coordination with consensus | Team pipeline with verify/fix loops | Poll-based dispatch with concurrency limits |
-| **Workspace isolation** | Per-session telemetry boundary | Per-agent swarm isolation | Per-team execution context | Per-issue filesystem workspace |
-| **Claim/dispatch model** | Orchestrator claim states (pending→claimed→running→done) | Claims for human-agent coordination | N/A | Running map + claimed set + retry queue |
-| **Retry with backoff** | Orchestrator retry policy | N/A | Ralph mode (persistent execution) | Exponential backoff with configurable attempts |
+| Concept | gctrl | Ruflo | OMC | Symphony | Centaur |
+|---------|------|-------|-----|----------|---------|
+| **WORKFLOW.md as config** | Prompt templates + YAML frontmatter for agent dispatch | N/A | N/A | YAML frontmatter + prompt body | N/A (skills are markdown, tools are Python) |
+| **Orchestrator with concurrency control** | Dispatch, retry, dependency DAG, concurrency slots | Swarm coordination with consensus | Team pipeline with verify/fix loops | Poll-based dispatch with concurrency limits | Durable workflow engine, checkpoint every step |
+| **Workspace isolation** | Per-session telemetry boundary | Per-agent swarm isolation | Per-team execution context | Per-issue filesystem workspace | Per-thread sandbox container |
+| **Claim/dispatch model** | Orchestrator claim states (pending→claimed→running→done) | Claims for human-agent coordination | N/A | Running map + claimed set + retry queue | Thread assignment via Postgres |
+| **Retry with backoff** | Orchestrator retry policy | N/A | Ralph mode (persistent execution) | Exponential backoff with configurable attempts | Durable workflow resume |
+| **Skills as markdown** | `.agents/skills/` — progressive disclosure, filesystem registry | N/A | `.agents/skills/` (same convention) | N/A | `.agents/skills/` — same path, same concept |
+| **Bounded kernel / userspace** | Kernel provides mechanisms; apps/skills provide policy | N/A | Plugin layer on Claude Code runtime | Policy in WORKFLOW.md, mechanism in orchestrator | Skills/tools are patchable; kernel is not |
 
 ### gctrl vs. Symphony: Closest Cousins
 
