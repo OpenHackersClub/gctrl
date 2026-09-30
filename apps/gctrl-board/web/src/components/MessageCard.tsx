@@ -59,7 +59,7 @@ export function MessageCard({ message, selected, onClick }: Props) {
           {/* Second row: source + kind badge + time */}
           <div className="flex items-center gap-2 mt-1">
             <span className="text-[11px] font-mono text-zinc-500 truncate">
-              {message.source_name}
+              {message.source}
             </span>
             <span className="text-[10px] font-mono px-1.5 py-0.5 bg-zinc-800/80 text-zinc-500 border border-zinc-700/40 leading-none">
               {KIND_LABEL[message.kind] ?? message.kind}

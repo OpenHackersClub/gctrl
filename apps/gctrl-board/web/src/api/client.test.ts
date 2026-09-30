@@ -26,6 +26,22 @@ describe("api client base URL resolution", () => {
     setDesktop(undefined)
   })
 
+  it("disk endpoints read usage and send scoped cleanup identifiers", async () => {
+    await api.disk.usage()
+    await api.disk.docker()
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/disk/usage")
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/disk/docker")
+
+    fetchMock = vi.fn(async () => new Response(null, { status: 204 }))
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
+    await api.disk.remove("/allowed/project/target")
+    await api.disk.prune("cache123")
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/disk/candidates/remove")
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST", body: JSON.stringify({ path: "/allowed/project/target" }) })
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/disk/docker/prune")
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: "POST", body: JSON.stringify({ id: "cache123" }) })
+  })
+
   it("issues a relative request when no desktop bridge is present (web context)", async () => {
     setDesktop(undefined)
     await api.projects.list()

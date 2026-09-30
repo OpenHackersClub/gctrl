@@ -98,8 +98,7 @@ export function MessageDetail({ message, onAction }: Props) {
           {message.title}
         </h2>
         <div className="flex items-center gap-3 mt-2 text-[11px] text-zinc-500 font-mono">
-          <span>from {message.source_name}</span>
-          <span className="text-zinc-700">{message.source_type}</span>
+          <span>from {message.source}</span>
           <span className="ml-auto text-zinc-600">
             {new Date(message.created_at).toLocaleString()}
           </span>

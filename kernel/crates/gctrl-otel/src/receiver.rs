@@ -20,6 +20,7 @@ use gctrl_storage::{DuckDbStore, SqliteStore};
 use serde::{Deserialize, Serialize};
 
 use crate::event_bus::{EventBus, ReplayResult, SessionEvent};
+use crate::disk_usage;
 use crate::span_processor::{self, OtlpExportRequest};
 
 pub struct AppState {
@@ -353,6 +354,10 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/net/stats", get(net_traffic_stats))
         .route("/api/net/domains", get(net_traffic_domains))
         .route("/api/net/daily", get(net_traffic_daily))
+        .route("/api/disk/usage", get(disk_usage::scan))
+        .route("/api/disk/candidates/remove", post(disk_usage::remove))
+        .route("/api/disk/docker", get(disk_usage::docker_usage))
+        .route("/api/disk/docker/prune", post(disk_usage::docker_prune))
         .route("/api/net/ca", get(net_proxy_ca))
         // Persona management (kernel extension)
         .route("/api/personas", get(persona_list).post(persona_upsert))
