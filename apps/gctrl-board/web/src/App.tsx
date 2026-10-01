@@ -13,6 +13,7 @@ import { InboxPage } from "./pages/InboxPage"
 import { AnalyticsPage } from "./pages/AnalyticsPage"
 import { SchedulePage } from "./pages/SchedulePage"
 import { MacosSpacesPage } from "./pages/MacosSpacesPage"
+import { DiskPage } from "./pages/DiskPage"
 import { api } from "./api/client"
 import type { DesktopShim } from "./lib/desktop-env"
 import type { Issue, InboxStats } from "./types"
@@ -241,8 +242,10 @@ export function App() {
         ? "analytics"
         : route.page === "schedule"
           ? "schedule"
-          : route.page === "settings"
-            ? "settings"
+        : route.page === "settings"
+          ? "settings"
+          : route.page === "disk"
+            ? "disk"
             : "board"
 
   return (
@@ -383,6 +386,8 @@ export function App() {
           <SchedulePage route={route} navigate={navigate} />
         ) : route.page === "settings" ? (
           <MacosSpacesPage />
+        ) : route.page === "disk" ? (
+          <DiskPage />
         ) : (
           <AnalyticsPage route={route} navigate={navigate} />
         )}

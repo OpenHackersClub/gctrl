@@ -71,6 +71,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  disk: {
+    usage: () => request<DiskReport>("/api/disk/usage"),
+    docker: () => request<DockerDiskReport>("/api/disk/docker"),
+    remove: (path: string) => request<null>("/api/disk/candidates/remove", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
+    prune: (id: string) => request<null>("/api/disk/docker/prune", {
+      method: "POST",
+      body: JSON.stringify({ id }),
+    }),
+  },
   projects: {
     list: () => request<Project[]>(`${BASE}/projects`),
     create: (name: string, key: string) =>
@@ -459,6 +471,24 @@ export const api = {
         method: "POST",
       }),
   },
+}
+
+export interface DiskReport {
+  roots: { path: string; bytes: number }[]
+  candidates: DiskCandidate[]
+}
+
+export interface DiskCandidate {
+  path: string
+  bytes: number
+  kind: string
+  modified_at_ms: number | null
+}
+
+export interface DockerDiskReport {
+  available: boolean
+  reason: string | null
+  candidates: { id: string; bytes: number; description: string; reclaimable: boolean }[]
 }
 
 export type MacosPermissionStatus =

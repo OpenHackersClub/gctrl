@@ -11,6 +11,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { createHealthCheck } from "./health-check"
+import { readDiskAllowlist } from "./disk-config"
 import { KernelSidecar } from "./kernel-sidecar"
 import { ensureLoginItemRegistered } from "./login-item"
 import { buildAppMenu } from "./menu"
@@ -104,6 +105,7 @@ const createSidecar = async (): Promise<KernelSidecar | undefined> => {
       port: KERNEL_PORT,
       dataDir,
       vaultDir,
+      env: { GCTRL_DISK_ALLOWLIST: readDiskAllowlist(ctx.userDataPath, process.env.GCTRL_DISK_ALLOWLIST) ?? "[]" },
     },
     {
       spawner: createSpawner(),
