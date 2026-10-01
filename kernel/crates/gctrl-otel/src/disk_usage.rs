@@ -6,6 +6,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use axum::{extract::State, http::StatusCode, Json};
+use cap_std::ambient_authority;
+#[cfg(unix)]
+use cap_std::fs::OpenOptionsExt;
+use cap_std::fs::{Dir, OpenOptions};
 use serde::{Deserialize, Serialize};
 
 use crate::receiver::AppState;
@@ -105,21 +109,25 @@ fn cargo_pool_slot(path: &Path) -> bool {
             == Some("cargo-target")
 }
 
-fn lock_cargo_slot(path: &Path) -> io::Result<Option<fs::File>> {
-    if !cargo_pool_slot(path) {
+fn lock_cargo_slot(root: &Dir, relative: &Path, absolute: &Path) -> io::Result<Option<fs::File>> {
+    if !cargo_pool_slot(absolute) {
         return Ok(None);
     }
-    let lock_path = path.with_extension("lock");
-    if fs::symlink_metadata(&lock_path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+    let lock_path = relative.with_extension("lock");
+    if root
+        .symlink_metadata(&lock_path)
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "Cargo slot lock is a symlink",
         ));
     }
-    let lock = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(lock_path)?;
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW);
+    let lock = root.open_with(lock_path, &options)?.into_std();
     lock.try_lock()?;
     Ok(Some(lock))
 }
@@ -176,6 +184,12 @@ fn docker_output(args: &[&str]) -> io::Result<String> {
 }
 
 fn checked_docker_root(roots: &[PathBuf]) -> io::Result<String> {
+    if cfg!(not(target_os = "linux")) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Docker cache pruning requires a host-local Linux daemon",
+        ));
+    }
     if roots.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -272,11 +286,12 @@ fn docker_candidates(roots: &[PathBuf]) -> io::Result<(String, Vec<DockerCandida
 }
 
 fn size_and_candidates(
-    path: &Path,
+    dir: &Dir,
+    relative: &Path,
     root: &Path,
     candidates: &mut Vec<DiskCandidate>,
 ) -> io::Result<u64> {
-    let metadata = fs::symlink_metadata(path)?;
+    let metadata = dir.symlink_metadata(relative)?;
     if metadata.file_type().is_symlink() {
         return Ok(0);
     }
@@ -284,25 +299,23 @@ fn size_and_candidates(
         return Ok(metadata.len());
     }
     let mut bytes = 0_u64;
-    for entry in fs::read_dir(path)? {
+    for entry in dir.read_dir(relative)? {
         let entry = entry?;
-        match size_and_candidates(&entry.path(), root, candidates) {
+        let child = relative.join(entry.file_name());
+        match size_and_candidates(dir, &child, root, candidates) {
             Ok(child_bytes) => bytes = bytes.saturating_add(child_bytes),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
     }
-    if inside(root, path) {
-        if let Some(kind) = candidate_kind(path) {
-            if cargo_pool_slot(path) && lock_cargo_slot(path).is_err() {
+    let path = root.join(relative);
+    if inside(root, &path) {
+        if let Some(kind) = candidate_kind(&path) {
+            if cargo_pool_slot(&path) && lock_cargo_slot(dir, relative, &path).is_err() {
                 return Ok(bytes);
             }
-            candidates.retain(|candidate| !candidate.path.starts_with(path));
-            candidates.push(DiskCandidate {
-                path: path.to_path_buf(),
-                bytes,
-                kind,
-            });
+            candidates.retain(|candidate| !candidate.path.starts_with(&path));
+            candidates.push(DiskCandidate { path, bytes, kind });
         }
     }
     Ok(bytes)
@@ -334,7 +347,8 @@ pub fn scan_roots(roots: &[PathBuf]) -> io::Result<DiskReport> {
                 "allowlisted root is not a directory",
             ));
         }
-        let bytes = size_and_candidates(&root, &root, &mut report.candidates)?;
+        let dir = Dir::open_ambient_dir(&root, ambient_authority())?;
+        let bytes = size_and_candidates(&dir, Path::new("."), &root, &mut report.candidates)?;
         report.roots.push(DiskRoot { path: root, bytes });
     }
     report.candidates.sort_by(|a, b| b.bytes.cmp(&a.bytes));
@@ -349,32 +363,46 @@ pub fn remove_candidate(roots: &[PathBuf], path: &Path) -> io::Result<()> {
             "path is not a recognized build output",
         ));
     }
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+    if fs::symlink_metadata(path)?.file_type().is_symlink() {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "candidate must be a directory, not a symlink",
+            "candidate must not be a symlink",
         ));
     }
-    let canonical = path.canonicalize()?;
-    if candidate_kind(&canonical).is_none() {
+    let path = path.canonicalize()?;
+    if candidate_kind(&path).is_none() {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "resolved path is not a recognized build output",
         ));
     }
-    let permitted = roots
-        .iter()
-        .filter_map(|root| root.canonicalize().ok())
-        .any(|root| inside(&root, &canonical));
-    if !permitted {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "candidate is outside the disk allowlist",
-        ));
+    for root in roots {
+        let root = root.canonicalize()?;
+        let Ok(relative) = path.strip_prefix(&root) else {
+            continue;
+        };
+        if relative.as_os_str().is_empty()
+            || relative
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            continue;
+        }
+        let dir = Dir::open_ambient_dir(&root, ambient_authority())?;
+        let metadata = dir.symlink_metadata(relative)?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "candidate must be a directory, not a symlink",
+            ));
+        }
+        let _slot_lock = lock_cargo_slot(&dir, relative, &path)?;
+        return dir.remove_dir_all(relative);
     }
-    let _slot_lock = lock_cargo_slot(&canonical)?;
-    fs::remove_dir_all(canonical)
+    Err(io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        "candidate is outside the disk allowlist",
+    ))
 }
 
 pub async fn scan(
@@ -478,4 +506,30 @@ fn api_error(error: io::Error) -> (StatusCode, String) {
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (status, error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_stays_with_open_root_after_path_is_replaced() {
+        use std::os::unix::fs::symlink;
+
+        let parent = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = parent.path().join("allowed");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("inside"), vec![0_u8; 11]).unwrap();
+        fs::write(outside.path().join("outside"), vec![0_u8; 99]).unwrap();
+
+        let dir = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
+        fs::rename(&root, parent.path().join("moved")).unwrap();
+        symlink(outside.path(), &root).unwrap();
+
+        let bytes = size_and_candidates(&dir, Path::new("."), &root, &mut Vec::new()).unwrap();
+        assert_eq!(bytes, 11);
+        assert!(outside.path().join("outside").exists());
+    }
 }

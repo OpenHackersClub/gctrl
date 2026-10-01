@@ -68,6 +68,8 @@ GCTRL_DESKTOP_DEV_URL=http://localhost:5174 pnpm --filter gctrl-desktop dev
 
 The kernel sidecar is intentionally **not spawned in dev** — `pnpm dev` skips construction entirely. In packaged mode, the sidecar lifecycle probes `:4318/health` first and defers to any external daemon already there (a `brew`/`cargo gctrld serve` you left running, or another gctrl-desktop session) so two daemons never race for the port and the DuckDB writer lock. On first packaged launch, the .app also registers itself as a macOS Login Item via `app.setLoginItemSettings` so `gctrld` is up before any `gctrl://` click; subsequent launches respect a user who has unticked it in System Settings → General → Login Items.
 
+The packaged sidecar reads `disk-allowlist.json` from the app's user-data directory (`~/Library/Application Support/gctrl-desktop/` on macOS). The file is a JSON array of absolute directory paths. `GCTRL_DISK_ALLOWLIST` overrides the file; absent or invalid configuration supplies an empty allowlist. Restart the app after changing it.
+
 ## Release
 
 Local release flow (requires Apple Developer ID cert + App Store Connect API key in env):
