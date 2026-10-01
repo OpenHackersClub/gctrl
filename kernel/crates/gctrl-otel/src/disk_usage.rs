@@ -286,23 +286,28 @@ fn docker_candidates(roots: &[PathBuf]) -> io::Result<(String, Vec<DockerCandida
 }
 
 fn size_and_candidates(
+    root_dir: &Dir,
     dir: &Dir,
     relative: &Path,
     root: &Path,
     candidates: &mut Vec<DiskCandidate>,
 ) -> io::Result<u64> {
-    let metadata = dir.symlink_metadata(relative)?;
-    if metadata.file_type().is_symlink() {
-        return Ok(0);
-    }
-    if !metadata.is_dir() {
-        return Ok(metadata.len());
-    }
     let mut bytes = 0_u64;
-    for entry in dir.read_dir(relative)? {
+    for entry in dir.read_dir(".")? {
         let entry = entry?;
         let child = relative.join(entry.file_name());
-        match size_and_candidates(dir, &child, root, candidates) {
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let child_result = if file_type.is_dir() {
+            entry.open_dir().and_then(|child_dir| {
+                size_and_candidates(root_dir, &child_dir, &child, root, candidates)
+            })
+        } else {
+            entry.metadata().map(|metadata| metadata.len())
+        };
+        match child_result {
             Ok(child_bytes) => bytes = bytes.saturating_add(child_bytes),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
@@ -311,7 +316,7 @@ fn size_and_candidates(
     let path = root.join(relative);
     if inside(root, &path) {
         if let Some(kind) = candidate_kind(&path) {
-            if cargo_pool_slot(&path) && lock_cargo_slot(dir, relative, &path).is_err() {
+            if cargo_pool_slot(&path) && lock_cargo_slot(root_dir, relative, &path).is_err() {
                 return Ok(bytes);
             }
             candidates.retain(|candidate| !candidate.path.starts_with(&path));
@@ -348,7 +353,7 @@ pub fn scan_roots(roots: &[PathBuf]) -> io::Result<DiskReport> {
             ));
         }
         let dir = Dir::open_ambient_dir(&root, ambient_authority())?;
-        let bytes = size_and_candidates(&dir, Path::new("."), &root, &mut report.candidates)?;
+        let bytes = size_and_candidates(&dir, &dir, Path::new("."), &root, &mut report.candidates)?;
         report.roots.push(DiskRoot { path: root, bytes });
     }
     report.candidates.sort_by(|a, b| b.bytes.cmp(&a.bytes));
@@ -528,7 +533,8 @@ mod tests {
         fs::rename(&root, parent.path().join("moved")).unwrap();
         symlink(outside.path(), &root).unwrap();
 
-        let bytes = size_and_candidates(&dir, Path::new("."), &root, &mut Vec::new()).unwrap();
+        let bytes =
+            size_and_candidates(&dir, &dir, Path::new("."), &root, &mut Vec::new()).unwrap();
         assert_eq!(bytes, 11);
         assert!(outside.path().join("outside").exists());
     }
