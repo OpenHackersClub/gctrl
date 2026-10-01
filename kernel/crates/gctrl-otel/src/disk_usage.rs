@@ -4,6 +4,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::UNIX_EPOCH;
 
 use axum::{extract::State, http::StatusCode, Json};
 use cap_std::ambient_authority;
@@ -20,6 +21,7 @@ pub struct DiskCandidate {
     pub path: PathBuf,
     pub bytes: u64,
     pub kind: &'static str,
+    pub modified_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -285,6 +287,39 @@ fn docker_candidates(roots: &[PathBuf]) -> io::Result<(String, Vec<DockerCandida
     Ok((builder, candidates))
 }
 
+fn size_tree(dir: &Dir) -> io::Result<(u64, Option<u64>)> {
+    let mut bytes = 0_u64;
+    let mut modified_at_ms = None;
+    for entry in dir.read_dir(".")? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let child = if file_type.is_dir() {
+            entry.open_dir().and_then(|child_dir| size_tree(&child_dir))
+        } else {
+            entry.metadata().map(|metadata| {
+                let modified = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|time| time.into_std().duration_since(UNIX_EPOCH).ok())
+                    .and_then(|duration| u64::try_from(duration.as_millis()).ok());
+                (metadata.len(), modified)
+            })
+        };
+        match child {
+            Ok((child_bytes, child_modified)) => {
+                bytes = bytes.saturating_add(child_bytes);
+                modified_at_ms = modified_at_ms.max(child_modified);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok((bytes, modified_at_ms))
+}
+
 fn size_and_candidates(
     root_dir: &Dir,
     dir: &Dir,
@@ -292,35 +327,44 @@ fn size_and_candidates(
     root: &Path,
     candidates: &mut Vec<DiskCandidate>,
 ) -> io::Result<u64> {
+    let path = root.join(relative.strip_prefix(".").unwrap_or(relative));
+    if inside(root, &path) {
+        if let Some(kind) = candidate_kind(&path) {
+            if cargo_pool_slot(&path) && lock_cargo_slot(root_dir, relative, &path).is_err() {
+                return Ok(0);
+            }
+            let (bytes, modified_at_ms) = size_tree(dir)?;
+            candidates.push(DiskCandidate {
+                path,
+                bytes,
+                kind,
+                modified_at_ms,
+            });
+            return Ok(bytes);
+        }
+    }
     let mut bytes = 0_u64;
+    let in_node_modules = relative
+        .file_name()
+        .is_some_and(|name| name == "node_modules");
     for entry in dir.read_dir(".")? {
         let entry = entry?;
-        let child = relative.join(entry.file_name());
-        let file_type = entry.file_type()?;
-        if file_type.is_symlink() {
+        let name = entry.file_name();
+        if name == ".git" || (in_node_modules && name != ".cache") {
             continue;
         }
-        let child_result = if file_type.is_dir() {
-            entry.open_dir().and_then(|child_dir| {
-                size_and_candidates(root_dir, &child_dir, &child, root, candidates)
-            })
-        } else {
-            entry.metadata().map(|metadata| metadata.len())
-        };
+        let child = relative.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() || !file_type.is_dir() {
+            continue;
+        }
+        let child_result = entry.open_dir().and_then(|child_dir| {
+            size_and_candidates(root_dir, &child_dir, &child, root, candidates)
+        });
         match child_result {
             Ok(child_bytes) => bytes = bytes.saturating_add(child_bytes),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
-        }
-    }
-    let path = root.join(relative);
-    if inside(root, &path) {
-        if let Some(kind) = candidate_kind(&path) {
-            if cargo_pool_slot(&path) && lock_cargo_slot(root_dir, relative, &path).is_err() {
-                return Ok(bytes);
-            }
-            candidates.retain(|candidate| !candidate.path.starts_with(&path));
-            candidates.push(DiskCandidate { path, bytes, kind });
         }
     }
     Ok(bytes)
@@ -533,8 +577,7 @@ mod tests {
         fs::rename(&root, parent.path().join("moved")).unwrap();
         symlink(outside.path(), &root).unwrap();
 
-        let bytes =
-            size_and_candidates(&dir, &dir, Path::new("."), &root, &mut Vec::new()).unwrap();
+        let bytes = size_tree(&dir).unwrap().0;
         assert_eq!(bytes, 11);
         assert!(outside.path().join("outside").exists());
     }

@@ -475,7 +475,14 @@ export const api = {
 
 export interface DiskReport {
   roots: { path: string; bytes: number }[]
-  candidates: { path: string; bytes: number; kind: string }[]
+  candidates: DiskCandidate[]
+}
+
+export interface DiskCandidate {
+  path: string
+  bytes: number
+  kind: string
+  modified_at_ms: number | null
 }
 
 export interface DockerDiskReport {

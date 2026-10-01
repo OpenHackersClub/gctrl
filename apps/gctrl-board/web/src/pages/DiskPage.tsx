@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { api, type DiskReport, type DockerDiskReport } from "../api/client"
+import { buildRecommendations, removeCandidates, type DiskRecommendation } from "./disk-recommendations"
 
 const COLORS = ["#34d399", "#38bdf8", "#fbbf24", "#a78bfa", "#fb7185", "#71717a"]
 
@@ -20,6 +21,8 @@ export function DiskPage() {
   const [docker, setDocker] = useState<DockerDiskReport | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  const [progress, setProgress] = useState(0)
+  const [result, setResult] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
   const refresh = useCallback(async () => {
@@ -38,17 +41,18 @@ export function DiskPage() {
 
   useEffect(() => { void refresh() }, [refresh])
 
+  const recommendations = useMemo(() => buildRecommendations(report?.candidates ?? [], Date.now()), [report])
+
   const slices = useMemo(() => {
     if (!report) return []
     const total = report.roots.reduce((sum, root) => sum + root.bytes, 0)
-    const candidateTotal = report.candidates.reduce((sum, candidate) => sum + candidate.bytes, 0)
     const entries = report.candidates.slice(0, 5).map((candidate) => ({
       label: candidate.path,
       bytes: candidate.bytes,
     }))
     const remaining = Math.max(0, total - entries.reduce((sum, entry) => sum + entry.bytes, 0))
-    if (remaining > 0) entries.push({ label: "Other files in allowed paths", bytes: remaining })
-    return entries.map((entry, index) => ({ ...entry, color: COLORS[index], total, candidateTotal }))
+    if (remaining > 0) entries.push({ label: "Other build outputs", bytes: remaining })
+    return entries.map((entry, index) => ({ ...entry, color: COLORS[index], total }))
   }, [report])
 
   const gradient = useMemo(() => {
@@ -69,6 +73,7 @@ export function DiskPage() {
 
   const remove = async (path: string) => {
     setBusy(path)
+    setResult(null)
     try {
       await api.disk.remove(path)
       await refresh()
@@ -77,6 +82,17 @@ export function DiskPage() {
     } finally {
       setBusy(null)
     }
+  }
+
+  const removeRecommendation = async (recommendation: DiskRecommendation) => {
+    setBusy(recommendation.id)
+    setProgress(0)
+    setResult(null)
+    const { removed, failed } = await removeCandidates(recommendation.candidates.map((candidate) => candidate.path), api.disk.remove, setProgress)
+    await refresh()
+    setResult(`${removed} build outputs removed.`)
+    if (failed.length > 0) setError(`${failed.length} failed: ${failed.map((item) => `${item.path} (${item.reason})`).join("; ")}`)
+    setBusy(null)
   }
 
   const prune = async (id: string) => {
@@ -96,12 +112,13 @@ export function DiskPage() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="text-xl font-display font-semibold text-zinc-100">Build disk usage</h2>
-          <p className="text-sm text-zinc-500 mt-1">Only configured paths are scanned. Build outputs can be removed individually.</p>
+          <p className="text-sm text-zinc-500 mt-1">Only configured paths are scanned. Review a recommendation to remove several rebuildable outputs in one click.</p>
         </div>
         <button onClick={() => void refresh()} disabled={loading} className="px-3 py-1.5 text-sm border border-zinc-700 text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">Scan again</button>
       </div>
 
       {error && <p role="alert" className="text-sm text-red-300 border border-red-900 bg-red-950/40 p-3">{error}</p>}
+      {result && <p role="status" className="text-sm text-zinc-300 border border-zinc-700 bg-zinc-900 p-3">{result}</p>}
       {loading && !report && <p className="text-zinc-500">Scanning allowed paths…</p>}
       {report?.roots.length === 0 && (
         <div className="border border-zinc-800 bg-zinc-900/40 p-5 text-sm text-zinc-400">
@@ -111,11 +128,34 @@ export function DiskPage() {
 
       {report && report.roots.length > 0 && (
         <>
+          <section className="space-y-3">
+            <h3 className="font-display text-sm uppercase tracking-wide text-zinc-300">Recommended cleanup</h3>
+            {recommendations.length === 0 ? <p className="text-sm text-zinc-500">No eligible bulk cleanup groups found. Review individual build outputs below.</p> : (
+              <div className="grid gap-3 lg:grid-cols-2">
+                {recommendations.map((recommendation) => <div key={recommendation.id} className="border border-zinc-700 bg-zinc-900/60 p-4 space-y-3">
+                  <div>
+                    <p className="text-zinc-100 font-medium">{recommendation.title} <span className="font-mono text-emerald-300">· {size(recommendation.bytes)}</span></p>
+                    <p className="text-sm text-zinc-400 mt-1">{recommendation.reason}</p>
+                  </div>
+                  <ul className="max-h-40 overflow-auto space-y-1 text-xs font-mono text-zinc-500" aria-label={`${recommendation.title} paths`}>
+                    {recommendation.candidates.map((candidate) => <li key={candidate.path} className="flex gap-3 justify-between">
+                      <span className="truncate" title={candidate.path}>{candidate.path}</span>
+                      <span className="shrink-0">{size(candidate.bytes)}</span>
+                    </li>)}
+                  </ul>
+                  <button onClick={() => void removeRecommendation(recommendation)} disabled={busy !== null || loading} className="px-3 py-2 text-sm border border-red-800 text-red-200 hover:bg-red-950/50 disabled:opacity-50">
+                    {busy === recommendation.id ? `Removing ${progress}/${recommendation.candidates.length}…` : `Remove ${recommendation.candidates.length} outputs`}
+                  </button>
+                </div>)}
+              </div>
+            )}
+          </section>
+
           <section className="border border-zinc-800 bg-zinc-900/40 p-5 flex flex-wrap items-center gap-8">
             <div role="img" aria-label="Pie chart of disk usage in allowed paths" className="w-48 h-48 rounded-full shrink-0" style={{ background: gradient }} />
             <div className="space-y-3 min-w-0">
               <p className="text-2xl font-mono text-zinc-100">{size(report.roots.reduce((sum, root) => sum + root.bytes, 0))}</p>
-              <p className="text-xs uppercase tracking-wide text-zinc-500">In allowed paths</p>
+              <p className="text-xs uppercase tracking-wide text-zinc-500">Build outputs in allowed paths</p>
               <ul className="space-y-1.5 text-sm">
                 {slices.map((slice) => <li key={slice.label} className="flex items-center gap-2 min-w-0">
                   <span className="w-2.5 h-2.5 shrink-0" style={{ backgroundColor: slice.color }} />
@@ -135,7 +175,7 @@ export function DiskPage() {
                     <p className="text-sm text-zinc-200">{candidate.kind} <span className="font-mono text-zinc-400">· {size(candidate.bytes)}</span></p>
                     <p className="text-xs font-mono text-zinc-500 truncate" title={candidate.path}>{candidate.path}</p>
                   </div>
-                  <button onClick={() => void remove(candidate.path)} disabled={busy !== null} aria-label={`Remove ${candidate.path}`} className="px-3 py-1.5 text-xs border border-red-900 text-red-300 hover:bg-red-950/50 disabled:opacity-50">{busy === candidate.path ? "Removing…" : "Remove"}</button>
+                  <button onClick={() => void remove(candidate.path)} disabled={busy !== null || loading} aria-label={`Remove ${candidate.path}`} className="px-3 py-1.5 text-xs border border-red-900 text-red-300 hover:bg-red-950/50 disabled:opacity-50">{busy === candidate.path ? "Removing…" : "Remove"}</button>
                 </div>)}
               </div>
             )}

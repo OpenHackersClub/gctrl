@@ -23,6 +23,12 @@ fn scan_only_reports_build_artifacts_inside_allowed_roots() {
     .unwrap();
     fs::create_dir_all(allowed.path().join("project/src")).unwrap();
     fs::write(allowed.path().join("project/src/main.rs"), "fn main() {}").unwrap();
+    fs::create_dir_all(allowed.path().join("project/node_modules/pkg")).unwrap();
+    fs::write(
+        allowed.path().join("project/node_modules/pkg/library.js"),
+        vec![0_u8; 8192],
+    )
+    .unwrap();
     fs::create_dir_all(other.path().join("target")).unwrap();
 
     let report = scan_roots(&[allowed.path().to_path_buf()]).unwrap();
@@ -36,7 +42,14 @@ fn scan_only_reports_build_artifacts_inside_allowed_roots() {
             .canonicalize()
             .unwrap()
     );
+    assert!(!report.candidates[0].path.to_string_lossy().contains("/./"));
     assert!(report.candidates[0].bytes >= 4096);
+    assert!(
+        serde_json::to_value(&report.candidates[0]).unwrap()["modified_at_ms"]
+            .as_u64()
+            .is_some()
+    );
+    assert_eq!(report.roots[0].bytes, report.candidates[0].bytes);
     assert!(!report.candidates[0].path.starts_with(other.path()));
 }
 
