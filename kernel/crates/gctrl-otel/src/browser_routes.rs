@@ -26,10 +26,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use gctrl_browser::{
-    run_proxy, BrowserConfig, BrowserError, MockLauncher, Pool, RealLauncher, SessionId,
-    SessionOptions,
-};
+use gctrl_browser::{BrowserConfig, BrowserError, Pool, RealLauncher, SessionId, SessionOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::{Mutex, OnceLock};
@@ -60,21 +57,11 @@ pub(crate) async fn state() -> BrowserState {
             let cfg = Arc::new(BrowserConfig::default().with_env_overrides());
             // Default to a real launcher; misconfiguration / missing
             // Chromium is reported lazily on first acquire.
-            let launcher: Arc<dyn gctrl_browser::Launcher> = match RealLauncher::new(
+            let launcher = configured_launcher(RealLauncher::new(
                 cfg.chromium_path.clone(),
                 cfg.headed_default,
-            ) {
-                Ok(l) => Arc::new(l),
-                Err(e) => {
-                    tracing::warn!(error=%e, "real chromium launcher unavailable; using mock");
-                    Arc::new(MockLauncher::new("ws://127.0.0.1:0/disabled"))
-                }
-            };
-            let pool = Arc::new(Pool::new(
-                cfg,
-                launcher,
-                "ws://127.0.0.1:4318".into(),
             ));
+            let pool = Arc::new(Pool::new(cfg, launcher, "ws://127.0.0.1:4318".into()));
             // Spawn the recycle background task. It runs until the daemon
             // exits; OnceCell ensures only one is started.
             let pool_for_loop = Arc::clone(&pool);
@@ -131,14 +118,39 @@ async fn list_sessions() -> impl IntoResponse {
     Json(st.pool.list().await)
 }
 
-async fn create_session(Json(opts): Json<SessionOptions>) -> impl IntoResponse {
+async fn create_session(headers: HeaderMap, Json(opts): Json<SessionOptions>) -> impl IntoResponse {
     let st = state().await;
-    match st.pool.acquire(opts).await {
-        Ok(info) => (
-            StatusCode::CREATED,
-            Json(serde_json::to_value(info).unwrap()),
-        )
-            .into_response(),
+    let result = match headers.get(axum::http::header::HOST) {
+        Some(host) => match host.to_str().ok().and_then(|host| {
+            if host.contains('@') {
+                return None;
+            }
+            host.parse::<axum::http::uri::Authority>()
+                .ok()
+                .filter(|authority| url::Url::parse(&format!("ws://{authority}")).is_ok())
+        }) {
+            Some(authority) => {
+                st.pool
+                    .acquire_with_endpoint(opts, &format!("ws://{authority}"))
+                    .await
+            }
+            None => Err(BrowserError::InvalidRequest(
+                "invalid kernel HTTP host authority".into(),
+            )),
+        },
+        None => st.pool.acquire(opts).await,
+    };
+    match result {
+        Ok(info) => {
+            // Subscribe before publishing the endpoint: the first observation
+            // query must include frames produced before that query.
+            crate::recorder_routes::ensure_sink(&info.id, info.recording.max_bytes).await;
+            (
+                StatusCode::CREATED,
+                Json(serde_json::to_value(info).unwrap()),
+            )
+                .into_response()
+        }
         Err(e) => err_response(e).into_response(),
     }
 }
@@ -187,10 +199,10 @@ async fn cdp_attach(
         })
         .unwrap_or_default();
 
-    match st.pool.attach(&sid, &token).await {
-        Ok((upstream_url, tap)) => ws
+    match st.pool.scoped_attachment(&sid, &token).await {
+        Ok(attachment) => ws
             .on_upgrade(move |socket: WebSocket| async move {
-                if let Err(e) = run_proxy(socket, upstream_url, tap).await {
+                if let Err(e) = gctrl_browser::scope::run_scoped_proxy(socket, attachment).await {
                     tracing::warn!(error=%e, "cdp proxy ended with error");
                 }
             })
@@ -336,6 +348,54 @@ mod tests {
 
     fn app() -> Router {
         router::<()>().with_state(())
+    }
+
+    #[tokio::test]
+    async fn browser_endpoint_uses_the_serving_kernel_address() {
+        let _guard = install_mock_pool();
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/browser/sessions")
+                    .header("host", "127.0.0.1:19418")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let info: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            info["cdpEndpoint"]
+                .as_str()
+                .unwrap()
+                .starts_with("ws://127.0.0.1:19418/"),
+            "{info}"
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_endpoint_authority_cannot_allocate_an_identity() {
+        let _guard = install_mock_pool();
+        for host in ["127.0.0.1:19418/path", "user@host", "host:invalid"] {
+            let response = app()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/browser/sessions")
+                        .header("host", host)
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{host}");
+        }
+        assert_eq!(state().await.pool.active_count().await, 0);
     }
 
     #[tokio::test]
@@ -492,5 +552,58 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+fn configured_launcher(
+    result: Result<RealLauncher, BrowserError>,
+) -> Arc<dyn gctrl_browser::Launcher> {
+    match result {
+        Ok(launcher) => Arc::new(launcher),
+        Err(error) => {
+            tracing::warn!(error=%error, "Chromium unavailable; browser acquisition disabled");
+            Arc::new(UnavailableLauncher(error.to_string()))
+        }
+    }
+}
+
+struct UnavailableLauncher(String);
+#[async_trait::async_trait]
+impl gctrl_browser::Launcher for UnavailableLauncher {
+    async fn kill(&self, _: &str) -> Result<(), BrowserError> {
+        Err(BrowserError::Launch(self.0.clone()))
+    }
+    async fn launch(&self) -> Result<gctrl_browser::LaunchedChromium, BrowserError> {
+        Err(BrowserError::Launch(self.0.clone()))
+    }
+    async fn create_context(
+        &self,
+        _: &gctrl_browser::LaunchedChromium,
+    ) -> Result<String, BrowserError> {
+        Err(BrowserError::Launch(self.0.clone()))
+    }
+    async fn dispose_context(&self, _: &str, _: &str) -> Result<(), BrowserError> {
+        Err(BrowserError::Launch(self.0.clone()))
+    }
+}
+
+#[cfg(test)]
+mod launch_failure_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn unavailable_browser_must_not_mint_a_fake_identity() {
+        let launcher =
+            configured_launcher(Err(BrowserError::Launch("no Chromium installed".into())));
+        let pool = Pool::new(
+            Arc::new(BrowserConfig::default()),
+            launcher,
+            "ws://127.0.0.1:4318".into(),
+        );
+        assert!(
+            pool.acquire(SessionOptions::default()).await.is_err(),
+            "unavailable browser falsely advertised an isolated identity"
+        );
+        assert_eq!(pool.active_count().await, 0);
     }
 }

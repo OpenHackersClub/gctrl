@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+async-trait = { workspace = true }
 gctrl-core = { path = "../gctrl-core" }
 gctrl-storage = { path = "../gctrl-storage" }
 gctrl-context = { path = "../gctrl-context" }
@@ -40,6 +41,8 @@ dirs = { workspace = true }
 which = { workspace = true }
 
 [dev-dependencies]
+futures-util = { workspace = true }
+tokio-tungstenite = { workspace = true }
 tower = { workspace = true }
 http-body-util = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

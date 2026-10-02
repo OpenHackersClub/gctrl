@@ -7,14 +7,15 @@
 
 use std::sync::Arc;
 
+use crate::scope::ContextScope;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, watch, RwLock};
 use tracing::{info, warn};
 
 use crate::cdp_proxy::{CdpFrame, FRAME_TAP_CAPACITY};
 use crate::config::BrowserConfig;
 use crate::error::BrowserError;
-use crate::launcher::{Launcher, LaunchedChromium};
+use crate::launcher::{LaunchedChromium, Launcher};
 use crate::model::{SessionId, SessionInfo, SessionOptions, SessionStatus};
 use crate::recycle::{
     decide as recycle_decide, ChromiumSnapshot, ChromiumState, RecycleConfig, RecyclePlan,
@@ -29,19 +30,29 @@ struct Chromium {
     last_active_at: DateTime<Utc>,
     /// Session ids currently bound to this chromium.
     sessions: Vec<SessionId>,
-    /// Per-process broadcast tap shared by every session on this chromium.
-    /// Sessions get their own `Sender` clone so the recorder can subscribe
-    /// per-session (filtering on `session_id` happens at the recorder).
-    tap: broadcast::Sender<CdpFrame>,
 }
 
 struct SessionRecord {
     info: SessionInfo,
     token: Token,
     chromium_id: String,
-    /// Per-session tap clone — same channel as the parent chromium, but
-    /// makes the recorder API symmetric with "subscribe per session id".
+    scope: ContextScope,
+    revoke: watch::Sender<bool>,
+    /// Only this identity's validated frames are observable on this channel.
     tap: broadcast::Sender<CdpFrame>,
+}
+
+impl SessionRecord {
+    fn snapshot(&self) -> SessionInfo {
+        let mut info = self.info.clone();
+        if info.status == SessionStatus::Active
+            && (!self.scope.alive.load(std::sync::atomic::Ordering::SeqCst)
+                || Utc::now() >= info.expires_at)
+        {
+            info.status = SessionStatus::Expired;
+        }
+        info
+    }
 }
 
 pub struct Pool {
@@ -99,6 +110,17 @@ impl Pool {
     }
 
     pub async fn acquire(&self, opts: SessionOptions) -> Result<SessionInfo, BrowserError> {
+        self.acquire_with_endpoint(opts, &self.cdp_endpoint_base)
+            .await
+    }
+
+    /// Acquire an identity using the serving kernel's public WebSocket base.
+    /// The route validates HTTP authority before supplying this value.
+    pub async fn acquire_with_endpoint(
+        &self,
+        opts: SessionOptions,
+        endpoint_base: &str,
+    ) -> Result<SessionInfo, BrowserError> {
         // Validate options up-front — these checks belong here (not in
         // the route layer) so in-kernel callers get the same gates.
         if opts.headed && !self.config.headed_default {
@@ -127,9 +149,7 @@ impl Pool {
                         max: self.config.pool_max,
                     });
                 }
-                drop(state);
                 let launched = self.launcher.launch().await?;
-                let (tx, _rx) = broadcast::channel::<CdpFrame>(FRAME_TAP_CAPACITY);
                 let now = Utc::now();
                 let new_chromium = Chromium {
                     chromium: launched,
@@ -137,11 +157,9 @@ impl Pool {
                     created_at: now,
                     last_active_at: now,
                     sessions: Vec::new(),
-                    tap: tx,
                 };
                 let id = new_chromium.chromium.id.clone();
-                self.state.write().await.chromiums.push(new_chromium);
-                state = self.state.write().await;
+                state.chromiums.push(new_chromium);
                 id
             }
         };
@@ -151,7 +169,7 @@ impl Pool {
         let now = Utc::now();
         let cdp_endpoint = format!(
             "{}/api/browser/sessions/{}/cdp?token={}",
-            self.cdp_endpoint_base, id, token.0
+            endpoint_base, id, token.0
         );
 
         let chromium = state
@@ -160,11 +178,27 @@ impl Pool {
             .find(|c| c.chromium.id == chromium_id)
             .expect("chromium id resolved above");
 
+        // Serialize context allocation with slot reservation: a concurrent
+        // acquire cannot bypass pool limits while a new process is launching.
+        let browser_context_id = match self.launcher.create_context(&chromium.chromium).await {
+            Ok(context) => context,
+            Err(error) => {
+                // A lost response cannot establish that allocation did not occur.
+                // Preserve this process reservation and stop assigning contexts;
+                // recycle only after known peers release and exit is confirmed.
+                chromium.state = ChromiumState::Draining;
+                return Err(error);
+            }
+        };
+        let scope = ContextScope::new(browser_context_id.clone());
+        let revoke = scope.revoke.clone();
+        let (tap, _) = broadcast::channel::<CdpFrame>(FRAME_TAP_CAPACITY);
         let info = SessionInfo {
             id: id.clone(),
             created_at: now,
             expires_at: now + ChronoDuration::seconds(opts.ttl_seconds as i64),
             browser_version: chromium.chromium.version.clone(),
+            browser_context_id,
             status: SessionStatus::Active,
             recording: opts.recording.clone(),
             cdp_endpoint,
@@ -174,32 +208,57 @@ impl Pool {
 
         chromium.sessions.push(id.clone());
         chromium.last_active_at = now;
-        let tap = chromium.tap.clone();
 
         state.sessions.push(SessionRecord {
             info: info.clone(),
             token,
             chromium_id,
+            scope,
+            revoke,
             tap,
         });
         Ok(info)
     }
 
     pub async fn release(&self, id: &SessionId) -> Result<(), BrowserError> {
+        let (endpoint, context, alive) = {
+            let mut state = self.state.write().await;
+            let session = state
+                .sessions
+                .iter_mut()
+                .find(|s| &s.info.id == id)
+                .ok_or_else(|| BrowserError::SessionNotFound(id.clone()))?;
+            session.info.status = SessionStatus::Releasing;
+            session.revoke.send_replace(true);
+            let context = session.scope.context_id.clone();
+            let alive = session
+                .scope
+                .alive
+                .load(std::sync::atomic::Ordering::SeqCst);
+            let chromium_id = session.chromium_id.clone();
+            let chromium = state
+                .chromiums
+                .iter()
+                .find(|c| c.chromium.id == chromium_id)
+                .ok_or_else(|| BrowserError::Cdp("session chromium disappeared".into()))?;
+            (chromium.chromium.browser_ws_url.clone(), context, alive)
+        };
+        // If disposal cannot be confirmed, retain Releasing and the occupied
+        // slot. Tokens are already revoked; cleanup can be retried safely.
+        if alive {
+            self.launcher.dispose_context(&endpoint, &context).await?;
+        }
         let mut state = self.state.write().await;
-        let pos = state
-            .sessions
-            .iter()
-            .position(|s| &s.info.id == id)
-            .ok_or_else(|| BrowserError::SessionNotFound(id.clone()))?;
-        let removed = state.sessions.remove(pos);
-        if let Some(c) = state
-            .chromiums
-            .iter_mut()
-            .find(|c| c.chromium.id == removed.chromium_id)
-        {
-            c.sessions.retain(|s| s != id);
-            c.last_active_at = Utc::now();
+        if let Some(pos) = state.sessions.iter().position(|s| &s.info.id == id) {
+            let removed = state.sessions.remove(pos);
+            if let Some(c) = state
+                .chromiums
+                .iter_mut()
+                .find(|c| c.chromium.id == removed.chromium_id)
+            {
+                c.sessions.retain(|s| s != id);
+                c.last_active_at = Utc::now();
+            }
         }
         Ok(())
     }
@@ -210,7 +269,7 @@ impl Pool {
             .await
             .sessions
             .iter()
-            .map(|s| s.info.clone())
+            .map(SessionRecord::snapshot)
             .collect()
     }
 
@@ -221,7 +280,7 @@ impl Pool {
             .sessions
             .iter()
             .find(|s| &s.info.id == id)
-            .map(|s| s.info.clone())
+            .map(SessionRecord::snapshot)
     }
 
     /// Look up a session, verify the supplied bearer token, and return
@@ -238,7 +297,14 @@ impl Pool {
             .iter()
             .find(|s| &s.info.id == id)
             .ok_or_else(|| BrowserError::SessionNotFound(id.clone()))?;
-        if Utc::now() >= session.info.expires_at {
+        if session.info.status != SessionStatus::Active
+            || *session.revoke.borrow()
+            || !session
+                .scope
+                .alive
+                .load(std::sync::atomic::Ordering::SeqCst)
+            || Utc::now() >= session.info.expires_at
+        {
             return Err(BrowserError::SessionExpired(id.clone()));
         }
         if !crate::token::verify(supplied_token, session.token.as_str()) {
@@ -251,7 +317,35 @@ impl Pool {
             .ok_or_else(|| {
                 BrowserError::Cdp("session refers to a chromium that no longer exists".into())
             })?;
-        Ok((chromium.chromium.browser_ws_url.clone(), session.tap.clone()))
+        Ok((
+            chromium.chromium.browser_ws_url.clone(),
+            session.tap.clone(),
+        ))
+    }
+
+    /// Validated CDP attachment, including context scope and revocation.
+    pub async fn scoped_attachment(
+        &self,
+        id: &SessionId,
+        token: &str,
+    ) -> Result<crate::scope::ScopedAttachment, BrowserError> {
+        let (endpoint, tap) = self.attach(id, token).await?;
+        let state = self.state.read().await;
+        let session = state
+            .sessions
+            .iter()
+            .find(|s| &s.info.id == id)
+            .ok_or_else(|| BrowserError::SessionNotFound(id.clone()))?;
+        if session.info.status != SessionStatus::Active || *session.revoke.borrow() {
+            return Err(BrowserError::SessionExpired(id.clone()));
+        }
+        Ok(crate::scope::ScopedAttachment {
+            endpoint,
+            tap,
+            scope: session.scope.clone(),
+            revoked: session.revoke.subscribe(),
+            expires_at: session.info.expires_at,
+        })
     }
 
     /// Subscribe to the per-session frame tap. Used by the recorder.
@@ -270,29 +364,25 @@ impl Pool {
         let now = Utc::now();
         let mut report = SweepReport::default();
 
-        // Expire sessions past their TTL.
-        {
-            let mut state = self.state.write().await;
-            let expired: Vec<SessionId> = state
-                .sessions
-                .iter()
-                .filter(|s| now >= s.info.expires_at)
-                .map(|s| s.info.id.clone())
-                .collect();
-            for id in &expired {
-                if let Some(pos) = state.sessions.iter().position(|s| &s.info.id == id) {
-                    let removed = state.sessions.remove(pos);
-                    if let Some(c) = state
-                        .chromiums
-                        .iter_mut()
-                        .find(|c| c.chromium.id == removed.chromium_id)
-                    {
-                        c.sessions.retain(|s| s != id);
-                        c.last_active_at = Utc::now();
-                    }
-                }
+        // Revocation and context disposal share the explicit release path.
+        let expired: Vec<SessionId> = self
+            .state
+            .read()
+            .await
+            .sessions
+            .iter()
+            .filter(|s| {
+                now >= s.info.expires_at
+                    || s.info.status == SessionStatus::Releasing
+                    || !s.scope.alive.load(std::sync::atomic::Ordering::SeqCst)
+            })
+            .map(|s| s.info.id.clone())
+            .collect();
+        for id in expired {
+            match self.release(&id).await {
+                Ok(()) => report.expired_sessions += 1,
+                Err(e) => warn!(session=%id, error=%e, "context cleanup remains uncertain"),
             }
-            report.expired_sessions = expired.len();
         }
 
         // Recycle decisions.
@@ -328,18 +418,21 @@ impl Pool {
                 RecyclePlan::Kill { id, reason } => {
                     let mut state = self.state.write().await;
                     if let Some(pos) = state.chromiums.iter().position(|c| c.chromium.id == id) {
-                        let c = state.chromiums.remove(pos);
-                        if let Some(mut child) = c.chromium.child.lock().await.take() {
-                            if let Err(e) = child.start_kill() {
-                                warn!(error=%e, chromium=%c.chromium.id, "failed to kill chromium");
+                        // A new session may have been allocated since the snapshot.
+                        if !state.chromiums[pos].sessions.is_empty() {
+                            continue;
+                        }
+                        state.chromiums[pos].state = ChromiumState::Draining;
+                        match self.launcher.kill(&id).await {
+                            Ok(()) => {
+                                state.chromiums.remove(pos);
+                                info!(chromium=%id, reason=reason.as_str(), "recycled chromium");
+                                report.killed += 1;
+                            }
+                            Err(e) => {
+                                warn!(error=%e, chromium=%id, "process exit remains uncertain")
                             }
                         }
-                        info!(
-                            chromium = %c.chromium.id,
-                            reason = reason.as_str(),
-                            "recycled chromium"
-                        );
-                        report.killed += 1;
                     }
                 }
             }
@@ -517,5 +610,216 @@ mod tests {
         let report = pool.sweep().await;
         assert_eq!(report.expired_sessions, 1);
         assert!(pool.get(&info.id).await.is_none());
+    }
+    #[tokio::test]
+    async fn parallel_acquire_respects_limits_and_uses_distinct_contexts() {
+        let pool = Arc::new(Pool::new(
+            Arc::new(BrowserConfig {
+                pool_max: 1,
+                contexts_per_chromium_max: 2,
+                ..Default::default()
+            }),
+            Arc::new(MockLauncher::new("ws://mock")),
+            "ws://kernel".into(),
+        ));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let pool = pool.clone();
+            handles.push(tokio::spawn(async move {
+                pool.acquire(SessionOptions::default()).await
+            }));
+        }
+        let mut contexts = std::collections::HashSet::new();
+        let mut rejected = 0;
+        for h in handles {
+            match h.await.unwrap() {
+                Ok(s) => {
+                    assert!(contexts.insert(s.browser_context_id));
+                }
+                Err(BrowserError::PoolExhausted { .. }) => rejected += 1,
+                Err(e) => panic!("unexpected acquire error: {e}"),
+            }
+        }
+        assert_eq!(contexts.len(), 2);
+        assert_eq!(rejected, 6);
+        assert_eq!(pool.chromium_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn taps_are_per_identity_and_release_revokes_existing_attachments() {
+        let pool = pool_with_mock();
+        let a = pool.acquire(SessionOptions::default()).await.unwrap();
+        let b = pool.acquire(SessionOptions::default()).await.unwrap();
+        let mut ra = pool.subscribe(&a.id).await.unwrap();
+        let mut rb = pool.subscribe(&b.id).await.unwrap();
+        let aa = pool.scoped_attachment(&a.id, &a.token).await.unwrap();
+        let bb = pool.scoped_attachment(&b.id, &b.token).await.unwrap();
+        aa.tap
+            .send(CdpFrame {
+                direction: crate::FrameDirection::ClientToBrowser,
+                payload: "identity-a".into(),
+                ts: Utc::now(),
+            })
+            .unwrap();
+        assert_eq!(ra.try_recv().unwrap().payload, "identity-a");
+        assert!(
+            rb.try_recv().is_err(),
+            "sibling recorder observed a foreign frame"
+        );
+        pool.release(&a.id).await.unwrap();
+        assert!(*aa.revoked.borrow());
+        assert!(!*bb.revoked.borrow());
+        assert!(pool.scoped_attachment(&a.id, &a.token).await.is_err());
+        assert!(pool.scoped_attachment(&b.id, &b.token).await.is_ok());
+    }
+
+    struct CleanupFailure {
+        fail: std::sync::atomic::AtomicBool,
+        disposed: std::sync::atomic::AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl Launcher for CleanupFailure {
+        async fn kill(&self, _: &str) -> Result<(), BrowserError> {
+            if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+                Err(BrowserError::Launch("exit confirmation lost".into()))
+            } else {
+                Ok(())
+            }
+        }
+        async fn launch(&self) -> Result<LaunchedChromium, BrowserError> {
+            MockLauncher::new("ws://mock").launch().await
+        }
+        async fn create_context(&self, c: &LaunchedChromium) -> Result<String, BrowserError> {
+            MockLauncher::new("ws://mock").create_context(c).await
+        }
+        async fn dispose_context(&self, _: &str, _: &str) -> Result<(), BrowserError> {
+            self.disposed
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+                Err(BrowserError::Cdp("cleanup connection lost".into()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+    #[tokio::test]
+    async fn uncertain_cleanup_fences_connections_and_retains_slot_until_confirmed() {
+        use std::sync::atomic::Ordering;
+        let launcher = Arc::new(CleanupFailure {
+            fail: true.into(),
+            disposed: 0.into(),
+        });
+        let pool = Pool::new(
+            Arc::new(BrowserConfig {
+                pool_max: 1,
+                contexts_per_chromium_max: 1,
+                ..Default::default()
+            }),
+            launcher.clone(),
+            "ws://kernel".into(),
+        );
+        let s = pool.acquire(SessionOptions::default()).await.unwrap();
+        let attachment = pool.scoped_attachment(&s.id, &s.token).await.unwrap();
+        assert!(pool.release(&s.id).await.is_err());
+        assert!(*attachment.revoked.borrow());
+        assert_eq!(
+            pool.get(&s.id).await.unwrap().status,
+            SessionStatus::Releasing
+        );
+        assert!(matches!(
+            pool.acquire(SessionOptions::default()).await,
+            Err(BrowserError::PoolExhausted { .. })
+        ));
+        assert!(pool.scoped_attachment(&s.id, &s.token).await.is_err());
+        launcher.fail.store(false, Ordering::SeqCst);
+        assert_eq!(pool.sweep().await.expired_sessions, 1);
+        assert_eq!(launcher.disposed.load(Ordering::SeqCst), 2);
+        assert!(pool.get(&s.id).await.is_none());
+        assert!(pool.acquire(SessionOptions::default()).await.is_ok());
+    }
+    #[tokio::test]
+    async fn uncertain_process_exit_retains_capacity_until_confirmed() {
+        use std::sync::atomic::Ordering;
+        let launcher = Arc::new(CleanupFailure {
+            fail: false.into(),
+            disposed: 0.into(),
+        });
+        let pool = Pool::new(
+            Arc::new(BrowserConfig {
+                pool_max: 1,
+                contexts_per_chromium_max: 1,
+                recycle_idle_seconds: 0,
+                ..Default::default()
+            }),
+            launcher.clone(),
+            "ws://kernel".into(),
+        );
+        let session = pool.acquire(SessionOptions::default()).await.unwrap();
+        pool.release(&session.id).await.unwrap();
+        launcher.fail.store(true, Ordering::SeqCst);
+        assert_eq!(pool.sweep().await.killed, 0);
+        assert_eq!(pool.chromium_count().await, 1);
+        assert!(matches!(
+            pool.acquire(SessionOptions::default()).await,
+            Err(BrowserError::PoolExhausted { .. })
+        ));
+        launcher.fail.store(false, Ordering::SeqCst);
+        assert_eq!(pool.sweep().await.killed, 1);
+        assert_eq!(pool.chromium_count().await, 0);
+        assert!(pool.acquire(SessionOptions::default()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn acquired_endpoint_is_preserved_for_later_inspection() {
+        let pool = pool_with_mock();
+        let info = pool
+            .acquire_with_endpoint(SessionOptions::default(), "ws://127.0.0.1:19418")
+            .await
+            .unwrap();
+        assert!(info.cdp_endpoint.starts_with("ws://127.0.0.1:19418/"));
+        assert_eq!(
+            pool.get(&info.id).await.unwrap().cdp_endpoint,
+            info.cdp_endpoint
+        );
+    }
+    struct ContextCreationFailure;
+    #[async_trait::async_trait]
+    impl Launcher for ContextCreationFailure {
+        async fn launch(&self) -> Result<LaunchedChromium, BrowserError> {
+            MockLauncher::new("ws://mock").launch().await
+        }
+        async fn create_context(&self, _: &LaunchedChromium) -> Result<String, BrowserError> {
+            Err(BrowserError::Cdp(
+                "context may have been created before connection loss".into(),
+            ))
+        }
+        async fn dispose_context(&self, _: &str, _: &str) -> Result<(), BrowserError> {
+            Ok(())
+        }
+        async fn kill(&self, _: &str) -> Result<(), BrowserError> {
+            Ok(())
+        }
+    }
+    #[tokio::test]
+    async fn uncertain_context_allocation_drains_the_process_until_exit_is_confirmed() {
+        let pool = Pool::new(
+            Arc::new(BrowserConfig {
+                pool_max: 1,
+                ..Default::default()
+            }),
+            Arc::new(ContextCreationFailure),
+            "ws://kernel".into(),
+        );
+        assert!(matches!(
+            pool.acquire(SessionOptions::default()).await,
+            Err(BrowserError::Cdp(_))
+        ));
+        assert!(matches!(
+            pool.acquire(SessionOptions::default()).await,
+            Err(BrowserError::PoolExhausted { .. })
+        ));
+        assert_eq!(pool.chromium_count().await, 1);
+        assert_eq!(pool.sweep().await.killed, 1);
+        assert_eq!(pool.chromium_count().await, 0);
     }
 }

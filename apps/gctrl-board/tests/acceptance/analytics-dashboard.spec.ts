@@ -300,7 +300,7 @@ test.describe("Analytics Dashboard — CDP observability", () => {
     await seedExternalSession(kernel)
 
     await page.goto("/analytics/overview")
-    cdp.clearConsole()
+    await cdp.clearConsole()
 
     for (const tab of ["Sessions", "Usage", "Evals", "Contributions", "Overview"]) {
       await page.getByRole("tab", { name: tab }).click()
@@ -309,7 +309,7 @@ test.describe("Analytics Dashboard — CDP observability", () => {
       await page.waitForTimeout(250)
     }
 
-    const errors = cdp.getConsoleErrors()
+    const errors = await cdp.getConsoleErrors()
     // Filter out noise from analytics_sync_status: in local dev there's
     // no Worker, so the route 404s. The page swallows it via .catch and
     // it produces a network 404 (not a console error), so this filter
@@ -334,8 +334,7 @@ test.describe("Analytics Dashboard — CDP observability", () => {
     await page.getByRole("tab", { name: "Usage" }).click()
     await page.waitForTimeout(500)
 
-    const analyticsReqs = cdp
-      .getRequests()
+    const analyticsReqs = (await cdp.getRequests())
       .filter((r) => {
         try {
           const url = new URL(r.url)

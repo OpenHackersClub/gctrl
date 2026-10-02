@@ -4,45 +4,28 @@
  * in-process Playwright `CDPSession`. Used when `BROWSER_BACKEND=kernel`.
  *
  * The kernel taps CDP frames at the WS proxy layer (`gctrl-browser`'s
- * `cdp_proxy::run_proxy`) and structures them into per-session
+ * `scope::run_scoped_proxy`) and structures them into per-session
  * `recorder_*` records (`gctrl-recorder::CaptureSink`). This observer is
  * a thin fetch-and-shape layer over those records — designed to be a
  * drop-in for the in-process `CDPObserver` so test assertion code is
- * untouched during the PR5 parity gate.
+ * awaits either backend during the parity gate.
  *
  * Spec: vault/specs/implementation/kernel/driver-browser.md §3, §9.
  */
 
 import type { CapturedRequest, ConsoleEntry, ObservabilityReport } from "./cdp"
 
-interface KernelRequest {
-  requestId: string
-  url: string
-  method: string
-  status: number | null
-  startedAt: string
-  finishedAt: string | null
-  failed: boolean
-}
-
-interface KernelConsole {
-  seq: number
-  level: "log" | "info" | "warn" | "error" | "debug" | "exception"
-  kind: string
-  text: string
-  ts: string
-}
-
-interface KernelMetric {
-  name: string
-  value: number
-  ts: string
-}
+import { Effect } from "effect"
+import type { CDPSession } from "@playwright/test"
+import { BrowserClient, type CapturedRequest as KernelRequest, type ConsoleEntry as KernelConsole } from "../../../../../shell/gctrl-shell/src/services/BrowserClient"
+import { kernelBrowserLayer } from "./kernel-browser"
 
 export class KernelCDPObserver {
+  private consoleAfterSeq = -1
   constructor(
     private readonly baseUrl: string,
-    private readonly sessionId: string
+    private readonly sessionId: string,
+    private readonly cdp: Pick<CDPSession, "send">,
   ) {}
 
   /** No-op: enabling/disabling happens implicitly when the kernel
@@ -50,32 +33,21 @@ export class KernelCDPObserver {
   async enable(): Promise<void> {}
   async disable(): Promise<void> {}
 
-  private async fetchJson<T>(path: string): Promise<T> {
-    const res = await fetch(`${this.baseUrl}${path}`)
-    if (!res.ok) {
-      throw new Error(
-        `kernel recorder fetch ${path} → ${res.status} ${res.statusText}`
-      )
-    }
-    return (await res.json()) as T
+  private fetchRequests() {
+    return Effect.runPromise(Effect.flatMap(BrowserClient, browser => browser.network(this.sessionId)).pipe(
+      Effect.provide(kernelBrowserLayer(this.baseUrl)),
+    ))
   }
 
-  private async fetchRequests(): Promise<KernelRequest[]> {
-    return this.fetchJson<KernelRequest[]>(
-      `/api/browser/sessions/${encodeURIComponent(this.sessionId)}/network`
-    )
+  private fetchConsole() {
+    return Effect.runPromise(Effect.flatMap(BrowserClient, browser => browser.console(this.sessionId)).pipe(
+      Effect.provide(kernelBrowserLayer(this.baseUrl)),
+    )).then(entries => entries.filter(entry => entry.seq > this.consoleAfterSeq))
   }
 
-  private async fetchConsole(): Promise<KernelConsole[]> {
-    return this.fetchJson<KernelConsole[]>(
-      `/api/browser/sessions/${encodeURIComponent(this.sessionId)}/console`
-    )
-  }
-
-  private async fetchMetrics(): Promise<KernelMetric[]> {
-    return this.fetchJson<KernelMetric[]>(
-      `/api/browser/sessions/${encodeURIComponent(this.sessionId)}/metrics`
-    )
+  async clearConsole(): Promise<void> {
+    const entries = await this.fetchConsole()
+    this.consoleAfterSeq = entries.reduce((latest, entry) => Math.max(latest, entry.seq), this.consoleAfterSeq)
   }
 
   private toCaptured(r: KernelRequest): CapturedRequest {
@@ -85,6 +57,7 @@ export class KernelCDPObserver {
       method: r.method,
       timestamp: Date.parse(r.startedAt) / 1000,
       responseStatus: r.status ?? undefined,
+      responseHeaders: r.responseHeaders,
     }
   }
 
@@ -103,10 +76,8 @@ export class KernelCDPObserver {
     }
   }
 
-  // Note: these mirror the `CDPObserver` accessors but are async because
-  // they go over HTTP. Tests on the kernel backend `await` them; tests
-  // on the local backend get the sync versions. Cutover work in a
-  // future PR will unify the call sites.
+  // Both fixture paths await these accessors; kernel reads use validated
+  // shell responses for the same identity that controls the page.
 
   async getRequests(): Promise<CapturedRequest[]> {
     const xs = await this.fetchRequests()
@@ -153,10 +124,10 @@ export class KernelCDPObserver {
   }
 
   async getPerformanceMetrics(): Promise<Record<string, number>> {
-    const xs = await this.fetchMetrics()
-    const out: Record<string, number> = {}
-    for (const m of xs) out[m.name] = m.value
-    return out
+    // Performance samples are requested against this page's validated CDP
+    // session; the kernel proxy also captures the response for its recorder.
+    const { metrics } = await this.cdp.send("Performance.getMetrics")
+    return Object.fromEntries(metrics.map(metric => [metric.name, metric.value]))
   }
 
   async getJSHeapSizeMB(): Promise<number> {

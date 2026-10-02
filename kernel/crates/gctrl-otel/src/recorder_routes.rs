@@ -47,7 +47,7 @@ async fn registry() -> Arc<Mutex<Registry>> {
 /// Attach a sink for the given session. If one already exists it is
 /// returned as-is; otherwise a fresh sink is wired to a new pump task
 /// reading the pool's per-session frame broadcast.
-async fn ensure_sink(id: &SessionId, max_bytes: u64) -> Option<Arc<CaptureSink>> {
+pub(crate) async fn ensure_sink(id: &SessionId, max_bytes: u64) -> Option<Arc<CaptureSink>> {
     let pool = browser_state().await.pool;
     let key = id.to_string();
     let reg = registry().await;
@@ -106,7 +106,8 @@ async fn report(Path(id): Path<String>) -> impl IntoResponse {
 
 /// Resolve the sink for an active session. If the recorder hasn't yet
 /// attached for this session, attach now using the session's recording
-/// cap (so the first observation request bootstraps the sink lazily).
+/// cap. HTTP acquisition installs the sink before any client can attach;
+// direct in-kernel pool users retain this lazy compatibility path.
 async fn get_or_install(id: &SessionId) -> Option<Arc<CaptureSink>> {
     let pool = browser_state().await.pool;
     let info = pool.get(id).await?;

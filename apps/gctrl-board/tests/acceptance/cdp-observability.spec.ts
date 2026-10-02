@@ -28,7 +28,7 @@ test.describe("CDP Observability", () => {
     await selectProject(page, seedProject.key)
     await expect(page.getByText("CDP network test issue")).toBeVisible()
 
-    const apiRequests = cdp.getApiRequests()
+    const apiRequests = await cdp.getApiRequests()
     expect(apiRequests.length).toBeGreaterThan(0)
 
     // All API requests must go through Vite proxy (/api/board/*),
@@ -55,7 +55,7 @@ test.describe("CDP Observability", () => {
     await selectProject(page, seedProject.key)
     await expect(page.getByText("Content-type test")).toBeVisible()
 
-    const apiReqs = cdp.getApiRequests()
+    const apiReqs = await cdp.getApiRequests()
     const withHeaders = apiReqs.filter((r) => r.responseHeaders)
 
     expect(withHeaders.length).toBeGreaterThan(0)
@@ -99,7 +99,7 @@ test.describe("CDP Observability", () => {
     await panel.locator("button:has(svg)").first().click()
 
     // No console errors during the entire workflow
-    const errors = cdp.getConsoleErrors()
+    const errors = await cdp.getConsoleErrors()
     expect(errors).toHaveLength(0)
   })
 
@@ -119,7 +119,7 @@ test.describe("CDP Observability", () => {
     await expect(page.getByText(issue.id)).toBeVisible()
 
     // Clear startup noise
-    cdp.clearConsole()
+    await cdp.clearConsole()
 
     // Drag to todo
     await dragIssueToColumn(page, issue.id, "todo")
@@ -127,7 +127,7 @@ test.describe("CDP Observability", () => {
     await expect(todoCol.getByText(issue.title)).toBeVisible()
 
     // No JS exceptions during DnD
-    const errors = cdp.getConsoleErrors()
+    const errors = await cdp.getConsoleErrors()
     expect(errors).toHaveLength(0)
   })
 
@@ -279,7 +279,7 @@ test.describe("CDP Observability", () => {
     await selectProject(page, seedProject.key)
     await expect(page.getByText("Report test issue")).toBeVisible()
 
-    const report = cdp.report()
+    const report = await cdp.report()
 
     // Should have made API requests
     expect(report.apiRequests).toBeGreaterThan(0)

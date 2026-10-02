@@ -19,6 +19,7 @@ const mockSession = {
   createdAt: "2026-05-02T10:00:00Z",
   expiresAt: "2026-05-02T10:10:00Z",
   browserVersion: "Chrome/124.0.6367.78",
+  browserContextId: "isolated-context",
   status: "active" as const,
   recording: {
     network: true,
@@ -99,6 +100,7 @@ describe("BrowserClient", () => {
     expect(result.id).toBe("01HV-fake")
     expect(result.cdpEndpoint).toContain("token=")
     expect(result.status).toBe("active")
+    expect(result).toHaveProperty("browserContextId", "isolated-context")
   })
 
   it("list() returns the session array", async () => {

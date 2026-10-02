@@ -22,12 +22,13 @@ pub mod launcher;
 pub mod model;
 pub mod pool;
 pub mod recycle;
+pub mod scope;
 pub mod token;
 
 pub use cdp_proxy::{run_proxy, CdpFrame, FrameDirection, FRAME_TAP_CAPACITY};
 pub use config::BrowserConfig;
 pub use error::BrowserError;
-pub use launcher::{Launcher, LaunchedChromium, MockLauncher, RealLauncher};
+pub use launcher::{LaunchedChromium, Launcher, MockLauncher, RealLauncher};
 pub use model::{
     RecordingOptions, SessionId, SessionInfo, SessionOptions, SessionStatus, Viewport,
 };
