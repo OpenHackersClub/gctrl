@@ -108,7 +108,7 @@ Observe & Eval owns both the **substrate** (metrics, prompts, judges, datasets, 
 
 | Task | Description | Priority | Depends On | Issue |
 |------|-------------|----------|------------|-------|
-| Computer-use coordination end to end | Implement the [computer-use contract](../architecture/kernel/computer-use.md), browser identity isolation, kernel input ownership, target-host GUI drivers, SSH recovery, shell/desktop supervision, and all five live acceptance scenarios | P1 | [Specs PR #231](https://github.com/OpenHackersClub/gctrl/pull/231), existing browser/platform/orchestration primitives | [#232](https://github.com/OpenHackersClub/gctrl/issues/232) |
+| Computer-use coordination end to end | Implement the [computer-use contract](../architecture/kernel/computer-use.md), browser identity isolation, kernel input ownership, target-host GUI drivers, SSH recovery, shell/desktop supervision, and all five live acceptance scenarios | P1 | [Specs PR #231](https://github.com/OpenHackersClub/gctrl/pull/231), existing browser/platform/orchestration primitives | [#232](https://github.com/OpenHackersClub/gctrl/issues/232); [draft implementation PR #233](https://github.com/OpenHackersClub/gctrl/pull/233) |
 
 **Done when:** All acceptance criteria in #232 have implementation and verification evidence; documentation-only or mock-only scenario checks MUST NOT establish runtime completion.
 
