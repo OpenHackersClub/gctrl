@@ -4,6 +4,14 @@ gctrl Desktop is a **packaging and distribution mode**, not a new application. I
 
 The desktop app preserves every architectural invariant from [os.md](../os.md): the kernel runs as an independent binary, the UI consumes kernel HTTP on `:4318`, and dependency direction stays `App → Shell → Kernel`. From the kernel's perspective, the desktop app is identical to local-dev mode — a renderer process that talks HTTP. The Electron shell is a thin packaging layer, not a runtime the kernel knows about.
 
+## OS-Native Supervision
+
+1. gctrl Desktop MUST remain a thin distribution and supervision surface. Existing editors, terminals, browsers, Spaces, and monitors MUST remain first-class working surfaces, following [principles.md](../../principles.md#design-principles).
+2. The renderer MAY show task/session progress, target identity, observations, and controls for cancellation or human takeover through shell/kernel contracts [deferred]. Input ownership and recovery MUST remain kernel responsibilities under [computer-use.md](../kernel/computer-use.md).
+3. Electron MUST NOT implement a parallel computer-use controller or duplicate platform driver capabilities. Native OS integration MUST retain the [driver-macos boundary](../kernel/driver-macos.md).
+4. Embedded editor/terminal replacements and browser design mode MUST remain outside this initiative's [product scope](../../gctrl/PRD.md#non-goals). Independent browser automation and visual verification MUST remain available without the desktop distribution.
+5. Remote supervision and independent GUI environments remain [deferred]; the desktop bundle MUST NOT be described as provisioning machines or supplying GUI isolation merely by arranging windows or Spaces.
+
 ## Architectural Position
 
 ```mermaid
@@ -33,7 +41,7 @@ flowchart TB
 
 **Key invariants preserved:**
 
-1. **Local-first.** No network connectivity required for any feature. The kernel runs entirely on-device; no remote calls are added by the desktop shell.
+1. **Local-first.** Local features MUST work without network connectivity; optional remote supervision requires connectivity [deferred]. The kernel runs entirely on-device; no remote calls are added by the desktop shell.
 2. **Single-writer DuckDB.** The kernel sidecar is the sole writer (same as local-dev mode). The renderer never opens DuckDB directly.
 3. **Dependency direction unchanged.** The renderer is an HTTP client of the kernel — the same role the Cloudflare Worker SPA plays in cloud mode and the Vite dev server plays in local-dev mode.
 4. **No new application layer.** Desktop is a deployment target, not an app. There are no `desktop_*` tables, no `/api/desktop/*` routes. Bootstrap concerns (spawning the kernel, auto-update) live in the Electron main process and never touch the kernel.
@@ -116,7 +124,7 @@ Loaded from a packaged `dist-web/` directory bundled into the `.app`. Routes use
 
 The desktop mode MUST preserve the local-first guarantees from [principles.md](../../principles.md) § Design Principles:
 
-1. **Offline functional.** Disconnect the network; every feature continues to work, including session history, board state, analytics, and inbox. The kernel does not phone home.
+1. **Offline functional.** Disconnect the network; local features MUST continue to work, including session history, board state, analytics, and inbox. The kernel does not phone home.
 2. **No mandatory cloud account.** The desktop app launches and is fully usable without any login. Cloud sync (R2) and external drivers (GitHub, Linear) remain opt-in and configured per-user, exactly as in CLI/local-dev mode.
 3. **Data lives in `~/Library/Application Support/gctrl/`.** Uninstalling the app does NOT delete user data; deletion is a deliberate user action (`gctrl reset` or manual). The vault directory remains user-owned and Obsidian-mountable.
 4. **Updates do not require online presence.** The app launches and works without an update check succeeding; auto-update is a background concern.

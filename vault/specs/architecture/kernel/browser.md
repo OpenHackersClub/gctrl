@@ -78,6 +78,15 @@ sequenceDiagram
 
 ---
 
+## Identity and Storage Isolation
+
+> Status: **[deferred]**. Per-identity context enforcement, persistent profile selection, and Task binding are requirements to implement and verify. The current [pool](../../../../kernel/crates/gctrl-browser/src/pool.rs) allocates session records, and the [CDP proxy](../../../../kernel/crates/gctrl-browser/src/cdp_proxy.rs) relays browser-level frames; endpoint/token separation alone MUST NOT be advertised as storage isolation.
+
+1. Browser profiles/contexts used for separate identities MUST isolate cookies, storage, and login state. Persistent profiles MUST use separate user-data directories; separate tabs in the same profile/context MUST NOT count as identity isolation. Context lifecycle and pooling belong in [driver-browser.md](../../implementation/kernel/driver-browser.md).
+2. Task bindings MUST identify the intended browser session/context and tab, and MUST follow [computer-use target identity and verification](computer-use.md#target-identity-and-action-verification). End-to-end Task/agent Session binding and persistent profile selection remain [deferred]; existing browser-session shapes are in [model.rs](../../../../kernel/crates/gctrl-browser/src/model.rs).
+3. Browser automation MUST remain independently usable through the shell and CDP attach layer. Screenshots and visual verification MAY be used without an embedded editor, terminal, or browser design mode.
+4. Browser storage isolation MUST NOT imply independent desktop input. Headed operations that use global focus, keyboard, or pointer MUST follow [shared input ownership](computer-use.md#shared-input-cancellation-and-human-takeover).
+
 ## Daemon Model
 
 Following gstack's key insight: **sub-second latency requires a persistent browser**. Cold-starting Chromium per command is too slow for multi-step agent workflows.
@@ -236,7 +245,7 @@ Response format: plain text for agent consumption (minimal token overhead). Erro
 
 ### CDP attach layer (low-level — see implementation spec)
 
-Underneath the agent commands, the same `gctrl-browser` crate exposes a **raw CDP attach endpoint** for clients that want to drive Chromium directly via Chrome DevTools Protocol — primarily Playwright-based acceptance tests in apps. Each acquired session is a `BrowserContext` on a pooled Chromium; clients connect via `chromium.connectOverCDP(<cdpEndpoint>)` and observation (network, console, performance, screenshots) is captured by a sibling `gctrl-recorder` crate and queryable as JSON.
+Underneath the agent commands, the same `gctrl-browser` crate exposes a **raw CDP attach endpoint** for clients that want to drive Chromium directly via Chrome DevTools Protocol — primarily Playwright-based acceptance tests in apps. Per-session endpoints attach to pooled Chromium. The intended isolation unit is a `BrowserContext` [deferred], subject to [identity and storage isolation](#identity-and-storage-isolation); clients connect via `chromium.connectOverCDP(<cdpEndpoint>)` and observation (network, console, performance, screenshots) is captured by a sibling `gctrl-recorder` crate and queryable as JSON.
 
 ```
 POST   /api/browser/sessions                      { viewport, recording, ttlSeconds }
@@ -247,7 +256,7 @@ GET    /api/browser/sessions/:id/{network,console,metrics,report}
 GET    /api/browser/health
 ```
 
-The agent command layer is itself implemented on top of this — `gctrl browser snapshot` acquires a session under the hood. See [vault/specs/implementation/kernel/driver-browser.md](../../implementation/kernel/driver-browser.md) for the pool semantics, recycle policy, recording cap, configuration schema, and migration plan.
+The agent command layer is intended to use this attach layer [deferred]; the existing [gctrl-browser crate](../../../../kernel/crates/gctrl-browser/src/lib.rs) exposes the lower layer, while migration of agent commands remains planned. See [vault/specs/implementation/kernel/driver-browser.md](../../implementation/kernel/driver-browser.md) for the pool semantics, recycle policy, recording cap, configuration schema, and migration plan.
 
 ---
 
