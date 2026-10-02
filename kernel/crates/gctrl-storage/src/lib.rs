@@ -1,4 +1,5 @@
 pub mod board_markdown;
+mod compute_journal;
 pub mod duckdb_store;
 pub mod persona_markdown;
 pub mod schema;

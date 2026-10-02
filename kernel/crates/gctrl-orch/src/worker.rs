@@ -15,6 +15,8 @@ const COMPLETION_COMMENT_MAX_BYTES: usize = 50_000;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum DispatchOutcome {
+    /// Durable attempt retained; reconnect/fence before retry or replacement.
+    AwaitingReconciliation { task_id: String },
     /// Won the CAS, ran the agent, released the claim.
     Released { task_id: String },
     /// Won the CAS, agent failed or timed out — requeued for retry.
@@ -205,7 +207,7 @@ impl Worker {
 /// Keep the last `max_bytes` of `body`, prepending a truncation marker if
 /// anything was dropped. Agent stdout tends to end with the useful summary,
 /// so tail-truncation preserves what reviewers care about.
-fn truncate_tail(body: &str, max_bytes: usize) -> std::borrow::Cow<'_, str> {
+pub(crate) fn truncate_tail(body: &str, max_bytes: usize) -> std::borrow::Cow<'_, str> {
     if body.len() <= max_bytes {
         return std::borrow::Cow::Borrowed(body);
     }

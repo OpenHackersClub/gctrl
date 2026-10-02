@@ -2,7 +2,7 @@
 
 gctrl MUST coordinate observation and input across existing applications with explicit targets, input ownership, and verifiable recovery.
 
-> Status: Implementation is in progress under [#232](https://github.com/OpenHackersClub/gctrl/issues/232). The [browser attach layer](../../implementation/kernel/driver-browser.md) enforces ephemeral storage identities. The [coordinator library](../../implementation/kernel/computer-use.md) validates explicit bindings, reserves desktop input across observation/action/verification, revokes permits on takeover/cancellation, and requires fencing after uncertain outcomes or restart. Its conformance tests use injected drivers and journals; daemon integration, native drivers, durable storage, human-input monitoring, remote recovery, HTTP/CLI supervision, and their live gates remain **[deferred]** until implemented and verified.
+> Status: Implementation is in progress under [#232](https://github.com/OpenHackersClub/gctrl/issues/232). The [browser attach layer](../../implementation/kernel/driver-browser.md) enforces ephemeral storage identities. The [coordinator library](../../implementation/kernel/computer-use.md) validates explicit bindings, reserves desktop input across observation/action/verification, revokes permits on takeover/cancellation, and requires fencing after uncertain outcomes or restart. Its conformance tests use injected drivers and journals; daemon integration, native drivers, durable storage, human-input monitoring, GUI recovery, HTTP/CLI supervision, and their live gates remain **[deferred]** until implemented and verified.
 
 ## Responsibilities and Existing Contracts
 
@@ -48,7 +48,7 @@ gctrl MUST coordinate observation and input across existing applications with ex
 1. Connection loss MUST be treated as uncertain observation/control, not evidence that a remote process has exited. The previous attempt MUST be reconciled before retry or replacement dispatch; the orchestrator MUST remain the sole dispatch authority.
 2. Recovery MUST reconnect to the same execution and GUI environment when identity can be established, inspect the prior action's effects, and confirm exit or fence the previous attempt before allowing replacement work. An action with an unknown outcome MUST NOT be blindly replayed.
 3. A human MUST be shown whether execution and cancellation are confirmed or uncertain. Human takeover on a remote GUI MUST use the target host's independent input runtime and the same ownership contract.
-4. Remote attachment, durable attempt identity, fencing, and restart reconciliation remain [deferred]. Until these are specified and verified, connection-loss recovery MUST NOT be presented as supported by the proposed SSH backend. Transport policy and target-host tooling belong in [compute.md](compute.md#remote-execution-and-gui-environments).
+4. Remote execution attachment, durable attempt identity, recursive fencing, and worker restart reconciliation MUST follow the [compute implementation](../../implementation/kernel/compute.md). Its live gate covers claimed execution; daemon restart, GUI recovery, and human supervision remain [deferred] and MUST NOT be inferred from that result. Transport policy and target-host tooling belong in [compute.md](compute.md#remote-execution-and-gui-environments).
 
 ## Contract Verification Scenarios [deferred]
 

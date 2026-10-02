@@ -53,6 +53,13 @@ task_id: Option<TaskId>   // Scheduler Task this session is executing
 2. Drivers MUST establish host/login/input-runtime identity and application/window or browser/context/tab incarnation. A `BindingRequest` MUST select a driver-issued target and reference an authorized Task/agent Session/workspace relationship.
 3. Durable binding/event tables and HTTP wire routes remain **[deferred]**. Their implementation MUST accompany the [computer-use contract](kernel/computer-use.md) and use the kernel-owned storage schema.
 
+### Durable Compute Attempts
+
+1. Compute invocation, snapshot, phase, configuration, and journal schemas MUST follow [gctrl-core/compute.rs](../../../kernel/crates/gctrl-core/src/compute.rs). `ComputePhase` MUST NOT be interpreted as an orchestrator claim state.
+2. Kernel execution intent and retained Task reservations MUST use `CREATE_COMPUTE_ATTEMPTS_TABLE` and `CREATE_COMPUTE_OWNERS_TABLE` in [schema.rs](../../../kernel/crates/gctrl-storage/src/schema.rs). Their single-writer adapter MUST follow [compute_journal.rs](../../../kernel/crates/gctrl-storage/src/compute_journal.rs).
+3. The [compute worker](../../../kernel/crates/gctrl-orch/src/compute_worker.rs) MUST resolve an existing SQLite `OrchTask`, create a scheduler-provenance agent Session, and persist the Task/session/workspace/environment association before dispatch. Caller labels or opaque Session metadata MUST NOT create this authority. Computer-use binding authorization against these records remains [deferred].
+4. A target receipt MUST match the canonical invocation hash, actual host incarnation, and established process incarnation. Requested cancellation MUST survive uncertain transport and later running receipts. Terminal receipts MUST retain their Task reservation until `ComputeJournal::settle` acknowledges the durable claim transition.
+
 ### SessionStatus
 
 **Source:** [`kernel/crates/gctrl-core/src/types.rs`](../../../kernel/crates/gctrl-core/src/types.rs) — `SessionStatus` enum.

@@ -1757,6 +1757,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gctrl-compute"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "gctrl-core",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "gctrl-computer-use"
 version = "0.1.0"
 dependencies = [
@@ -1794,6 +1805,7 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.18",
  "toml",
@@ -1899,7 +1911,9 @@ name = "gctrl-orch"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
+ "gctrl-compute",
  "gctrl-core",
  "gctrl-storage",
  "serde",

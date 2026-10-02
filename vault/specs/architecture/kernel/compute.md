@@ -2,41 +2,14 @@
 
 The **ComputeSubstrate** is the kernel port that defines *where* an agent runs — local process, Cloudflare Container, e2b sandbox, SSH-attached host, or browser tab. It is decoupled from the **AgentHarness** (which agent runs); see [harness.md](harness.md). A Session is the cross-product of one Runtime and one Compute.
 
-> Status: **[deferred]**. The port is currently sketched inline in [`../session-trigger-from-board.md`](../session-trigger-from-board.md). This file is the canonical kernel-architecture spec for the Compute port; the existing `AgentAdapter` in `kernel/crates/gctrl-orch/src/agent/` will be split into Runtime + Compute as part of the [Slice 2 scope](../session-trigger-from-board.md#deployment-phasing).
-
----
+> Status: The durable port, OpenSSH target transport, Linux execution supervisor, kernel ledger, and opt-in worker library are implemented under [#232](https://github.com/OpenHackersClub/gctrl/issues/232). Daemon/HTTP/shell wiring, per-Task workflow selection, GUI attachment, and sandbox policy enforcement remain **[deferred]**. The default CLI worker still uses local processes.
 
 ## 1. Compute Port
 
-```rust
-#[async_trait]
-pub trait ComputeSubstrate: Send + Sync {
-    /// Stable compute identifier — e.g. "local-process", "cf-containers".
-    fn kind(&self) -> ComputeKind;
-
-    /// Provision execution resources for an Invocation. MAY pull a container
-    /// image, allocate a VM slot, attach to a remote host, or fork a process.
-    async fn launch(&self, invocation: Invocation, spec: ComputeSpec)
-        -> Result<ComputeHandle, ComputeError>;
-}
-
-pub struct ComputeHandle {
-    pub id: String,                              // pid, container_id, e2b sandbox_id, …
-    pub kill: Box<dyn FnOnce() -> Result<(), ComputeError> + Send>,
-    pub wait: Box<dyn Future<Output = ComputeExit> + Send>,
-}
-
-pub struct ComputeSpec {
-    pub kind: ComputeKind,
-    pub image: Option<String>,                   // container image, e2b template, etc.
-    pub cpu_ms: Option<u64>,
-    pub memory_mb: Option<u64>,
-    pub egress: EgressPolicy,                    // see § Network Egress
-    pub credentials: CredentialDelivery,         // see § Credentials
-}
-```
-
-The ComputeSubstrate MUST NOT decide *what* runs inside — that is the Runtime's job via `Invocation`. The ComputeSubstrate only allocates the execution environment, wires stdin/stdout/stderr, enforces egress policy, and reports exit.
+1. Types, configuration, canonical invocation hashing, and `ComputeSubstrate` / `TargetHostPort` / `ComputeJournal` MUST follow [gctrl-core/compute.rs](../../../../kernel/crates/gctrl-core/src/compute.rs). Native process handles MUST stay in implementations.
+2. The substrate MUST execute the declared invocation on its selected environment. It MUST NOT select the agent program or silently redirect work to another host. Agent-program rendering and rollout normalization belong to [harness.md](harness.md); the generic harness registry remains [deferred].
+3. Durable launch intent MUST precede target dispatch. A Task MUST retain its reservation through uncertain acknowledgments and terminal-receipt import until its claim transition is durably acknowledged. The [kernel ledger and worker](../../implementation/kernel/compute.md) MUST enforce this ordering.
+4. Reconciliation and cancellation MUST address the original attempt. Dropped futures, SSH loss, and missing exit evidence MUST NOT authorize a replacement invocation. Confirmed termination MUST follow the existing [claim state machine](orchestrator.md), without new claim states.
 
 ---
 
@@ -47,36 +20,36 @@ The ComputeSubstrate MUST NOT decide *what* runs inside — that is the Runtime'
 | `local-process` | `tokio::process::Child` on the gctrl daemon host | Workspace dir persists; process does not | Wired today |
 | `cf-containers` | Cloudflare Container, ephemeral | No (re-provision on retry) | [deferred] — impl spec: [../../implementation/kernel/compute-cf-containers.md](../../implementation/kernel/compute-cf-containers.md) |
 | `e2b` | e2b cloud sandbox VM | No (re-provision on retry) | [deferred] |
-| `ssh-remote` | SSH-attached remote host | Workspace persists on the host | [deferred] |
+| `ssh-remote` | OpenSSH-attached Linux host | Target attempt and kernel intent persist | Substrate/worker library implemented; daemon/CLI integration [deferred] |
 | `docker` | Local Docker / Podman container | Workspace via volume mount | [deferred] |
 | `browser-tab` | CDP-attached Chromium tab via [browser.md](browser.md) | Tab persists across attaches | [deferred] |
 
-The default and only currently-implemented backend is `local-process`; new backends MUST be feature-gated and SHOULD ship behind an explicit WORKFLOW.md opt-in until proven on real Tasks.
+The default CLI backend MUST remain `local-process`. Optional backends MUST require explicit operator configuration; per-Task WORKFLOW.md selection remains [deferred]. Library conformance and a live worker gate MUST NOT be presented as daemon or GUI integration.
 
 ---
 
 ## Remote Execution and GUI Environments
 
-> Status: **[deferred]**. SSH attachment and GUI environment coordination are proposed requirements; `local-process` remains the only implemented execution backend.
+> Status: OpenSSH attachment and durable worker recovery are implemented as opt-in libraries. GUI coordination and daemon supervision remain **[deferred]**.
 
 1. Remote execution SHOULD use ordinary OpenSSH over a private network, following [principles.md § Vendor Independence](../../principles.md#vendor-independence). The execution process, workspace, application tools, and any GUI observation/input tooling MUST run on the explicitly selected target host; a local supervisor MUST NOT silently redirect remote actions to its own desktop.
 2. A remote backend MUST discover the target's actual capabilities and permissions before computer use, following the [computer-use contract](computer-use.md#responsibilities-and-existing-contracts). SSH access alone MUST NOT imply a GUI is available.
 3. Compute backends MUST declare the isolation they actually provide, using [computer-use isolation boundaries](computer-use.md#isolation-boundaries). A container MUST NOT imply GUI isolation without an independent desktop/input runtime. VM/container provisioning and lifecycle management MAY remain optional; an existing target environment MAY be attached instead.
 4. GUI input ownership and human takeover MUST follow [computer-use.md](computer-use.md#shared-input-cancellation-and-human-takeover), independently of compute concurrency slots. Remote connection-loss recovery MUST follow [its recovery contract](computer-use.md#recovery-and-remote-supervision).
-5. Host discovery, SSH configuration, remote attempt identity, GUI attachment, and fencing wire contracts remain [deferred]. This direction MUST NOT introduce a new `ComputeSubstrate` interface or change orchestrator claim states.
+5. The SSH backend MUST use an operator-owned SSH alias, target helper paths, state directory, and delegated Linux cgroup-v2 subtree. It MUST fail before dispatch when the required target runtime is unavailable. VM lifecycle management MAY remain external. GUI capability discovery and attachment remain [deferred]; process isolation MUST NOT establish GUI isolation.
 
 ## 3. Failure-as-Tool-Error
 
-A killed container or a quota'd e2b sandbox — confirmed compute failure MUST surface to the Orchestrator as `AgentExitAbnormal`, never as a kernel error. The existing retry path owns recovery (see [orchestrator.md § Retry and Backoff](orchestrator.md#retry-and-backoff)). A closed SSH connection MUST first follow [computer-use recovery](computer-use.md#recovery-and-remote-supervision); it MUST NOT by itself establish process exit or authorize duplicate dispatch [deferred].
+A killed container or a quota'd e2b sandbox — confirmed compute failure MUST surface to the Orchestrator as `AgentExitAbnormal`, never as a kernel error. The existing retry path owns recovery (see [orchestrator.md § Retry and Backoff](orchestrator.md#retry-and-backoff)). A closed SSH connection MUST first follow [computer-use recovery](computer-use.md#recovery-and-remote-supervision); it MUST NOT by itself establish process exit or authorize duplicate dispatch.
 
-> **Formal verification.** This rule is mechanically checked in [`kernel/specs-lean4/KernelSpec/Substrate.lean`](../../../../kernel/specs-lean4/KernelSpec/Substrate.lean): `Substrate.exit_lands_in_retryQueued` proves every `ComputeExit` (`clean | error _ | crashed | killed | networkLost`) lands in `RetryQueued` from `Running`. This proves claim-state handling of a reported exit; it does not prove that a disconnected remote process stopped. Remote exit detection and fencing MUST be verified separately before an SSH backend reports `networkLost` as retryable [deferred].
+> **Formal verification.** This rule is mechanically checked in [`kernel/specs-lean4/KernelSpec/Substrate.lean`](../../../../kernel/specs-lean4/KernelSpec/Substrate.lean): `Substrate.exit_lands_in_retryQueued` proves every `ComputeExit` (`clean | error _ | crashed | killed | networkLost`) lands in `RetryQueued` from `Running`. This proves claim-state handling of a reported exit; it does not prove that a disconnected remote process stopped. Remote exit detection and fencing MUST be verified separately before an SSH backend reports `networkLost` as retryable.
 
 **Rules:**
 
-1. ComputeSubstrate `wait` futures MUST resolve to `ComputeExit` even on crashes — never panic, never propagate kernel-level errors.
-2. The `kill` closure MUST be idempotent — calling it on an already-dead compute MUST succeed silently.
-3. Re-dispatch on a different `(runtime, compute)` pair MUST be possible if the previous attempt's SessionEvents are intact in the session log.
-4. The ComputeSubstrate MUST NOT persist state that the kernel does not also know about. Anything load-bearing for recovery MUST be in the kernel session log.
+1. `launch`, `reconcile`, and `cancel` MUST return typed target evidence or a typed error. The worker MUST retain uncertain intent on transport, receipt-validation, or journal failure.
+2. Cancellation MUST be idempotent and MUST distinguish a requested stop from recursively confirmed termination. Process-group exit alone MUST NOT establish that detached descendants stopped.
+3. Replacement on another environment MUST wait for the original attempt to be confirmed stopped and its claim transition acknowledged. Generic cross-harness rollout recovery remains [deferred].
+4. Load-bearing Task/session/workspace relationships, cancellation intent, and target receipts MUST be retained by the kernel ledger. Target metadata MUST NOT replace that authority.
 
 ---
 
@@ -159,7 +132,7 @@ When a per-compute slot is exhausted, eligible Tasks targeting that compute MUST
 
 ## 8. Configuration
 
-ComputeSubstrates are selected per-Task via `WORKFLOW.md` frontmatter:
+The worker library MUST accept operator-validated [ComputeWorkerConfig](../../../../kernel/crates/gctrl-core/src/compute.rs). Target paths and variables MUST NOT be inferred from the supervisor host. Per-Task `WORKFLOW.md` selection is [deferred]; the proposed shape is:
 
 ```yaml
 agent:
@@ -176,7 +149,7 @@ agent:
       - "raw.githubusercontent.com"
 ```
 
-`compute_config` is opaque to the kernel and passed verbatim to the ComputeSubstrate's `launch` method. Validation lives in the backend, not the orchestrator.
+The future `compute_config` wire schema remains [deferred]. The kernel MUST validate execution authority and the selected environment before the backend validates target capabilities.
 
 ---
 
@@ -199,8 +172,8 @@ These are observed by the Orchestrator and surfaced in the existing `orchestrato
 
 1. Define a `ComputeKind` variant in `gctrl-core`.
 2. Implement the `ComputeSubstrate` trait in a new feature-gated crate: `kernel/crates/gctrl-compute-<kind>/`.
-3. Implement `launch` — provision resources, wire the Invocation, return a `ComputeHandle`.
-4. Implement `kill` and `wait` — both MUST honor the failure-as-tool-error rule.
+3. Implement `launch` against the canonical invocation and durable attempt identity.
+4. Implement `reconcile` and `cancel`; both MUST preserve identity and the failure-as-tool-error rule.
 5. Add a row to the **Built-in Backends** table in this file and to the [compatibility matrix](../apps/adr-runtime-compute-decoupling.md#compatibility-matrix).
 6. Add per-compute concurrency limits to `orchestrator.compute_slots` defaults.
 7. Write a conformance test that exercises provision → launch → kill → wait against a representative Runtime (`claude-code` is the reference).

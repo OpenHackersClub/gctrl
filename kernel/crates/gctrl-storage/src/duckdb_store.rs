@@ -13,7 +13,7 @@ use gctrl_core::{
 use crate::schema;
 
 pub struct DuckDbStore {
-    conn: Mutex<Connection>,
+    pub(crate) conn: Mutex<Connection>,
 }
 
 /// Built WHERE-clause + bound params for filtering directly on

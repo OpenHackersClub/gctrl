@@ -4,6 +4,7 @@ pub mod app_manifest;
 pub mod browser;
 pub mod browser_recording;
 pub mod capabilities;
+pub mod compute;
 pub mod computer_use;
 pub mod config;
 pub mod context;
