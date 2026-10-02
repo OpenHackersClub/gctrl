@@ -2,7 +2,7 @@
 
 > Tools and workflows for harness engineering — so agents work with the right context and guardrails, and humans deep-think on what matters and review work.
 >
-> Instantiates the [PRD template](../../apps/gctrl-board/vault/specs/workflows/prd-template.md) for gctrl itself.
+> Instantiates the [PRD template](../../../apps/gctrl-board/vault/specs/workflows/prd-template.md) for gctrl itself.
 
 ## The Problem
 
@@ -202,16 +202,35 @@ Zero drivers = gctrl works standalone. Add drivers as your workflow grows.
 
 **Metric:** Feature parity with Langfuse core (traces, scores, cost analytics, prompt management) at zero data-transfer cost.
 
+### 7. Cross-Application Computer Use [deferred]
+
+**Problem:** A task spans an editor, terminal, browser, and other desktop apps. Agents can act on the wrong account or window, interfere with each other, or continue after a human takes over.
+
+1. gctrl MUST let an agent work across existing applications while making the intended target and action result visible to the human.
+2. A human MUST be able to stop agent input, take over the working surface, and deliberately return control after inspecting the result.
+3. Independent browser automation and visual verification MUST remain available without an embedded editor, terminal, or browser design mode.
+
+### 8. Parallel Isolated Work and Remote Supervision [deferred]
+
+**Problem:** Multiple agents need separate files, browser identities, or GUI environments. A developer also needs to supervise work on another host without a lost connection launching the task twice.
+
+1. gctrl MUST support concurrent work with separate browser identities and workspaces, and make the isolation available to each task clear to the human.
+2. Tasks requiring concurrent desktop input MUST use independent GUI environments; tasks sharing a desktop MUST coordinate input with each other and the human.
+3. gctrl SHOULD let a human observe, cancel, and take over work on an explicitly selected remote host while retaining local operation without remote infrastructure.
+4. Remote supervision MUST expose uncertain execution after connection loss and MUST NOT duplicate active work when reconnecting.
+
 ## Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for milestones, task breakdown, and open questions.
 
 ## Non-Goals
 
-- **Not a cloud platform.** gctrl is local-first. Cloud sync is optional. We don't host dashboards or run agents in the cloud.
-- **Not an agent framework.** gctrl doesn't build agents — it manages them. It works with any agent that accepts a prompt and exits with a status code.
-- **Not a replacement for Linear/GitHub/Notion.** gctrl connects to these tools via drivers. It provides the kernel underneath, not a replacement.
-- **Not enterprise-first.** Designed for individuals and small teams. Enterprise features (SSO, RBAC, compliance) are future work, not core.
+1. **Hosted cloud platform.** gctrl MUST remain local-first. Optional remote execution MAY use user-selected infrastructure; gctrl MUST NOT require a hosted service.
+2. **Agent framework.** gctrl MUST manage existing agents rather than require a new agent framework.
+3. **Replacement for Linear/GitHub/Notion.** gctrl SHOULD connect to these tools via drivers.
+4. **Enterprise-first scope.** Enterprise features (SSO, RBAC, compliance) SHOULD remain future work rather than core requirements.
+5. **Embedded editor and terminal replacements.** This initiative MUST NOT build replacements for existing editors or terminals.
+6. **Browser design mode.** This initiative MUST NOT add browser-based visual design editing; independent browser automation and visual verification remain in scope.
 
 ## Success Criteria
 
@@ -220,7 +239,11 @@ See [ROADMAP.md](ROADMAP.md) for milestones, task breakdown, and open questions.
 3. An agent working on an issue has access to project context (conventions, docs, issue state) without human intervention.
 4. Cost overruns are detected and halted within 30 seconds.
 5. The orchestrator can dispatch and manage 10 concurrent agent sessions without human intervention.
+6. [deferred] Two tasks using different browser identities MUST complete without reading or changing each other's login state.
+7. [deferred] Concurrent tasks sharing a desktop MUST avoid conflicting input, and a human takeover MUST stop subsequent agent input until deliberate resume.
+8. [deferred] A supervision disconnect MUST NOT cause duplicate remote dispatch; the human MUST be able to inspect the prior attempt after reconnecting.
+9. [deferred] A task in an independent GUI environment MUST accept input without moving focus or the pointer on the human's desktop.
 
 ---
 
-*For architecture details, see [../../architecture/](../../architecture/). For implementation details, see [../../implementation/](../../implementation/).*
+*For architecture details, see [architecture](../architecture/) and the [computer-use contract](../architecture/kernel/computer-use.md). For implementation details, see [implementation](../implementation/).*

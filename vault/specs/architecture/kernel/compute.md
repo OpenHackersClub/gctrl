@@ -55,11 +55,21 @@ The default and only currently-implemented backend is `local-process`; new backe
 
 ---
 
+## Remote Execution and GUI Environments
+
+> Status: **[deferred]**. SSH attachment and GUI environment coordination are proposed requirements; `local-process` remains the only implemented execution backend.
+
+1. Remote execution SHOULD use ordinary OpenSSH over a private network, following [principles.md § Vendor Independence](../../principles.md#vendor-independence). The execution process, workspace, application tools, and any GUI observation/input tooling MUST run on the explicitly selected target host; a local supervisor MUST NOT silently redirect remote actions to its own desktop.
+2. A remote backend MUST discover the target's actual capabilities and permissions before computer use, following the [computer-use contract](computer-use.md#responsibilities-and-existing-contracts). SSH access alone MUST NOT imply a GUI is available.
+3. Compute backends MUST declare the isolation they actually provide, using [computer-use isolation boundaries](computer-use.md#isolation-boundaries). A container MUST NOT imply GUI isolation without an independent desktop/input runtime. VM/container provisioning and lifecycle management MAY remain optional; an existing target environment MAY be attached instead.
+4. GUI input ownership and human takeover MUST follow [computer-use.md](computer-use.md#shared-input-cancellation-and-human-takeover), independently of compute concurrency slots. Remote connection-loss recovery MUST follow [its recovery contract](computer-use.md#recovery-and-remote-supervision).
+5. Host discovery, SSH configuration, remote attempt identity, GUI attachment, and fencing wire contracts remain [deferred]. This direction MUST NOT introduce a new `ComputeSubstrate` interface or change orchestrator claim states.
+
 ## 3. Failure-as-Tool-Error
 
-A killed container, a closed SSH connection, a quota'd e2b sandbox — any compute failure MUST surface to the Orchestrator as `AgentExitAbnormal`, never as a kernel error. This mirrors the principle that "containers are cattle": the Orchestrator's existing retry path handles the recovery (see [orchestrator.md § Retry and Backoff](orchestrator.md#retry-and-backoff)).
+A killed container or a quota'd e2b sandbox — confirmed compute failure MUST surface to the Orchestrator as `AgentExitAbnormal`, never as a kernel error. The existing retry path owns recovery (see [orchestrator.md § Retry and Backoff](orchestrator.md#retry-and-backoff)). A closed SSH connection MUST first follow [computer-use recovery](computer-use.md#recovery-and-remote-supervision); it MUST NOT by itself establish process exit or authorize duplicate dispatch [deferred].
 
-> **Formal verification.** This rule is mechanically checked in [`kernel/specs-lean4/KernelSpec/Substrate.lean`](../../../../kernel/specs-lean4/KernelSpec/Substrate.lean): `Substrate.exit_lands_in_retryQueued` proves every `ComputeExit` (`clean | error _ | crashed | killed | networkLost`) lands in `RetryQueued` from `Running` — the orchestrator never gets stuck because of how a compute died.
+> **Formal verification.** This rule is mechanically checked in [`kernel/specs-lean4/KernelSpec/Substrate.lean`](../../../../kernel/specs-lean4/KernelSpec/Substrate.lean): `Substrate.exit_lands_in_retryQueued` proves every `ComputeExit` (`clean | error _ | crashed | killed | networkLost`) lands in `RetryQueued` from `Running`. This proves claim-state handling of a reported exit; it does not prove that a disconnected remote process stopped. Remote exit detection and fencing MUST be verified separately before an SSH backend reports `networkLost` as retryable [deferred].
 
 **Rules:**
 

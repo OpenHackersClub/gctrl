@@ -25,30 +25,6 @@ See `vault/specs/principles.md` for the full Unix philosophy mapping and design 
 
 ## Architecture Index
 
-```
-vault/specs/architecture/
-├── README.md          ← this file — system overview, Unix philosophy, data flow
-├── os.md                    ← layer guide: kernel, shell, apps, utilities, external apps
-├── app-decoupling.md        ← app ↔ kernel contract: zero duplication, port-based capabilities, ejection model
-├── app-install-protocol.md  ← gctrl-app.toml manifest schema; install/binding/override flow; capability registry
-├── domain-model.md          ← domain types, storage schema (DDL), Effect-TS schemas
-│
-├── kernel/            ← kernel primitives and extensions (Tasks + Sessions only)
-│   ├── orchestrator.md    claim states, dispatch eligibility, retry/backoff
-│   ├── scheduler.md       Task lifecycle, interface trait, platform implementations
-│   ├── harness.md         AgentHarness port, built-in runtimes (the "brain")
-│   ├── compute.md         ComputeSubstrate port, built-in backends (the "hand")
-│   └── browser.md         CDP daemon, ref system, tab management
-│
-├── shell/             ← shell layer (CLI dispatcher, HTTP API, query engine)
-│
-└── apps/              ← native applications, utilities, and distribution targets (Issues live here)
-    ├── gctrl-board.md       kanban — issues, board visualization, agent integration
-    ├── tracker.md          Issue lifecycle, DAG, auto-transitions, TrackerPort
-    ├── gctrl-desktop.md    Electron macOS distribution — kernel sidecar, native packaging
-    └── gctrl-mobile.md     Mobile companion app — remote-only, no kernel, comms + prompting + analytics
-```
-
 | Document | Scope |
 |----------|-------|
 | This file | System layers, Unix philosophy, internal code architecture, data flow |
@@ -62,9 +38,10 @@ vault/specs/architecture/
 | [kernel/compute.md](kernel/compute.md) | `ComputeSubstrate` port — where it runs (`local-process`, `cf-containers`, `e2b`, …) |
 | [apps/adr-runtime-compute-decoupling.md](apps/adr-runtime-compute-decoupling.md) | ADR — Brain ≠ Hand invariants, `(runtime, compute)` compatibility matrix |
 | [kernel/browser.md](kernel/browser.md) | Browser control kernel extension — CDP daemon, ref system, tab management |
+| [kernel/computer-use.md](kernel/computer-use.md) | [deferred] OS-native computer-use coordination — target identity, isolation boundaries, input ownership, human takeover, recovery |
 | [apps/gctrl-board.md](apps/gctrl-board.md) | Kanban application — Issues, board visualization, agent integration |
 | [apps/tracker.md](apps/tracker.md) | Tracker application component — Issue lifecycle, DAG, auto-transitions, TrackerPort |
-| [apps/gctrl-desktop.md](apps/gctrl-desktop.md) | Electron macOS distribution — kernel sidecar, native packaging, tech stack rationale |
+| [apps/gctrl-desktop.md](apps/gctrl-desktop.md) | Thin Electron distribution and supervision surface — kernel sidecar, native packaging, tech stack rationale |
 | [apps/gctrl-mobile.md](apps/gctrl-mobile.md) | Mobile companion — remote-only, no kernel, scoped to comms + prompting + analytics |
 
 ---
