@@ -8,7 +8,6 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -18,27 +17,7 @@ use tokio::sync::Mutex;
 
 use crate::error::BrowserError;
 
-/// A running Chromium process exposing a CDP WebSocket. The proxy connects
-/// outbound to `browser_ws_url` and relays frames to/from clients.
-pub struct LaunchedChromium {
-    /// Stable identifier for the underlying Chromium process. Used by the
-    /// pool to attribute sessions to a Chromium and by recycle accounting.
-    pub id: String,
-    /// `ws://127.0.0.1:<port>/devtools/browser/<browser-uuid>` returned
-    /// from the Chromium debug server's `/json/version`.
-    pub browser_ws_url: String,
-    /// User-agent style version string (e.g. `Chrome/124.0.6367.78`).
-    pub version: String,
-    /// Process handle. Behind a `Mutex` so the pool can call `kill().await`
-    /// without taking ownership; `MockLauncher` returns `None` since there
-    /// is nothing to kill.
-    pub child: Arc<Mutex<Option<Child>>>,
-}
-
-#[async_trait]
-pub trait Launcher: Send + Sync {
-    async fn launch(&self) -> Result<LaunchedChromium, BrowserError>;
-}
+pub use gctrl_core::browser::{LaunchedChromium, Launcher};
 
 /// Spawns a real Chromium process with a random debug port, then resolves
 /// the browser-level CDP WebSocket URL by polling
@@ -47,6 +26,7 @@ pub struct RealLauncher {
     chromium_path: PathBuf,
     headed: bool,
     user_data_root: PathBuf,
+    children: Mutex<std::collections::HashMap<String, Child>>,
 }
 
 impl RealLauncher {
@@ -66,12 +46,49 @@ impl RealLauncher {
             chromium_path: path,
             headed,
             user_data_root,
+            children: Mutex::new(std::collections::HashMap::new()),
         })
     }
 }
 
 #[async_trait]
 impl Launcher for RealLauncher {
+    async fn kill(&self, process_id: &str) -> Result<(), BrowserError> {
+        let mut children = self.children.lock().await;
+        if let Some(child) = children.get_mut(process_id) {
+            tokio::time::timeout(Duration::from_secs(15), child.kill())
+                .await
+                .map_err(|_| BrowserError::Launch("process exit confirmation timed out".into()))?
+                .map_err(|e| BrowserError::Launch(format!("confirm process exit: {e}")))?;
+            children.remove(process_id);
+        }
+        Ok(())
+    }
+    async fn create_context(&self, chromium: &LaunchedChromium) -> Result<String, BrowserError> {
+        let result = control_command(
+            &chromium.browser_ws_url,
+            "Target.createBrowserContext",
+            serde_json::json!({}),
+        )
+        .await?;
+        result["browserContextId"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                BrowserError::Cdp("createBrowserContext returned no context identity".into())
+            })
+    }
+
+    async fn dispose_context(&self, endpoint: &str, context_id: &str) -> Result<(), BrowserError> {
+        control_command(
+            endpoint,
+            "Target.disposeBrowserContext",
+            serde_json::json!({"browserContextId":context_id}),
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn launch(&self) -> Result<LaunchedChromium, BrowserError> {
         let id = uuid::Uuid::new_v4().to_string();
         let user_dir = self.user_data_root.join(&id);
@@ -112,13 +129,51 @@ impl Launcher for RealLauncher {
 
         let (ws_url, version) = fetch_version(port).await?;
 
+        self.children.lock().await.insert(id.clone(), child);
         Ok(LaunchedChromium {
             id,
             browser_ws_url: ws_url,
             version,
-            child: Arc::new(Mutex::new(Some(child))),
         })
     }
+}
+
+async fn control_command(
+    endpoint: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, BrowserError> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (mut ws, _) = tokio_tungstenite::connect_async(endpoint)
+            .await
+            .map_err(|e| BrowserError::Cdp(format!("context control connect: {e}")))?;
+        ws.send(Message::Text(
+            serde_json::json!({"id":1,"method":method,"params":params}).to_string(),
+        ))
+        .await
+        .map_err(|e| BrowserError::Cdp(format!("context control send: {e}")))?;
+        while let Some(frame) = ws.next().await {
+            let frame =
+                frame.map_err(|e| BrowserError::Cdp(format!("context control receive: {e}")))?;
+            if let Message::Text(text) = frame {
+                let reply: serde_json::Value = serde_json::from_str(&text)
+                    .map_err(|e| BrowserError::Cdp(format!("context control JSON: {e}")))?;
+                if reply["id"] == 1 {
+                    if let Some(error) = reply.get("error") {
+                        return Err(BrowserError::Cdp(format!("{method}: {error}")));
+                    }
+                    return Ok(reply["result"].clone());
+                }
+            }
+        }
+        Err(BrowserError::Cdp(format!(
+            "context control closed during {method}"
+        )))
+    })
+    .await
+    .map_err(|_| BrowserError::Cdp(format!("context control timeout during {method}")))?
 }
 
 fn autodetect_chromium() -> Result<PathBuf, BrowserError> {
@@ -177,21 +232,35 @@ struct VersionInfo {
 }
 
 async fn fetch_version(port: u16) -> Result<(String, String), BrowserError> {
-    let url = format!("http://127.0.0.1:{port}/json/version");
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(2))
         .build()
         .map_err(|e| BrowserError::Launch(format!("build http client: {e}")))?;
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| BrowserError::Launch(format!("get /json/version: {e}")))?;
-    let info: VersionInfo = resp
-        .json()
-        .await
-        .map_err(|e| BrowserError::Launch(format!("parse /json/version: {e}")))?;
-    Ok((info.ws_url, info.browser))
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        // DevToolsActivePort may precede a ready HTTP listener. Probe the same
+        // process; never spawn a replacement in response to a startup race.
+        let result = async {
+            let response = client
+                .get(format!("http://127.0.0.1:{port}/json/version"))
+                .send()
+                .await
+                .map_err(|e| BrowserError::Launch(format!("get /json/version: {e}")))?
+                .error_for_status()
+                .map_err(|e| BrowserError::Launch(format!("/json/version status: {e}")))?;
+            let info: VersionInfo = response
+                .json()
+                .await
+                .map_err(|e| BrowserError::Launch(format!("parse /json/version: {e}")))?;
+            Ok((info.ws_url, info.browser))
+        }
+        .await;
+        match result {
+            Ok(info) => return Ok(info),
+            Err(error) if tokio::time::Instant::now() >= deadline => return Err(error),
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
 }
 
 /// Mock launcher used by route + pool tests. Each `launch()` returns a
@@ -213,12 +282,25 @@ impl MockLauncher {
 
 #[async_trait]
 impl Launcher for MockLauncher {
+    async fn kill(&self, _: &str) -> Result<(), BrowserError> {
+        Ok(())
+    }
+    async fn create_context(&self, _chromium: &LaunchedChromium) -> Result<String, BrowserError> {
+        Ok(format!("mock-context-{}", uuid::Uuid::new_v4()))
+    }
+    async fn dispose_context(
+        &self,
+        _endpoint: &str,
+        _context_id: &str,
+    ) -> Result<(), BrowserError> {
+        Ok(())
+    }
+
     async fn launch(&self) -> Result<LaunchedChromium, BrowserError> {
         Ok(LaunchedChromium {
             id: uuid::Uuid::new_v4().to_string(),
             browser_ws_url: self.ws_url.clone(),
             version: self.version.clone(),
-            child: Arc::new(Mutex::new(None)),
         })
     }
 }
@@ -226,6 +308,7 @@ impl Launcher for MockLauncher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn mock_launcher_returns_configured_url() {
@@ -234,5 +317,32 @@ mod tests {
         assert_eq!(c.browser_ws_url, "ws://127.0.0.1:0/fake");
         assert_eq!(c.version, "Chromium/mock");
         assert!(!c.id.is_empty());
+    }
+    #[tokio::test]
+    async fn chromium_version_probe_waits_for_the_listener_to_be_ready() {
+        use axum::{routing::get, Router};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let seen = attempts.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = Router::new().route("/json/version", get(move || {
+            let seen = seen.clone();
+            async move {
+                if seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                    (axum::http::StatusCode::SERVICE_UNAVAILABLE, axum::Json(serde_json::json!({"error":"starting"})))
+                } else {
+                    (axum::http::StatusCode::OK, axum::Json(serde_json::json!({"Browser":"Chromium/test","webSocketDebuggerUrl":"ws://owned"})))
+                }
+            }
+        }));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let result = fetch_version(port).await;
+        server.abort();
+        assert_eq!(
+            result.unwrap(),
+            ("ws://owned".into(), "Chromium/test".into())
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 }

@@ -43,6 +43,7 @@ export const SessionInfo = Schema.Struct({
   createdAt: Schema.String,
   expiresAt: Schema.String,
   browserVersion: Schema.String,
+  browserContextId: Schema.String,
   status: Schema.Literal("active", "releasing", "expired"),
   recording: Schema.Struct({
     network: Schema.Boolean,
@@ -76,6 +77,7 @@ export const CapturedRequest = Schema.Struct({
   url: Schema.String,
   method: Schema.String,
   status: Schema.NullOr(Schema.Number),
+  responseHeaders: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.String })),
   startedAt: Schema.String,
   finishedAt: Schema.NullOr(Schema.String),
   failed: Schema.Boolean,

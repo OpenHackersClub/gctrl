@@ -1,0 +1,12 @@
+[package]
+name = "gctrl-computer-use"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gctrl-core = { path = "../gctrl-core" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }

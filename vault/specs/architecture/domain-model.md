@@ -12,7 +12,7 @@ Newtype wrappers over `String` with `Serialize`/`Deserialize`.
 
 | Type | Source |
 |------|--------|
-| `WorkspaceId`, `DeviceId`, `SessionId`, `TraceId`, `SpanId` | [`kernel/crates/gctrl-core/src/types.rs`](../../kernel/crates/gctrl-core/src/types.rs) § Identifiers |
+| `WorkspaceId`, `DeviceId`, `SessionId`, `TraceId`, `SpanId` | [`kernel/crates/gctrl-core/src/types.rs`](../../../kernel/crates/gctrl-core/src/types.rs) § Identifiers |
 | `TaskId` *(specs-only)* | see § 2 Task below |
 | `UserId` *(specs-only)* | see § 2 User below |
 | `ScheduleId` *(specs-only)* | [`kernel/scheduler.md`](kernel/scheduler.md) |
@@ -23,7 +23,7 @@ Newtype wrappers over `String` with `Serialize`/`Deserialize`.
 
 ### Session
 
-**Source:** [`kernel/crates/gctrl-core/src/types.rs`](../../kernel/crates/gctrl-core/src/types.rs) — `Session` struct.
+**Source:** [`kernel/crates/gctrl-core/src/types.rs`](../../../kernel/crates/gctrl-core/src/types.rs) — `Session` struct.
 
 Current shape: `id`, `workspace_id`, `device_id`, `agent_name`, `started_at`, `ended_at`, `status`, `total_cost_usd`, `total_input_tokens`, `total_output_tokens`.
 
@@ -41,19 +41,38 @@ task_id: Option<TaskId>   // Scheduler Task this session is executing
 - `agent_name` — display label (e.g. `"Claude Code"`, `"Codex CLI"`)
 - `task_id` — the Scheduler Task this session is working on (nullable for ad-hoc sessions)
 
+### Browser Identity
+
+1. Browser identity schemas MUST follow [gctrl-core/browser.rs](../../../kernel/crates/gctrl-core/src/browser.rs): `SessionId`, `SessionOptions`, `SessionInfo`, `SessionStatus`, `RecordingOptions`, `Viewport`, `BrowserError`, `LaunchedChromium`, and the `Launcher` port. Native process handles MUST remain in the browser driver. Recorder wire records MUST follow [gctrl-core/browser_recording.rs](../../../kernel/crates/gctrl-core/src/browser_recording.rs).
+2. Browser `SessionInfo.browser_context_id` MUST identify a real ephemeral storage context. It MUST NOT be interpreted as an agent Session, Task, or independent desktop identity. Lifecycle and enforcement MUST follow [driver-browser.md](../implementation/kernel/driver-browser.md).
+3. Persistent browser profiles and Task/agent Session binding remain **[deferred]** under [computer-use.md](kernel/computer-use.md).
+
+### Computer-Use Binding and Control
+
+1. Coordination types and driver/journal ports MUST follow [gctrl-core/computer_use.rs](../../../kernel/crates/gctrl-core/src/computer_use.rs). `ControlStatus` MUST describe input control, not an orchestrator claim transition.
+2. Drivers MUST establish host/login/input-runtime identity and application/window or browser/context/tab incarnation. A `BindingRequest` MUST select a driver-issued target and reference an authorized Task/agent Session/workspace relationship.
+3. Durable binding/event tables and HTTP wire routes remain **[deferred]**. Their implementation MUST accompany the [computer-use contract](kernel/computer-use.md) and use the kernel-owned storage schema.
+
+### Durable Compute Attempts
+
+1. Compute invocation, snapshot, phase, configuration, and journal schemas MUST follow [gctrl-core/compute.rs](../../../kernel/crates/gctrl-core/src/compute.rs). `ComputePhase` MUST NOT be interpreted as an orchestrator claim state.
+2. Kernel execution intent and retained Task reservations MUST use `CREATE_COMPUTE_ATTEMPTS_TABLE` and `CREATE_COMPUTE_OWNERS_TABLE` in [schema.rs](../../../kernel/crates/gctrl-storage/src/schema.rs). Their single-writer adapter MUST follow [compute_journal.rs](../../../kernel/crates/gctrl-storage/src/compute_journal.rs).
+3. The [compute worker](../../../kernel/crates/gctrl-orch/src/compute_worker.rs) MUST resolve an existing SQLite `OrchTask`, create a scheduler-provenance agent Session, and persist the Task/session/workspace/environment association before dispatch. Caller labels or opaque Session metadata MUST NOT create this authority. Computer-use binding authorization against these records remains [deferred].
+4. A target receipt MUST match the canonical invocation hash, actual host incarnation, and established process incarnation. Requested cancellation MUST survive uncertain transport and later running receipts. Terminal receipts MUST retain their Task reservation until `ComputeJournal::settle` acknowledges the durable claim transition.
+
 ### SessionStatus
 
-**Source:** [`kernel/crates/gctrl-core/src/types.rs`](../../kernel/crates/gctrl-core/src/types.rs) — `SessionStatus` enum.
+**Source:** [`kernel/crates/gctrl-core/src/types.rs`](../../../kernel/crates/gctrl-core/src/types.rs) — `SessionStatus` enum.
 
 States: `Active` (initial) → `Completed` | `Failed` | `Cancelled` (terminal).
 
 ### Span
 
-**Source:** [`kernel/crates/gctrl-core/src/types.rs`](../../kernel/crates/gctrl-core/src/types.rs) — `Span` struct (includes `span_type`: `Generation` | `Span` | `Event`).
+**Source:** [`kernel/crates/gctrl-core/src/types.rs`](../../../kernel/crates/gctrl-core/src/types.rs) — `Span` struct (includes `span_type`: `Generation` | `Span` | `Event`).
 
 ### SpanStatus
 
-**Source:** [`kernel/crates/gctrl-core/src/types.rs`](../../kernel/crates/gctrl-core/src/types.rs) — `SpanStatus` enum.
+**Source:** [`kernel/crates/gctrl-core/src/types.rs`](../../../kernel/crates/gctrl-core/src/types.rs) — `SpanStatus` enum.
 
 States: `Ok` | `Error(String)` | `Unset` (pending).
 
@@ -110,11 +129,11 @@ pub struct User {
 
 ### TrafficRecord
 
-**Source:** [`kernel/crates/gctrl-core/src/types.rs`](../../kernel/crates/gctrl-core/src/types.rs) — `TrafficRecord` struct.
+**Source:** [`kernel/crates/gctrl-core/src/types.rs`](../../../kernel/crates/gctrl-core/src/types.rs) — `TrafficRecord` struct.
 
 ### PolicyDecision
 
-**Source:** [`kernel/crates/gctrl-core/src/types.rs`](../../kernel/crates/gctrl-core/src/types.rs) — `PolicyDecision` enum.
+**Source:** [`kernel/crates/gctrl-core/src/types.rs`](../../../kernel/crates/gctrl-core/src/types.rs) — `PolicyDecision` enum.
 
 Variants: `Allow` | `Warn(String)` | `Deny(String)`.
 
@@ -202,7 +221,7 @@ pub trait TrafficStore: Send + Sync {
 
 ### GuardrailPolicy
 
-**Source:** [`kernel/crates/gctrl-guardrails/src/engine.rs`](../../kernel/crates/gctrl-guardrails/src/engine.rs) — `GuardrailPolicy` trait.
+**Source:** [`kernel/crates/gctrl-guardrails/src/engine.rs`](../../../kernel/crates/gctrl-guardrails/src/engine.rs) — `GuardrailPolicy` trait.
 
 Built-in policies *(partially implemented; see `gctrl-guardrails/src/policies.rs`)*:
 - `SessionBudgetPolicy` — halt if session cost exceeds threshold
@@ -213,7 +232,7 @@ Built-in policies *(partially implemented; see `gctrl-guardrails/src/policies.rs
 
 ### SyncEngine
 
-**Source:** [`kernel/crates/gctrl-sync/src/engine.rs`](../../kernel/crates/gctrl-sync/src/engine.rs) — `SyncEngine` trait. Full design in [`kernel/sync.md`](kernel/sync.md).
+**Source:** [`kernel/crates/gctrl-sync/src/engine.rs`](../../../kernel/crates/gctrl-sync/src/engine.rs) — `SyncEngine` trait. Full design in [`kernel/sync.md`](kernel/sync.md).
 
 ### SchedulerPort *(specs-only)*
 
@@ -273,7 +292,7 @@ pub trait BrowserPort: Send + Sync {
 
 ## 4. Configuration Types
 
-**Source:** [`kernel/crates/gctrl-core/src/config.rs`](../../kernel/crates/gctrl-core/src/config.rs).
+**Source:** [`kernel/crates/gctrl-core/src/config.rs`](../../../kernel/crates/gctrl-core/src/config.rs).
 
 `GctlConfig` composes: `StorageConfig`, `OtelConfig`, `ProxyConfig`, `SyncConfig`, `GuardrailsConfig`. See source for field-level defaults.
 
@@ -286,7 +305,7 @@ pub trait BrowserPort: Send + Sync {
 
 ## 5. Storage Schema (DuckDB)
 
-**Source:** [`kernel/crates/gctrl-storage/src/schema.rs`](../../kernel/crates/gctrl-storage/src/schema.rs) — all `CREATE_*_TABLE` constants and `CREATE_INDEXES`.
+**Source:** [`kernel/crates/gctrl-storage/src/schema.rs`](../../../kernel/crates/gctrl-storage/src/schema.rs) — all `CREATE_*_TABLE` constants and `CREATE_INDEXES`.
 
 ### 5.1 Kernel-owned tables (implemented)
 
@@ -359,13 +378,13 @@ Every agent MUST create tasks via `SchedulerPort` — never write directly.
 
 ### 5.2 Board application tables
 
-**Source:** [`kernel/crates/gctrl-storage/src/schema.rs`](../../kernel/crates/gctrl-storage/src/schema.rs) — `CREATE_BOARD_*_TABLE` constants: `board_projects`, `board_issues`, `board_events`, `board_comments`.
+**Source:** [`kernel/crates/gctrl-storage/src/schema.rs`](../../../kernel/crates/gctrl-storage/src/schema.rs) — `CREATE_BOARD_*_TABLE` constants: `board_projects`, `board_issues`, `board_events`, `board_comments`.
 
 Per Invariant #3, application tables carry the `board_` namespace prefix.
 
 ### 5.2a Inbox application tables
 
-**Source:** [`kernel/crates/gctrl-storage/src/schema.rs`](../../kernel/crates/gctrl-storage/src/schema.rs) — `CREATE_INBOX_*_TABLE` constants: `inbox_messages`, `inbox_threads`, `inbox_actions`, `inbox_subscriptions`.
+**Source:** [`kernel/crates/gctrl-storage/src/schema.rs`](../../../kernel/crates/gctrl-storage/src/schema.rs) — `CREATE_INBOX_*_TABLE` constants: `inbox_messages`, `inbox_threads`, `inbox_actions`, `inbox_subscriptions`.
 
 Per Invariant #3, the `inbox_` prefix marks these as owned by the gctrl-inbox application; the kernel hosts the rows but does not interpret them. See [`apps/gctrl-inbox.md`](apps/gctrl-inbox.md) for application-level semantics.
 
@@ -393,18 +412,18 @@ The earlier `eval_scores` prefix was folded into the kernel-owned `scores` table
 
 ### 5.4 Indexes
 
-**Source:** [`kernel/crates/gctrl-storage/src/schema.rs`](../../kernel/crates/gctrl-storage/src/schema.rs) — `CREATE_INDEXES` constant.
+**Source:** [`kernel/crates/gctrl-storage/src/schema.rs`](../../../kernel/crates/gctrl-storage/src/schema.rs) — `CREATE_INDEXES` constant.
 
 ---
 
 ## 6. gctrl-board Effect-TS Schemas
 
-**Source:** [`apps/gctrl-board/src/schema/`](../../apps/gctrl-board/src/schema/).
+**Source:** [`apps/gctrl-board/src/schema/`](../../../apps/gctrl-board/src/schema/).
 
 | Type | File |
 |------|------|
-| `IssueId`, `ProjectId`, `IssueStatus`, `Priority`, `AssigneeType`, `Assignee`, `Issue`, `CreateIssueInput`, `IssueFilter` | [`Issue.ts`](../../apps/gctrl-board/src/schema/Issue.ts) |
-| `IssueEventType`, `IssueEvent`, `Comment` | [`IssueEvent.ts`](../../apps/gctrl-board/src/schema/IssueEvent.ts) |
-| `BoardId`, `Board`, `Project` | [`Board.ts`](../../apps/gctrl-board/src/schema/Board.ts) |
+| `IssueId`, `ProjectId`, `IssueStatus`, `Priority`, `AssigneeType`, `Assignee`, `Issue`, `CreateIssueInput`, `IssueFilter` | [`Issue.ts`](../../../apps/gctrl-board/src/schema/Issue.ts) |
+| `IssueEventType`, `IssueEvent`, `Comment` | [`IssueEvent.ts`](../../../apps/gctrl-board/src/schema/IssueEvent.ts) |
+| `BoardId`, `Board`, `Project` | [`Board.ts`](../../../apps/gctrl-board/src/schema/Board.ts) |
 
 All identifiers are `Schema.String.pipe(Schema.brand(...))` branded value objects. Enumerations use `Schema.Literal(...)`. Structures use `Schema.Struct({...})`.

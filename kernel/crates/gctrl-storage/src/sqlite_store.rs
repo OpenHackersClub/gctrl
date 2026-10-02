@@ -988,6 +988,17 @@ impl SqliteStore {
         Ok(None)
     }
 
+    /// Read an existing orchestrator claim; never promote/create on lookup.
+    pub fn get_orch_task(&self, id: &str) -> Result<Option<OrchTask>> {
+        use rusqlite::OptionalExtension;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| GctlError::Storage(e.to_string()))?;
+        conn.query_row("SELECT id, issue_id, project_key, attempt_ordinal, agent_kind, orchestrator_claim, attempt, created_at, updated_at FROM tasks WHERE id=?", [id], row_to_task)
+            .optional().map_err(|e| GctlError::Storage(e.to_string()))
+    }
+
     /// List all OrchTask rows linked to an Issue, ordered by attempt ordinal.
     pub fn list_tasks_for_issue(&self, issue_id: &str) -> Result<Vec<OrchTask>> {
         let conn = self.conn.lock().unwrap();

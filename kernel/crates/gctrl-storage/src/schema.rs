@@ -641,9 +641,37 @@ pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_recorder_cdp_events_session ON recorder_cdp_events(session_id)",
 ];
 
+/// Generic kernel execution intent; never app-owned metadata or a claim state.
+pub const CREATE_COMPUTE_ATTEMPTS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS gctrl_compute_attempts (
+    attempt_id VARCHAR PRIMARY KEY,
+    task_id VARCHAR NOT NULL,
+    agent_session_id VARCHAR NOT NULL,
+    workspace_id VARCHAR NOT NULL,
+    environment_id VARCHAR NOT NULL,
+    phase VARCHAR NOT NULL,
+    cancellation_requested BOOLEAN NOT NULL DEFAULT FALSE,
+    invocation_json VARCHAR NOT NULL,
+    snapshot_json VARCHAR,
+    detail VARCHAR,
+    created_at VARCHAR NOT NULL,
+    updated_at VARCHAR NOT NULL
+)
+"#;
+
+/// A Task retains its reservation until target-confirmed exit/cancellation.
+pub const CREATE_COMPUTE_OWNERS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS gctrl_compute_owners (
+    task_id VARCHAR PRIMARY KEY,
+    attempt_id VARCHAR NOT NULL UNIQUE
+)
+"#;
+
 pub fn all_migrations() -> Vec<&'static str> {
     let mut stmts = vec![
         CREATE_SESSIONS_TABLE,
+        CREATE_COMPUTE_ATTEMPTS_TABLE,
+        CREATE_COMPUTE_OWNERS_TABLE,
         // Idempotent column add for DBs that predate `created_by`. Runs
         // after CREATE so a fresh schema is also a no-op.
         ADD_SESSIONS_CREATED_BY,

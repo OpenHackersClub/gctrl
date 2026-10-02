@@ -32,6 +32,8 @@ import {
 } from "./kernel"
 import { CDPObserver } from "./cdp"
 import { KernelCDPObserver } from "./kernel-cdp"
+import { acquireKernelSession, releaseKernelSession } from "./kernel-browser"
+import type { SessionInfo } from "../../../../../shell/gctrl-shell/src/services/BrowserClient"
 
 /**
  * Which CDP observation backend the suite uses.
@@ -50,14 +52,8 @@ const BROWSER_BACKEND = (process.env.BROWSER_BACKEND ?? "local") as
   | "local"
   | "kernel"
 
-/** Per-test acquired kernel session id, populated when BACKEND=kernel. */
-type KernelBrowserSession = {
-  id: string
-  cdpEndpoint: string
-  token: string
-}
-
 type BoardFixtures = {
+  kernelBrowser: { session: SessionInfo; browser: Browser; baseUrl: string } | null
   /** Direct HTTP client to kernel — seed data and verify server state. */
   kernel: KernelTestClient
   /**
@@ -81,34 +77,6 @@ type BoardFixtures = {
   ) => Promise<{ project: TestProject; issues: TestIssue[] }>
 }
 
-/** Acquire a kernel-managed browser session. Used by the `kernel` backend. */
-async function acquireKernelSession(
-  baseUrl: string
-): Promise<KernelBrowserSession> {
-  const res = await fetch(`${baseUrl}/api/browser/sessions`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ ttlSeconds: 600 }),
-  })
-  if (!res.ok) {
-    throw new Error(
-      `kernel acquire ${res.status}: ${await res.text().catch(() => "")}`
-    )
-  }
-  const info = (await res.json()) as KernelBrowserSession
-  return info
-}
-
-async function releaseKernelSession(
-  baseUrl: string,
-  id: string
-): Promise<void> {
-  await fetch(
-    `${baseUrl}/api/browser/sessions/${encodeURIComponent(id)}`,
-    { method: "DELETE" }
-  ).catch(() => {})
-}
-
 export const test = base.extend<BoardFixtures>({
   /**
    * Browser fixture: local Chromium launch or Cloudflare Browser Rendering
@@ -123,33 +91,6 @@ export const test = base.extend<BoardFixtures>({
    */
   browser: [
     async ({}, use) => {
-      // BROWSER_BACKEND=kernel: connect Playwright to the kernel-managed
-      // Chromium pool over CDP. Acquires once per worker; the kernel
-      // session lives for `ttlSeconds` (10 min default), enough for a
-      // worker's tests.
-      if (BROWSER_BACKEND === "kernel" && !cdpBrowser) {
-        const port = process.env.GCTRL_KERNEL_PORT ?? "4318"
-        const baseUrl = `http://localhost:${port}`
-        try {
-          const sess = await acquireKernelSession(baseUrl)
-          cdpBrowser = await chromium.connectOverCDP(sess.cdpEndpoint, {
-            headers: { Authorization: `Bearer ${sess.token}` },
-          })
-          process.stderr.write(
-            `[browser-backend=kernel] attached to session ${sess.id}\n`
-          )
-          // Best-effort release on disconnect; not strictly required —
-          // kernel TTL will expire the session naturally.
-          cdpBrowser.on("disconnected", () => {
-            void releaseKernelSession(baseUrl, sess.id)
-          })
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err)
-          process.stderr.write(
-            `[browser-backend=kernel] acquire failed — falling back to local Chromium: ${msg}\n`
-          )
-        }
-      }
       const cdpEndpoint = process.env.CDP_ENDPOINT
       if (cdpEndpoint && !cdpBrowser) {
         try {
@@ -194,6 +135,27 @@ export const test = base.extend<BoardFixtures>({
     { scope: "worker", timeout: 120_000 },
   ],
 
+  // A fresh kernel identity per test: parallel workers never share cookies,
+  // and recorder queries use the identity that actually controls the page.
+  kernelBrowser: async ({}, use) => {
+    if (BROWSER_BACKEND !== "kernel") { await use(null); return }
+    const baseUrl = `http://localhost:${process.env.GCTRL_KERNEL_PORT ?? "4318"}`
+    const session = await acquireKernelSession(baseUrl)
+    let browser: Browser | undefined
+    try {
+      browser = await chromium.connectOverCDP(session.cdpEndpoint)
+      await use({ session, browser, baseUrl })
+    } finally {
+      await browser?.close()
+      await releaseKernelSession(baseUrl, session.id)
+    }
+  },
+
+  context: async ({ browser, contextOptions, kernelBrowser }, use) => {
+    const context = await (kernelBrowser?.browser ?? browser).newContext(contextOptions)
+    try { await use(context) } finally { await context.close() }
+  },
+
   kernel: async ({}, use) => {
     const previewUrl = process.env.PREVIEW_URL
     const port = process.env.GCTRL_KERNEL_PORT ?? "14318"
@@ -223,21 +185,16 @@ export const test = base.extend<BoardFixtures>({
     await use(client)
   },
 
-  cdp: async ({ page }, use) => {
-    if (BROWSER_BACKEND === "kernel") {
-      // Acquire a fresh per-test session against the same kernel the
-      // worker's `browser` is attached to. Reading observations from
-      // the recorder doesn't require the same session as Playwright —
-      // we just need a session id to query against. A future cutover
-      // PR will share the worker session id with the per-test observer.
-      const port = process.env.GCTRL_KERNEL_PORT ?? "4318"
-      const baseUrl = `http://localhost:${port}`
-      const sess = await acquireKernelSession(baseUrl)
-      const observer = new KernelCDPObserver(baseUrl, sess.id)
+  cdp: async ({ page, kernelBrowser }, use) => {
+    if (kernelBrowser) {
+      const session = await page.context().newCDPSession(page)
+      await session.send("Performance.enable")
+      const observer = new KernelCDPObserver(kernelBrowser.baseUrl, kernelBrowser.session.id, session)
       await observer.enable()
-      await use(observer)
-      await observer.disable()
-      await releaseKernelSession(baseUrl, sess.id)
+      try { await use(observer) } finally {
+        await observer.disable()
+        await session.detach()
+      }
       return
     }
     const session = await page.context().newCDPSession(page)

@@ -4,7 +4,7 @@ The **AgentHarness** is the kernel port that defines *which agent program* runs 
 
 The pair `AgentHarness × ComputeSubstrate` mirrors gctrl's existing `EvalHarness × EvalSubstrate` (see [glossary.md](../../glossary.md)) — *Harness* is the active driver; *Substrate* is the passive surface it drives against. The naming is the same shape across both subsystems by design.
 
-> Status: **[deferred]**. The port is currently sketched inline in [`../session-trigger-from-board.md`](../session-trigger-from-board.md). This file is the canonical kernel-architecture spec for the Harness port; the existing `AgentAdapter` in `kernel/crates/gctrl-orch/src/agent/` will be split into Harness + Substrate as part of the [Slice 2 scope](../session-trigger-from-board.md#deployment-phasing).
+> Status: The generic `AgentHarness` registry and rollout normalization remain **[deferred]**. The existing local execution example is [agent.rs](../../../../kernel/crates/gctrl-orch/src/agent.rs). The [durable compute worker](../../../../kernel/crates/gctrl-orch/src/compute_worker.rs) renders an operator-selected command without spawning it; the [compute port](compute.md) executes it on the selected target. Per-Task harness/compute selection remains [deferred].
 
 ---
 

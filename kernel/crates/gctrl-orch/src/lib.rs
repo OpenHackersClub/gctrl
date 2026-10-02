@@ -20,7 +20,9 @@
 //! aren't wired up yet.
 
 pub mod agent;
+mod compute_worker;
 pub mod config;
+pub use compute_worker::ComputeWorker;
 pub mod prompt;
 pub mod worker;
 

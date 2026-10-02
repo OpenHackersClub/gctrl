@@ -2,7 +2,7 @@
 
 gctrl MUST coordinate observation and input across existing applications with explicit targets, input ownership, and verifiable recovery.
 
-> Status: **[deferred]**. This document defines the intended contract, not shipped computer-use coordination. Target bindings, input arbitration, takeover signaling, and remote recovery wire contracts remain undecided. The existing [browser attach layer](../../implementation/kernel/driver-browser.md) and [platform driver](driver-macos.md) provide narrower capabilities.
+> Status: Implementation is in progress under [#232](https://github.com/OpenHackersClub/gctrl/issues/232). The [browser attach layer](../../implementation/kernel/driver-browser.md) enforces ephemeral storage identities. The [coordinator library](../../implementation/kernel/computer-use.md) validates explicit bindings, reserves desktop input across observation/action/verification, revokes permits on takeover/cancellation, and requires fencing after uncertain outcomes or restart. Its conformance tests use injected drivers and journals; daemon integration, native drivers, durable storage, human-input monitoring, GUI recovery, HTTP/CLI supervision, and their live gates remain **[deferred]** until implemented and verified.
 
 ## Responsibilities and Existing Contracts
 
@@ -10,11 +10,11 @@ gctrl MUST coordinate observation and input across existing applications with ex
 2. Dispatch MUST retain the [AgentHarness](harness.md) / [ComputeSubstrate](compute.md) separation. Existing execution examples are [agent.rs](../../../../kernel/crates/gctrl-orch/src/agent.rs) and [worker.rs](../../../../kernel/crates/gctrl-orch/src/worker.rs); the port split itself remains [deferred].
 3. Claim states, transitions, retry, and dispatch eligibility MUST remain owned by [orchestrator.md](orchestrator.md). Input ownership MUST NOT introduce a second claim state machine.
 4. Platform capabilities and permissions MUST follow [driver-macos.md](driver-macos.md) and the existing [PlatformPort](../../../../kernel/crates/gctrl-core/src/platform.rs). Space discovery or focus support MUST NOT be treated as a general desktop-input runtime.
-5. This specification MUST leave runtime APIs, schemas, tables, and claim states unchanged. New interface definitions and conformance tests MUST accompany implementation work [deferred].
+5. Input coordination MUST NOT add orchestrator claim states. Rust coordination interfaces MUST follow [gctrl-core/computer_use.rs](../../../../kernel/crates/gctrl-core/src/computer_use.rs); implementation MUST include conformance tests. HTTP routes and durable journal schemas remain [deferred] under [domain-model.md](../domain-model.md).
 
 ## Target Identity and Action Verification
 
-1. Each computer-use action MUST bind to a Task and its agent Session, an execution host/environment, and the intended application target. Browser actions MUST additionally identify the browser session/profile/context and tab; desktop actions MUST identify the desktop/input environment and window. These are semantic requirements, not new wire fields [deferred]. A browser session is distinct from the agent Session defined in the [glossary](../../glossary.md).
+1. Each computer-use action MUST bind to a Task and its agent Session, an execution host/environment, and the intended application target. Browser actions MUST additionally identify the browser session/profile/context and tab; desktop actions MUST identify the desktop/input environment and window. Rust target and driver schemas MUST follow [computer_use.rs](../../../../kernel/crates/gctrl-core/src/computer_use.rs). The HTTP binding contract and storage authority checks remain [deferred]. A browser session is distinct from the agent Session defined in the [glossary](../../glossary.md).
 2. An action MUST NOT infer its target solely from the frontmost window, tab order, screen position, or a reused process ID. Target replacement or lost identity MUST stop input until the intended target is re-established.
 3. Computer use MUST follow observation → action → verification. Observe the bound target, check input ownership when required, perform the action, then observe the same target to verify the expected effect. A successful tool return alone MUST NOT establish task success.
 4. Stale observations, navigation, changed focus, or human edits that invalidate the intended action MUST require fresh observation before further input. Browser refs MUST retain the invalidation rules in [browser.md](browser.md#ref-lifecycle).
@@ -41,14 +41,14 @@ gctrl MUST coordinate observation and input across existing applications with ex
 3. A human takeover request or detected human input that invalidates the action MUST revoke agent input ownership, stop queued input, and interrupt ongoing input sequences at the next cancellable boundary. An already-applied action MUST be recorded and re-observed; takeover MUST NOT imply rollback.
 4. Cancellation MUST stop subsequent input and request execution cancellation through the existing orchestration/compute controls. The kernel MUST distinguish a requested stop from a confirmed stop; lack of acknowledgment MUST NOT grant another agent input ownership.
 5. Resume MUST require an explicit human decision, re-established target identity, fresh observation, and reacquired input ownership. Reconnection, elapsed time, or renewed focus MUST NOT automatically resume input.
-6. Ownership release on normal completion MUST be explicit. On controller failure, uncertain ownership MUST block further agent input until recovery confirms the previous controller cannot continue. Arbitration, revocation acknowledgment, and stale-controller fencing remain [deferred].
+6. Ownership release on normal completion MUST be explicit. On controller failure, uncertain ownership MUST block further agent input until recovery confirms the previous controller cannot continue. The coordinator library MUST enforce these rules through the [driver/journal ports and conformance tests](../../implementation/kernel/computer-use.md). Production driver acknowledgment, durable journal recovery, and daemon integration remain [deferred].
 
 ## Recovery and Remote Supervision
 
 1. Connection loss MUST be treated as uncertain observation/control, not evidence that a remote process has exited. The previous attempt MUST be reconciled before retry or replacement dispatch; the orchestrator MUST remain the sole dispatch authority.
 2. Recovery MUST reconnect to the same execution and GUI environment when identity can be established, inspect the prior action's effects, and confirm exit or fence the previous attempt before allowing replacement work. An action with an unknown outcome MUST NOT be blindly replayed.
 3. A human MUST be shown whether execution and cancellation are confirmed or uncertain. Human takeover on a remote GUI MUST use the target host's independent input runtime and the same ownership contract.
-4. Remote attachment, durable attempt identity, fencing, and restart reconciliation remain [deferred]. Until these are specified and verified, connection-loss recovery MUST NOT be presented as supported by the proposed SSH backend. Transport policy and target-host tooling belong in [compute.md](compute.md#remote-execution-and-gui-environments).
+4. Remote execution attachment, durable attempt identity, recursive fencing, and worker restart reconciliation MUST follow the [compute implementation](../../implementation/kernel/compute.md). Its live gate covers claimed execution; daemon restart, GUI recovery, and human supervision remain [deferred] and MUST NOT be inferred from that result. Transport policy and target-host tooling belong in [compute.md](compute.md#remote-execution-and-gui-environments).
 
 ## Contract Verification Scenarios [deferred]
 

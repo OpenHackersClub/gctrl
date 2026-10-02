@@ -82,6 +82,7 @@ mod tests {
             url: "u".into(),
             method: "GET".into(),
             status: Some(500),
+            response_headers: Default::default(),
             started_at: now,
             finished_at: Some(now),
             failed: true,
@@ -102,14 +103,7 @@ mod tests {
                 ts: now,
             },
         ];
-        let r = ObservabilityReport::build(
-            "sess1".into(),
-            vec![req],
-            console,
-            vec![],
-            42,
-            7,
-        );
+        let r = ObservabilityReport::build("sess1".into(), vec![req], console, vec![], 42, 7);
         assert_eq!(r.stats.recorded_bytes, 42);
         assert_eq!(r.stats.dropped_frames, 7);
         assert_eq!(r.stats.request_count, 1);

@@ -102,6 +102,16 @@ Observe & Eval owns both the **substrate** (metrics, prompts, judges, datasets, 
 |------|-------------|----------|------------|-------|
 | URL routing (system-wide link router) | gctrl-desktop as default browser; kernel rewrites + routes every out-of-browser link to an explicit browser/profile/app target. Spec: [url-routing.md](../architecture/kernel/url-routing.md) | P1 | driver-macos `PlatformPort` | [#228](https://github.com/OpenHackersClub/gctrl/issues/228) |
 
+## OS-Native Computer Use — In Progress
+
+**Goal:** Coordinate existing application surfaces with explicit target identities, independent browser/GUI environments, human takeover, and reconciled OpenSSH execution.
+
+| Task | Description | Priority | Depends On | Issue |
+|------|-------------|----------|------------|-------|
+| Computer-use coordination end to end | Implement the [computer-use contract](../architecture/kernel/computer-use.md), browser identity isolation, kernel input ownership, target-host GUI drivers, SSH recovery, shell/desktop supervision, and all five live acceptance scenarios | P1 | [Specs PR #231](https://github.com/OpenHackersClub/gctrl/pull/231), existing browser/platform/orchestration primitives | [#232](https://github.com/OpenHackersClub/gctrl/issues/232); [draft implementation PR #233](https://github.com/OpenHackersClub/gctrl/pull/233) |
+
+**Done when:** All acceptance criteria in #232 have implementation and verification evidence; documentation-only or mock-only scenario checks MUST NOT establish runtime completion.
+
 ## Backlog (unprioritized)
 
 - Protobuf OTLP support (currently JSON only)

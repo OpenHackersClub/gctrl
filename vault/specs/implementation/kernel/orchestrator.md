@@ -100,25 +100,9 @@ pub fn transition(state: ClaimState, trigger: Trigger) -> Option<ClaimState> {
 
 ### Dispatch Ports
 
-The orchestrator depends on two traits — `AgentHarness` and `ComputeSubstrate` — defined in `gctrl-core`. The canonical specs are [`harness.md`](../../architecture/kernel/harness.md) and [`compute.md`](../../architecture/kernel/compute.md); they MUST NOT be restated here. Brief Rust shape (this file is the implementation plan, not the trait spec):
-
-```rust
-// gctrl-core::ports
-#[async_trait] pub trait AgentHarness: Send + Sync {
-    fn kind(&self) -> AgentKind;
-    fn render_invocation(&self, prompt: &str, workspace: &Path) -> Invocation;
-    async fn import_rollout(&self, session_id: SessionId, source: RolloutSource)
-        -> Result<(), RolloutError>;
-}
-
-#[async_trait] pub trait ComputeSubstrate: Send + Sync {
-    fn kind(&self) -> ComputeKind;
-    async fn launch(&self, invocation: Invocation, spec: ComputeSpec)
-        -> Result<ComputeHandle, ComputeError>;
-}
-```
-
-`Invocation`, `ComputeHandle`, `ComputeSpec`, and the failure-as-tool-error rule are in `harness.md` / `compute.md`. The orchestrator obtains both impls from a registry at startup and never references concrete types.
+1. The implemented durable worker MUST use [gctrl-core/compute.rs](../../../../kernel/crates/gctrl-core/src/compute.rs) for invocation, receipt, journal, and substrate contracts. Execution ordering and live gates MUST follow [compute.md](compute.md).
+2. Generic `AgentHarness` registration, workflow selection, and rollout import remain [deferred] under [harness.md](../../architecture/kernel/harness.md). The implementation MUST NOT duplicate port definitions here.
+3. The legacy local worker remains [worker.rs](../../../../kernel/crates/gctrl-orch/src/worker.rs). Daemon wiring of the durable worker remains [deferred]; its library tests MUST NOT establish that integration.
 
 ### WORKFLOW.md Configuration (agent section)
 
@@ -169,7 +153,7 @@ for each candidate in sorted_eligible_tasks:
     running[candidate.id] = RunEntry { handle, agent_kind, compute_kind, started_at, attempt }
 ```
 
-Compute failure (container crash, SSH drop, e2b quota) MUST surface from `substrate.launch().await` or `handle.wait` as `ComputeExit::{crashed | killed | networkLost}` and be mapped to `Trigger::AgentExitAbnormal` for the existing retry path. See [`KernelSpec/Substrate.lean`](../../../../kernel/specs-lean4/KernelSpec/Substrate.lean) `exit_lands_in_retryQueued`.
+Confirmed execution failure MUST follow the [compute failure contract](../../architecture/kernel/compute.md#3-failure-as-tool-error). An SSH drop MUST retain the prior attempt for reconciliation; it MUST NOT establish an exit or trigger replacement dispatch. The pseudocode above remains [deferred] and MUST NOT replace the implemented durable worker ordering.
 
 ### Retry Constants
 

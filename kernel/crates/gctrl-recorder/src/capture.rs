@@ -110,8 +110,16 @@ impl CaptureSink {
                     params.get("requestId").and_then(|v| v.as_str()),
                     params.get("request"),
                 ) {
-                    let url = req.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let m = req.get("method").and_then(|v| v.as_str()).unwrap_or("GET").to_string();
+                    let url = req
+                        .get("url")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let m = req
+                        .get("method")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("GET")
+                        .to_string();
                     st.requests.insert(
                         rid.to_string(),
                         CapturedRequest {
@@ -119,6 +127,7 @@ impl CaptureSink {
                             url,
                             method: m,
                             status: None,
+                            response_headers: Default::default(),
                             started_at: frame.ts,
                             finished_at: None,
                             failed: false,
@@ -133,6 +142,18 @@ impl CaptureSink {
                 ) {
                     if let Some(req) = st.requests.get_mut(rid) {
                         req.status = resp.get("status").and_then(|v| v.as_i64());
+                        req.response_headers = resp
+                            .get("headers")
+                            .and_then(Value::as_object)
+                            .map(|headers| {
+                                headers
+                                    .iter()
+                                    .filter_map(|(key, value)| {
+                                        value.as_str().map(|value| (key.clone(), value.to_owned()))
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
                     }
                 }
             }
@@ -206,18 +227,26 @@ impl CaptureSink {
             }
             "Log.entryAdded" => {
                 if let Some(entry) = params.get("entry") {
-                    let level_str =
-                        entry.get("level").and_then(|v| v.as_str()).unwrap_or("info");
+                    let level_str = entry
+                        .get("level")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("info");
                     let level = match level_str {
                         "error" => ConsoleLevel::Error,
                         "warning" => ConsoleLevel::Warn,
                         "info" => ConsoleLevel::Info,
                         _ => ConsoleLevel::Log,
                     };
-                    let text =
-                        entry.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let kind =
-                        entry.get("source").and_then(|v| v.as_str()).unwrap_or("log").to_string();
+                    let text = entry
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let kind = entry
+                        .get("source")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("log")
+                        .to_string();
                     let seq = st.next_seq;
                     st.next_seq += 1;
                     st.console.push(ConsoleEntry {
@@ -295,7 +324,7 @@ mod tests {
         ))
         .await;
         sink.ingest(&frame(
-            r#"{"method":"Network.responseReceived","params":{"requestId":"r1","response":{"status":200}}}"#,
+            r#"{"method":"Network.responseReceived","params":{"requestId":"r1","response":{"status":200,"headers":{"content-type":"application/json"}}}}"#,
         ))
         .await;
         sink.ingest(&frame(
@@ -306,6 +335,10 @@ mod tests {
         assert_eq!(reqs.len(), 1);
         assert_eq!(reqs[0].url, "https://example.com/x");
         assert_eq!(reqs[0].status, Some(200));
+        assert_eq!(
+            serde_json::to_value(&reqs[0]).unwrap()["responseHeaders"]["content-type"],
+            "application/json"
+        );
         assert!(reqs[0].finished_at.is_some());
         assert!(!reqs[0].failed);
     }
