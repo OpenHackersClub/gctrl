@@ -110,6 +110,7 @@ export function NavSidebar({ route, navigate, unreadCount }: NavSidebarProps) {
   const isAnalyticsActive = route.page === "analytics"
   const isScheduleActive = route.page === "schedule"
   const isSettingsActive = route.page === "settings"
+  const isDiskActive = route.page === "disk"
 
   return (
     <nav className="w-14 min-h-screen bg-zinc-950 border-r border-zinc-800 flex flex-col items-center py-4 gap-1 shrink-0">
@@ -157,6 +158,20 @@ export function NavSidebar({ route, navigate, unreadCount }: NavSidebarProps) {
         title="Schedule"
       >
         <ScheduleIcon active={isScheduleActive} />
+      </button>
+
+      <button
+        onClick={() => navigate("/disk")}
+        data-testid="nav-disk"
+        className={`w-10 h-10 flex items-center justify-center rounded-md transition-all duration-150 cursor-pointer
+          ${isDiskActive ? "bg-emerald-500/10 text-emerald-400" : "text-zinc-500 hover:bg-zinc-800/60"}`}
+        title="Disk usage"
+        aria-label="Disk usage"
+      >
+        <svg className="w-5 h-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
+          <circle cx="10" cy="10" r="7" />
+          <path d="M10 3v7l6 4" />
+        </svg>
       </button>
 
       {/* Spacer */}

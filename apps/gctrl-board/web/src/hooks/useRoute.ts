@@ -17,8 +17,12 @@ export type Route =
   | { page: "analytics"; tab: AnalyticsTab; sessionId: string | null }
   | { page: "settings"; section: "macos-spaces" }
   | { page: "schedule"; name: string | null; runId: string | null }
+  | { page: "disk" }
 
 export function parseRoute(pathname: string): Route {
+  if (pathname === "/disk" || pathname === "/disk/") {
+    return { page: "disk" }
+  }
   // /analytics/sessions/:sessionId
   const analyticsSession = pathname.match(/^\/analytics\/sessions\/([^/]+)/)
   if (analyticsSession) {

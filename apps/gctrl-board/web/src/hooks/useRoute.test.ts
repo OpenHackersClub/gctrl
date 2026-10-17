@@ -8,6 +8,9 @@ import { parseRoute } from "./useRoute"
 // parsing the same.
 
 describe("parseRoute — schedule routes (M1b)", () => {
+  it("/disk opens the disk usage page", () => {
+    expect(parseRoute("/disk")).toEqual({ page: "disk" })
+  })
   it("/schedule → schedule page with no name + no runId", () => {
     expect(parseRoute("/schedule")).toEqual({
       page: "schedule",
