@@ -34,6 +34,7 @@ See `vault/specs/principles.md` for the full Unix philosophy mapping and design 
 | [app-install-protocol.md](app-install-protocol.md) | `gctrl-app.toml` manifest schema, capability registry, install / override / reload flow, `gctrl_app_installs` + `gctrl_app_bindings` tables |
 | [kernel/orchestrator.md](kernel/orchestrator.md) | Orchestrator kernel primitive — Task claim states, dispatch eligibility, retry/backoff, concurrency control |
 | [kernel/scheduler.md](kernel/scheduler.md) | Scheduler kernel primitive — Task lifecycle, interface trait, platform implementations |
+| [kernel/reclaim.md](kernel/reclaim.md) | Reclaim kernel extension — build-pool slot reset at a size cap, removal of worktrees whose pull request is merged |
 | [kernel/harness.md](kernel/harness.md) | `AgentHarness` port — which agent program runs (`claude-code`, `codex`, `opencode`, …) |
 | [kernel/compute.md](kernel/compute.md) | `ComputeSubstrate` port — where it runs (`local-process`, `cf-containers`, `e2b`, …) |
 | [apps/adr-runtime-compute-decoupling.md](apps/adr-runtime-compute-decoupling.md) | ADR — Brain ≠ Hand invariants, `(runtime, compute)` compatibility matrix |
