@@ -102,6 +102,17 @@ Observe & Eval owns both the **substrate** (metrics, prompts, judges, datasets, 
 |------|-------------|----------|------------|-------|
 | URL routing (system-wide link router) | gctrl-desktop as default browser; kernel rewrites + routes every out-of-browser link to an explicit browser/profile/app target. Spec: [url-routing.md](../architecture/kernel/url-routing.md) | P1 | driver-macos `PlatformPort` | [#228](https://github.com/OpenHackersClub/gctrl/issues/228) |
 
+## Host Resource Reclaim — Planned
+
+**Goal:** Disk used by pooled build directories and merged worktrees stays bounded without operator action. Spec: [reclaim.md](../architecture/kernel/reclaim.md).
+
+| Task | Description | Priority | Depends On | Issue |
+|------|-------------|----------|------------|-------|
+| Build-pool retention | Hourly run resets an idle pooled Cargo target directory above its size cap; run records, `/api/reclaim/*` routes, `report` and `enforce` modes, `gctrl reclaim` shell commands | P1 | Scheduler `http` schedules, Inbox | [#234](https://github.com/OpenHackersClub/gctrl/issues/234) |
+| Worktree reaping on merge | Hourly run removes a clean linked worktree whose pull request is merged; stale worktrees are reported, not modified | P1 | Build-pool retention, `driver-github` merged-PR fields | [#235](https://github.com/OpenHackersClub/gctrl/issues/235) |
+
+**Done when:** With `mode = "enforce"`, each run resets a pool slot above the cap whose lock is free, a slot held busy for 3 consecutive runs raises an alert, and an eligible worktree is removed by the first hourly run after its pull request's `merge_grace` elapses.
+
 ## Backlog (unprioritized)
 
 - Protobuf OTLP support (currently JSON only)
