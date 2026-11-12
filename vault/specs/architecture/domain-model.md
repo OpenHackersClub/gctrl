@@ -297,6 +297,26 @@ From `schema.rs`: `sessions`, `spans`, `traffic`, `guardrail_events`, `scores`, 
 **Spec-only extensions** (not yet in schema.rs):
 
 ```sql
+-- reclaim_runs / reclaim_actions (see architecture/kernel/reclaim.md § Records and telemetry)
+CREATE TABLE IF NOT EXISTS reclaim_runs (
+    id              VARCHAR PRIMARY KEY,
+    kind            VARCHAR NOT NULL,    -- pool | worktrees
+    mode            VARCHAR NOT NULL,    -- report | enforce
+    started_at      VARCHAR NOT NULL,
+    finished_at     VARCHAR,
+    bytes_reclaimed BIGINT NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS reclaim_actions (
+    run_id      VARCHAR NOT NULL,        -- FK → reclaim_runs.id
+    target_path VARCHAR NOT NULL,
+    action      VARCHAR NOT NULL,        -- planned, reset, removed, restored, reported, skipped_busy, skipped_unsafe, skipped_missing, skipped_no_evidence, failed
+    bytes       BIGINT NOT NULL DEFAULT 0,
+    detail      VARCHAR                  -- redacted, max 512 bytes
+);
+```
+
+```sql
 -- users table (see os.md § 6 — persona identity model)
 CREATE TABLE IF NOT EXISTS users (
     id              VARCHAR PRIMARY KEY,
