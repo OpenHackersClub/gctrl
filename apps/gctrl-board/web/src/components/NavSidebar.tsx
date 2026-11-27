@@ -74,6 +74,25 @@ function ScheduleIcon({ active }: { active: boolean }) {
   )
 }
 
+function AgentsIcon({ active }: { active: boolean }) {
+  const color = active ? "text-emerald-400" : "text-zinc-500"
+  return (
+    <svg
+      className={`w-5 h-5 ${color} transition-colors duration-150`}
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      {/* Terminal window with a prompt — agent runs. */}
+      <rect x="2.5" y="3.5" width="15" height="13" rx="1.5" />
+      <path d="M6 8l2.5 2L6 12M10.5 12.5h3.5" />
+    </svg>
+  )
+}
+
 function SettingsIcon({ active }: { active: boolean }) {
   const color = active ? "text-emerald-400" : "text-zinc-500"
   return (
@@ -109,6 +128,7 @@ export function NavSidebar({ route, navigate, unreadCount }: NavSidebarProps) {
   const isInboxActive = route.page === "inbox"
   const isAnalyticsActive = route.page === "analytics"
   const isScheduleActive = route.page === "schedule"
+  const isAgentsActive = route.page === "agents"
   const isSettingsActive = route.page === "settings"
 
   return (
@@ -146,6 +166,17 @@ export function NavSidebar({ route, navigate, unreadCount }: NavSidebarProps) {
         title="Analytics"
       >
         <AnalyticsIcon active={isAnalyticsActive} />
+      </button>
+
+      {/* Agents nav item — every Claude Code / Codex run */}
+      <button
+        onClick={() => navigate("/agents")}
+        data-testid="nav-agents"
+        className={`w-10 h-10 flex items-center justify-center rounded-md transition-all duration-150 cursor-pointer
+          ${isAgentsActive ? "bg-emerald-500/10" : "hover:bg-zinc-800/60"}`}
+        title="Agents"
+      >
+        <AgentsIcon active={isAgentsActive} />
       </button>
 
       {/* Schedule nav item */}

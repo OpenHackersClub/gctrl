@@ -22,6 +22,8 @@ export default defineConfig({
   },
   server: {
     port: 4200,
+    // Tailnet access (`tailscale serve`) sends the MagicDNS host.
+    allowedHosts: [".ts.net"],
     proxy: {
       "/api": {
         target: `http://localhost:${process.env.GCTRL_KERNEL_PORT ?? "4318"}`,

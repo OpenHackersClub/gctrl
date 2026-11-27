@@ -1788,6 +1788,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "gctrl-driver-agents"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "dirs",
+ "gctrl-mac-comm",
+ "http-body-util",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tracing",
+]
+
+[[package]]
 name = "gctrl-driver-macos"
 version = "0.1.0"
 dependencies = [
@@ -1912,6 +1931,7 @@ dependencies = [
  "gctrl-browser",
  "gctrl-context",
  "gctrl-core",
+ "gctrl-driver-agents",
  "gctrl-driver-macos",
  "gctrl-gcal",
  "gctrl-mac-comm",

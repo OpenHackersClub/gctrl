@@ -609,3 +609,63 @@ export interface ScheduleRunNowResult {
   status: number | null
   error: string | null
 }
+
+// ── Agent panel (kernel driver-agents, /api/agents) ──
+// Spec: vault/specs/architecture/apps/agent-panel.md § Model.
+
+export type AgentHarness = "claude-code" | "codex"
+
+/** Kernel-derived state. Needs you is computed by the board from the inbox. */
+export type AgentRunState = "running" | "idle" | "resumable" | "done"
+
+export interface AgentLive {
+  pid: number
+  tty: string | null
+  status: "busy" | "idle" | "unknown"
+}
+
+export interface AgentPr {
+  number: number
+  url: string
+  repository: string | null
+}
+
+export interface AgentRun {
+  id: string
+  harness: AgentHarness
+  native_id: string
+  title: string
+  name: string | null
+  project_key: string
+  cwd: string
+  cwd_exists: boolean
+  worktree: string | null
+  git_branch: string | null
+  last_prompt: string | null
+  pr: AgentPr | null
+  cost_usd: number | null
+  tokens: number | null
+  model: string | null
+  started_at: string
+  updated_at: string
+  headless: boolean
+  archived: boolean
+  stale: boolean
+  live: AgentLive | null
+  state: AgentRunState
+  resume_command: string | null
+}
+
+export interface AgentRunsResponse {
+  generated_at: string
+  runs: AgentRun[]
+  hidden: { headless: number; stale: number }
+}
+
+/** `POST /api/agents/{id}/open`. `action` is `focused` | `launched` | `none`,
+ *  prefixed `would_` on a dry run. */
+export interface AgentOpenResult {
+  action: string
+  detail?: string | null
+  command?: string | null
+}

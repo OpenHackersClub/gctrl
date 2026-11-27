@@ -50,9 +50,23 @@ impl Osascript {
     /// Run `osascript` with multiple `-e` script fragments. Each fragment is
     /// passed as a separate argv entry; there is no string concatenation.
     pub async fn run(&self, fragments: &[&str]) -> Result<OsascriptOutput, CommError> {
+        self.run_with_args(fragments, &[]).await
+    }
+
+    /// Run `osascript` with `-e` script fragments followed by positional
+    /// arguments. The script reads them as `item N of argv` inside
+    /// `on run argv`, so argument text is never parsed as AppleScript source.
+    pub async fn run_with_args(
+        &self,
+        fragments: &[&str],
+        args: &[&str],
+    ) -> Result<OsascriptOutput, CommError> {
         let mut cmd = Command::new("osascript");
         for f in fragments {
             cmd.arg("-e").arg(f);
+        }
+        for a in args {
+            cmd.arg(a);
         }
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())

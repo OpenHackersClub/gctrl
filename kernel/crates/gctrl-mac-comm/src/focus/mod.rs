@@ -23,6 +23,29 @@ use crate::model::{FocusRequest, FocusResponse};
 #[cfg(target_os = "macos")]
 use crate::model::TerminalApp;
 
+/// Map a failed `osascript` run to a typed error.
+#[cfg(target_os = "macos")]
+pub(crate) fn classify_osascript_error(
+    exit_code: i32,
+    stderr: &str,
+    target: &'static str,
+) -> CommError {
+    // -1743: Apple Events authorization denied. The error code lands in
+    // stderr from osascript; checking stderr is reliable across macOS
+    // versions (the exit code is always non-zero on these conditions).
+    if stderr.contains("-1743") || stderr.contains("not allowed assistive access") {
+        return CommError::AutomationDenied { target };
+    }
+    // -600: application is not running (NSAppleScriptError "application isn't running").
+    if stderr.contains("-600") || stderr.contains("isn't running") {
+        return CommError::TargetNotRunning { target };
+    }
+    CommError::OsascriptFailed {
+        exit_code,
+        stderr: stderr.to_string(),
+    }
+}
+
 /// Bring the originating terminal session to the foreground.
 ///
 /// `req` MUST already be validated by [`crate::validate::focus_request`].

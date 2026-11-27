@@ -83,3 +83,14 @@ describe("parseRoute — schedule routes (M1b)", () => {
     })
   })
 })
+
+describe("parseRoute — agents route", () => {
+  it("/agents → agents page", () => {
+    expect(parseRoute("/agents")).toEqual({ page: "agents" })
+    expect(parseRoute("/agents/")).toEqual({ page: "agents" })
+  })
+
+  it("/agentsx stays on the board", () => {
+    expect(parseRoute("/agentsx")).toEqual({ page: "board", projectKey: null, view: "kanban" })
+  })
+})

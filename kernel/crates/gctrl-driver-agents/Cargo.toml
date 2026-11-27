@@ -1,0 +1,21 @@
+[package]
+name = "gctrl-driver-agents"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+axum = { workspace = true }
+chrono = { workspace = true }
+dirs = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+regex = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+gctrl-mac-comm = { path = "../gctrl-mac-comm" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tower = { workspace = true }
+http-body-util = { workspace = true }

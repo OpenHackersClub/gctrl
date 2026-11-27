@@ -18,6 +18,7 @@ members = [
     "kernel/crates/gctrl-browser",
     "kernel/crates/gctrl-recorder",
     "kernel/crates/gctrl-mac-comm",
+    "kernel/crates/gctrl-driver-agents",
 ]
 
 [workspace.package]

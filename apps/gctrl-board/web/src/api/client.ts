@@ -1,5 +1,7 @@
 import type {
   AcceptanceRollup,
+  AgentOpenResult,
+  AgentRunsResponse,
   Issue,
   MoveIssueResult,
   Project,
@@ -266,6 +268,24 @@ export const api = {
   // so the UI can hide the affordance entirely.
   comm: {
     capabilities: () => request<CommCapabilities>("/api/comm/capabilities"),
+  },
+
+  // Kernel driver-agents — every Claude Code / Codex run on this machine.
+  // Local-only: the Cloudflare Worker does not proxy these routes.
+  // Spec: vault/specs/architecture/apps/agent-panel.md § HTTP API.
+  agents: {
+    list: (params: { includeHeadless: boolean; includeStale: boolean }) => {
+      const qs = new URLSearchParams({
+        include_headless: String(params.includeHeadless),
+        include_stale: String(params.includeStale),
+      })
+      return request<AgentRunsResponse>(`/api/agents?${qs.toString()}`)
+    },
+    open: (id: string, opts?: { dryRun?: boolean }) =>
+      request<AgentOpenResult>(
+        `/api/agents/${encodeURIComponent(id)}/open${opts?.dryRun ? "?dry_run=true" : ""}`,
+        { method: "POST" },
+      ),
   },
 
   // Kernel analytics + sessions — proxied by Vite dev server to :4318.

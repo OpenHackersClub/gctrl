@@ -1,0 +1,264 @@
+import { useCallback, useMemo, useState } from "react"
+import { api } from "../api/client"
+import { AgentRunCard } from "../components/AgentRunCard"
+import { useAgents } from "../hooks/useAgents"
+import {
+  AGENT_COLUMNS,
+  AGENT_COLUMN_LABELS,
+  type AgentColumn,
+  type AgentLane,
+  buildLanes,
+  columnFor,
+  laneSummary,
+  needsYouSessionIds,
+  openErrorMessage,
+  openResultMessage,
+} from "../lib/agent-lanes"
+import type { AgentRun } from "../types"
+
+const COLUMN_ACCENT: Record<AgentColumn, string> = {
+  needs_you: "#f43f5e",
+  running: "#f59e0b",
+  idle: "#34d399",
+  resumable: "#71717a",
+  done: "#3f3f46",
+}
+
+interface Props {
+  onToast: (message: string, type?: "error" | "success") => void
+}
+
+/**
+ * Every Claude Code / Codex run on this machine: state columns × project
+ * swimlanes. Spec: vault/specs/architecture/apps/agent-panel.md § Board page.
+ */
+export function AgentsPage({ onToast }: Props) {
+  const [includeHeadless, setIncludeHeadless] = useState(false)
+  const [includeStale, setIncludeStale] = useState(false)
+  const [showDone, setShowDone] = useState(false)
+  // Lanes the operator toggled away from their default (live ⇒ open).
+  const [toggledLanes, setToggledLanes] = useState<ReadonlySet<string>>(new Set())
+  const [opening, setOpening] = useState<string | null>(null)
+
+  const { data, messages, loading, error, refresh } = useAgents({ includeHeadless, includeStale })
+
+  const now = new Date()
+  const nowMinute = Math.floor(now.getTime() / 60_000)
+  const needsYou = useMemo(
+    () => needsYouSessionIds(messages, new Date(nowMinute * 60_000)),
+    [messages, nowMinute],
+  )
+  const lanes = useMemo(() => buildLanes(data?.runs ?? [], needsYou), [data, needsYou])
+
+  const toggleLane = useCallback((key: string) => {
+    setToggledLanes((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }, [])
+
+  const handleOpen = useCallback(
+    async (run: AgentRun) => {
+      setOpening(run.id)
+      try {
+        const result = await api.agents.open(run.id)
+        const toast = openResultMessage(result)
+        onToast(toast.message, toast.type)
+        refresh()
+      } catch (e) {
+        onToast(openErrorMessage(e), "error")
+      } finally {
+        setOpening(null)
+      }
+    },
+    [onToast, refresh],
+  )
+
+  const totals = useMemo(() => {
+    const counts: Record<AgentColumn, number> = { needs_you: 0, running: 0, idle: 0, resumable: 0, done: 0 }
+    for (const r of data?.runs ?? []) counts[columnFor(r, needsYou)] += 1
+    return counts
+  }, [data, needsYou])
+
+  const gridTemplate = `repeat(4, minmax(220px, 1fr)) ${showDone ? "minmax(220px, 1fr)" : "7rem"}`
+
+  return (
+    <div className="flex flex-col h-[calc(100vh-3.5rem)] min-w-0" data-testid="agents-page">
+      {/* ── Toolbar ── */}
+      <div className="flex items-center gap-4 px-4 py-2 border-b border-zinc-800/80 text-[11px] font-mono">
+        <FilterToggle
+          label="Show headless"
+          checked={includeHeadless}
+          onChange={setIncludeHeadless}
+          testId="toggle-headless"
+        />
+        <FilterToggle
+          label="Show stale (7d+)"
+          checked={includeStale}
+          onChange={setIncludeStale}
+          testId="toggle-stale"
+        />
+        {data && (data.hidden.headless > 0 || data.hidden.stale > 0) && (
+          <span className="text-zinc-600">
+            hidden: {data.hidden.headless} headless · {data.hidden.stale} stale
+          </span>
+        )}
+        <span className="ml-auto text-zinc-500">
+          {data ? `${data.runs.length} runs · ${lanes.length} projects` : ""}
+        </span>
+        {error && (
+          <span className="text-rose-400" title={error}>
+            kernel unreachable — showing last result
+          </span>
+        )}
+      </div>
+
+      <div className="flex-1 overflow-auto px-4 pb-6">
+        {/* ── Column headers ── */}
+        <div
+          className="grid gap-3 sticky top-0 z-10 bg-zinc-950/95 backdrop-blur-sm pt-3 pb-2"
+          style={{ gridTemplateColumns: gridTemplate }}
+        >
+          {AGENT_COLUMNS.map((col) => (
+            <div
+              key={col}
+              data-testid={`agents-column-${col}`}
+              className="flex items-center gap-2 px-2 py-1.5"
+              style={{ borderTop: `2px solid ${COLUMN_ACCENT[col]}` }}
+            >
+              <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: COLUMN_ACCENT[col] }} />
+              <span className="text-xs font-display font-semibold tracking-wider text-zinc-400 uppercase">
+                {AGENT_COLUMN_LABELS[col]}
+              </span>
+              <span className="text-[10px] font-mono text-zinc-600 ml-auto">{totals[col]}</span>
+              {col === "done" && (
+                <button
+                  type="button"
+                  onClick={() => setShowDone((v) => !v)}
+                  className="text-[10px] font-mono text-zinc-500 hover:text-zinc-300 cursor-pointer"
+                  title={showDone ? "Collapse Done" : "Expand Done"}
+                >
+                  {showDone ? "◂" : "▸"}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {loading && !data ? (
+          <p className="text-[13px] font-mono text-zinc-600 px-2 py-8">loading runs…</p>
+        ) : lanes.length === 0 ? (
+          <p className="text-[13px] font-mono text-zinc-600 px-2 py-8">
+            {error ? `Cannot reach /api/agents: ${error}` : "No runs match the filters."}
+          </p>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {lanes.map((lane) => {
+              const expanded = lane.live !== toggledLanes.has(lane.projectKey)
+              return (
+                <Lane
+                  key={lane.projectKey}
+                  lane={lane}
+                  expanded={expanded}
+                  showDone={showDone}
+                  gridTemplate={gridTemplate}
+                  now={now}
+                  opening={opening}
+                  onToggle={toggleLane}
+                  onOpen={handleOpen}
+                />
+              )
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function Lane({
+  lane,
+  expanded,
+  showDone,
+  gridTemplate,
+  now,
+  opening,
+  onToggle,
+  onOpen,
+}: {
+  lane: AgentLane
+  expanded: boolean
+  showDone: boolean
+  gridTemplate: string
+  now: Date
+  opening: string | null
+  onToggle: (key: string) => void
+  onOpen: (run: AgentRun) => void
+}) {
+  return (
+    <section data-testid={`agents-lane-${lane.projectKey}`} className="border border-zinc-800/60 bg-zinc-950/40">
+      <button
+        type="button"
+        onClick={() => onToggle(lane.projectKey)}
+        className="w-full flex items-center gap-2 px-3 py-1.5 text-left cursor-pointer hover:bg-zinc-900/60"
+      >
+        <span className="text-[10px] font-mono text-zinc-500 w-3">{expanded ? "▾" : "▸"}</span>
+        <span className="text-[13px] font-display font-semibold tracking-wide text-zinc-200">{lane.projectKey}</span>
+        {lane.live && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" title="live runs" />}
+        {!expanded && <span className="text-[11px] font-mono text-zinc-500 truncate">{laneSummary(lane, now)}</span>}
+      </button>
+
+      {expanded && (
+        <div className="grid gap-3 px-3 pb-3 pt-1" style={{ gridTemplateColumns: gridTemplate }}>
+          {AGENT_COLUMNS.map((col) =>
+            col === "done" && !showDone ? (
+              <div key={col} className="text-[10px] font-mono text-zinc-600 px-2 pt-2">
+                {lane.counts.done > 0 ? `${lane.counts.done} done` : ""}
+              </div>
+            ) : (
+              <div key={col} className="flex flex-col gap-2 min-w-0">
+                {lane.columns[col].map((run) => (
+                  <AgentRunCard
+                    key={run.id}
+                    run={run}
+                    column={col}
+                    now={now}
+                    busy={opening === run.id}
+                    onOpen={onOpen}
+                  />
+                ))}
+              </div>
+            ),
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function FilterToggle({
+  label,
+  checked,
+  onChange,
+  testId,
+}: {
+  label: string
+  checked: boolean
+  onChange: (value: boolean) => void
+  testId: string
+}) {
+  return (
+    <label className="flex items-center gap-1.5 cursor-pointer select-none text-zinc-400 hover:text-zinc-200">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        data-testid={testId}
+        className="accent-emerald-500"
+      />
+      {label}
+    </label>
+  )
+}
