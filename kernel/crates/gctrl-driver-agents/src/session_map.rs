@@ -95,7 +95,9 @@ impl SessionMap {
         self.seen = true;
         if let Some(first) = text.lines().next().and_then(|l| l.strip_prefix("Session ")) {
             let name = first.split(" [").next().unwrap_or("").trim();
-            if !name.is_empty() && !name.contains(char::is_whitespace) {
+            // A session with no name prints its id, which says less than its title.
+            let id_like = name.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+            if !name.is_empty() && !id_like && !name.contains(char::is_whitespace) {
                 self.name = Some(name.to_string());
             }
         }
@@ -200,6 +202,14 @@ Steps:\n\
         assert_eq!(m.progress.current_step.as_deref(), Some("refactor"));
         assert_eq!((m.progress.steps_done, m.progress.steps_total), (1, 2));
         assert!(m.seen());
+    }
+
+    #[test]
+    fn ignores_an_id_printed_as_the_session_name() {
+        let mut m = SessionMap::default();
+        assert!(m.apply_result("Session f741d06b-46e6-4778-942c-13b0aa11bb22 [r · main]\nGoal: x"));
+        assert_eq!(m.name, None);
+        assert_eq!(m.goal.as_deref(), Some("x"));
     }
 
     #[test]
