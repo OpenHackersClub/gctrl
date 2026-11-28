@@ -134,17 +134,31 @@ async fn open(
     if p.dry_run {
         return ok("would_launch", None, Some(command));
     }
-    if !index.note_launch(&run.id) {
+    let Some(claim) = index.claim_run(&run.id) else {
         return ok("none", Some("launch_in_progress".into()), Some(command));
-    }
-    match gctrl_mac_comm::launch(&req).await {
-        Ok(r) => ok("launched", Some("iTerm2".into()), Some(r.command)),
-        Err(e) => comm_error(e),
+    };
+    // A disconnected HTTP caller must not release an in-flight terminal launch.
+    match tokio::spawn(async move {
+        claim.launched();
+        let result = gctrl_mac_comm::launch(&req).await;
+        if result.is_ok() {
+            claim.launched();
+        }
+        result
+    })
+    .await
+    {
+        Ok(Ok(r)) => ok("launched", Some("iTerm2".into()), Some(r.command)),
+        Ok(Err(e)) => comm_error(e),
+        Err(e) => comm_error(CommError::Io(std::io::Error::other(e))),
     }
 }
 
 /// Mount `/api/agents/*` with its own index state.
-async fn gather_runs(State(index): State<Arc<AgentIndex>>, Json(req): Json<GatherRequest>) -> Response {
+async fn gather_runs(
+    State(index): State<Arc<AgentIndex>>,
+    Json(req): Json<GatherRequest>,
+) -> Response {
     if req.ids.is_empty() {
         return (StatusCode::BAD_REQUEST, "ids is empty").into_response();
     }
@@ -165,7 +179,10 @@ pub fn router<S: Clone + Send + Sync + 'static>(index: Arc<AgentIndex>) -> Route
         .route("/api/agents/{id}", get(get_one))
         .route("/api/agents/gather", post(gather_runs))
         .route("/api/agents/{id}/open", post(open))
-        .route("/api/agents/{id}/gather", axum::routing::delete(cancel_gather))
+        .route(
+            "/api/agents/{id}/gather",
+            axum::routing::delete(cancel_gather),
+        )
         .with_state(index)
 }
 
@@ -198,7 +215,13 @@ mod tests {
 
     async fn call(app: Router, method: &str, uri: &str) -> (StatusCode, serde_json::Value) {
         let resp = app
-            .oneshot(Request::builder().method(method).uri(uri).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         let status = resp.status();
@@ -258,5 +281,23 @@ mod tests {
         assert_eq!(status, StatusCode::CONFLICT);
         let (status, _) = call(app(tmp.path()), "POST", "/api/agents/claude:nope/open").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn open_does_not_launch_a_run_owned_by_gather() {
+        let tmp = tempfile::tempdir().unwrap();
+        fake_home(tmp.path(), tmp.path().to_str().unwrap());
+        let index = Arc::new(AgentIndex::new(Paths::from_home(tmp.path())));
+        let claim = index.claim_run(&format!("claude:{SID}")).unwrap();
+        claim.queue();
+        let (status, body) = call(
+            router::<()>(Arc::clone(&index)),
+            "POST",
+            &format!("/api/agents/claude:{SID}/open"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["action"], "none");
+        assert_eq!(body["detail"], "launch_in_progress");
     }
 }

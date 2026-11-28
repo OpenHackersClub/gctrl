@@ -12,7 +12,8 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use gctrl_mac_comm::launch::{shell_command, LaunchRequest};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// A run with no live process and no activity for this long is stale.
@@ -47,7 +48,11 @@ impl Paths {
     pub fn detect() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/nonexistent"));
         let mut p = Self::from_home(&home);
-        let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+        let env = |k: &str| {
+            std::env::var_os(k)
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+        };
         if let Some(v) = env("CODEX_HOME") {
             p.codex_home = v;
         }
@@ -90,10 +95,62 @@ struct Inner {
 
 pub struct AgentIndex {
     inner: Mutex<Inner>,
-    launches: Mutex<HashMap<String, Instant>>,
-    gather_queue: Mutex<Vec<String>>,
+    operations: Mutex<Operations>,
     /// Gather windows whose initial shell no run has used yet.
     fresh_windows: Mutex<std::collections::HashSet<i64>>,
+}
+
+#[derive(Default)]
+struct Operations {
+    active: HashMap<String, Operation>,
+    launches: HashMap<String, Instant>,
+}
+
+struct Operation {
+    cancelled: Arc<AtomicBool>,
+    queued: bool,
+}
+
+/// Own one run until its open/gather operation completes, including queued work.
+pub(crate) struct RunClaim {
+    index: Arc<AgentIndex>,
+    id: String,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl RunClaim {
+    pub(crate) fn queue(&self) {
+        let mut operations = self.index.operations.lock().expect("operation lock");
+        if let Some(operation) = operations.active.get_mut(&self.id) {
+            operation.queued = true;
+        }
+    }
+
+    pub(crate) fn cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn launched(&self) {
+        self.index
+            .operations
+            .lock()
+            .expect("operation lock")
+            .launches
+            .insert(self.id.clone(), Instant::now());
+    }
+}
+
+impl Drop for RunClaim {
+    fn drop(&mut self) {
+        let mut operations = self.index.operations.lock().expect("operation lock");
+        if operations
+            .active
+            .get(&self.id)
+            .is_some_and(|operation| Arc::ptr_eq(&operation.cancelled, &self.cancelled))
+        {
+            operations.active.remove(&self.id);
+        }
+    }
 }
 
 pub fn derive_state(archived: bool, live: Option<&LiveInfo>) -> RunState {
@@ -136,8 +193,7 @@ impl AgentIndex {
                 runs: Vec::new(),
                 refreshed: None,
             }),
-            launches: Mutex::new(HashMap::new()),
-            gather_queue: Mutex::new(Vec::new()),
+            operations: Mutex::new(Operations::default()),
             fresh_windows: Mutex::new(std::collections::HashSet::new()),
         }
     }
@@ -195,35 +251,57 @@ impl AgentIndex {
         }
     }
 
-    /// Record a launch of `id`. False when the same run launched within the
-    /// debounce window, so a double click opens one tab.
-    pub fn note_launch(&self, id: &str) -> bool {
-        let mut l = self.launches.lock().expect("launch lock");
-        l.retain(|_, t| t.elapsed() < LAUNCH_DEBOUNCE);
-        if l.contains_key(id) {
-            return false;
+    /// Claim a run before any terminal operation. Open and gather share this
+    /// claim and the debounce after a launch attempt.
+    pub(crate) fn claim_run(self: &Arc<Self>, id: &str) -> Option<RunClaim> {
+        let mut operations = self.operations.lock().expect("operation lock");
+        operations
+            .launches
+            .retain(|_, t| t.elapsed() < LAUNCH_DEBOUNCE);
+        if operations.active.contains_key(id) || operations.launches.contains_key(id) {
+            return None;
         }
-        l.insert(id.to_string(), Instant::now());
-        true
+        let cancelled = Arc::new(AtomicBool::new(false));
+        operations.active.insert(
+            id.to_string(),
+            Operation {
+                cancelled: Arc::clone(&cancelled),
+                queued: false,
+            },
+        );
+        Some(RunClaim {
+            index: Arc::clone(self),
+            id: id.to_string(),
+            cancelled,
+        })
     }
 
     /// Runs a gather is waiting on.
     pub fn gather_queue(&self) -> Vec<String> {
-        self.gather_queue.lock().expect("gather lock").clone()
-    }
-
-    /// Add `id` to the gather queue; false when it is already queued.
-    pub fn enqueue_gather(&self, id: &str) -> bool {
-        let mut q = self.gather_queue.lock().expect("gather lock");
-        if q.iter().any(|x| x == id) {
-            return false;
-        }
-        q.push(id.to_string());
-        true
+        self.operations
+            .lock()
+            .expect("operation lock")
+            .active
+            .iter()
+            .filter(|(_, operation)| {
+                operation.queued && !operation.cancelled.load(Ordering::SeqCst)
+            })
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 
     pub fn dequeue_gather(&self, id: &str) {
-        self.gather_queue.lock().expect("gather lock").retain(|x| x != id);
+        if let Some(operation) = self
+            .operations
+            .lock()
+            .expect("operation lock")
+            .active
+            .get(id)
+        {
+            if operation.queued {
+                operation.cancelled.store(true, Ordering::SeqCst);
+            }
+        }
     }
 
     /// Record that `window_id` opened with an unused shell.
@@ -298,8 +376,16 @@ mod tests {
 
     #[test]
     fn state_derivation() {
-        let busy = LiveInfo { pid: 1, tty: None, status: LiveStatus::Busy };
-        let idle = LiveInfo { pid: 1, tty: None, status: LiveStatus::Idle };
+        let busy = LiveInfo {
+            pid: 1,
+            tty: None,
+            status: LiveStatus::Busy,
+        };
+        let idle = LiveInfo {
+            pid: 1,
+            tty: None,
+            status: LiveStatus::Idle,
+        };
         assert_eq!(derive_state(false, Some(&busy)), RunState::Running);
         assert_eq!(derive_state(false, Some(&idle)), RunState::Idle);
         assert_eq!(derive_state(false, None), RunState::Resumable);
@@ -339,9 +425,19 @@ mod tests {
             },
         ];
         let procs: HashMap<u32, Proc> = [
-            proc(10, "Fri Nov 27 10:30:03 2026", Some("/dev/ttys003"), "node something"),
+            proc(
+                10,
+                "Fri Nov 27 10:30:03 2026",
+                Some("/dev/ttys003"),
+                "node something",
+            ),
             // pid 11 now belongs to an unrelated process started after a reboot.
-            proc(11, "Sat Nov 28 09:00:00 2026", None, "/usr/sbin/mDNSResponder"),
+            proc(
+                11,
+                "Sat Nov 28 09:00:00 2026",
+                None,
+                "/usr/sbin/mDNSResponder",
+            ),
         ]
         .into_iter()
         .map(|p| (p.pid, p))
@@ -364,7 +460,12 @@ mod tests {
             kind: None,
             name: None,
         };
-        let process = proc(11, "Sat Nov 28 09:00:00 2026", Some("/dev/ttys003"), "claude --resume another");
+        let process = proc(
+            11,
+            "Sat Nov 28 09:00:00 2026",
+            Some("/dev/ttys003"),
+            "claude --resume another",
+        );
         let procs = [(11, process)].into_iter().collect();
         assert!(claude_live(&[entry.clone()], &procs).is_empty());
 
@@ -391,11 +492,26 @@ mod tests {
             thread("44444444-4444-4444-4444-444444444444", "/w/web", 99, "exec"),
         ];
         let procs: HashMap<u32, Proc> = [
-            proc(100, "x x x x x", Some("/dev/ttys001"), &format!("/b/codex --no-daemon resume {CODEX_ID}")),
+            proc(
+                100,
+                "x x x x x",
+                Some("/dev/ttys001"),
+                &format!("/b/codex --no-daemon resume {CODEX_ID}"),
+            ),
             proc(200, "x x x x x", Some("/dev/ttys002"), "/b/codex"),
             // Helper spawned by pid 200 on the same tty.
-            proc(201, "x x x x x", Some("/dev/ttys002"), "/b/codex app-server"),
-            proc(300, "x x x x x", None, "/Applications/Codex.app/Contents/MacOS/codex"),
+            proc(
+                201,
+                "x x x x x",
+                Some("/dev/ttys002"),
+                "/b/codex app-server",
+            ),
+            proc(
+                300,
+                "x x x x x",
+                None,
+                "/Applications/Codex.app/Contents/MacOS/codex",
+            ),
         ]
         .into_iter()
         .map(|p| (p.pid, p))
@@ -576,7 +692,10 @@ mod tests {
         assert!(default_view.runs.iter().all(|r| !r.headless && !r.stale));
         let all = AgentIndex::list(
             &runs,
-            ListOptions { include_headless: true, include_stale: true },
+            ListOptions {
+                include_headless: true,
+                include_stale: true,
+            },
             now,
         );
         assert_eq!(all.runs.len(), runs.len());
@@ -584,9 +703,32 @@ mod tests {
 
     #[test]
     fn launch_debounce() {
-        let idx = AgentIndex::new(Paths::from_home(Path::new("/nonexistent")));
-        assert!(idx.note_launch("claude:x"));
-        assert!(!idx.note_launch("claude:x"));
-        assert!(idx.note_launch("codex:y"));
+        let idx = Arc::new(AgentIndex::new(Paths::from_home(Path::new("/nonexistent"))));
+        let claim = idx.claim_run("claude:x").unwrap();
+        assert!(idx.claim_run("claude:x").is_none());
+        claim.launched();
+        drop(claim);
+        assert!(idx.claim_run("claude:x").is_none());
+        assert!(idx.claim_run("codex:y").is_some());
+    }
+
+    #[test]
+    fn cancelled_queue_keeps_ownership_until_worker_exits() {
+        let index = Arc::new(AgentIndex::with_adapters(Vec::new(), "/nonexistent".into()));
+        let claim = index.claim_run("claude:x").unwrap();
+        claim.queue();
+        index.dequeue_gather("claude:x");
+        assert!(claim.cancelled());
+        assert!(index.gather_queue().is_empty());
+        assert!(index.claim_run("claude:x").is_none());
+        drop(claim);
+        assert!(index.claim_run("claude:x").is_some());
+    }
+
+    #[test]
+    fn failed_operation_releases_ownership_without_debouncing_retry() {
+        let index = Arc::new(AgentIndex::with_adapters(Vec::new(), "/nonexistent".into()));
+        drop(index.claim_run("claude:x").unwrap());
+        assert!(index.claim_run("claude:x").is_some());
     }
 }

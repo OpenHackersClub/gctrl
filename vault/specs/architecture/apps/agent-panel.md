@@ -181,14 +181,14 @@ sequenceDiagram
   K-->>P: action
 ```
 
-1. The launch command is a fixed template per harness:
+1. The launch command MUST invoke the fixed resume argv for its harness after changing directory and activating the environment (see `kernel/crates/gctrl-mac-comm/src/launch.rs::shell_command`):
 
-   | Harness | Command |
+   | Harness | Resume argv |
    | --- | --- |
-   | Claude Code | `cd '<cwd>' && claude --resume <id>` |
-   | Codex | `cd '<cwd>' && codex resume -c tui.resume_cwd=current <id>` |
-   | Hermes Agent | `cd '<cwd>' && hermes --resume <id>` |
-   | Pi | `cd '<cwd>' && pi --session <id>` |
+   | Claude Code | `claude --resume <id>` |
+   | Codex | `codex resume -c tui.resume_cwd=current <id>` |
+   | Hermes Agent | `hermes --resume <id>` |
+   | Pi | `pi --session <id>` |
 
 2. Every argv token, `<id>` included, matches `^[A-Za-z0-9._=:/@+-]{1,128}$`. `<cwd>` passes the mac-comm `cwd` validator, which excludes `'`, so single quotes are safe.
 3. AppleScript receives the command as an `argv` item and never concatenates it into script text.
@@ -241,12 +241,13 @@ sequenceDiagram
    1. Not live, cwd present: resume.
    2. Live with `status = idle`: stop, then resume.
    3. Live with `status = busy` or `unknown`: queue.
-   4. Live with no tty, cwd gone, already queued, or unknown id: skip.
+   4. Live with no tty, cwd gone, an open or gather operation in progress, a launch within the 5 s debounce, or unknown id: skip.
 3. The window opens before any process is stopped. It opens with the first directly resumable run's command; when there is none, the first run moved into it, stopped or queued, reuses the window's initial shell.
 4. Stopping sends SIGTERM to the run's pid after checking the pid is still on the run's tty, then waits up to 5 s for it to exit. A run that does not exit is skipped (`did_not_exit`). Every harness writes each message as it completes, so an idle run's conversation is on disk.
 5. With `close_old`, the pane a stopped run leaves behind is closed only when every process on its tty is a shell or `login`.
 6. A queued run is checked every 3 s. When its turn ends it is stopped and resumed in the gather window. When that window is gone, it resumes in a new window. It leaves the queue when moved, when it disappears, when `DELETE /api/agents/{id}/gather` cancels it, or after 4 h.
 7. At most 32 runs move per gather.
+8. Open and gather MUST atomically claim each run before terminal side effects. One claim MUST own both immediate and queued work until completion or failure. Cancelling queued work MUST prevent another owner until the cancelled worker exits. Disconnecting an HTTP caller MUST retain ownership until its terminal operation finishes.
 
 ## Adding a harness
 

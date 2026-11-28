@@ -12,15 +12,65 @@
 //! The window opens before any process is stopped, so a missing Automation
 //! permission fails the call without touching a run.
 
-use crate::index::{launch_request, AgentIndex};
+use crate::index::{launch_request, AgentIndex, RunClaim};
 use crate::model::{AgentRun, GatherItem, GatherResponse, LiveInfo, LiveStatus};
 use crate::procs;
 use chrono::Utc;
+use gctrl_mac_comm::launch::{LaunchRequest, WindowResponse};
 use gctrl_mac_comm::CommError;
 use serde::Deserialize;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+trait GatherOps: Send + Sync + 'static {
+    fn refresh(
+        &self,
+        index: &Arc<AgentIndex>,
+        age: Duration,
+    ) -> impl std::future::Future<Output = Vec<AgentRun>> + Send;
+    fn window(
+        &self,
+        requests: &[LaunchRequest],
+    ) -> impl std::future::Future<Output = Result<WindowResponse, CommError>> + Send;
+    fn resume(
+        &self,
+        index: &AgentIndex,
+        window: i64,
+        run: &AgentRun,
+    ) -> impl std::future::Future<Output = Result<(), CommError>> + Send;
+    fn stop(&self, live: &LiveInfo) -> impl std::future::Future<Output = bool> + Send;
+    fn close(&self, tty: &str) -> impl std::future::Future<Output = Option<String>> + Send;
+    fn wait(&self) -> impl std::future::Future<Output = ()> + Send;
+}
+
+struct NativeOps;
+
+impl GatherOps for NativeOps {
+    async fn refresh(&self, index: &Arc<AgentIndex>, age: Duration) -> Vec<AgentRun> {
+        refresh(index, age).await
+    }
+    async fn window(&self, requests: &[LaunchRequest]) -> Result<WindowResponse, CommError> {
+        gctrl_mac_comm::open_window(requests).await
+    }
+    async fn resume(
+        &self,
+        index: &AgentIndex,
+        window: i64,
+        run: &AgentRun,
+    ) -> Result<(), CommError> {
+        resume_into(index, window, run).await
+    }
+    async fn stop(&self, live: &LiveInfo) -> bool {
+        stop(live).await
+    }
+    async fn close(&self, tty: &str) -> Option<String> {
+        close_if_bare(tty).await
+    }
+    async fn wait(&self) {
+        tokio::time::sleep(QUEUE_POLL).await
+    }
+}
 
 /// Most runs one gather moves.
 pub const MAX_RUNS: usize = 32;
@@ -128,8 +178,8 @@ async fn refresh(index: &Arc<AgentIndex>, max_age: Duration) -> Vec<AgentRun> {
 
 /// The run's live info when a fresh refresh still reports it idle, so a
 /// prompt sent since planning is never interrupted.
-async fn still_idle(index: &Arc<AgentIndex>, id: &str) -> Option<LiveInfo> {
-    refresh(index, Duration::ZERO)
+async fn still_idle(index: &Arc<AgentIndex>, id: &str, ops: &impl GatherOps) -> Option<LiveInfo> {
+    ops.refresh(index, Duration::ZERO)
         .await
         .into_iter()
         .find(|r| r.id == id)
@@ -163,27 +213,55 @@ pub async fn gather(
     index: Arc<AgentIndex>,
     req: GatherRequest,
 ) -> Result<GatherResponse, CommError> {
+    gather_with(index, req, Arc::new(NativeOps)).await
+}
+
+async fn gather_with<O: GatherOps>(
+    index: Arc<AgentIndex>,
+    req: GatherRequest,
+    ops: Arc<O>,
+) -> Result<GatherResponse, CommError> {
+    // Terminal operations retain their claims if the HTTP caller disconnects.
+    tokio::spawn(gather_claimed(index, req, ops))
+        .await
+        .map_err(|error| CommError::Io(std::io::Error::other(error)))?
+}
+
+async fn gather_claimed<O: GatherOps>(
+    index: Arc<AgentIndex>,
+    req: GatherRequest,
+    ops: Arc<O>,
+) -> Result<GatherResponse, CommError> {
     // Liveness must be current: a stale "not live" would launch a duplicate.
-    let runs = refresh(&index, Duration::ZERO).await;
-    let queued = index.gather_queue();
+    let runs = ops.refresh(&index, Duration::ZERO).await;
     let mut ids: Vec<&String> = Vec::new();
     for id in &req.ids {
         if !ids.contains(&id) && ids.len() < MAX_RUNS {
             ids.push(id);
         }
     }
-    let plans: Vec<(&str, Option<&AgentRun>, Plan)> = ids
+    let mut plans: Vec<(&str, Option<&AgentRun>, Plan, Option<RunClaim>)> = ids
         .iter()
         .map(|id| {
             let run = runs.iter().find(|r| &r.id == *id);
-            (id.as_str(), run, plan(run, queued.contains(*id)))
+            let mut planned = plan(run, false);
+            let claim = if matches!(planned, Plan::Skip(_)) {
+                None
+            } else {
+                let claim = index.claim_run(id);
+                if claim.is_none() {
+                    planned = Plan::Skip("operation_in_progress");
+                }
+                claim
+            };
+            (id.as_str(), run, planned, claim)
         })
         .collect();
 
     let mut items = Vec::new();
-    let movable = plans.iter().any(|(_, _, p)| !matches!(p, Plan::Skip(_)));
+    let movable = plans.iter().any(|(_, _, p, _)| !matches!(p, Plan::Skip(_)));
     if !movable {
-        for (id, _, p) in &plans {
+        for (id, _, p, _) in &plans {
             if let Plan::Skip(why) = p {
                 items.push(item(id, "skipped", Some((*why).into())));
             }
@@ -198,54 +276,73 @@ pub async fn gather(
     // with a shell that the first moved run reuses.
     let seed = plans
         .iter()
-        .find(|(_, _, p)| *p == Plan::Resume)
-        .and_then(|(_, r, _)| *r);
+        .find(|(_, _, p, _)| *p == Plan::Resume)
+        .and_then(|(_, r, _, _)| *r);
     let seed_req: Vec<_> = seed
         .map(|r| launch_request(r.harness, &r.native_id, &r.cwd))
         .into_iter()
         .collect();
-    let window = gctrl_mac_comm::open_window(&seed_req).await?;
+    if let Some(seed) = seed {
+        plans
+            .iter()
+            .find(|(id, _, _, _)| *id == seed.id)
+            .and_then(|(_, _, _, claim)| claim.as_ref())
+            .expect("claimed seed")
+            .launched();
+    }
+    let window = ops.window(&seed_req).await?;
     if seed.is_none() {
         index.mark_fresh_window(window.window_id);
     }
 
-    for (id, run, p) in &plans {
+    for (id, run, p, claim) in &mut plans {
         match p {
             Plan::Skip(why) => items.push(item(id, "skipped", Some((*why).into()))),
             Plan::Resume => {
+                let claim = claim.take().expect("claimed run");
                 let run = run.expect("planned run");
                 if Some(run.id.as_str()) == seed.map(|s| s.id.as_str()) {
+                    claim.launched();
                     items.push(item(id, "resumed", None));
                     continue;
                 }
-                match resume_into(&index, window.window_id, run).await {
-                    Ok(()) => items.push(item(id, "resumed", None)),
+                claim.launched();
+                match ops.resume(&index, window.window_id, run).await {
+                    Ok(()) => {
+                        claim.launched();
+                        items.push(item(id, "resumed", None));
+                    }
                     Err(e) => items.push(item(id, "skipped", Some(e.to_string()))),
                 }
             }
             Plan::Stop(_) => {
+                let claim = claim.take().expect("claimed run");
                 let run = run.expect("planned run");
-                let Some(live) = still_idle(&index, &run.id).await else {
+                let Some(live) = still_idle(&index, &run.id, ops.as_ref()).await else {
                     // Busy again since planning: wait for this turn instead.
-                    index.enqueue_gather(&run.id);
+                    claim.queue();
                     tokio::spawn(wait_and_move(
                         Arc::clone(&index),
                         run.id.clone(),
                         window.window_id,
                         req.close_old,
+                        Arc::clone(&ops),
+                        claim,
                     ));
                     items.push(item(id, "queued", Some("waits for its turn to end".into())));
                     continue;
                 };
                 let live = &live;
-                if !stop(live).await {
+                if !ops.stop(live).await {
                     items.push(item(id, "skipped", Some("did_not_exit".into())));
                     continue;
                 }
-                match resume_into(&index, window.window_id, run).await {
+                claim.launched();
+                match ops.resume(&index, window.window_id, run).await {
                     Ok(()) => {
+                        claim.launched();
                         let closed = match (req.close_old, &live.tty) {
-                            (true, Some(tty)) => close_if_bare(tty).await,
+                            (true, Some(tty)) => ops.close(tty).await,
                             _ => None,
                         };
                         items.push(item(
@@ -259,13 +356,16 @@ pub async fn gather(
                 }
             }
             Plan::Queue => {
+                let claim = claim.take().expect("claimed run");
                 let run = run.expect("planned run");
-                index.enqueue_gather(&run.id);
+                claim.queue();
                 tokio::spawn(wait_and_move(
                     Arc::clone(&index),
                     run.id.clone(),
                     window.window_id,
                     req.close_old,
+                    Arc::clone(&ops),
+                    claim,
                 ));
                 items.push(item(id, "queued", Some("waits for its turn to end".into())));
             }
@@ -279,48 +379,258 @@ pub async fn gather(
 
 /// Move a queued run once its turn ends. Leaves the queue when moved, when
 /// the run disappears, when a caller cancels it, or after [`QUEUE_LIMIT`].
-async fn wait_and_move(index: Arc<AgentIndex>, id: String, window_id: i64, close_old: bool) {
+async fn wait_and_move<O: GatherOps>(
+    index: Arc<AgentIndex>,
+    id: String,
+    window_id: i64,
+    close_old: bool,
+    ops: Arc<O>,
+    claim: RunClaim,
+) {
     let deadline = Instant::now() + QUEUE_LIMIT;
     loop {
-        tokio::time::sleep(QUEUE_POLL).await;
-        if !index.gather_queue().contains(&id) {
+        ops.wait().await;
+        if claim.cancelled() {
             return;
         }
         if Instant::now() > deadline {
             tracing::info!(run = %id, "gather wait expired");
             break;
         }
-        let runs = refresh(&index, Duration::from_secs(1)).await;
+        let runs = ops.refresh(&index, Duration::from_secs(1)).await;
+        if claim.cancelled() {
+            return;
+        }
         let Some(run) = runs.into_iter().find(|r| r.id == id) else {
             break;
         };
         let old_tty = match &run.live {
             None => None,
             Some(l) if l.status == LiveStatus::Idle => {
-                let Some(l) = still_idle(&index, &id).await else {
+                let Some(l) = still_idle(&index, &id, ops.as_ref()).await else {
                     continue;
                 };
-                if !stop(&l).await {
+                if claim.cancelled() {
+                    return;
+                }
+                if !ops.stop(&l).await {
                     continue;
                 }
                 l.tty.clone()
             }
             Some(_) => continue,
         };
-        if let Err(e) = resume_into(&index, window_id, &run).await {
+        claim.launched();
+        if let Err(e) = ops.resume(&index, window_id, &run).await {
             tracing::warn!(run = %id, error = %e, "gather resume failed");
-        } else if let (true, Some(tty)) = (close_old, old_tty) {
-            close_if_bare(&tty).await;
+        } else {
+            claim.launched();
+            if let (true, Some(tty)) = (close_old, old_tty) {
+                ops.close(&tty).await;
+            }
         }
         break;
     }
-    index.dequeue_gather(&id);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::{Harness, RunState};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Mutex;
+    use tokio::sync::Notify;
+
+    struct FakeOps {
+        runs: Mutex<Vec<AgentRun>>,
+        windows: AtomicUsize,
+        resumes: Mutex<Vec<String>>,
+        entered: Notify,
+        release: Notify,
+        tick: Notify,
+        fail_window: AtomicBool,
+    }
+
+    impl GatherOps for FakeOps {
+        async fn refresh(&self, _: &Arc<AgentIndex>, _: Duration) -> Vec<AgentRun> {
+            self.runs.lock().unwrap().clone()
+        }
+        async fn window(&self, requests: &[LaunchRequest]) -> Result<WindowResponse, CommError> {
+            let number = self.windows.fetch_add(1, Ordering::SeqCst);
+            if number == 0 {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+            if self.fail_window.load(Ordering::SeqCst) {
+                return Err(CommError::NotSupported);
+            }
+            self.resumes
+                .lock()
+                .unwrap()
+                .extend(requests.iter().map(|r| r.argv.last().unwrap().clone()));
+            Ok(WindowResponse {
+                window_id: number as i64 + 1,
+                commands: Vec::new(),
+            })
+        }
+        async fn resume(&self, _: &AgentIndex, _: i64, run: &AgentRun) -> Result<(), CommError> {
+            self.resumes.lock().unwrap().push(run.native_id.clone());
+            Ok(())
+        }
+        async fn stop(&self, _: &LiveInfo) -> bool {
+            true
+        }
+        async fn close(&self, _: &str) -> Option<String> {
+            None
+        }
+        async fn wait(&self) {
+            self.tick.notified().await
+        }
+    }
+
+    fn fake_ops(runs: Vec<AgentRun>) -> Arc<FakeOps> {
+        Arc::new(FakeOps {
+            runs: Mutex::new(runs),
+            windows: AtomicUsize::new(0),
+            resumes: Mutex::new(Vec::new()),
+            entered: Notify::new(),
+            release: Notify::new(),
+            tick: Notify::new(),
+            fail_window: AtomicBool::new(false),
+        })
+    }
+
+    async fn wait_until(mut condition: impl FnMut() -> bool) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !condition() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn overlapping_gathers(live: Option<LiveInfo>) {
+        let index = Arc::new(AgentIndex::with_adapters(Vec::new(), "/nonexistent".into()));
+        let queued = live.as_ref().is_some_and(|l| l.status != LiveStatus::Idle);
+        let ops = fake_ops(vec![run(live, true)]);
+        let req = || GatherRequest {
+            ids: vec!["claude:x".into()],
+            close_old: false,
+        };
+        let first = tokio::spawn(gather_with(Arc::clone(&index), req(), Arc::clone(&ops)));
+        ops.entered.notified().await;
+        let second = tokio::time::timeout(
+            Duration::from_secs(1),
+            gather_with(Arc::clone(&index), req(), Arc::clone(&ops)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        ops.release.notify_one();
+        first.await.unwrap().unwrap();
+        assert_eq!(ops.windows.load(Ordering::SeqCst), 1);
+        assert!(second.window_id.is_none());
+        assert_eq!(second.items[0].action, "skipped");
+        if queued {
+            assert_eq!(index.gather_queue(), ["claude:x"]);
+            ops.runs.lock().unwrap()[0].live = None;
+            ops.tick.notify_one();
+            wait_until(|| index.gather_queue().is_empty()).await;
+        }
+        assert_eq!(*ops.resumes.lock().unwrap(), ["x"]);
+        let repeated = gather_with(Arc::clone(&index), req(), Arc::clone(&ops))
+            .await
+            .unwrap();
+        assert!(repeated.window_id.is_none());
+        assert_eq!(ops.windows.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn overlapping_gathers_resume_once() {
+        overlapping_gathers(None).await
+    }
+
+    #[tokio::test]
+    async fn overlapping_gathers_stop_and_resume_once() {
+        overlapping_gathers(live(LiveStatus::Idle, Some("/dev/ttys001"))).await
+    }
+
+    #[tokio::test]
+    async fn overlapping_gathers_queue_one_worker() {
+        overlapping_gathers(live(LiveStatus::Busy, Some("/dev/ttys001"))).await
+    }
+
+    #[tokio::test]
+    async fn disconnected_caller_keeps_in_flight_gather_claimed() {
+        let index = Arc::new(AgentIndex::with_adapters(Vec::new(), "/nonexistent".into()));
+        let ops = fake_ops(vec![run(None, true)]);
+        let req = || GatherRequest {
+            ids: vec!["claude:x".into()],
+            close_old: false,
+        };
+        let caller = tokio::spawn(gather_with(Arc::clone(&index), req(), Arc::clone(&ops)));
+        ops.entered.notified().await;
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        let second = gather_with(Arc::clone(&index), req(), Arc::clone(&ops))
+            .await
+            .unwrap();
+        assert!(second.window_id.is_none());
+        assert_eq!(ops.windows.load(Ordering::SeqCst), 1);
+        ops.release.notify_one();
+        wait_until(|| !ops.resumes.lock().unwrap().is_empty()).await;
+        assert!(index.claim_run("claude:x").is_none());
+    }
+
+    #[tokio::test]
+    async fn failed_window_releases_all_gather_claims() {
+        let index = Arc::new(AgentIndex::with_adapters(Vec::new(), "/nonexistent".into()));
+        let ops = fake_ops(vec![run(
+            live(LiveStatus::Busy, Some("/dev/ttys001")),
+            true,
+        )]);
+        ops.fail_window.store(true, Ordering::SeqCst);
+        ops.release.notify_one();
+        let result = gather_with(
+            Arc::clone(&index),
+            GatherRequest {
+                ids: vec!["claude:x".into()],
+                close_old: false,
+            },
+            ops,
+        )
+        .await;
+        assert!(matches!(result, Err(CommError::NotSupported)));
+        assert!(index.gather_queue().is_empty());
+        assert!(index.claim_run("claude:x").is_some());
+    }
+
+    #[tokio::test]
+    async fn cancelling_queue_prevents_resume_and_releases_claim_after_worker_exits() {
+        let index = Arc::new(AgentIndex::with_adapters(Vec::new(), "/nonexistent".into()));
+        let ops = fake_ops(vec![run(
+            live(LiveStatus::Busy, Some("/dev/ttys001")),
+            true,
+        )]);
+        ops.release.notify_one();
+        gather_with(
+            Arc::clone(&index),
+            GatherRequest {
+                ids: vec!["claude:x".into()],
+                close_old: false,
+            },
+            Arc::clone(&ops),
+        )
+        .await
+        .unwrap();
+        index.dequeue_gather("claude:x");
+        assert!(index.claim_run("claude:x").is_none());
+        ops.runs.lock().unwrap()[0].live = None;
+        ops.tick.notify_one();
+        wait_until(|| index.claim_run("claude:x").is_some()).await;
+        assert!(ops.resumes.lock().unwrap().is_empty());
+    }
 
     fn run(live: Option<LiveInfo>, cwd_exists: bool) -> AgentRun {
         AgentRun {
@@ -382,18 +692,19 @@ mod tests {
 
     #[test]
     fn gather_queue_dedupes() {
-        let idx = AgentIndex::new(crate::index::Paths::from_home(std::path::Path::new(
-            "/nonexistent",
+        let idx = Arc::new(AgentIndex::new(crate::index::Paths::from_home(
+            std::path::Path::new("/nonexistent"),
         )));
-        assert!(idx.enqueue_gather("claude:x"));
-        assert!(!idx.enqueue_gather("claude:x"));
+        let claim = idx.claim_run("claude:x").unwrap();
+        claim.queue();
+        assert!(idx.claim_run("claude:x").is_none());
         assert_eq!(idx.gather_queue(), vec!["claude:x".to_string()]);
         idx.dequeue_gather("claude:x");
         assert!(idx.gather_queue().is_empty());
     }
 
-    #[test]
-    fn hermes_compression_keeps_queued_identity() {
+    #[tokio::test]
+    async fn hermes_compression_keeps_queued_identity() {
         let tmp = tempfile::tempdir().unwrap();
         let db = rusqlite::Connection::open(tmp.path().join("state.db")).unwrap();
         db.execute_batch(
@@ -402,24 +713,52 @@ mod tests {
              CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT,
                content TEXT, tool_calls TEXT, timestamp REAL);
              INSERT INTO sessions VALUES ('root', 'cli', 1, NULL, NULL, NULL, '/tmp');
-             INSERT INTO messages VALUES (1, 'root', 'user', 'work', NULL, 2);"
-        ).unwrap();
-        let index = AgentIndex::with_adapters(
-            vec![Box::new(crate::hermes::HermesAdapter::new(tmp.path().to_path_buf(), "/tmp".into()))],
+             INSERT INTO messages VALUES (1, 'root', 'user', 'work', NULL, 2);",
+        )
+        .unwrap();
+        let index = Arc::new(AgentIndex::with_adapters(
+            vec![Box::new(crate::hermes::HermesAdapter::new(
+                tmp.path().to_path_buf(),
+                "/tmp".into(),
+            ))],
             tmp.path().to_path_buf(),
-        );
-        let before = index.refresh(Utc::now());
+        ));
+        let mut before = index.refresh(Utc::now());
         let queued_id = before[0].id.clone();
-        assert!(index.enqueue_gather(&queued_id));
+        before[0].live = live(LiveStatus::Busy, Some("/dev/ttys001"));
+        let ops = fake_ops(before);
+        ops.release.notify_one();
+        let gathered = gather_with(
+            Arc::clone(&index),
+            GatherRequest {
+                ids: vec![queued_id.clone()],
+                close_old: false,
+            },
+            Arc::clone(&ops),
+        )
+        .await
+        .unwrap();
+        assert_eq!(gathered.items[0].action, "queued");
         db.execute_batch(
             "UPDATE sessions SET ended_at=3, end_reason='compression' WHERE id='root';
              INSERT INTO sessions VALUES ('child', 'cli', 3, NULL, NULL, 'root', '/tmp');
-             INSERT INTO messages VALUES (2, 'child', 'assistant', 'done', NULL, 4);"
-        ).unwrap();
+             INSERT INTO messages VALUES (2, 'child', 'assistant', 'done', NULL, 4);",
+        )
+        .unwrap();
         let after = index.refresh(Utc::now());
-        let queued = after.iter().find(|run| run.id == queued_id).expect("queued conversation survives compression");
+        let queued = after
+            .iter()
+            .find(|run| run.id == queued_id)
+            .expect("queued conversation survives compression");
         assert_eq!(queued.native_id, "child");
-        assert_eq!(launch_request(queued.harness, &queued.native_id, &queued.cwd).argv, ["hermes", "--resume", "child"]);
+        assert_eq!(
+            launch_request(queued.harness, &queued.native_id, &queued.cwd).argv,
+            ["hermes", "--resume", "child"]
+        );
         assert_eq!(index.gather_queue(), [queued_id]);
+        *ops.runs.lock().unwrap() = after;
+        ops.tick.notify_one();
+        wait_until(|| index.gather_queue().is_empty()).await;
+        assert_eq!(*ops.resumes.lock().unwrap(), ["child"]);
     }
 }
