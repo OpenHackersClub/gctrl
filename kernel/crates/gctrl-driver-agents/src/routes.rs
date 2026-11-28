@@ -181,6 +181,39 @@ async fn update_map(
     }
 }
 
+/// A map update from a command running inside an agent session, which
+/// names its own process instead of a run id.
+#[derive(Deserialize)]
+struct ProcessMap {
+    pid: u32,
+    #[serde(flatten)]
+    update: crate::kernel_maps::MapUpdate,
+}
+
+async fn update_map_by_process(
+    State(index): State<Arc<AgentIndex>>,
+    Json(body): Json<ProcessMap>,
+) -> Response {
+    let idx = Arc::clone(&index);
+    let res =
+        tokio::task::spawn_blocking(move || match idx.run_for_process(body.pid, Utc::now()) {
+            None => Err((
+                StatusCode::NOT_FOUND,
+                format!("no live agent run owns process {}", body.pid),
+            )),
+            Some(id) => idx
+                .update_map(&id, body.update)
+                .map(|map| serde_json::json!({ "id": id, "map": map }))
+                .map_err(|e| (StatusCode::BAD_REQUEST, e)),
+        })
+        .await;
+    match res {
+        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Err(e)) => e.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
 async fn cancel_gather(State(index): State<Arc<AgentIndex>>, Path(id): Path<String>) -> StatusCode {
     index.dequeue_gather(&id);
     StatusCode::NO_CONTENT
@@ -191,6 +224,7 @@ pub fn router<S: Clone + Send + Sync + 'static>(index: Arc<AgentIndex>) -> Route
         .route("/api/agents", get(list))
         .route("/api/agents/{id}", get(get_one))
         .route("/api/agents/gather", post(gather_runs))
+        .route("/api/agents/map", post(update_map_by_process))
         .route("/api/agents/{id}/open", post(open))
         .route("/api/agents/{id}/map", post(update_map))
         .route(
@@ -266,10 +300,14 @@ mod tests {
                     .unwrap(),
             )
         };
-        let bad = post(serde_json::json!({"status": "sleeping"})).await.unwrap();
+        let bad = post(serde_json::json!({"status": "sleeping"}))
+            .await
+            .unwrap();
         assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
-        let ok = post(serde_json::json!({"goal": "Ship the API", "status": "blocked",
-            "steps": [{"text": "tests", "status": "in_progress"}]}))
+        let ok = post(
+            serde_json::json!({"goal": "Ship the API", "status": "blocked",
+            "steps": [{"text": "tests", "status": "in_progress"}]}),
+        )
         .await
         .unwrap();
         assert_eq!(ok.status(), StatusCode::OK);
@@ -280,9 +318,59 @@ mod tests {
         assert_eq!(run["progress"]["status"], "blocked");
         assert!(run.get("map").is_none());
 
-        let (_, one) = call(router::<()>(Arc::clone(&index)), "GET", &format!("/api/agents/claude:{SID}")).await;
+        let (_, one) = call(
+            router::<()>(Arc::clone(&index)),
+            "GET",
+            &format!("/api/agents/claude:{SID}"),
+        )
+        .await;
         assert_eq!(one["map"]["source"], "kernel");
         assert_eq!(one["map"]["steps"][0]["text"], "tests");
+    }
+
+    #[tokio::test]
+    async fn a_command_reports_through_its_process() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().join("api");
+        std::fs::create_dir_all(&cwd).unwrap();
+        fake_home(tmp.path(), cwd.to_str().unwrap());
+        // The test process stands in for the live Claude session.
+        let me = std::process::id();
+        let start = crate::procs::snapshot()
+            .get(&me)
+            .map(|p| p.lstart.clone())
+            .unwrap_or_default();
+        let sessions = tmp.path().join(".claude/sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(
+            sessions.join(format!("{me}.json")),
+            serde_json::json!({"pid": me, "sessionId": SID, "cwd": cwd, "status": "idle", "procStart": start})
+                .to_string(),
+        )
+        .unwrap();
+        let index = Arc::new(AgentIndex::new(Paths::from_home(tmp.path())));
+        let post = |pid: u32| {
+            router::<()>(Arc::clone(&index)).oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/agents/map")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"pid": pid, "summary": "tests pass"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+        };
+        let ok = post(me).await.unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&ok.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(body["id"], format!("claude:{SID}"));
+        assert_eq!(body["map"]["summary"], "tests pass");
+        assert_eq!(
+            post(u32::MAX - 1).await.unwrap().status(),
+            StatusCode::NOT_FOUND
+        );
     }
 
     #[tokio::test]

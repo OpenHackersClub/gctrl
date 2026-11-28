@@ -31,6 +31,7 @@ const SOURCE_LABEL: Record<string, string> = {
   "session-map": "session-map mod",
   transcript: "transcript",
   kernel: "reported to gctrl",
+  "codex-goal": "Codex /goal",
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {

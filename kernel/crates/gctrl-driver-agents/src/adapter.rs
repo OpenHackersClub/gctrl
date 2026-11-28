@@ -183,6 +183,7 @@ mod tests {
     fn proc(pid: u32, tty: Option<&str>, command: &str) -> Proc {
         Proc {
             pid,
+            ppid: 1,
             lstart: "x".into(),
             tty: tty.map(str::to_string),
             command: command.into(),

@@ -17,6 +17,7 @@ pub mod adapter;
 pub mod claude;
 pub mod codex;
 pub mod gather;
+pub mod handoff_table;
 pub mod hermes;
 pub mod index;
 pub mod jsonl;
@@ -45,7 +46,11 @@ pub fn default_router<S: Clone + Send + Sync + 'static>() -> axum::Router<S> {
         .spawn(move || {
             let started = std::time::Instant::now();
             let runs = warm.refresh(chrono::Utc::now());
-            tracing::info!(runs = runs.len(), ms = started.elapsed().as_millis() as u64, "agent index warmed");
+            tracing::info!(
+                runs = runs.len(),
+                ms = started.elapsed().as_millis() as u64,
+                "agent index warmed"
+            );
         })
         .ok();
     routes::router(index)

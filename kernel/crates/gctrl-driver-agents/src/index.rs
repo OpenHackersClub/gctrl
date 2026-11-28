@@ -5,7 +5,9 @@ use crate::claude::ClaudeAdapter;
 use crate::codex::CodexAdapter;
 use crate::hermes::HermesAdapter;
 use crate::kernel_maps::{KernelMaps, MapUpdate};
-use crate::model::{AgentRun, Harness, Hidden, ListResponse, LiveInfo, LiveStatus, RunState, SessionMap};
+use crate::model::{
+    AgentRun, Harness, Hidden, ListResponse, LiveInfo, LiveStatus, RunState, SessionMap,
+};
 use crate::pi::PiAdapter;
 use crate::procs;
 use crate::project::Resolver;
@@ -200,7 +202,11 @@ impl AgentIndex {
         Self::with_parts(adapters, home, reported)
     }
 
-    pub fn with_parts(adapters: Vec<Box<dyn Adapter>>, home: PathBuf, reported: KernelMaps) -> Self {
+    pub fn with_parts(
+        adapters: Vec<Box<dyn Adapter>>,
+        home: PathBuf,
+        reported: KernelMaps,
+    ) -> Self {
         Self {
             reported,
             inner: Mutex::new(Inner {
@@ -247,6 +253,21 @@ impl AgentIndex {
         runs
     }
 
+    /// The live run whose process is `pid` or an ancestor of it: the run a
+    /// command started inside an agent session belongs to.
+    pub fn run_for_process(&self, pid: u32, now: DateTime<Utc>) -> Option<String> {
+        let chain = procs::ancestors(&procs::snapshot(), pid);
+        let find = |runs: &[AgentRun]| {
+            chain.iter().find_map(|p| {
+                runs.iter()
+                    .find(|r| r.live.as_ref().is_some_and(|l| l.pid == *p))
+                    .map(|r| r.id.clone())
+            })
+        };
+        find(&self.refresh_if_older(Duration::from_secs(30), now))
+            .or_else(|| find(&self.refresh(now)))
+    }
+
     /// Apply a map update reported for run `id`; the next list reflects it.
     pub fn update_map(&self, id: &str, upd: MapUpdate) -> Result<SessionMap, String> {
         let map = self.reported.update(id, upd)?;
@@ -266,7 +287,10 @@ impl AgentIndex {
             } else {
                 // The list carries goal and progress; the full map comes
                 // with `GET /api/agents/{id}`.
-                out.push(AgentRun { map: None, ..r.clone() });
+                out.push(AgentRun {
+                    map: None,
+                    ..r.clone()
+                });
             }
         }
         ListResponse {
@@ -332,32 +356,52 @@ impl AgentIndex {
 
     /// Record that `window_id` opened with an unused shell.
     pub fn mark_fresh_window(&self, window_id: i64) {
-        self.fresh_windows.lock().expect("window lock").insert(window_id);
+        self.fresh_windows
+            .lock()
+            .expect("window lock")
+            .insert(window_id);
     }
 
     /// True once for a window that still has its unused initial shell.
     pub fn take_fresh_window(&self, window_id: i64) -> bool {
-        self.fresh_windows.lock().expect("window lock").remove(&window_id)
+        self.fresh_windows
+            .lock()
+            .expect("window lock")
+            .remove(&window_id)
     }
 }
 
 /// A map reported to the kernel replaces the harness's own when it is newer.
+/// A Codex `/goal` stays on the reported map as its pinned goal, and the
+/// goal's status wins when it changed last.
 fn apply_reported(records: &mut [RunRecord], reported: &HashMap<String, SessionMap>) {
     for r in records.iter_mut() {
         let id = format!("{}:{}", r.harness.prefix(), r.native_id);
         let Some(m) = reported.get(&id) else { continue };
-        if r.map.as_ref().is_some_and(|cur| cur.updated_at > m.updated_at) {
-            continue;
+        let merged = match r.map.as_ref() {
+            Some(goal) if goal.source == crate::codex::GOAL_SOURCE => with_goal(m, goal),
+            Some(cur) if cur.updated_at > m.updated_at => continue,
+            _ => m.clone(),
+        };
+        if merged.goal.is_some() {
+            r.goal = merged.goal.clone();
         }
-        if m.goal.is_some() {
-            r.goal = m.goal.clone();
-        }
-        r.progress = Some(m.progress());
+        r.progress = Some(merged.progress());
         if r.name.is_none() {
-            r.name = m.name.clone();
+            r.name = merged.name.clone();
         }
-        r.map = Some(m.clone());
+        r.map = Some(merged);
     }
+}
+
+fn with_goal(reported: &SessionMap, goal: &SessionMap) -> SessionMap {
+    let mut m = reported.clone();
+    m.goal = goal.goal.clone();
+    m.goal_pinned = true;
+    if goal.updated_at > reported.updated_at && goal.status.is_some() {
+        m.status = goal.status.clone();
+    }
+    m
 }
 
 fn build_run(resolver: &mut Resolver, r: RunRecord, now: DateTime<Utc>) -> AgentRun {
@@ -416,6 +460,7 @@ mod tests {
     fn proc(pid: u32, lstart: &str, tty: Option<&str>, command: &str) -> Proc {
         Proc {
             pid,
+            ppid: 1,
             lstart: lstart.into(),
             tty: tty.map(str::to_string),
             command: command.into(),
@@ -564,8 +609,9 @@ mod tests {
         .into_iter()
         .map(|p| (p.pid, p))
         .collect();
-        let cwds: HashMap<u32, String> =
-            [(200, "/w/web".to_string()), (201, "/w/web".to_string())].into_iter().collect();
+        let cwds: HashMap<u32, String> = [(200, "/w/web".to_string()), (201, "/w/web".to_string())]
+            .into_iter()
+            .collect();
         let live = match_processes(&threads, &procs, procs::is_codex_cli, |_| cwds);
         assert_eq!(live.get(CODEX_ID), Some(&100));
         assert_eq!(live.get("33333333-3333-3333-3333-333333333333"), Some(&200));
@@ -736,7 +782,13 @@ mod tests {
         assert_eq!(pi.state, RunState::Resumable);
 
         let default_view = AgentIndex::list(&runs, ListOptions::default(), now);
-        assert_eq!(default_view.hidden, Hidden { headless: 1, stale: 1 });
+        assert_eq!(
+            default_view.hidden,
+            Hidden {
+                headless: 1,
+                stale: 1
+            }
+        );
         assert!(default_view.runs.iter().all(|r| !r.headless && !r.stale));
         let all = AgentIndex::list(
             &runs,
@@ -747,6 +799,39 @@ mod tests {
             now,
         );
         assert_eq!(all.runs.len(), runs.len());
+    }
+
+    #[test]
+    fn a_codex_goal_stays_pinned_on_a_reported_map() {
+        use crate::codex::ThreadGoal;
+        use crate::model::MapStep;
+        let at = |ms| rfc3339(crate::adapter::from_ms(ms));
+        let goal = ThreadGoal {
+            objective: "Ship the billing fix".into(),
+            status: "complete".into(),
+            updated_at_ms: 2_000,
+        };
+        let mut rec = RunRecord::new(Harness::Codex, "t1".into(), "/w".into(), Utc::now());
+        rec.map = Some(goal.to_map());
+        let reported = SessionMap {
+            source: "kernel".into(),
+            goal: Some("something else".into()),
+            status: Some("active".into()),
+            steps: vec![MapStep {
+                text: "patch".into(),
+                status: "in_progress".into(),
+            }],
+            updated_at: Some(at(1_000)),
+            ..SessionMap::default()
+        };
+        let all = HashMap::from([("codex:t1".to_string(), reported)]);
+        apply_reported(std::slice::from_mut(&mut rec), &all);
+        let m = rec.map.as_ref().unwrap();
+        assert_eq!(m.goal.as_deref(), Some("Ship the billing fix"));
+        assert!(m.goal_pinned);
+        assert_eq!(m.status.as_deref(), Some("done"), "the goal changed last");
+        assert_eq!(m.steps.len(), 1);
+        assert_eq!(rec.goal.as_deref(), Some("Ship the billing fix"));
     }
 
     #[test]

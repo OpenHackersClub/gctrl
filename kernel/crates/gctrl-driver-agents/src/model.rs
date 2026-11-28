@@ -12,7 +12,12 @@ pub enum Harness {
 }
 
 impl Harness {
-    pub const ALL: [Harness; 4] = [Harness::ClaudeCode, Harness::Codex, Harness::Hermes, Harness::Pi];
+    pub const ALL: [Harness; 4] = [
+        Harness::ClaudeCode,
+        Harness::Codex,
+        Harness::Hermes,
+        Harness::Pi,
+    ];
 
     /// Prefix of a run id: `claude:<id>`, `codex:<id>`, `hermes:<id>`, `pi:<id>`.
     pub const fn prefix(self) -> &'static str {
@@ -189,7 +194,11 @@ impl SessionMap {
             },
             summary: self.summary.clone(),
             current_step: current,
-            steps_done: self.steps.iter().filter(|s| s.status == "completed").count() as u32,
+            steps_done: self
+                .steps
+                .iter()
+                .filter(|s| s.status == "completed")
+                .count() as u32,
             steps_total: self.steps.len() as u32,
         }
     }

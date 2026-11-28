@@ -10,10 +10,10 @@
 
 use crate::adapter::{from_system, parse_ts, Adapter, RunRecord, ScanCtx};
 use crate::jsonl::{message_text, Cursor};
-use crate::model::{Harness, LiveInfo, LiveStatus, PrLink, Progress, SessionMap};
 use crate::map_store::MapStores;
-use crate::session_map::{is_snapshot_line, tool_result_text, TranscriptMap};
+use crate::model::{Harness, LiveInfo, LiveStatus, PrLink, Progress, SessionMap};
 use crate::procs::{self, Proc};
+use crate::session_map::{is_snapshot_line, tool_result_text, TranscriptMap};
 use crate::text::{clip, is_human_prompt, is_uuid};
 use serde::Deserialize;
 use serde_json::Value;
@@ -171,9 +171,10 @@ impl Transcript {
                     self.cost_usd = Some(c);
                 }
             }
-            "user" if self.first_prompt.is_none()
-                && !truthy(&line.is_meta)
-                && !truthy(&line.is_sidechain) =>
+            "user"
+                if self.first_prompt.is_none()
+                    && !truthy(&line.is_meta)
+                    && !truthy(&line.is_sidechain) =>
             {
                 if let Ok(u) = serde_json::from_slice::<UserLine>(raw) {
                     if let Some(t) = message_text(&u.message.content) {
@@ -218,7 +219,9 @@ impl Transcript {
         for b in blocks {
             match b["type"].as_str() {
                 Some("tool_use")
-                    if b["name"].as_str().is_some_and(|n| n.ends_with("session-map__update")) =>
+                    if b["name"]
+                        .as_str()
+                        .is_some_and(|n| n.ends_with("session-map__update")) =>
                 {
                     self.map.apply_input(&b["input"]);
                 }
@@ -235,7 +238,11 @@ impl Transcript {
     /// What the session is working toward: the session-map goal (which
     /// already reflects `/goal`), else the `/goal` condition.
     pub fn goal(&self) -> Option<String> {
-        self.map.map.goal.clone().or_else(|| self.goal_condition.clone())
+        self.map
+            .map
+            .goal
+            .clone()
+            .or_else(|| self.goal_condition.clone())
     }
 
     pub fn progress(&self) -> Option<Progress> {
@@ -343,7 +350,12 @@ pub fn config_dirs(home: &Path) -> Vec<PathBuf> {
     let mut dirs = vec![home.join(".claude")];
     let children = |p: PathBuf| -> Vec<PathBuf> {
         std::fs::read_dir(p)
-            .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect())
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .collect()
+            })
             .unwrap_or_default()
     };
     dirs.extend(children(home.join(".claude").join("clients")));
@@ -351,7 +363,11 @@ pub fn config_dirs(home: &Path) -> Vec<PathBuf> {
     if let Ok(rd) = std::fs::read_dir(home) {
         dirs.extend(
             rd.flatten()
-                .filter(|e| e.file_name().to_str().is_some_and(|n| n.starts_with(".claude-")))
+                .filter(|e| {
+                    e.file_name()
+                        .to_str()
+                        .is_some_and(|n| n.starts_with(".claude-"))
+                })
                 .map(|e| e.path())
                 .filter(|p| p.is_dir()),
         );
@@ -448,7 +464,10 @@ pub fn read_registry(dir: &Path) -> Vec<LiveEntry> {
 /// Live Claude sessions by session id. A registry entry counts when its pid
 /// exists and its recorded start time matches. Entries without a start time
 /// require a `claude` CLI process.
-pub fn claude_live(registry: &[LiveEntry], procs: &HashMap<u32, Proc>) -> HashMap<String, LiveInfo> {
+pub fn claude_live(
+    registry: &[LiveEntry],
+    procs: &HashMap<u32, Proc>,
+) -> HashMap<String, LiveInfo> {
     let mut out: HashMap<String, LiveInfo> = HashMap::new();
     for e in registry {
         let Some(p) = procs.get(&e.pid) else { continue };
@@ -532,9 +551,16 @@ impl Adapter for ClaudeAdapter {
                 .or_else(|| t.mtime.map(from_system))
                 .unwrap_or(ctx.now);
             let mut r = RunRecord::new(Harness::ClaudeCode, t.session_id.clone(), cwd, updated);
-            r.started = t.started_at.as_deref().and_then(parse_ts).unwrap_or(updated);
+            r.started = t
+                .started_at
+                .as_deref()
+                .and_then(parse_ts)
+                .unwrap_or(updated);
             r.title = t.title().unwrap_or_else(|| "(untitled)".into());
-            let map = stored.get(&t.session_id).cloned().or_else(|| t.session_map());
+            let map = stored
+                .get(&t.session_id)
+                .cloned()
+                .or_else(|| t.session_map());
             // `/rename` wins; the session-map name covers unrenamed sessions.
             r.name = t
                 .agent_name
@@ -648,7 +674,13 @@ mod tests {
 
         // A session with only `/goal` uses its condition.
         let p2 = tmp.path().join("goal-only.jsonl");
-        std::fs::write(&p2, r#"{"type":"attachment","attachment":{"type":"goal_status","condition":"fix CI"}}"#.to_string() + "\n").unwrap();
+        std::fs::write(
+            &p2,
+            r#"{"type":"attachment","attachment":{"type":"goal_status","condition":"fix CI"}}"#
+                .to_string()
+                + "\n",
+        )
+        .unwrap();
         let mut t2 = Transcript::new(SID);
         t2.refresh(&p2).unwrap();
         assert_eq!(t2.goal().as_deref(), Some("fix CI"));
@@ -681,7 +713,10 @@ mod tests {
     fn appends_incrementally_and_ignores_partial_line() {
         let tmp = tempfile::tempdir().unwrap();
         let all = lines();
-        let p = write(tmp.path(), &(all[..3].join("\n") + "\n" + r#"{"type":"last-pro"#));
+        let p = write(
+            tmp.path(),
+            &(all[..3].join("\n") + "\n" + r#"{"type":"last-pro"#),
+        );
         let mut t = Transcript::new(SID);
         t.refresh(&p).unwrap();
         assert_eq!(t.last_prompt, None);

@@ -114,7 +114,9 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
         Ok(Err(_)) => None,
         Err(_) => {
             tracing::debug!(dir = %dir.display(), "git timed out");
-            let _ = Command::new("/bin/kill").args(["-9", &pid.to_string()]).status();
+            let _ = Command::new("/bin/kill")
+                .args(["-9", &pid.to_string()])
+                .status();
             None
         }
     }
@@ -142,15 +144,25 @@ fn origin_from_config(config: &str) -> Option<String> {
 /// that prompt for the kernel, and the read blocks until someone answers,
 /// so the resolver runs no git there and keys the run by directory name.
 fn privacy_protected(home: &Path, dir: &Path) -> bool {
-    ["Documents", "Desktop", "Downloads", "Library/Mobile Documents"]
-        .iter()
-        .any(|sub| dir.starts_with(home.join(sub)))
+    [
+        "Documents",
+        "Desktop",
+        "Downloads",
+        "Library/Mobile Documents",
+    ]
+    .iter()
+    .any(|sub| dir.starts_with(home.join(sub)))
 }
 
 fn git_info(dir: &Path) -> GitInfo {
     let rev = git(
         dir,
-        &["rev-parse", "--show-toplevel", "--git-dir", "--git-common-dir"],
+        &[
+            "rev-parse",
+            "--show-toplevel",
+            "--git-dir",
+            "--git-common-dir",
+        ],
     );
     let (toplevel, linked_worktree, common_dir) = match rev {
         Some(out) => {
@@ -257,9 +269,18 @@ mod tests {
 
     #[test]
     fn slugs() {
-        assert_eq!(slug_from_origin("git@github.com:acme/api.git").as_deref(), Some("api"));
-        assert_eq!(slug_from_origin("https://github.com/acme/api").as_deref(), Some("api"));
-        assert_eq!(slug_from_origin("https://github.com/acme/api/").as_deref(), Some("api"));
+        assert_eq!(
+            slug_from_origin("git@github.com:acme/api.git").as_deref(),
+            Some("api")
+        );
+        assert_eq!(
+            slug_from_origin("https://github.com/acme/api").as_deref(),
+            Some("api")
+        );
+        assert_eq!(
+            slug_from_origin("https://github.com/acme/api/").as_deref(),
+            Some("api")
+        );
         assert_eq!(slug_from_origin(""), None);
     }
 
@@ -276,7 +297,10 @@ mod tests {
         let got = missing_cwd_candidate(home, Path::new("/Users/me/wt/acme/api/fix-login"));
         assert_eq!(
             got,
-            Some((PathBuf::from("/Users/me/workspaces/acme/api"), Some("fix-login".into())))
+            Some((
+                PathBuf::from("/Users/me/workspaces/acme/api"),
+                Some("fix-login".into())
+            ))
         );
     }
 
@@ -296,7 +320,10 @@ mod tests {
     #[test]
     fn reads_origin_from_git_config() {
         let cfg = "[core]\n\tbare = false\n[remote \"upstream\"]\n\turl = git@github.com:up/x.git\n[remote \"origin\"]\n\turl = git@github.com:acme/payments.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n";
-        assert_eq!(origin_from_config(cfg).as_deref(), Some("git@github.com:acme/payments.git"));
+        assert_eq!(
+            origin_from_config(cfg).as_deref(),
+            Some("git@github.com:acme/payments.git")
+        );
         assert_eq!(origin_from_config("[core]\n"), None);
     }
 
@@ -310,9 +337,20 @@ mod tests {
         std::fs::create_dir_all(&worktree).unwrap();
         for args in [
             &["init", "-q"][..],
-            &["remote", "add", "origin", "git@github.com:acme/payments.git"][..],
+            &[
+                "remote",
+                "add",
+                "origin",
+                "git@github.com:acme/payments.git",
+            ][..],
         ] {
-            assert!(Command::new("git").arg("-C").arg(&checkout).args(args).status().unwrap().success());
+            assert!(Command::new("git")
+                .arg("-C")
+                .arg(&checkout)
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
         }
         let mut r = Resolver::new(home.to_path_buf());
         let got = r.resolve(worktree.to_str().unwrap(), None);
@@ -323,10 +361,19 @@ mod tests {
     #[test]
     fn skips_git_in_privacy_protected_folders() {
         let home = Path::new("/Users/me");
-        assert!(privacy_protected(home, Path::new("/Users/me/Documents/Codex/2026-09-06/we")));
+        assert!(privacy_protected(
+            home,
+            Path::new("/Users/me/Documents/Codex/2026-09-06/we")
+        ));
         assert!(privacy_protected(home, Path::new("/Users/me/Desktop/demo")));
-        assert!(!privacy_protected(home, Path::new("/Users/me/workspaces/acme/api")));
-        assert!(!privacy_protected(home, Path::new("/Users/me/DocumentsArchive")));
+        assert!(!privacy_protected(
+            home,
+            Path::new("/Users/me/workspaces/acme/api")
+        ));
+        assert!(!privacy_protected(
+            home,
+            Path::new("/Users/me/DocumentsArchive")
+        ));
 
         // A git repo inside Documents keys by its directory name, not origin.
         let tmp = tempfile::tempdir().unwrap();
@@ -334,9 +381,20 @@ mod tests {
         std::fs::create_dir_all(&repo).unwrap();
         for args in [
             &["init", "-q"][..],
-            &["remote", "add", "origin", "git@github.com:acme/payments.git"][..],
+            &[
+                "remote",
+                "add",
+                "origin",
+                "git@github.com:acme/payments.git",
+            ][..],
         ] {
-            assert!(Command::new("git").arg("-C").arg(&repo).args(args).status().unwrap().success());
+            assert!(Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
         }
         let mut r = Resolver::new(tmp.path().to_path_buf());
         assert_eq!(r.resolve(repo.to_str().unwrap(), None).key, "scratch");
@@ -359,23 +417,53 @@ mod tests {
             assert!(ok, "git {args:?}");
         };
         run(&repo, &["init", "-q", "-b", "main"]);
-        run(&repo, &["remote", "add", "origin", "git@github.com:acme/payments.git"]);
         run(
             &repo,
-            &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"],
+            &[
+                "remote",
+                "add",
+                "origin",
+                "git@github.com:acme/payments.git",
+            ],
+        );
+        run(
+            &repo,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "init",
+            ],
         );
         let wt = tmp.path().join("fix-login");
         run(&repo, &["worktree", "add", "-q", wt.to_str().unwrap()]);
 
         let mut r = Resolver::new(tmp.path().to_path_buf());
         let main = r.resolve(repo.to_str().unwrap(), None);
-        assert_eq!(main, Resolved { key: "payments".into(), worktree: None });
+        assert_eq!(
+            main,
+            Resolved {
+                key: "payments".into(),
+                worktree: None
+            }
+        );
         let linked = r.resolve(wt.to_str().unwrap(), None);
         assert_eq!(
             linked,
-            Resolved { key: "payments".into(), worktree: Some("fix-login".into()) }
+            Resolved {
+                key: "payments".into(),
+                worktree: Some("fix-login".into())
+            }
         );
-        let hinted = r.resolve("/nonexistent/x", Some("https://github.com/acme/billing.git"));
+        let hinted = r.resolve(
+            "/nonexistent/x",
+            Some("https://github.com/acme/billing.git"),
+        );
         assert_eq!(hinted.key, "billing");
     }
 }

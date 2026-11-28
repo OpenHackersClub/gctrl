@@ -29,6 +29,7 @@ The driver reads harness stores and never writes them.
 | Any harness | `<data dir>/gctrl/agent-maps/<harness>_<native id>.json`, written by `POST /api/agents/{id}/map` | The session map in the gctrl shape |
 | Claude Code | `<config>/sessions/<pid>.json` (live registry) | `pid`, `sessionId`, `cwd`, `status` (`busy`, `idle`, `shell`), `procStart`, `kind` |
 | Codex | `$CODEX_HOME/state_<n>.sqlite` → `threads` (highest `<n>` wins; default `~/.codex`) | `id`, `cwd`, `name`, `title`, `first_user_message`, `git_branch`, `git_origin_url`, `tokens_used`, `model`, `archived`, `source`, `thread_source`, `created_at_ms`, `updated_at_ms`, `rollout_path` |
+| Codex | `$CODEX_HOME/goals_<n>.sqlite` → `thread_goals` (highest `<n>` wins) | `thread_id`, `objective`, `status` (`active`, `paused`, `blocked`, `usage_limited`, `budget_limited`, `complete`), `updated_at_ms` |
 | Codex | Tail of the thread's rollout JSONL | Last `response_item` message with `role = user`; last `event_msg` of type `task_started`, `task_complete` or `turn_aborted` |
 | Hermes Agent | `$HERMES_HOME/state.db` → `sessions`, `messages` (default `~/.hermes`) | `sessions.{id, source, cwd, title, model, started_at, ended_at, end_reason, parent_session_id, archived, input_tokens, output_tokens, actual_cost_usd, estimated_cost_usd}`; per session the first and last `user` message, and the role and `tool_calls` of the newest message |
 | Pi | `<sessions>/--<cwd>--/<timestamp>_<id>.jsonl`, where `<sessions>` is `$PI_CODING_AGENT_SESSION_DIR`, else `$PI_CODING_AGENT_DIR/sessions`, else `~/.pi/agent/sessions` | Header `session.{id, cwd, timestamp}`; `session_info.name`; `model_change.modelId`; `message.message.{role, content, model, stopReason}` |
@@ -43,8 +44,9 @@ Rules:
 5. SQLite stores (Codex, Hermes) open with `mode=ro`. When the harness is not running, the WAL index is absent and a read-only connection cannot create it. The driver then opens the database with `immutable=1`, which is safe because with no `-wal` file the main database file holds every committed write. Queries read `PRAGMA table_info` first and treat missing columns as `NULL`.
 6. Hermes context compression ends a session with `end_reason = 'compression'` and continues in a child session. A chain MUST retain the oldest session's run identity, `started_at` and first prompt; `native_id` MUST identify the newest session for resuming. Hermes rows with active-message tracking (`messages.active`) count only active messages.
 7. A session-map tool result follows its call and prints the whole map, so it overrides the call's input. Only transcript lines that name `session-map__update`, `goal_status`, or a printed `Goal:` / `Status:` line are parsed in full. When a first read of a transcript changed in the last 7 days finds no printed map in its tail, the driver scans the skipped middle backward, up to 64 MiB, and stops at the newest printed map.
-8. A run's session map comes from the first source that holds it: for Claude Code, the session-map mod's store, then the transcript. A map reported to the kernel replaces either when its `updated_at` is newer. The mod's store is read again only when its file changes; when two config dirs hold the same session, the newer map wins. Store fields of an unknown shape are read leniently.
-9. A prompt shown on a card excludes harness-injected text: lines that start with `<`, the AGENTS.md preamble, and messages relayed from another agent session.
+8. A run's session map comes from the first source that holds it: for Claude Code, the session-map mod's store, then the transcript; for Codex, the thread's `/goal`. A map reported to the kernel replaces a Claude Code map when its `updated_at` is newer. On a Codex run the reported map keeps the `/goal` objective as its pinned goal, and takes the goal's status when the goal changed last. The mod's store is read again only when its file changes; when two config dirs hold the same session, the newer map wins. Store fields of an unknown shape are read leniently.
+9. A Codex `/goal` maps to a pinned goal with status `active` (`active`), `blocked` (`blocked`, `usage_limited`, `budget_limited`, the last two with the limit as summary), `done` (`complete`), or no status with summary `Goal paused` (`paused`).
+10. A prompt shown on a card excludes harness-injected text: lines that start with `<`, the AGENTS.md preamble, and messages relayed from another agent session.
 
 ## Liveness
 
@@ -174,10 +176,13 @@ A body with no ids returns 400. When opening the window fails, the call returns 
   "handoffs": [{ "who": "operator", "type": "signoff", "action": "Approve the migration", "n": 1 }] }
 ```
 
-1. The body takes the session-map update tool's fields (`goal`, `status`, `summary`, `name`, `steps`) plus `handoffs`, `clearHandoffs`, `refs`, `repo` and `branch`. A field left out keeps its value; a list replaces the stored list.
-2. `{id}` is `<harness prefix>:<native id>` with a known prefix; the run need not be indexed yet.
-3. 400 when `status`, a step status or a hand-off type is outside its set, or past 50 steps, 30 hand-offs or 40 refs. Text is cut to 300 characters; refs keep `https://` URLs only.
-4. The response is the stored map; the next list reflects it.
+1. The body takes the session-map update tool's fields (`goal`, `status`, `summary`, `name`, `steps`) plus `handoffs`, `clearHandoffs`, `refs`, `repo`, `branch` and `reply`. A field left out keeps its value; a list replaces the stored list.
+2. `reply` is the text of the session's final reply. When it holds a hand-off table (header `\ | Who | Type | Action | Why`, as in the harness hand-off convention), the table's rows replace the hand-offs that are not pinned; a reply without one leaves them. The last such table outside a code fence counts. A row's `\N` is its `n`, the `[SignOff]`, `[Ops]` or `[Task]` tag its type, and the text after a leading emoji its `who`.
+3. `{id}` is `<harness prefix>:<native id>` with a known prefix; the run need not be indexed yet.
+4. 400 when `status`, a step status or a hand-off type is outside its set, or past 50 steps, 30 hand-offs or 40 refs. Text is cut to 300 characters; refs keep `https://` URLs only.
+5. The response is the stored map; the next list reflects it.
+
+`POST /api/agents/map` takes the same body plus `pid`, for a command that runs inside a session and knows its own process but not its run id. The run is the live run whose process is `pid` or the nearest ancestor of it. The response is `{"id", "map"}`; 404 when no live run owns the process.
 
 ## Open and resume
 

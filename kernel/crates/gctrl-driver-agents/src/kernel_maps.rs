@@ -1,10 +1,13 @@
 //! Session maps reported to the kernel by any harness through
 //! `POST /api/agents/{id}/map`. The body takes the fields of the Claude Code
 //! session-map update tool (`goal`, `status`, `summary`, `name`, `steps`)
-//! plus `handoffs`, `clearHandoffs`, `refs`, `repo` and `branch`; fields
-//! left out keep their value, and a list replaces the stored list. Each map
-//! is kept as `<maps dir>/<harness>_<native id>.json`.
+//! plus `handoffs`, `clearHandoffs`, `refs`, `repo`, `branch` and `reply`;
+//! fields left out keep their value, and a list replaces the stored list.
+//! `reply` is the text of the agent's final reply: its hand-off table, when
+//! it has one, replaces the hand-offs that are not pinned. Each map is kept
+//! as `<maps dir>/<harness>_<native id>.json`.
 
+use crate::handoff_table;
 use crate::model::{Harness, MapHandoff, MapRef, MapStep, SessionMap};
 use crate::text::clip;
 use chrono::{SecondsFormat, Utc};
@@ -32,6 +35,7 @@ pub struct MapUpdate {
     pub refs: Option<Vec<MapRef>>,
     pub repo: Option<String>,
     pub branch: Option<String>,
+    pub reply: Option<String>,
 }
 
 /// `<harness prefix>:<native id>` with a known prefix and a safe native id.
@@ -110,6 +114,11 @@ pub fn apply(map: &mut SessionMap, upd: MapUpdate) -> Result<(), String> {
     }
     if upd.clear_handoffs == Some(true) {
         map.handoffs.retain(|h| h.pinned);
+    }
+    if let Some(rows) = upd.reply.as_deref().and_then(handoff_table::parse) {
+        map.handoffs.retain(|h| h.pinned);
+        let room = MAX_HANDOFFS.saturating_sub(map.handoffs.len());
+        map.handoffs.extend(rows.into_iter().take(room));
     }
     if let Some(h) = upd.handoffs {
         map.handoffs = h
@@ -233,6 +242,31 @@ mod tests {
         // A new instance reads the map back from disk.
         let again = KernelMaps::open(tmp.path().to_path_buf());
         assert_eq!(again.all()[id].goal.as_deref(), Some("Fix billing"));
+    }
+
+    #[test]
+    fn a_reply_table_replaces_unpinned_handoffs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let maps = KernelMaps::open(tmp.path().to_path_buf());
+        let id = "hermes:20260420_134853_5501ee";
+        maps.update(
+            id,
+            upd(json!({"handoffs": [
+            {"who": "operator", "type": "ops", "action": "Pinned row", "pinned": true},
+            {"who": "operator", "type": "ops", "action": "Old row", "n": 1}]})),
+        )
+        .unwrap();
+        let reply =
+            "Shipped.\n\n| \\ | Who | Type | Action | Why |\n| --- | --- | --- | --- | --- |\n\
+            | \\1 | 🙋🏻‍♂️ operator | ✍️ [SignOff] | Approve the release | |\n";
+        let m = maps.update(id, upd(json!({"reply": reply}))).unwrap();
+        let actions: Vec<&str> = m.handoffs.iter().map(|h| h.action.as_str()).collect();
+        assert_eq!(actions, ["Pinned row", "Approve the release"]);
+        // A reply without a table leaves the hand-offs alone.
+        let m = maps
+            .update(id, upd(json!({"reply": "Still working."})))
+            .unwrap();
+        assert_eq!(m.handoffs.len(), 2);
     }
 
     #[test]
