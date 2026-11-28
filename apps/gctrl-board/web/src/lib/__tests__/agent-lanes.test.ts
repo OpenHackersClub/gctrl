@@ -2,10 +2,17 @@ import { describe, expect, it } from "vitest"
 import type { AgentRun, InboxMessage } from "../../types"
 import {
   buildLanes,
+  cardGoal,
   cardHeadline,
+  cardProgress,
   columnFor,
   formatUsage,
   gatherErrorMessage,
+  handoffGroups,
+  hideAllButLive,
+  mapBrief,
+  projectOptions,
+  visibleLanes,
   gatherPreview,
   gatherResultMessage,
   laneSummary,
@@ -264,5 +271,112 @@ describe("gather", () => {
     expect(gatherErrorMessage(new Error("403: denied"), "switch")).toContain("Accessibility")
     expect(gatherErrorMessage(new Error("501: off"), "switch")).toContain("Mission Control")
     expect(gatherErrorMessage(new Error("403: x"), "gather")).toContain("Automation denied")
+  })
+})
+
+describe("goal and progress", () => {
+  const progress = (o: Partial<NonNullable<AgentRun["progress"]>> = {}) => ({
+    status: "active",
+    summary: null,
+    current_step: null,
+    steps_done: 0,
+    steps_total: 0,
+    ...o,
+  })
+
+  it("leads with the goal, never repeating the headline", () => {
+    expect(cardGoal(run({ id: "claude:a", name: "s-x", goal: "Ship the parser" }))).toBe("Ship the parser")
+    expect(cardGoal(run({ id: "codex:b", name: "Fix login", goal: "Fix login" }))).toBeNull()
+    expect(cardGoal(run({ id: "claude:c", name: "s-y", title: "Refactor auth" }))).toBe("Refactor auth")
+    expect(cardGoal(run({ id: "claude:d", title: "Only title" }))).toBeNull()
+  })
+
+  it("shows the current step, else the summary, with the step count", () => {
+    const step = run({ id: "claude:a", progress: progress({ current_step: "review", steps_done: 2, steps_total: 4 }) })
+    expect(cardProgress(step)).toBe("review · 2/4")
+    const summary = run({ id: "claude:b", progress: progress({ summary: "tests green" }) })
+    expect(cardProgress(summary)).toBe("tests green")
+    expect(cardProgress(run({ id: "claude:c" }))).toBeNull()
+  })
+
+  it("moves a live blocked or handoff run to Needs you", () => {
+    const live = { pid: 1, tty: "/dev/ttys001", status: "idle" as const }
+    const blocked = run({ id: "claude:a", state: "idle", live, progress: progress({ status: "blocked" }) })
+    expect(columnFor(blocked, new Set())).toBe("needs_you")
+    const ended = run({ id: "claude:b", state: "resumable", progress: progress({ status: "handoff" }) })
+    expect(columnFor(ended, new Set())).toBe("resumable")
+    const active = run({ id: "claude:c", state: "idle", live, progress: progress() })
+    expect(columnFor(active, new Set())).toBe("idle")
+  })
+})
+
+describe("project filter", () => {
+  const live = { pid: 1, tty: "/dev/ttys001", status: "idle" as const }
+  const lanes = buildLanes(
+    [
+      run({ id: "claude:a", project_key: "web", state: "idle", live }),
+      run({ id: "claude:b", project_key: "api", state: "resumable" }),
+      run({ id: "codex:c", project_key: "api", state: "resumable" }),
+    ],
+    new Set(),
+  )
+
+  it("lists projects alphabetically with run counts and liveness", () => {
+    expect(projectOptions(lanes)).toEqual([
+      { key: "api", runs: 2, live: false },
+      { key: "web", runs: 1, live: true },
+    ])
+  })
+
+  it("hides the projects the operator unticked", () => {
+    expect(visibleLanes(lanes, new Set()).map((l) => l.projectKey).sort()).toEqual(["api", "web"])
+    expect(visibleLanes(lanes, new Set(["api"])).map((l) => l.projectKey)).toEqual(["web"])
+  })
+
+  it("live only hides every project without a live run", () => {
+    expect([...hideAllButLive(projectOptions(lanes))]).toEqual(["api"])
+  })
+})
+
+describe("session map", () => {
+  const map = {
+    source: "session-map",
+    goal: "Ship the panel",
+    status: "active",
+    summary: "pane done",
+    steps: [
+      { text: "scan", status: "completed" as const },
+      { text: "pane", status: "in_progress" as const },
+    ],
+    handoffs: [
+      { who: "codex", type: "task" as const, action: "Fix lipo" },
+      { who: "operator", type: "ops" as const, action: "Grant Accessibility", why: "binary swap", n: 1 },
+    ],
+    refs: [{ kind: "pr" as const, repo: "acme/api", number: 7, url: "https://github.com/acme/api/pull/7", roles: ["created"], state: "OPEN" }],
+    reports: [],
+    repo: "acme/api",
+    branch: "main",
+  }
+
+  it("groups hand-offs with the operator first", () => {
+    expect(handoffGroups(map.handoffs).map((g) => g.who)).toEqual(["operator", "codex"])
+  })
+
+  it("renders the brief the session-map mod copies", () => {
+    expect(mapBrief(run({ id: "claude:a", name: "s-panel" }), map)).toBe(
+      [
+        "Session s-panel [acme/api · main]",
+        "Goal: Ship the panel",
+        "Status: active — pane done",
+        "Hand-offs:",
+        "\\1 operator [Ops] Grant Accessibility — binary swap",
+        "→ codex [Task] Fix lipo",
+        "Steps:",
+        "- [x] scan",
+        "- [>] pane",
+        "GitHub:",
+        "- PR acme/api#7 (OPEN) created",
+      ].join("\n"),
+    )
   })
 })

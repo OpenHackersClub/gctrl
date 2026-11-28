@@ -4,7 +4,10 @@ use crate::adapter::{Adapter, RunRecord, ScanCtx};
 use crate::claude::ClaudeAdapter;
 use crate::codex::CodexAdapter;
 use crate::hermes::HermesAdapter;
-use crate::model::{AgentRun, Harness, Hidden, ListResponse, LiveInfo, LiveStatus, RunState};
+use crate::kernel_maps::{KernelMaps, MapUpdate};
+use crate::model::{
+    AgentRun, Harness, Hidden, ListResponse, LiveInfo, LiveStatus, RunState, SessionMap,
+};
 use crate::pi::PiAdapter;
 use crate::procs;
 use crate::project::Resolver;
@@ -32,6 +35,8 @@ pub struct Paths {
     pub codex_home: PathBuf,
     pub hermes_home: PathBuf,
     pub pi_sessions: PathBuf,
+    /// Where maps reported through `POST /api/agents/{id}/map` are kept.
+    pub maps_dir: PathBuf,
 }
 
 impl Paths {
@@ -41,6 +46,7 @@ impl Paths {
             codex_home: home.join(".codex"),
             hermes_home: home.join(".hermes"),
             pi_sessions: home.join(".pi").join("agent").join("sessions"),
+            maps_dir: home.join(".gctrl").join("agent-maps"),
         }
     }
 
@@ -48,6 +54,9 @@ impl Paths {
     pub fn detect() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/nonexistent"));
         let mut p = Self::from_home(&home);
+        if let Some(data) = dirs::data_dir() {
+            p.maps_dir = data.join("gctrl").join("agent-maps");
+        }
         let env = |k: &str| {
             std::env::var_os(k)
                 .filter(|v| !v.is_empty())
@@ -95,6 +104,7 @@ struct Inner {
 
 pub struct AgentIndex {
     inner: Mutex<Inner>,
+    reported: KernelMaps,
     operations: Mutex<Operations>,
     /// Gather windows whose initial shell no run has used yet.
     fresh_windows: Mutex<std::collections::HashSet<i64>>,
@@ -182,11 +192,23 @@ pub fn launch_request(harness: Harness, native_id: &str, cwd: &str) -> LaunchReq
 
 impl AgentIndex {
     pub fn new(paths: Paths) -> Self {
-        Self::with_adapters(paths.adapters(), paths.home)
+        let reported = KernelMaps::open(paths.maps_dir.clone());
+        Self::with_parts(paths.adapters(), paths.home, reported)
     }
 
+    /// An index over `adapters` whose reported maps live under `home`.
     pub fn with_adapters(adapters: Vec<Box<dyn Adapter>>, home: PathBuf) -> Self {
+        let reported = KernelMaps::open(home.join(".gctrl").join("agent-maps"));
+        Self::with_parts(adapters, home, reported)
+    }
+
+    pub fn with_parts(
+        adapters: Vec<Box<dyn Adapter>>,
+        home: PathBuf,
+        reported: KernelMaps,
+    ) -> Self {
         Self {
+            reported,
             inner: Mutex::new(Inner {
                 adapters,
                 resolver: Resolver::new(home),
@@ -215,11 +237,12 @@ impl AgentIndex {
         let ctx = ScanCtx { procs: &procs, now };
         let mut guard = self.inner.lock().expect("agent index lock");
         let inner = &mut *guard;
-        let records: Vec<RunRecord> = inner
+        let mut records: Vec<RunRecord> = inner
             .adapters
             .iter_mut()
             .flat_map(|a| a.scan(&ctx))
             .collect();
+        apply_reported(&mut records, &self.reported.all());
         let mut runs: Vec<AgentRun> = records
             .into_iter()
             .map(|r| build_run(&mut inner.resolver, r, now))
@@ -228,6 +251,28 @@ impl AgentIndex {
         inner.runs = runs.clone();
         inner.refreshed = Some(Instant::now());
         runs
+    }
+
+    /// The live run whose process is `pid` or its nearest ancestor: the run
+    /// a command started inside an agent session belongs to. The index is
+    /// refreshed first, so a session started inside another session's shell
+    /// resolves to itself, not to the older session around it.
+    pub fn run_for_process(&self, pid: u32, now: DateTime<Utc>) -> Option<String> {
+        let runs = self.refresh(now);
+        let live: HashMap<u32, &str> = runs
+            .iter()
+            .filter_map(|r| r.live.as_ref().map(|l| (l.pid, r.id.as_str())))
+            .collect();
+        procs::ancestors(&procs::snapshot(), pid)
+            .into_iter()
+            .find_map(|p| live.get(&p).map(|id| id.to_string()))
+    }
+
+    /// Apply a map update reported for run `id`; the next list reflects it.
+    pub fn update_map(&self, id: &str, upd: MapUpdate) -> Result<SessionMap, String> {
+        let map = self.reported.update(id, upd)?;
+        self.inner.lock().expect("agent index lock").refreshed = None;
+        Ok(map)
     }
 
     /// Apply the default filters and count what they hide.
@@ -240,7 +285,12 @@ impl AgentIndex {
             } else if r.stale && !opts.include_stale {
                 hidden.stale += 1;
             } else {
-                out.push(r.clone());
+                // The list carries goal and progress; the full map comes
+                // with `GET /api/agents/{id}`.
+                out.push(AgentRun {
+                    map: None,
+                    ..r.clone()
+                });
             }
         }
         ListResponse {
@@ -306,13 +356,52 @@ impl AgentIndex {
 
     /// Record that `window_id` opened with an unused shell.
     pub fn mark_fresh_window(&self, window_id: i64) {
-        self.fresh_windows.lock().expect("window lock").insert(window_id);
+        self.fresh_windows
+            .lock()
+            .expect("window lock")
+            .insert(window_id);
     }
 
     /// True once for a window that still has its unused initial shell.
     pub fn take_fresh_window(&self, window_id: i64) -> bool {
-        self.fresh_windows.lock().expect("window lock").remove(&window_id)
+        self.fresh_windows
+            .lock()
+            .expect("window lock")
+            .remove(&window_id)
     }
+}
+
+/// A map reported to the kernel replaces the harness's own when it is newer.
+/// A Codex `/goal` stays on the reported map as its pinned goal, and the
+/// goal's status wins when it changed last.
+fn apply_reported(records: &mut [RunRecord], reported: &HashMap<String, SessionMap>) {
+    for r in records.iter_mut() {
+        let id = format!("{}:{}", r.harness.prefix(), r.native_id);
+        let Some(m) = reported.get(&id) else { continue };
+        let merged = match r.map.as_ref() {
+            Some(goal) if goal.source == crate::codex::GOAL_SOURCE => with_goal(m, goal),
+            Some(cur) if cur.updated_at > m.updated_at => continue,
+            _ => m.clone(),
+        };
+        if merged.goal.is_some() {
+            r.goal = merged.goal.clone();
+        }
+        r.progress = Some(merged.progress());
+        if r.name.is_none() {
+            r.name = merged.name.clone();
+        }
+        r.map = Some(merged);
+    }
+}
+
+fn with_goal(reported: &SessionMap, goal: &SessionMap) -> SessionMap {
+    let mut m = reported.clone();
+    m.goal = goal.goal.clone();
+    m.goal_pinned = true;
+    if goal.updated_at > reported.updated_at && goal.status.is_some() {
+        m.status = goal.status.clone();
+    }
+    m
 }
 
 fn build_run(resolver: &mut Resolver, r: RunRecord, now: DateTime<Utc>) -> AgentRun {
@@ -333,6 +422,9 @@ fn build_run(resolver: &mut Resolver, r: RunRecord, now: DateTime<Utc>) -> Agent
         cwd_exists,
         worktree: resolved.worktree,
         git_branch: r.git_branch,
+        goal: r.goal,
+        progress: r.progress,
+        map: r.map,
         last_prompt: r.last_prompt,
         pr: r.pr,
         cost_usd: r.cost_usd,
@@ -368,6 +460,7 @@ mod tests {
     fn proc(pid: u32, lstart: &str, tty: Option<&str>, command: &str) -> Proc {
         Proc {
             pid,
+            ppid: 1,
             lstart: lstart.into(),
             tty: tty.map(str::to_string),
             command: command.into(),
@@ -516,8 +609,9 @@ mod tests {
         .into_iter()
         .map(|p| (p.pid, p))
         .collect();
-        let cwds: HashMap<u32, String> =
-            [(200, "/w/web".to_string()), (201, "/w/web".to_string())].into_iter().collect();
+        let cwds: HashMap<u32, String> = [(200, "/w/web".to_string()), (201, "/w/web".to_string())]
+            .into_iter()
+            .collect();
         let live = match_processes(&threads, &procs, procs::is_codex_cli, |_| cwds);
         assert_eq!(live.get(CODEX_ID), Some(&100));
         assert_eq!(live.get("33333333-3333-3333-3333-333333333333"), Some(&200));
@@ -688,7 +782,13 @@ mod tests {
         assert_eq!(pi.state, RunState::Resumable);
 
         let default_view = AgentIndex::list(&runs, ListOptions::default(), now);
-        assert_eq!(default_view.hidden, Hidden { headless: 1, stale: 1 });
+        assert_eq!(
+            default_view.hidden,
+            Hidden {
+                headless: 1,
+                stale: 1
+            }
+        );
         assert!(default_view.runs.iter().all(|r| !r.headless && !r.stale));
         let all = AgentIndex::list(
             &runs,
@@ -699,6 +799,39 @@ mod tests {
             now,
         );
         assert_eq!(all.runs.len(), runs.len());
+    }
+
+    #[test]
+    fn a_codex_goal_stays_pinned_on_a_reported_map() {
+        use crate::codex::ThreadGoal;
+        use crate::model::MapStep;
+        let at = |ms| rfc3339(crate::adapter::from_ms(ms));
+        let goal = ThreadGoal {
+            objective: "Ship the billing fix".into(),
+            status: "complete".into(),
+            updated_at_ms: 2_000,
+        };
+        let mut rec = RunRecord::new(Harness::Codex, "t1".into(), "/w".into(), Utc::now());
+        rec.map = Some(goal.to_map());
+        let reported = SessionMap {
+            source: "kernel".into(),
+            goal: Some("something else".into()),
+            status: Some("active".into()),
+            steps: vec![MapStep {
+                text: "patch".into(),
+                status: "in_progress".into(),
+            }],
+            updated_at: Some(at(1_000)),
+            ..SessionMap::default()
+        };
+        let all = HashMap::from([("codex:t1".to_string(), reported)]);
+        apply_reported(std::slice::from_mut(&mut rec), &all);
+        let m = rec.map.as_ref().unwrap();
+        assert_eq!(m.goal.as_deref(), Some("Ship the billing fix"));
+        assert!(m.goal_pinned);
+        assert_eq!(m.status.as_deref(), Some("done"), "the goal changed last");
+        assert_eq!(m.steps.len(), 1);
+        assert_eq!(rec.goal.as_deref(), Some("Ship the billing fix"));
     }
 
     #[test]

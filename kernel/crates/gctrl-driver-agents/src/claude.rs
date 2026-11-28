@@ -10,14 +10,22 @@
 
 use crate::adapter::{from_system, parse_ts, Adapter, RunRecord, ScanCtx};
 use crate::jsonl::{message_text, Cursor};
-use crate::model::{Harness, LiveInfo, LiveStatus, PrLink};
+use crate::map_store::MapStores;
+use crate::model::{Harness, LiveInfo, LiveStatus, PrLink, Progress, SessionMap};
 use crate::procs::{self, Proc};
+use crate::session_map::{is_snapshot_line, tool_result_text, TranscriptMap};
 use crate::text::{clip, is_human_prompt, is_uuid};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+
+/// A large transcript changed this recently gets its skipped middle scanned
+/// for the session map; older ones are stale and keep head and tail only.
+const GAP_SCAN_RECENT: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+/// Most bytes of a transcript's middle scanned for the session map.
+const GAP_SCAN_MAX: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Default)]
 pub struct Transcript {
@@ -34,6 +42,10 @@ pub struct Transcript {
     pub last_prompt: Option<String>,
     pub pr: Option<PrLink>,
     pub cost_usd: Option<f64>,
+    /// The session map as the transcript records it.
+    pub map: TranscriptMap,
+    /// The `/goal` condition.
+    pub goal_condition: Option<String>,
     pub mtime: Option<SystemTime>,
     cursor: Cursor,
 }
@@ -101,6 +113,7 @@ impl Transcript {
             return;
         };
         let kind = s(&line.kind).unwrap_or("");
+        self.ingest_goal_records(kind, raw);
 
         if let Some(ts) = s(&line.timestamp) {
             if self.started_at.as_deref().is_none_or(|cur| ts < cur) {
@@ -158,9 +171,10 @@ impl Transcript {
                     self.cost_usd = Some(c);
                 }
             }
-            "user" if self.first_prompt.is_none()
-                && !truthy(&line.is_meta)
-                && !truthy(&line.is_sidechain) =>
+            "user"
+                if self.first_prompt.is_none()
+                    && !truthy(&line.is_meta)
+                    && !truthy(&line.is_sidechain) =>
             {
                 if let Ok(u) = serde_json::from_slice::<UserLine>(raw) {
                     if let Some(t) = message_text(&u.message.content) {
@@ -174,6 +188,72 @@ impl Transcript {
         }
     }
 
+    /// Session-map calls and results, and `/goal`. Only lines that name
+    /// them are parsed in full.
+    fn ingest_goal_records(&mut self, kind: &str, raw: &[u8]) {
+        let has = |needle: &[u8]| raw.windows(needle.len()).any(|w| w == needle);
+        let wanted = match kind {
+            "assistant" => has(b"session-map__update"),
+            "user" => has(b"\\nGoal: ") || has(b"\\nStatus: "),
+            "attachment" => has(b"\"goal_status\""),
+            _ => false,
+        };
+        if !wanted {
+            return;
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(raw) else {
+            return;
+        };
+        if kind == "attachment" {
+            let a = &v["attachment"];
+            if a["type"] == "goal_status" {
+                if let Some(c) = a["condition"].as_str().filter(|c| !c.trim().is_empty()) {
+                    self.goal_condition = Some(clip(c, 160));
+                }
+            }
+            return;
+        }
+        let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else {
+            return;
+        };
+        for b in blocks {
+            match b["type"].as_str() {
+                Some("tool_use")
+                    if b["name"]
+                        .as_str()
+                        .is_some_and(|n| n.ends_with("session-map__update")) =>
+                {
+                    self.map.apply_input(&b["input"]);
+                }
+                Some("tool_result") => {
+                    if let Some(text) = tool_result_text(b) {
+                        self.map.apply_result(&text);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// What the session is working toward: the session-map goal (which
+    /// already reflects `/goal`), else the `/goal` condition.
+    pub fn goal(&self) -> Option<String> {
+        self.map
+            .map
+            .goal
+            .clone()
+            .or_else(|| self.goal_condition.clone())
+    }
+
+    pub fn progress(&self) -> Option<Progress> {
+        self.map.progress()
+    }
+
+    /// The transcript's session map, when it recorded one.
+    pub fn session_map(&self) -> Option<SessionMap> {
+        self.map.seen().then(|| self.map.map.clone())
+    }
+
     /// Bring the summary up to date with the file at `path`.
     pub fn refresh(&mut self, path: &Path) -> std::io::Result<()> {
         let Some(update) = self.cursor.read(path)? else {
@@ -184,10 +264,68 @@ impl Transcript {
             *self = Transcript::new(std::mem::take(&mut self.session_id));
             self.cursor = cursor;
         }
-        for line in &update.lines {
+        let (head, tail) = update.lines.split_at(update.head_lines);
+        for line in head {
+            self.ingest_line(line);
+        }
+        // The latest printed session map may sit in the skipped middle of a
+        // large file; find it before folding in the newer tail.
+        if let Some(gap) = update.gap {
+            let recent = self
+                .cursor
+                .mtime()
+                .and_then(|m| m.elapsed().ok())
+                .is_some_and(|age| age < GAP_SCAN_RECENT);
+            if recent && !tail.iter().any(|l| is_snapshot_line(l)) {
+                if let Err(e) = self.scan_gap_for_map(path, gap) {
+                    tracing::debug!(path = %path.display(), error = %e, "gap scan failed");
+                }
+            }
+        }
+        for line in tail {
             self.ingest_line(line);
         }
         self.mtime = self.cursor.mtime();
+        Ok(())
+    }
+
+    /// Read `gap` backward in chunks for the newest printed session map, and
+    /// the newest `/goal` while passing. Stops at the first map found or after
+    /// [`GAP_SCAN_MAX`] bytes.
+    fn scan_gap_for_map(&mut self, path: &Path, (lo, hi): (u64, u64)) -> std::io::Result<()> {
+        use std::io::{Read, Seek, SeekFrom};
+        const CHUNK: u64 = 1024 * 1024;
+        const OVERLAP: u64 = 64 * 1024;
+        let floor = lo.max(hi.saturating_sub(GAP_SCAN_MAX));
+        let mut f = std::fs::File::open(path)?;
+        let mut end = hi;
+        while end > floor {
+            let start = end.saturating_sub(CHUNK).max(floor);
+            let read_end = (end + OVERLAP).min(hi);
+            let mut buf = vec![0u8; (read_end - start) as usize];
+            f.seek(SeekFrom::Start(start))?;
+            f.read_exact(&mut buf)?;
+            let mut lines: Vec<&[u8]> = buf.split(|b| *b == b'\n').collect();
+            // Drop the partial first and last lines; the overlap covers them.
+            if start > lo {
+                lines.remove(0);
+            }
+            lines.pop();
+            for line in lines.iter().rev() {
+                if self.goal_condition.is_none()
+                    && memchr::memmem::find(line, br#""goal_status""#).is_some()
+                {
+                    self.ingest_goal_records("attachment", line);
+                }
+                if is_snapshot_line(line) {
+                    self.ingest_goal_records("user", line);
+                    if self.map.has_snapshot() {
+                        return Ok(());
+                    }
+                }
+            }
+            end = start;
+        }
         Ok(())
     }
 
@@ -212,7 +350,12 @@ pub fn config_dirs(home: &Path) -> Vec<PathBuf> {
     let mut dirs = vec![home.join(".claude")];
     let children = |p: PathBuf| -> Vec<PathBuf> {
         std::fs::read_dir(p)
-            .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect())
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .collect()
+            })
             .unwrap_or_default()
     };
     dirs.extend(children(home.join(".claude").join("clients")));
@@ -220,7 +363,11 @@ pub fn config_dirs(home: &Path) -> Vec<PathBuf> {
     if let Ok(rd) = std::fs::read_dir(home) {
         dirs.extend(
             rd.flatten()
-                .filter(|e| e.file_name().to_str().is_some_and(|n| n.starts_with(".claude-")))
+                .filter(|e| {
+                    e.file_name()
+                        .to_str()
+                        .is_some_and(|n| n.starts_with(".claude-"))
+                })
                 .map(|e| e.path())
                 .filter(|p| p.is_dir()),
         );
@@ -317,7 +464,10 @@ pub fn read_registry(dir: &Path) -> Vec<LiveEntry> {
 /// Live Claude sessions by session id. A registry entry counts when its pid
 /// exists and its recorded start time matches. Entries without a start time
 /// require a `claude` CLI process.
-pub fn claude_live(registry: &[LiveEntry], procs: &HashMap<u32, Proc>) -> HashMap<String, LiveInfo> {
+pub fn claude_live(
+    registry: &[LiveEntry],
+    procs: &HashMap<u32, Proc>,
+) -> HashMap<String, LiveInfo> {
     let mut out: HashMap<String, LiveInfo> = HashMap::new();
     for e in registry {
         let Some(p) = procs.get(&e.pid) else { continue };
@@ -353,6 +503,7 @@ pub fn claude_live(registry: &[LiveEntry], procs: &HashMap<u32, Proc>) -> HashMa
 pub struct ClaudeAdapter {
     home: PathBuf,
     transcripts: HashMap<PathBuf, Transcript>,
+    stores: MapStores,
 }
 
 impl ClaudeAdapter {
@@ -360,6 +511,7 @@ impl ClaudeAdapter {
         Self {
             home,
             transcripts: HashMap::new(),
+            stores: MapStores::default(),
         }
     }
 }
@@ -377,6 +529,9 @@ impl Adapter for ClaudeAdapter {
             .flat_map(|d| read_registry(d))
             .collect();
         let live = claude_live(&registry, ctx.procs);
+        // The session-map mod's store is the authoritative map; the
+        // transcript is the fallback.
+        let stored = self.stores.read(&config);
 
         let mut out = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
@@ -396,13 +551,31 @@ impl Adapter for ClaudeAdapter {
                 .or_else(|| t.mtime.map(from_system))
                 .unwrap_or(ctx.now);
             let mut r = RunRecord::new(Harness::ClaudeCode, t.session_id.clone(), cwd, updated);
-            r.started = t.started_at.as_deref().and_then(parse_ts).unwrap_or(updated);
+            r.started = t
+                .started_at
+                .as_deref()
+                .and_then(parse_ts)
+                .unwrap_or(updated);
             r.title = t.title().unwrap_or_else(|| "(untitled)".into());
-            r.name = t.agent_name.clone();
+            let map = stored
+                .get(&t.session_id)
+                .cloned()
+                .or_else(|| t.session_map());
+            // `/rename` wins; the session-map name covers unrenamed sessions.
+            r.name = t
+                .agent_name
+                .clone()
+                .or_else(|| map.as_ref().and_then(|m| m.name.clone()));
             r.git_branch = t.git_branch.clone();
+            r.goal = map
+                .as_ref()
+                .and_then(|m| m.goal.clone())
+                .or_else(|| t.goal_condition.clone());
+            r.progress = map.as_ref().map(SessionMap::progress);
             r.last_prompt = t.last_prompt.clone();
             r.pr = t.pr.clone();
             r.cost_usd = t.cost_usd;
+            r.map = map;
             r.headless = t.headless();
             r.live = live.get(&t.session_id).cloned();
             out.push(r);
@@ -421,6 +594,11 @@ impl Adapter for ClaudeAdapter {
             r.name = e.name.clone();
             r.headless = e.kind.as_deref() == Some("bg");
             r.live = Some(info.clone());
+            if let Some(m) = stored.get(&r.native_id) {
+                r.goal = m.goal.clone();
+                r.progress = Some(m.progress());
+                r.map = Some(m.clone());
+            }
             out.push(r);
         }
         out
@@ -476,10 +654,69 @@ mod tests {
     }
 
     #[test]
+    fn reads_goal_and_progress_from_session_map_and_goal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let body = [
+            r#"{"type":"attachment","attachment":{"type":"goal_status","met":false,"condition":"ship the parser"}}"#.to_string(),
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"mcp__session-map__update","input":{"goal":"Parser ships","status":"active","steps":[{"text":"tests","status":"completed"},{"text":"refactor","status":"in_progress"}]}}]}}"#.to_string(),
+            serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"Session s-parser [acme/api · main]\nGoal: Parser ships\nStatus: active — refactor half done\nSteps:\n- [x] tests\n- [>] refactor"}]}}).to_string(),
+        ]
+        .join("\n")
+            + "\n";
+        let p = write(tmp.path(), &body);
+        let mut t = Transcript::new(SID);
+        t.refresh(&p).unwrap();
+        assert_eq!(t.goal().as_deref(), Some("Parser ships"));
+        let pr = t.progress().unwrap();
+        assert_eq!(pr.summary.as_deref(), Some("refactor half done"));
+        assert_eq!(pr.current_step.as_deref(), Some("refactor"));
+        assert_eq!((pr.steps_done, pr.steps_total), (1, 2));
+
+        // A session with only `/goal` uses its condition.
+        let p2 = tmp.path().join("goal-only.jsonl");
+        std::fs::write(
+            &p2,
+            r#"{"type":"attachment","attachment":{"type":"goal_status","condition":"fix CI"}}"#
+                .to_string()
+                + "\n",
+        )
+        .unwrap();
+        let mut t2 = Transcript::new(SID);
+        t2.refresh(&p2).unwrap();
+        assert_eq!(t2.goal().as_deref(), Some("fix CI"));
+        assert_eq!(t2.progress(), None);
+    }
+
+    #[test]
+    fn finds_the_session_map_in_the_middle_of_a_large_transcript() {
+        let tmp = tempfile::tempdir().unwrap();
+        let filler = |n: usize| -> String {
+            let line = serde_json::json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "x".repeat(2000)}]}}).to_string();
+            (0..n).map(|_| format!("{line}\n")).collect()
+        };
+        let map = |goal: &str| {
+            serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t","content":format!("Session s-big [acme/api · main]\nGoal: {goal}\nStatus: active — midway\nSteps:\n- [x] a\n- [>] b")}]}}).to_string() + "\n"
+        };
+        // head filler, an old map, a newer map, then 600 KiB of filler so both
+        // maps fall in the skipped middle.
+        let body = filler(40) + &map("old goal") + &filler(200) + &map("new goal") + &filler(300);
+        let p = write(tmp.path(), &body);
+        assert!(std::fs::metadata(&p).unwrap().len() > HEAD_BYTES + TAIL_BYTES);
+        let mut t = Transcript::new(SID);
+        t.refresh(&p).unwrap();
+        assert_eq!(t.goal().as_deref(), Some("new goal"));
+        assert_eq!(t.map.map.name.as_deref(), Some("s-big"));
+        assert_eq!(t.progress().unwrap().current_step.as_deref(), Some("b"));
+    }
+
+    #[test]
     fn appends_incrementally_and_ignores_partial_line() {
         let tmp = tempfile::tempdir().unwrap();
         let all = lines();
-        let p = write(tmp.path(), &(all[..3].join("\n") + "\n" + r#"{"type":"last-pro"#));
+        let p = write(
+            tmp.path(),
+            &(all[..3].join("\n") + "\n" + r#"{"type":"last-pro"#),
+        );
         let mut t = Transcript::new(SID);
         t.refresh(&p).unwrap();
         assert_eq!(t.last_prompt, None);

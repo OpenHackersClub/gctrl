@@ -15,6 +15,7 @@
 5. **Headless**: a run with no interactive terminal: Codex `source = exec`, a Claude transcript whose `entrypoint` is `sdk-cli`, or a Hermes session whose `source` is neither `cli` nor `tui` (gateway sessions such as Telegram and cron).
 6. **Stale**: a run that is not live and has no activity for 7 days or more.
 7. **Gather**: resuming a set of runs as tabs of one new iTerm2 window on one Space.
+8. **Session map**: what a session reports about its own work: goal, status (`active`, `blocked`, `handoff`, `done`) with a one-line summary, steps, open hand-offs, GitHub refs and reports. The shape follows the Claude Code session-map mod and is harness-neutral.
 
 ## Sources
 
@@ -23,8 +24,12 @@ The driver reads harness stores and never writes them.
 | Harness | Store | Fields |
 | --- | --- | --- |
 | Claude Code | `<config>/projects/<cwd-slug>/<uuid>.jsonl` (top level only; subagent transcripts are excluded) | `cwd`, `gitBranch`, `timestamp`, `entrypoint`, `custom-title.customTitle`, `agent-name.agentName`, `last-prompt.lastPrompt`, `pr-link.{prNumber,prUrl,prRepository}`, `cost-state.totalCostUSD` |
+| Claude Code | Session-map records in the same transcript: `assistant` → `tool_use` named `*session-map__update` (input `goal`, `status`, `summary`, `steps`), its `tool_result` (the printed map: `Session <name> […]`, `Goal:`, `Status: <status> — <summary>`, `Steps:` lines `- [x]`, `- [>]`, `- [ ]`), and `attachment` of type `goal_status` (`/goal` `condition`) | goal, session name, status, summary, steps |
+| Claude Code | `<config>/plugins/store/session-map_*.json` (the session-map mod's store) | `map:<session id>` → `map`: `name`, `goal`, `isGoalPinned`, `goalPausedFor`, `status`, `summary`, `steps`, `handoffs`, `refs`, `reports`, `where.{repo,branch}`, `updatedAt` |
+| Any harness | `<data dir>/gctrl/agent-maps/<harness>_<native id>.json`, written by `POST /api/agents/{id}/map` | The session map in the gctrl shape |
 | Claude Code | `<config>/sessions/<pid>.json` (live registry) | `pid`, `sessionId`, `cwd`, `status` (`busy`, `idle`, `shell`), `procStart`, `kind` |
 | Codex | `$CODEX_HOME/state_<n>.sqlite` → `threads` (highest `<n>` wins; default `~/.codex`) | `id`, `cwd`, `name`, `title`, `first_user_message`, `git_branch`, `git_origin_url`, `tokens_used`, `model`, `archived`, `source`, `thread_source`, `created_at_ms`, `updated_at_ms`, `rollout_path` |
+| Codex | `$CODEX_HOME/goals_<n>.sqlite` → `thread_goals` (highest `<n>` wins) | `thread_id`, `objective`, `status` (`active`, `paused`, `blocked`, `usage_limited`, `budget_limited`, `complete`), `updated_at_ms` |
 | Codex | Tail of the thread's rollout JSONL | Last `response_item` message with `role = user`; last `event_msg` of type `task_started`, `task_complete` or `turn_aborted` |
 | Hermes Agent | `$HERMES_HOME/state.db` → `sessions`, `messages` (default `~/.hermes`) | `sessions.{id, source, cwd, title, model, started_at, ended_at, end_reason, parent_session_id, archived, input_tokens, output_tokens, actual_cost_usd, estimated_cost_usd}`; per session the first and last `user` message, and the role and `tool_calls` of the newest message |
 | Pi | `<sessions>/--<cwd>--/<timestamp>_<id>.jsonl`, where `<sessions>` is `$PI_CODING_AGENT_SESSION_DIR`, else `$PI_CODING_AGENT_DIR/sessions`, else `~/.pi/agent/sessions` | Header `session.{id, cwd, timestamp}`; `session_info.name`; `model_change.modelId`; `message.message.{role, content, model, stopReason}` |
@@ -38,7 +43,10 @@ Rules:
 4. The driver parses JSONL transcripts (Claude, Pi) incrementally from the last byte offset. A file read for the first time is parsed whole when it is at most 576 KiB, else as its first 64 KiB and last 512 KiB. A file that shrinks is parsed again from the start.
 5. SQLite stores (Codex, Hermes) open with `mode=ro`. When the harness is not running, the WAL index is absent and a read-only connection cannot create it. The driver then opens the database with `immutable=1`, which is safe because with no `-wal` file the main database file holds every committed write. Queries read `PRAGMA table_info` first and treat missing columns as `NULL`.
 6. Hermes context compression ends a session with `end_reason = 'compression'` and continues in a child session. A chain MUST retain the oldest session's run identity, `started_at` and first prompt; `native_id` MUST identify the newest session for resuming. Hermes rows with active-message tracking (`messages.active`) count only active messages.
-7. A prompt shown on a card excludes harness-injected text: lines that start with `<`, the AGENTS.md preamble, and messages relayed from another agent session.
+7. A session-map tool result follows its call and prints the whole map, so it overrides the call's input. Only transcript lines that name `session-map__update`, `goal_status`, or a printed `Goal:` / `Status:` line are parsed in full. When a first read of a transcript changed in the last 7 days finds no printed map in its tail, the driver scans the skipped middle backward, up to 64 MiB, and stops at the newest printed map.
+8. A run's session map comes from the first source that holds it: for Claude Code, the session-map mod's store, then the transcript; for Codex, the thread's `/goal`. A map reported to the kernel replaces a Claude Code map when its `updated_at` is newer. On a Codex run the reported map keeps the `/goal` objective as its pinned goal, and takes the goal's status when the goal changed last. The mod's store is read again only when its file changes; when two config dirs hold the same session, the newer map wins. Store fields of an unknown shape are read leniently.
+9. A Codex `/goal` maps to a pinned goal with status `active` (`active`), `blocked` (`blocked`, `usage_limited`, `budget_limited`, the last two with the limit as summary), `done` (`complete`), or no status with summary `Goal paused` (`paused`).
+10. A prompt shown on a card excludes harness-injected text: lines that start with `<`, the AGENTS.md preamble, and messages relayed from another agent session.
 
 ## Liveness
 
@@ -51,7 +59,7 @@ Rules:
 
 ## Model
 
-The index lives in kernel memory. It is rebuilt from the adapters at kernel start and refreshed when `GET /api/agents` is called more than 2 s after the last refresh. Mirroring runs into the `sessions` table is tracked in #240.
+The index lives in kernel memory. It is built on a background thread at kernel start and refreshed when `GET /api/agents` is called more than 2 s after the last refresh. Mirroring runs into the `sessions` table is tracked in #240.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -59,12 +67,15 @@ The index lives in kernel memory. It is rebuilt from the adapters at kernel star
 | `harness` | `claude-code` \| `codex` \| `hermes` \| `pi` | Owning harness |
 | `native_id` | string | The harness's own session or thread id |
 | `title` | string | Claude custom title; Codex thread name or title; Hermes session title; Pi session name; else the first prompt (cut to 120 chars) |
-| `name` | string \| null | Claude `agent-name` (the `/rename` name), Codex thread name, Hermes title, Pi session name |
+| `name` | string \| null | Claude `agent-name` (the `/rename` name), else the session-map name; Codex thread name; Hermes title; Pi session name |
 | `project_key` | string | See § Project key |
 | `cwd` | string | Working directory of the run. A Hermes session with no recorded cwd uses the home directory. |
 | `cwd_exists` | boolean | Whether `cwd` exists now |
 | `worktree` | string \| null | The cwd's directory name when the cwd is a linked git worktree |
 | `git_branch` | string \| null | Branch at the last record (Claude, Codex) |
+| `goal` | string \| null | The outcome the run works toward, cut to 160 chars. Claude: the session-map goal (which already reflects `/goal`), else the `/goal` condition. Codex: the generated thread name, unless `/rename` replaced it with an `s-` handle or it equals the title. |
+| `map` | session map \| null | The full session map (§ Terms), with `source` = `session-map`, `transcript` or `kernel`. Only `GET /api/agents/{id}` carries it; the list leaves it out. |
+| `progress` | `{status, summary, current_step, steps_done, steps_total}` \| null | Claude session map: `status` (`active`, `blocked`, `handoff`, `done`), the one-line summary, the step in progress (else the first pending step), and step counts. Null when the session never reported a map. |
 | `last_prompt` | string \| null | Last user prompt, cut to 200 chars |
 | `pr` | `{number, url, repository}` \| null | Last `pr-link` record (Claude) |
 | `cost_usd` | number \| null | Claude `cost-state.totalCostUSD`; Hermes actual, else estimated, cost |
@@ -80,8 +91,10 @@ The index lives in kernel memory. It is rebuilt from the adapters at kernel star
 
 1. When the cwd exists, the key is the basename of `git remote get-url origin` without `.git`. Otherwise it is the basename of `git rev-parse --show-toplevel`. Otherwise it is the cwd basename. This is the rule in `shell/hooks/claude-code-inbox.sh`.
 2. A Codex thread with `git_origin_url` uses that URL directly.
-3. When the cwd is gone, a cwd under `~/wt/<path>/<name>` resolves through `~/workspaces/<path>`. A cwd under `<repo>/.claude/worktrees/<name>` resolves through `<repo>`. Any other cwd resolves through its nearest existing ancestor.
+3. A cwd under `~/wt/<path>/<name>` resolves through `~/workspaces/<path>`, whether or not it still exists, and `<name>` is its worktree. When the cwd is gone, a cwd under `<repo>/.claude/worktrees/<name>` resolves through `<repo>`. Any other cwd resolves through its nearest existing ancestor.
 4. The key keeps only `[A-Za-z0-9._-]` and is cut to 64 characters.
+5. A cwd under `~/Documents`, `~/Desktop`, `~/Downloads` or `~/Library/Mobile Documents`, or on a volume other than the home directory's, is keyed by its directory name, with no git call. macOS guards those locations with a privacy prompt; a read inside them from the kernel raises the prompt and blocks until it is answered.
+6. A git call that takes longer than 3 s is abandoned and counts as no repository, so rule 1 falls back to the cwd basename.
 
 ## States
 
@@ -101,7 +114,7 @@ The index lives in kernel memory. It is rebuilt from the adapters at kernel star
 | Hermes Agent | The newest message has role `user` or `tool`, or role `assistant` with tool calls |
 | Pi | The newest message has role `user` or `toolResult`, or role `assistant` with `stopReason = toolUse` |
 
-The **Needs you** column is computed by the board. A run is in Needs you when an open inbox message with `requires_action = true` has `context.session_id` equal to the run's `native_id`. The kernel driver makes no assumptions about apps.
+The **Needs you** column is computed by the board. A live run is in Needs you when an open inbox message with `requires_action = true` has `context.session_id` equal to the run's `native_id`, or when its `progress.status` is `blocked` or `handoff`. The kernel driver makes no assumptions about apps.
 
 ## HTTP API
 
@@ -152,6 +165,24 @@ The **Needs you** column is computed by the board. A run is in Needs you when an
 A body with no ids returns 400. When opening the window fails, the call returns the mac-comm error status (403 when Automation is denied) and no run is stopped.
 
 `DELETE /api/agents/{id}/gather` removes a run from the gather queue (204).
+
+`GET /api/agents/{id}` returns one run with its `map`.
+
+`POST /api/agents/{id}/map` reports a session map for any harness, so a Codex, Hermes or Pi session (or a hook) can show the same goal, steps and hand-offs as a Claude session:
+
+```json
+{ "goal": "Fix billing rounding", "status": "active", "summary": "patch written",
+  "steps": [{ "text": "repro", "status": "completed" }, { "text": "patch", "status": "in_progress" }],
+  "handoffs": [{ "who": "operator", "type": "signoff", "action": "Approve the migration", "n": 1 }] }
+```
+
+1. The body takes the session-map update tool's fields (`goal`, `status`, `summary`, `name`, `steps`) plus `handoffs`, `clearHandoffs`, `refs`, `repo`, `branch` and `reply`. A field left out keeps its value; a list replaces the stored list.
+2. `reply` is the text of the session's final reply. When it holds a hand-off table (header `\ | Who | Type | Action | Why`, as in the harness hand-off convention), the table's rows replace the hand-offs that are not pinned; a reply without one leaves them. The last such table outside a code fence counts. A row's `\N` is its `n`, the `[SignOff]`, `[Ops]` or `[Task]` tag its type, and the text after a leading emoji its `who`.
+3. `{id}` is `<harness prefix>:<native id>` with a known prefix; the run need not be indexed yet.
+4. 400 when `status`, a step status or a hand-off type is outside its set, or past 50 steps, 30 hand-offs or 40 refs. Text is cut to 300 characters; refs keep `https://` URLs only.
+5. The response is the stored map; the next list reflects it.
+
+`POST /api/agents/map` takes the same body plus `pid`, for a command that runs inside a session and knows its own process but not its run id. The run is the live run whose process is `pid` or the nearest ancestor of it. The response is `{"id", "map"}`; 404 when no live run owns the process.
 
 ## Open and resume
 
@@ -261,9 +292,17 @@ sequenceDiagram
 1. Route `/agents` in the gctrl-board SPA, with a nav entry. gctrl-desktop renders the page.
 2. Columns: Needs you, Running, Idle, Resumable, Done (collapsed). Swimlanes: one per `project_key`, sorted by the most urgent column, then by `updated_at`. A lane with no live run collapses to one summary line.
 3. Header toggles: **Show headless** and **Show stale (7d+)**. Both are off by default and map to the query parameters.
-4. A card shows `name [worktree]` (or the title), a harness mark (CC, CX, HM, PI), the branch, one line of the last prompt, the relative `updated_at`, cost or tokens, and a PR chip. A run in `gather_queue` shows **waiting to move**.
-5. A click calls `POST /api/agents/{id}/open`, and a toast shows the result. The page polls every 5 s.
-6. **Select** switches the page to select mode: a click toggles a card's selection. **Gather N into a Space…** opens a dialog with the user desktops from `GET /api/macos/spaces` (the current one preselected), a preview of how each run moves, and **Close the panes they leave behind** (on by default).
+   **Projects** is a multi-select of the swimlanes to show: one checkbox per project with its run count and a live mark, a text filter, **All**, **None**, **Live only** (projects with a live run), and **only** per project. The page stores the hidden projects in `localStorage` (`gctrl.agents.hiddenProjects`), so a new project shows by default. Column counts and the run total count only shown projects.
+4. A card identifies the run by what it is working on:
+   1. Top row: `name [worktree]` (or the title) and a harness mark (CC, CX, HM, PI).
+   2. The goal, up to two lines. With no goal, the title when it differs from the headline.
+   3. Where the work stands: a `blocked`, `handoff` or `done` chip, then the current step (else the summary) and `steps_done/steps_total`.
+   4. Bottom row: the branch, the relative `updated_at`, cost or tokens, and a PR chip. A run in `gather_queue` shows **waiting to move**.
+   5. The last prompt appears only in the hover tooltip, with the goal, summary, cwd and resume command.
+5. **iTerm2 ↗** and the pane's terminal button call `POST /api/agents/{id}/open`, and a toast shows the result. The page polls every 5 s.
+6. A click on a card opens the **session-map pane** beside the board: goal (📌 when set with `/goal`, ⏸ with the reason while paused), status chip and summary, hand-offs grouped by recipient (operator first, `\N` or `→`), a progress bar and the step list, GitHub refs as links, reports, and the run's cwd, last prompt, model, usage, process and map source. **Go to iTerm2** (live) or **Resume in iTerm2** opens the terminal, **Copy map** copies the map as text in the mod's brief format, and Escape closes the pane. The pane re-reads `GET /api/agents/{id}` on every list poll.
+7. Each card's **iTerm2 ↗** button focuses the live pane or resumes the run, without opening the session-map pane.
+8. **Select** switches the page to select mode: a click toggles a card's selection. **Gather N into a Space…** opens a dialog with the user desktops from `GET /api/macos/spaces` (the current one preselected), a preview of how each run moves, and **Close the panes they leave behind** (on by default).
 
 ## Privacy
 

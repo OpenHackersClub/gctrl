@@ -78,6 +78,8 @@ mod tests {
         assert!(!is_human_prompt("  <environment_context>"));
         assert!(!is_human_prompt("# AGENTS.md instructions\n..."));
         assert!(!is_human_prompt("   "));
-        assert!(!is_human_prompt("Another Claude session sent a message: <x>"));
+        assert!(!is_human_prompt(
+            "Another Claude session sent a message: <x>"
+        ));
     }
 }

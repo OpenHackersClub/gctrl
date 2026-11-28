@@ -1,12 +1,17 @@
-//! Process table probe: `ps` for pid, start time, tty and argv; `lsof` for
-//! the working directory of Codex processes.
+//! Process table probe: `ps` for pid, parent pid, start time, tty and argv;
+//! `lsof` for the working directory of Codex processes.
 
 use std::collections::HashMap;
 use std::process::Command;
 
+// Absolute paths: the launchd kernel's PATH can leave out /usr/sbin.
+const PS: &str = "/bin/ps";
+const LSOF: &str = "/usr/sbin/lsof";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Proc {
     pub pid: u32,
+    pub ppid: u32,
     /// `lstart` with whitespace collapsed, e.g. `Fri Nov 27 10:30:03 2026`.
     pub lstart: String,
     /// `/dev/ttysNNN`, or `None` for processes without a controlling tty.
@@ -19,12 +24,13 @@ pub fn normalize_lstart(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Parse `ps -axo pid=,lstart=,tty=,command=` output.
+/// Parse `ps -axo pid=,ppid=,lstart=,tty=,command=` output.
 pub fn parse_ps(out: &str) -> Vec<Proc> {
     out.lines()
         .filter_map(|line| {
             let mut it = line.split_whitespace();
             let pid: u32 = it.next()?.parse().ok()?;
+            let ppid: u32 = it.next()?.parse().ok()?;
             let lstart: Vec<&str> = it.by_ref().take(5).collect();
             if lstart.len() != 5 {
                 return None;
@@ -33,6 +39,7 @@ pub fn parse_ps(out: &str) -> Vec<Proc> {
             let command: Vec<&str> = it.collect();
             Some(Proc {
                 pid,
+                ppid,
                 lstart: lstart.join(" "),
                 tty: (tty != "??" && tty != "-").then(|| format!("/dev/{tty}")),
                 command: command.join(" "),
@@ -44,8 +51,8 @@ pub fn parse_ps(out: &str) -> Vec<Proc> {
 pub fn snapshot() -> HashMap<u32, Proc> {
     // Claude Code records `procStart` as C-locale `lstart` in UTC; matching
     // that format is what lets a reused pid be told apart after a reboot.
-    let out = Command::new("ps")
-        .args(["-axo", "pid=,lstart=,tty=,command="])
+    let out = Command::new(PS)
+        .args(["-axo", "pid=,ppid=,lstart=,tty=,command="])
         .env("LC_ALL", "C")
         .env("TZ", "UTC")
         .output();
@@ -65,6 +72,20 @@ pub fn snapshot() -> HashMap<u32, Proc> {
     }
 }
 
+/// `pid` and its ancestors, nearest first, ending before launchd.
+pub fn ancestors(procs: &HashMap<u32, Proc>, pid: u32) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut cur = pid;
+    while cur > 1 && out.len() < 64 && !out.contains(&cur) {
+        out.push(cur);
+        match procs.get(&cur) {
+            Some(p) => cur = p.ppid,
+            None => break,
+        }
+    }
+    out
+}
+
 /// The executable's basename, from the first argv token.
 fn exe_name(command: &str) -> &str {
     let first = command.split_whitespace().next().unwrap_or("");
@@ -74,7 +95,13 @@ fn exe_name(command: &str) -> &str {
 /// True for a Codex CLI process. App bundles (Codex Desktop, the browser
 /// extension host) are excluded.
 pub fn is_codex_cli(p: &Proc) -> bool {
-    exe_name(&p.command) == "codex" && !p.command.split_whitespace().next().unwrap_or("").contains(".app/")
+    exe_name(&p.command) == "codex"
+        && !p
+            .command
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .contains(".app/")
 }
 
 /// True for a Claude Code CLI process.
@@ -84,7 +111,9 @@ pub fn is_claude_cli(p: &Proc) -> bool {
 
 fn is_interpreter(exe: &str) -> bool {
     matches!(exe, "node" | "bun" | "deno" | "python" | "python3")
-        || exe.strip_prefix("python3.").is_some_and(|v| v.chars().all(|c| c.is_ascii_digit()))
+        || exe
+            .strip_prefix("python3.")
+            .is_some_and(|v| v.chars().all(|c| c.is_ascii_digit()))
 }
 
 /// True when the process runs the program `name`: its executable is `name`,
@@ -116,7 +145,10 @@ pub fn is_pi_cli(p: &Proc) -> bool {
 /// after its agent exits.
 pub fn is_shell(p: &Proc) -> bool {
     let exe = exe_name(&p.command).trim_start_matches('-');
-    matches!(exe, "login" | "zsh" | "bash" | "fish" | "sh" | "nu" | "tcsh" | "ksh")
+    matches!(
+        exe,
+        "login" | "zsh" | "bash" | "fish" | "sh" | "nu" | "tcsh" | "ksh"
+    )
 }
 
 /// Parse `lsof -a -d cwd -Fpn -p <pids>` output into pid → cwd.
@@ -144,7 +176,7 @@ pub fn cwds(pids: &[u32]) -> HashMap<u32, String> {
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(",");
-    match Command::new("lsof")
+    match Command::new(LSOF)
         .args(["-a", "-d", "cwd", "-Fpn", "-p", &list])
         .output()
     {
@@ -160,10 +192,10 @@ pub fn cwds(pids: &[u32]) -> HashMap<u32, String> {
 mod tests {
     use super::*;
 
-    const PS: &str = "    1 Mon Nov 16 08:00:00 2026     ??  /sbin/launchd
-34455 Fri Nov 27 10:30:03 2026 ttys003  claude --resume 26e3373e-8358-416b-83f3-355a59325193
- 4100 Fri Nov  7 09:01:02 2026 ttys010  /Users/me/.codex/packages/standalone/current/bin/codex --no-daemon resume 01a04c15-4628-7913-bd1d-21ed78284c55
-47024 Fri Nov 27 09:00:00 2026     ??  /Applications/Codex.app/Contents/MacOS/codex app-server
+    const PS: &str = "    1     0 Mon Nov 16 08:00:00 2026     ??  /sbin/launchd
+34455   900 Fri Nov 27 10:30:03 2026 ttys003  claude --resume 26e3373e-8358-416b-83f3-355a59325193
+ 4100   901 Fri Nov  7 09:01:02 2026 ttys010  /Users/me/.codex/packages/standalone/current/bin/codex --no-daemon resume 01a04c15-4628-7913-bd1d-21ed78284c55
+47024     1 Fri Nov 27 09:00:00 2026     ??  /Applications/Codex.app/Contents/MacOS/codex app-server
 ";
 
     #[test]
@@ -171,6 +203,7 @@ mod tests {
         let procs = parse_ps(PS);
         assert_eq!(procs.len(), 4);
         assert_eq!(procs[1].pid, 34455);
+        assert_eq!(procs[1].ppid, 900);
         assert_eq!(procs[1].lstart, "Fri Nov 27 10:30:03 2026");
         assert_eq!(procs[1].tty.as_deref(), Some("/dev/ttys003"));
         assert_eq!(procs[0].tty, None);
@@ -188,16 +221,56 @@ mod tests {
 
     #[test]
     fn classifies_interpreted_harnesses() {
-        let p = |c: &str| Proc { pid: 1, lstart: String::new(), tty: None, command: c.into() };
-        assert!(is_hermes_cli(&p("/h/venv/bin/python3 /h/venv/bin/hermes --resume x")));
-        assert!(is_hermes_cli(&p("/h/venv/bin/python3.12 /h/venv/bin/hermes")));
-        assert!(!is_hermes_cli(&p("/h/venv/bin/python3 -m pip install hermes")));
+        let p = |c: &str| Proc {
+            pid: 1,
+            ppid: 0,
+            lstart: String::new(),
+            tty: None,
+            command: c.into(),
+        };
+        assert!(is_hermes_cli(&p(
+            "/h/venv/bin/python3 /h/venv/bin/hermes --resume x"
+        )));
+        assert!(is_hermes_cli(&p(
+            "/h/venv/bin/python3.12 /h/venv/bin/hermes"
+        )));
+        assert!(!is_hermes_cli(&p(
+            "/h/venv/bin/python3 -m pip install hermes"
+        )));
         assert!(is_pi_cli(&p("node /opt/homebrew/bin/pi --session abc")));
         assert!(is_pi_cli(&p("pi")));
         assert!(!is_pi_cli(&p("/usr/bin/pip install x")));
         assert!(is_shell(&p("-zsh")));
         assert!(is_shell(&p("login -pfl me /bin/zsh")));
         assert!(!is_shell(&p("claude --resume x")));
+    }
+
+    #[test]
+    fn walks_ancestors_to_launchd() {
+        let row = |pid, ppid| {
+            (
+                pid,
+                Proc {
+                    pid,
+                    ppid,
+                    lstart: String::new(),
+                    tty: None,
+                    command: String::new(),
+                },
+            )
+        };
+        let procs: HashMap<u32, Proc> = [
+            row(30, 20),
+            row(20, 10),
+            row(10, 1),
+            row(1, 0),
+            row(7, 8),
+            row(8, 7),
+        ]
+        .into();
+        assert_eq!(ancestors(&procs, 30), vec![30, 20, 10]);
+        assert_eq!(ancestors(&procs, 99), vec![99]);
+        assert_eq!(ancestors(&procs, 7), vec![7, 8]);
     }
 
     #[test]
@@ -212,7 +285,10 @@ mod tests {
     fn parses_lsof_cwd() {
         let out = "p4100\nfcwd\nn/Users/me/src/api\np4200\nfcwd\nn/tmp/x y\n";
         let map = parse_lsof_cwd(out);
-        assert_eq!(map.get(&4100).map(String::as_str), Some("/Users/me/src/api"));
+        assert_eq!(
+            map.get(&4100).map(String::as_str),
+            Some("/Users/me/src/api")
+        );
         assert_eq!(map.get(&4200).map(String::as_str), Some("/tmp/x y"));
     }
 }

@@ -630,6 +630,66 @@ export interface AgentPr {
   repository: string | null
 }
 
+/** Where a run's work stands, as the agent last reported it (Claude session map). */
+export interface AgentProgress {
+  status: string | null
+  summary: string | null
+  current_step: string | null
+  steps_done: number
+  steps_total: number
+}
+
+/** Session map (spec § Model): what a session reports about its own work. */
+export interface MapStep {
+  text: string
+  status: "pending" | "in_progress" | "completed"
+}
+
+export interface MapHandoff {
+  who: string
+  type: "signoff" | "ops" | "task"
+  action: string
+  why?: string | null
+  n?: number | null
+  pinned?: boolean
+}
+
+export interface MapRef {
+  kind: "pr" | "issue"
+  repo: string
+  number: number
+  url: string
+  roles: string[]
+  title?: string | null
+  state?: string | null
+}
+
+export interface MapReport {
+  slug: string
+  url?: string | null
+  path?: string | null
+  unanswered?: number | null
+  done?: boolean
+}
+
+export interface SessionMap {
+  /** `session-map` (Claude Code mod store), `transcript`, or `kernel` (reported via the API). */
+  source: string
+  name?: string | null
+  goal?: string | null
+  goal_pinned?: boolean
+  goal_paused_for?: string | null
+  status?: string | null
+  summary?: string | null
+  steps: MapStep[]
+  handoffs: MapHandoff[]
+  refs: MapRef[]
+  reports: MapReport[]
+  repo?: string | null
+  branch?: string | null
+  updated_at?: string | null
+}
+
 export interface AgentRun {
   id: string
   harness: AgentHarness
@@ -641,6 +701,11 @@ export interface AgentRun {
   cwd_exists: boolean
   worktree: string | null
   git_branch: string | null
+  /** The outcome the run is working toward. */
+  goal?: string | null
+  progress?: AgentProgress | null
+  /** Full session map; only `GET /api/agents/{id}` carries it. */
+  map?: SessionMap | null
   last_prompt: string | null
   pr: AgentPr | null
   cost_usd: number | null

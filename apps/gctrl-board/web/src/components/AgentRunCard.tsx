@@ -1,5 +1,5 @@
 import type { AgentRun } from "../types"
-import { type AgentColumn, cardHeadline, formatUsage, relativeTime } from "../lib/agent-lanes"
+import { type AgentColumn, cardGoal, cardHeadline, cardProgress, formatUsage, relativeTime } from "../lib/agent-lanes"
 
 const HARNESS_MARK: Record<AgentRun["harness"], { label: string; className: string; title: string }> = {
   "claude-code": {
@@ -53,23 +53,63 @@ interface Props {
   onSelect?: (run: AgentRun) => void
   /** A gather waits for this run's turn to end. */
   queued?: boolean
+  /** Click shows the run's session map; the iTerm2 button opens the terminal. */
+  onInspect?: (run: AgentRun) => void
+  /** The run shown in the detail pane. */
+  inspected?: boolean
 }
 
 const FALLBACK_MARK = { label: "??", className: "bg-zinc-800 text-zinc-400 border-zinc-700", title: "Agent" }
 
-export function AgentRunCard({ run, column, now, busy, onOpen, selecting, selected, onSelect, queued }: Props) {
+/** Session-map states worth a chip; `active` is the default and shows none. */
+const STATUS_CHIP: Record<string, string> = {
+  blocked: "bg-rose-500/10 text-rose-300 border-rose-500/25",
+  handoff: "bg-amber-500/10 text-amber-300 border-amber-500/25",
+  done: "bg-emerald-500/10 text-emerald-300 border-emerald-500/25",
+}
+
+export function AgentRunCard({
+  run,
+  column,
+  now,
+  busy,
+  onOpen,
+  selecting,
+  selected,
+  onSelect,
+  queued,
+  onInspect,
+  inspected,
+}: Props) {
   const harness = HARNESS_MARK[run.harness] ?? FALLBACK_MARK
   const usage = formatUsage(run)
   const headline = cardHeadline(run)
+  const goal = cardGoal(run)
+  const progress = cardProgress(run)
+  const status = run.progress?.status ?? null
   // Claude keys transcripts by cwd: a removed worktree cannot be resumed.
   const blocked = run.live === null && !run.cwd_exists
-  const action = selecting ? (selected ? "Deselect" : "Select") : run.live ? "Focus terminal" : "Resume in iTerm2"
-  const disabled = selecting ? false : blocked || busy
+  const terminalAction = run.live ? "Go to iTerm2" : "Resume in iTerm2"
+  const action = selecting
+    ? selected
+      ? "Deselect"
+      : "Select"
+    : onInspect
+      ? "Show session map"
+      : terminalAction
+  const disabled = selecting || onInspect ? false : blocked || busy
   const activate = () => {
     if (selecting) onSelect?.(run)
+    else if (onInspect) onInspect(run)
     else if (!disabled) onOpen(run)
   }
-  const tooltip = [run.cwd, run.resume_command ?? (blocked ? "worktree removed" : null)]
+  const tooltip = [
+    run.goal ? `Goal: ${run.goal}` : null,
+    run.progress?.summary ? `Now: ${run.progress.summary}` : null,
+    run.last_prompt ? `Last prompt: ${run.last_prompt}` : null,
+    run.cwd,
+    run.resume_command ?? (blocked ? "worktree removed" : null),
+  ]
     .filter(Boolean)
     .join("\n")
 
@@ -93,7 +133,7 @@ export function AgentRunCard({ run, column, now, busy, onOpen, selecting, select
       aria-pressed={selecting ? Boolean(selected) : undefined}
       className={`w-full text-left group border-l-2 ${COLUMN_BORDER[column]}
         bg-zinc-900/80 border transition-all duration-100
-        ${selected ? "border-emerald-500/70 ring-1 ring-emerald-500/40" : "border-zinc-800/80"}
+        ${selected || inspected ? "border-emerald-500/70 ring-1 ring-emerald-500/40" : "border-zinc-800/80"}
         ${disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer hover:border-zinc-700 hover:bg-zinc-900"}
         ${busy ? "animate-pulse" : ""}`}
     >
@@ -123,17 +163,28 @@ export function AgentRunCard({ run, column, now, busy, onOpen, selecting, select
           )}
         </div>
 
-        {/* Title when the name differs from it */}
-        {run.name && run.title !== run.name && (
-          <p className="text-[12px] text-zinc-400 leading-snug line-clamp-1">{run.title}</p>
+        {/* Goal: what the run is working toward */}
+        {goal && (
+          <p className="text-[12.5px] text-zinc-200 leading-snug line-clamp-2" data-testid="agent-goal">
+            {goal}
+          </p>
         )}
 
-        {/* Last prompt, one line */}
-        {run.last_prompt && (
-          <p className="text-[12px] text-zinc-500 leading-snug truncate">
-            <span className="opacity-50 mr-1">›</span>
-            {run.last_prompt}
-          </p>
+        {/* Where the work stands: current step or summary, step count */}
+        {(progress || (status && STATUS_CHIP[status])) && (
+          <div className="flex items-center gap-1.5 min-w-0 text-[11.5px] text-zinc-400" data-testid="agent-progress">
+            {status && STATUS_CHIP[status] && (
+              <span className={`text-[9px] font-mono uppercase tracking-wider px-1 py-px border shrink-0 ${STATUS_CHIP[status]}`}>
+                {status}
+              </span>
+            )}
+            {progress && (
+              <span className="truncate">
+                <span className="opacity-50 mr-1">▸</span>
+                {progress}
+              </span>
+            )}
+          </div>
         )}
 
         {/* Bottom row: branch, time, usage, PR */}
@@ -163,10 +214,23 @@ export function AgentRunCard({ run, column, now, busy, onOpen, selecting, select
               waiting to move
             </span>
           )}
-          {!disabled && (
-            <span className="ml-auto opacity-0 group-hover:opacity-100 text-emerald-400 transition-opacity">
-              {action} →
-            </span>
+          {!selecting && (
+            <button
+              type="button"
+              data-testid={`agent-iterm-${run.id}`}
+              disabled={blocked || busy}
+              onClick={(e) => {
+                e.stopPropagation()
+                onOpen(run)
+              }}
+              onKeyDown={(e) => e.stopPropagation()}
+              title={run.resume_command ?? terminalAction}
+              aria-label={`${terminalAction}: ${headline}`}
+              className="ml-auto px-1.5 py-px border border-zinc-700 text-zinc-400 hover:text-emerald-300 hover:border-emerald-500/50
+                opacity-70 group-hover:opacity-100 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+            >
+              iTerm2 ↗
+            </button>
           )}
         </div>
       </div>

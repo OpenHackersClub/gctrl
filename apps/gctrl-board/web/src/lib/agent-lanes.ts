@@ -1,4 +1,4 @@
-import type { AgentGatherResult, AgentOpenResult, AgentRun, InboxMessage } from "../types"
+import type { AgentGatherResult, AgentOpenResult, AgentRun, InboxMessage, MapHandoff, SessionMap } from "../types"
 
 /** Board columns, most urgent first. Spec: agent-panel.md § States. */
 export type AgentColumn = "needs_you" | "running" | "idle" | "resumable" | "done"
@@ -55,14 +55,19 @@ export function needsYouSessionIds(messages: InboxMessage[], now: Date): Set<str
   return ids
 }
 
+/** Session-map states that hand the run to the operator. */
+const WAITING_STATUSES = new Set(["blocked", "handoff"])
+
 /**
- * Column for one run. A request in the inbox only counts while the run's
- * process is live — a dead process cannot answer a prompt.
+ * Column for one run. An inbox request, or a session map that reports
+ * `blocked` or `handoff`, only counts while the run's process is live — a
+ * dead process cannot answer.
  */
 export function columnFor(run: AgentRun, needsYou: ReadonlySet<string>): AgentColumn {
   if (run.state === "done") return "done"
   const isLive = run.state === "running" || run.state === "idle"
-  if (isLive && needsYou.has(run.native_id)) return "needs_you"
+  const waiting = WAITING_STATUSES.has(run.progress?.status ?? "")
+  if (isLive && (needsYou.has(run.native_id) || waiting)) return "needs_you"
   return run.state
 }
 
@@ -145,6 +150,26 @@ export function relativeTime(iso: string, now: Date): string {
 /** Card headline: the `/rename` or thread name, else the title. */
 export function cardHeadline(run: AgentRun): string {
   return run.name ?? run.title
+}
+
+/**
+ * What the card leads with: the goal, else the title when the headline is a
+ * different name. Null when it would repeat the headline.
+ */
+export function cardGoal(run: AgentRun): string | null {
+  const headline = cardHeadline(run)
+  const goal = run.goal ?? (run.title !== headline ? run.title : null)
+  return goal && goal !== headline ? goal : null
+}
+
+/** One line on where the work stands: current step or summary, with step count. */
+export function cardProgress(run: AgentRun): string | null {
+  const p = run.progress
+  if (!p) return null
+  const text = p.current_step ?? p.summary
+  const count = p.steps_total > 0 ? `${p.steps_done}/${p.steps_total}` : null
+  if (!text) return count
+  return count ? `${text} · ${count}` : text
 }
 
 export function formatUsage(run: AgentRun): string | null {
@@ -248,4 +273,81 @@ export function gatherErrorMessage(error: unknown, stage: "switch" | "gather"): 
   }
   if (text.startsWith("403")) return "Automation denied — allow gctrl to control iTerm2 in System Settings"
   return `Gather failed: ${text}`
+}
+
+export interface ProjectOption {
+  key: string
+  runs: number
+  live: boolean
+}
+
+/** Every project on the board, alphabetical, for the project filter. */
+export function projectOptions(lanes: AgentLane[]): ProjectOption[] {
+  return lanes
+    .map((l) => ({
+      key: l.projectKey,
+      runs: AGENT_COLUMNS.reduce((n, c) => n + l.counts[c], 0),
+      live: l.live,
+    }))
+    .sort((a, b) => a.key.localeCompare(b.key))
+}
+
+/** Lanes whose project the operator has not hidden. */
+export function visibleLanes(lanes: AgentLane[], hidden: ReadonlySet<string>): AgentLane[] {
+  return hidden.size === 0 ? lanes : lanes.filter((l) => !hidden.has(l.projectKey))
+}
+
+/** Hidden set for "Live only": every project with no live run. */
+export function hideAllButLive(options: ProjectOption[]): Set<string> {
+  return new Set(options.filter((o) => !o.live).map((o) => o.key))
+}
+
+export interface HandoffGroup {
+  who: string
+  rows: MapHandoff[]
+}
+
+/** Hand-offs grouped by recipient in order of first appearance, operator first. */
+export function handoffGroups(handoffs: MapHandoff[]): HandoffGroup[] {
+  const groups: HandoffGroup[] = []
+  for (const h of handoffs) {
+    const g = groups.find((x) => x.who === h.who)
+    if (g) g.rows.push(h)
+    else groups.push({ who: h.who, rows: [h] })
+  }
+  const isOp = (g: HandoffGroup) => g.who.toLowerCase() === "operator"
+  return [...groups.filter(isOp), ...groups.filter((g) => !isOp(g))]
+}
+
+const TYPE_LABEL: Record<MapHandoff["type"], string> = { signoff: "[SignOff]", ops: "[Ops]", task: "[Task]" }
+const STEP_MARK = { completed: "x", in_progress: ">", pending: " " } as const
+
+/** The map as plain text, the same brief the session-map mod copies. */
+export function mapBrief(run: AgentRun, map: SessionMap): string {
+  const where = [map.repo, map.branch].filter(Boolean).join(" · ")
+  const lines = [
+    `Session ${run.name ?? run.native_id}${where ? ` [${where}]` : ""}`,
+    `Goal: ${map.goal ?? run.goal ?? "(not set)"}`,
+    `Status: ${map.status ?? "active"}${map.summary ? ` — ${map.summary}` : ""}`,
+  ]
+  if (map.handoffs.length > 0) {
+    lines.push(
+      "Hand-offs:",
+      ...handoffGroups(map.handoffs).flatMap((g) =>
+        g.rows.map(
+          (h) => `${h.n == null ? "→" : `\\${h.n}`} ${h.who} ${TYPE_LABEL[h.type]} ${h.action}${h.why ? ` — ${h.why}` : ""}`,
+        ),
+      ),
+    )
+  }
+  if (map.steps.length > 0) lines.push("Steps:", ...map.steps.map((s) => `- [${STEP_MARK[s.status]}] ${s.text}`))
+  if (map.refs.length > 0) {
+    lines.push(
+      "GitHub:",
+      ...map.refs.map(
+        (r) => `- ${r.kind === "pr" ? "PR" : "Issue"} ${r.repo}#${r.number}${r.state ? ` (${r.state})` : ""} ${r.roles.join(", ")}`,
+      ),
+    )
+  }
+  return lines.join("\n")
 }

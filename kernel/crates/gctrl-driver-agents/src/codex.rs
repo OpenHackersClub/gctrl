@@ -1,13 +1,14 @@
-//! Codex reader: `threads` in `~/.codex/state_<n>.sqlite`, plus the tail of
-//! each thread's rollout file for the last human prompt.
+//! Codex reader: `threads` in `~/.codex/state_<n>.sqlite`, the tail of each
+//! thread's rollout file for the last human prompt and turn state, and
+//! `thread_goals` in `~/.codex/goals_<n>.sqlite` for each thread's `/goal`.
 //!
-//! The database opens through [`crate::sqlite_ro`]. The reader never writes.
+//! The databases open through [`crate::sqlite_ro`]. The reader never writes.
 
-use crate::text::{clip, is_human_prompt};
 use crate::adapter::{from_ms, match_processes, Adapter, Candidate, RunRecord, ScanCtx};
-use crate::model::{Harness, LiveInfo, LiveStatus};
+use crate::model::{Harness, LiveInfo, LiveStatus, SessionMap};
 use crate::procs;
 use crate::sqlite_ro::{columns, open};
+use crate::text::{clip, is_human_prompt};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
@@ -51,13 +52,18 @@ impl Thread {
 
 /// The highest-numbered `state_<n>.sqlite` under `codex_home`.
 pub fn find_state_db(codex_home: &Path) -> Option<PathBuf> {
+    find_db(codex_home, "state_")
+}
+
+/// The highest-numbered `<prefix><n>.sqlite` under `codex_home`.
+fn find_db(codex_home: &Path, prefix: &str) -> Option<PathBuf> {
     let entries = std::fs::read_dir(codex_home).ok()?;
     entries
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().into_string().ok()?;
             let n: u32 = name
-                .strip_prefix("state_")?
+                .strip_prefix(prefix)?
                 .strip_suffix(".sqlite")?
                 .parse()
                 .ok()?;
@@ -67,13 +73,77 @@ pub fn find_state_db(codex_home: &Path) -> Option<PathBuf> {
         .map(|(_, p)| p)
 }
 
+/// `source` of a map built from a thread's Codex `/goal`.
+pub const GOAL_SOURCE: &str = "codex-goal";
+
+/// A thread's `/goal`: a row of `thread_goals` in `goals_<n>.sqlite`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThreadGoal {
+    pub objective: String,
+    /// `active`, `paused`, `blocked`, `usage_limited`, `budget_limited` or
+    /// `complete`.
+    pub status: String,
+    pub updated_at_ms: i64,
+}
+
+impl ThreadGoal {
+    /// The goal as a session map. The objective is pinned, as `/goal` pins
+    /// it in Claude Code; a goal stopped by a limit counts as blocked.
+    pub fn to_map(&self) -> SessionMap {
+        let (status, summary) = match self.status.as_str() {
+            "active" => (Some("active"), None),
+            "paused" => (None, Some("Goal paused")),
+            "blocked" => (Some("blocked"), None),
+            "usage_limited" => (Some("blocked"), Some("Usage limit reached")),
+            "budget_limited" => (Some("blocked"), Some("Token budget used up")),
+            "complete" => (Some("done"), None),
+            _ => (None, None),
+        };
+        SessionMap {
+            source: GOAL_SOURCE.into(),
+            goal: Some(clip(&self.objective, 300)).filter(|g| !g.is_empty()),
+            goal_pinned: true,
+            status: status.map(str::to_string),
+            summary: summary.map(str::to_string),
+            updated_at: Some(
+                from_ms(self.updated_at_ms).to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            ),
+            ..SessionMap::default()
+        }
+    }
+}
+
+/// Thread id → `/goal`, from `goals_<n>.sqlite`.
+pub fn read_goals(db: &Path) -> rusqlite::Result<HashMap<String, ThreadGoal>> {
+    let conn = open(db)?;
+    let mut stmt =
+        conn.prepare("SELECT thread_id, objective, status, updated_at_ms FROM thread_goals")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            ThreadGoal {
+                objective: r.get(1)?,
+                status: r.get(2)?,
+                updated_at_ms: r.get(3)?,
+            },
+        ))
+    })?;
+    rows.collect()
+}
+
 /// Interactive and headless user threads. Guardian reviews and subagent
 /// threads (`thread_source` other than `user`) are excluded.
 pub fn read_threads(db: &Path) -> rusqlite::Result<Vec<Thread>> {
     let c = open(db)?;
     let cols = columns(&c, "threads")?;
     let has = |n: &str| cols.iter().any(|c| c == n);
-    let opt = |n: &str| if has(n) { n.to_string() } else { "NULL".to_string() };
+    let opt = |n: &str| {
+        if has(n) {
+            n.to_string()
+        } else {
+            "NULL".to_string()
+        }
+    };
     let ms = |n: &str, secs: &str| {
         if has(n) {
             format!("COALESCE({n}, {secs} * 1000)")
@@ -162,13 +232,17 @@ pub fn read_tail(rollout: &Path) -> RolloutTail {
         }
         if l.contains(r#""type":"task_started""#) {
             Some(true)
-        } else if l.contains(r#""type":"task_complete""#) || l.contains(r#""type":"turn_aborted""#) {
+        } else if l.contains(r#""type":"task_complete""#) || l.contains(r#""type":"turn_aborted""#)
+        {
             Some(false)
         } else {
             None
         }
     });
-    RolloutTail { last_prompt, turn_open }
+    RolloutTail {
+        last_prompt,
+        turn_open,
+    }
 }
 
 /// Last human prompt in a rollout file, read from its tail.
@@ -233,6 +307,13 @@ impl Adapter for CodexAdapter {
                 })
             })
             .unwrap_or_default();
+        let goals = find_db(&self.codex_home, "goals_")
+            .and_then(|db| {
+                read_goals(&db)
+                    .map_err(|e| tracing::warn!(db = %db.display(), error = %e, "codex goals unreadable"))
+                    .ok()
+            })
+            .unwrap_or_default();
         let cands: Vec<Candidate<'_>> = threads
             .iter()
             .map(|t| Candidate {
@@ -260,6 +341,18 @@ impl Adapter for CodexAdapter {
                 r.started = from_ms(t.created_at_ms);
                 r.title = t.display_title();
                 r.name = t.name.clone().filter(|n| !n.is_empty());
+                // Codex names a thread with a generated summary until
+                // `/rename` replaces it with a session handle.
+                r.goal = r
+                    .name
+                    .clone()
+                    .filter(|n| !n.starts_with("s-") && n != &t.title);
+                if let Some(g) = goals.get(&t.id) {
+                    let map = g.to_map();
+                    r.goal = map.goal.clone().or(r.goal.take());
+                    r.progress = Some(map.progress());
+                    r.map = Some(map);
+                }
                 r.origin = t.git_origin_url.clone();
                 r.git_branch = t.git_branch.clone();
                 r.last_prompt = tail.last_prompt.clone();
@@ -275,7 +368,11 @@ impl Adapter for CodexAdapter {
                     LiveInfo {
                         pid,
                         tty: ctx.procs.get(&pid).and_then(|p| p.tty.clone()),
-                        status: if busy { LiveStatus::Busy } else { LiveStatus::Idle },
+                        status: if busy {
+                            LiveStatus::Busy
+                        } else {
+                            LiveStatus::Idle
+                        },
                     }
                 });
                 r
@@ -311,9 +408,38 @@ mod tests {
     }
 
     #[test]
+    fn reads_thread_goals_as_pinned_maps() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("goals_1.sqlite");
+        let c = Connection::open(&db).unwrap();
+        c.execute_batch(
+            "CREATE TABLE thread_goals (thread_id TEXT PRIMARY KEY, goal_id TEXT, objective TEXT, status TEXT,
+                token_budget INTEGER, tokens_used INTEGER, time_used_seconds INTEGER, created_at_ms INTEGER, updated_at_ms INTEGER);
+             INSERT INTO thread_goals VALUES ('t1', 'g1', 'Ship the billing fix', 'usage_limited', NULL, 0, 0, 1, 1795857072279);
+             INSERT INTO thread_goals VALUES ('t2', 'g2', 'Write the RFC', 'complete', NULL, 0, 0, 1, 1795857072279);",
+        )
+        .unwrap();
+        drop(c);
+        assert_eq!(find_db(tmp.path(), "goals_"), Some(db.clone()));
+        let goals = read_goals(&db).unwrap();
+        let m = goals["t1"].to_map();
+        assert_eq!(m.source, GOAL_SOURCE);
+        assert!(m.goal_pinned);
+        assert_eq!(m.goal.as_deref(), Some("Ship the billing fix"));
+        assert_eq!(m.status.as_deref(), Some("blocked"));
+        assert_eq!(m.summary.as_deref(), Some("Usage limit reached"));
+        assert_eq!(goals["t2"].to_map().status.as_deref(), Some("done"));
+    }
+
+    #[test]
     fn finds_highest_state_db() {
         let tmp = tempfile::tempdir().unwrap();
-        for n in ["state_3.sqlite", "state_5.sqlite", "state_5.sqlite-wal", "logs_9.sqlite"] {
+        for n in [
+            "state_3.sqlite",
+            "state_5.sqlite",
+            "state_5.sqlite-wal",
+            "logs_9.sqlite",
+        ] {
             std::fs::write(tmp.path().join(n), "").unwrap();
         }
         assert_eq!(

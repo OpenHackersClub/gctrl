@@ -115,6 +115,7 @@ Observe & Eval owns both the **substrate** (metrics, prompts, judges, datasets, 
 | Done overlay | Drag to Done, archived threads, merged PRs | P1 | Board page | [#241](https://github.com/OpenHackersClub/gctrl/issues/241) |
 | Harness adapters | `Adapter` contract; Hermes Agent and Pi adapters; per-harness busy detection | P0 | Harness scan | [#244](https://github.com/OpenHackersClub/gctrl/issues/244) |
 | Gather into a Space | Select runs, switch Space by Mission Control shortcut, resume them as tabs of one iTerm2 window; mid-turn runs move when the turn ends | P1 | Open | [#245](https://github.com/OpenHackersClub/gctrl/issues/245) |
+| Goal and progress | Cards lead with the goal and current step (Claude session map and `/goal`, Codex thread name); blocked or handoff runs go to Needs you | P1 | Board page | [#246](https://github.com/OpenHackersClub/gctrl/issues/246) |
 | Resume all | Per-lane action that reopens every Resumable run | P2 | Open | [#242](https://github.com/OpenHackersClub/gctrl/issues/242) |
 
 **Done when:** after a reboot, the `/agents` page lists every non-stale interactive run by project, and one click reopens a run in iTerm2 in its original directory.
