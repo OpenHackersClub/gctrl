@@ -82,6 +82,43 @@ pub fn is_claude_cli(p: &Proc) -> bool {
     exe_name(&p.command) == "claude"
 }
 
+fn is_interpreter(exe: &str) -> bool {
+    matches!(exe, "node" | "bun" | "deno" | "python" | "python3")
+        || exe.strip_prefix("python3.").is_some_and(|v| v.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// True when the process runs the program `name`: its executable is `name`,
+/// or an interpreter runs a script named `name` (`python3 …/bin/hermes`,
+/// `node …/bin/pi`).
+pub fn runs_program(p: &Proc, name: &str) -> bool {
+    let mut it = p.command.split_whitespace();
+    let base = |t: &str| t.rsplit('/').next().unwrap_or(t).to_string();
+    let Some(exe) = it.next().map(base) else {
+        return false;
+    };
+    if exe == name {
+        return true;
+    }
+    is_interpreter(&exe) && it.next().map(base).is_some_and(|s| s == name)
+}
+
+/// True for a Hermes Agent CLI or TUI process.
+pub fn is_hermes_cli(p: &Proc) -> bool {
+    runs_program(p, "hermes")
+}
+
+/// True for a Pi coding agent process.
+pub fn is_pi_cli(p: &Proc) -> bool {
+    runs_program(p, "pi")
+}
+
+/// True for a login shell or interactive shell, the processes left on a tty
+/// after its agent exits.
+pub fn is_shell(p: &Proc) -> bool {
+    let exe = exe_name(&p.command).trim_start_matches('-');
+    matches!(exe, "login" | "zsh" | "bash" | "fish" | "sh" | "nu" | "tcsh" | "ksh")
+}
+
 /// Parse `lsof -a -d cwd -Fpn -p <pids>` output into pid → cwd.
 pub fn parse_lsof_cwd(out: &str) -> HashMap<u32, String> {
     let mut map = HashMap::new();
@@ -147,6 +184,20 @@ mod tests {
         assert!(is_codex_cli(&procs[2]));
         assert!(!is_codex_cli(&procs[3]));
         assert!(!is_codex_cli(&procs[0]));
+    }
+
+    #[test]
+    fn classifies_interpreted_harnesses() {
+        let p = |c: &str| Proc { pid: 1, lstart: String::new(), tty: None, command: c.into() };
+        assert!(is_hermes_cli(&p("/h/venv/bin/python3 /h/venv/bin/hermes --resume x")));
+        assert!(is_hermes_cli(&p("/h/venv/bin/python3.12 /h/venv/bin/hermes")));
+        assert!(!is_hermes_cli(&p("/h/venv/bin/python3 -m pip install hermes")));
+        assert!(is_pi_cli(&p("node /opt/homebrew/bin/pi --session abc")));
+        assert!(is_pi_cli(&p("pi")));
+        assert!(!is_pi_cli(&p("/usr/bin/pip install x")));
+        assert!(is_shell(&p("-zsh")));
+        assert!(is_shell(&p("login -pfl me /bin/zsh")));
+        assert!(!is_shell(&p("claude --resume x")));
     }
 
     #[test]

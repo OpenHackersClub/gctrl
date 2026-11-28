@@ -1,13 +1,13 @@
 //! Codex reader: `threads` in `~/.codex/state_<n>.sqlite`, plus the tail of
 //! each thread's rollout file for the last human prompt.
 //!
-//! The database is opened with `mode=ro`. When Codex is not running its WAL
-//! index (`-shm`) is absent and a read-only connection cannot create one, so
-//! the reader falls back to `immutable=1`; with no `-wal` file present the
-//! main file holds every committed write. The reader never writes.
+//! The database opens through [`crate::sqlite_ro`]. The reader never writes.
 
 use crate::text::{clip, is_human_prompt};
-use rusqlite::{Connection, OpenFlags};
+use crate::adapter::{from_ms, match_processes, Adapter, Candidate, RunRecord, ScanCtx};
+use crate::model::{Harness, LiveInfo, LiveStatus};
+use crate::procs;
+use crate::sqlite_ro::{columns, open};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
@@ -67,34 +67,11 @@ pub fn find_state_db(codex_home: &Path) -> Option<PathBuf> {
         .map(|(_, p)| p)
 }
 
-fn open(db: &Path) -> rusqlite::Result<Connection> {
-    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
-        | OpenFlags::SQLITE_OPEN_URI
-        | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let base = format!("file:{}", db.display());
-    let try_open = |uri: String| -> rusqlite::Result<Connection> {
-        let c = Connection::open_with_flags(uri, flags)?;
-        c.busy_timeout(std::time::Duration::from_millis(500))?;
-        // Opening is lazy; touch the schema so a missing WAL index fails here.
-        c.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))?;
-        Ok(c)
-    };
-    try_open(format!("{base}?mode=ro")).or_else(|_| try_open(format!("{base}?immutable=1")))
-}
-
-fn columns(c: &Connection) -> rusqlite::Result<Vec<String>> {
-    let mut stmt = c.prepare("PRAGMA table_info(threads)")?;
-    let names = stmt
-        .query_map([], |r| r.get::<_, String>(1))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(names)
-}
-
 /// Interactive and headless user threads. Guardian reviews and subagent
 /// threads (`thread_source` other than `user`) are excluded.
 pub fn read_threads(db: &Path) -> rusqlite::Result<Vec<Thread>> {
     let c = open(db)?;
-    let cols = columns(&c)?;
+    let cols = columns(&c, "threads")?;
     let has = |n: &str| cols.iter().any(|c| c == n);
     let opt = |n: &str| if has(n) { n.to_string() } else { "NULL".to_string() };
     let ms = |n: &str, secs: &str| {
@@ -143,16 +120,31 @@ pub fn read_threads(db: &Path) -> rusqlite::Result<Vec<Thread>> {
     rows.collect()
 }
 
-/// Last human prompt in a rollout file, read from its tail.
-pub fn last_prompt(rollout: &Path) -> Option<String> {
+/// What the tail of a rollout file says about its thread.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RolloutTail {
+    pub last_prompt: Option<String>,
+    /// `Some(true)` while a turn has started and not completed.
+    pub turn_open: Option<bool>,
+}
+
+fn tail_text(rollout: &Path) -> Option<String> {
     let mut f = std::fs::File::open(rollout).ok()?;
     let len = f.metadata().ok()?.len();
     let start = len.saturating_sub(ROLLOUT_TAIL_BYTES);
     f.seek(SeekFrom::Start(start)).ok()?;
     let mut buf = Vec::new();
     f.read_to_end(&mut buf).ok()?;
-    let text = String::from_utf8_lossy(&buf);
-    text.lines()
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Last human prompt and turn state, read from a rollout's tail.
+pub fn read_tail(rollout: &Path) -> RolloutTail {
+    let Some(text) = tail_text(rollout) else {
+        return RolloutTail::default();
+    };
+    let last_prompt = text
+        .lines()
         .rev()
         .filter(|l| l.contains(r#""role":"user""#))
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
@@ -163,13 +155,31 @@ pub fn last_prompt(rollout: &Path) -> Option<String> {
                 .find_map(|c| c.get("text").and_then(Value::as_str))?;
             is_human_prompt(first).then(|| clip(first, 200))
         })
-        .next()
+        .next();
+    let turn_open = text.lines().rev().find_map(|l| {
+        if !l.contains(r#""type":"event_msg""#) {
+            return None;
+        }
+        if l.contains(r#""type":"task_started""#) {
+            Some(true)
+        } else if l.contains(r#""type":"task_complete""#) || l.contains(r#""type":"turn_aborted""#) {
+            Some(false)
+        } else {
+            None
+        }
+    });
+    RolloutTail { last_prompt, turn_open }
 }
 
-/// Rollout mtime, and a per-path cache of the last prompt keyed by mtime.
+/// Last human prompt in a rollout file, read from its tail.
+pub fn last_prompt(rollout: &Path) -> Option<String> {
+    read_tail(rollout).last_prompt
+}
+
+/// Per-path cache of [`RolloutTail`] keyed by mtime.
 #[derive(Default)]
 pub struct RolloutCache {
-    entries: HashMap<PathBuf, (Option<SystemTime>, Option<String>)>,
+    entries: HashMap<PathBuf, (Option<SystemTime>, RolloutTail)>,
 }
 
 impl RolloutCache {
@@ -177,22 +187,107 @@ impl RolloutCache {
         std::fs::metadata(path).and_then(|m| m.modified()).ok()
     }
 
-    pub fn last_prompt(&mut self, path: &Path) -> Option<String> {
+    pub fn tail(&mut self, path: &Path) -> RolloutTail {
         let mtime = Self::mtime(path);
-        if let Some((m, p)) = self.entries.get(path) {
+        if let Some((m, t)) = self.entries.get(path) {
             if *m == mtime {
-                return p.clone();
+                return t.clone();
             }
         }
-        let p = last_prompt(path);
-        self.entries.insert(path.to_path_buf(), (mtime, p.clone()));
-        p
+        let t = read_tail(path);
+        self.entries.insert(path.to_path_buf(), (mtime, t.clone()));
+        t
+    }
+}
+
+/// A rollout written this recently means a turn is in progress, when the
+/// tail carries no turn event.
+const BUSY_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Codex adapter: `threads` in the newest state database under `codex_home`.
+pub struct CodexAdapter {
+    codex_home: PathBuf,
+    rollouts: RolloutCache,
+}
+
+impl CodexAdapter {
+    pub fn new(codex_home: PathBuf) -> Self {
+        Self {
+            codex_home,
+            rollouts: RolloutCache::default(),
+        }
+    }
+}
+
+impl Adapter for CodexAdapter {
+    fn harness(&self) -> Harness {
+        Harness::Codex
+    }
+
+    fn scan(&mut self, ctx: &ScanCtx<'_>) -> Vec<RunRecord> {
+        let threads = find_state_db(&self.codex_home)
+            .map(|db| {
+                read_threads(&db).unwrap_or_else(|e| {
+                    tracing::warn!(db = %db.display(), error = %e, "codex threads unreadable");
+                    Vec::new()
+                })
+            })
+            .unwrap_or_default();
+        let cands: Vec<Candidate<'_>> = threads
+            .iter()
+            .map(|t| Candidate {
+                alias: &t.id,
+                run: &t.id,
+                cwd: &t.cwd,
+                updated_ms: t.updated_at_ms,
+                interactive: !t.headless(),
+            })
+            .collect();
+        let live = match_processes(&cands, ctx.procs, procs::is_codex_cli, procs::cwds);
+
+        threads
+            .iter()
+            .map(|t| {
+                let rollout = PathBuf::from(&t.rollout_path);
+                let updated = from_ms(t.updated_at_ms);
+                let pid = live.get(&t.id).copied();
+                let tail = if !t.headless() && ctx.wants_detail(pid.is_some(), updated) {
+                    self.rollouts.tail(&rollout)
+                } else {
+                    RolloutTail::default()
+                };
+                let mut r = RunRecord::new(Harness::Codex, t.id.clone(), t.cwd.clone(), updated);
+                r.started = from_ms(t.created_at_ms);
+                r.title = t.display_title();
+                r.name = t.name.clone().filter(|n| !n.is_empty());
+                r.origin = t.git_origin_url.clone();
+                r.git_branch = t.git_branch.clone();
+                r.last_prompt = tail.last_prompt.clone();
+                r.tokens = Some(t.tokens_used);
+                r.model = t.model.clone();
+                r.headless = t.headless();
+                r.archived = t.archived;
+                r.live = pid.map(|pid| {
+                    let recent = RolloutCache::mtime(&rollout)
+                        .and_then(|m| SystemTime::now().duration_since(m).ok())
+                        .is_some_and(|age| age < BUSY_WINDOW);
+                    let busy = tail.turn_open.unwrap_or(recent);
+                    LiveInfo {
+                        pid,
+                        tty: ctx.procs.get(&pid).and_then(|p| p.tty.clone()),
+                        status: if busy { LiveStatus::Busy } else { LiveStatus::Idle },
+                    }
+                });
+                r
+            })
+            .collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
 
     fn make_db(dir: &Path, name: &str) -> PathBuf {
         let p = dir.join(name);
@@ -261,5 +356,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(last_prompt(&p).as_deref(), Some("second ask"));
+    }
+
+    #[test]
+    fn turn_state_from_last_turn_event() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("rollout.jsonl");
+        let started = r#"{"type":"event_msg","payload":{"type":"task_started"}}"#;
+        let done = r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#;
+        let tokens = r#"{"type":"event_msg","payload":{"type":"token_count"}}"#;
+        std::fs::write(&p, [started, done, started, tokens].join("\n")).unwrap();
+        assert_eq!(read_tail(&p).turn_open, Some(true));
+        std::fs::write(&p, [started, tokens, done, tokens].join("\n")).unwrap();
+        assert_eq!(read_tail(&p).turn_open, Some(false));
+        std::fs::write(&p, tokens).unwrap();
+        assert_eq!(read_tail(&p).turn_open, None);
     }
 }

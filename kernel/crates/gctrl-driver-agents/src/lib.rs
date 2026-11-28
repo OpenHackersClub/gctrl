@@ -1,24 +1,31 @@
-//! gctrl-driver-agents — kernel driver that indexes Claude Code and Codex
-//! runs on this machine and reopens them.
+//! gctrl-driver-agents — kernel driver that indexes coding-agent runs on
+//! this machine (Claude Code, Codex, Hermes Agent, Pi) and reopens them.
 //!
 //! Spec: `vault/specs/architecture/apps/agent-panel.md`.
 //!
-//! - [`claude`] reads transcripts and the live registry under `~/.claude`.
-//! - [`codex`] reads `threads` from `~/.codex/state_<n>.sqlite`.
+//! - [`adapter`] is the per-harness contract and the shared process matcher.
+//! - [`claude`], [`codex`], [`hermes`], [`pi`] are the harness adapters.
 //! - [`procs`] probes the process table for liveness and ttys.
 //! - [`project`] maps a cwd to a project key and worktree name.
-//! - [`index`] assembles runs; [`routes`] serves `/api/agents/*`.
+//! - [`index`] assembles runs; [`gather`] moves runs into one terminal
+//!   window; [`routes`] serves `/api/agents/*`.
 //!
 //! Harness stores are read-only to this driver. Focus and launch go through
 //! `gctrl-mac-comm`.
 
+pub mod adapter;
 pub mod claude;
 pub mod codex;
+pub mod gather;
+pub mod hermes;
 pub mod index;
+pub mod jsonl;
 pub mod model;
+pub mod pi;
 pub mod procs;
 pub mod project;
 pub mod routes;
+pub mod sqlite_ro;
 pub mod text;
 
 pub use index::{AgentIndex, ListOptions, Paths};

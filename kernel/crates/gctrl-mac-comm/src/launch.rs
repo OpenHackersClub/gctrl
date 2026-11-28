@@ -101,6 +101,112 @@ pub async fn launch(req: &LaunchRequest) -> Result<LaunchResponse, CommError> {
     }
 }
 
+/// A new iTerm2 window and the commands typed into its tabs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowResponse {
+    pub window_id: i64,
+    pub commands: Vec<String>,
+}
+
+#[cfg(target_os = "macos")]
+const ITERM2_WINDOW: &str = r#"
+on run argv
+  tell application "iTerm2"
+    set w to (create window with default profile)
+    set is_first to true
+    repeat with cmd in argv
+      if is_first then
+        set is_first to false
+      else
+        tell w to create tab with default profile
+      end if
+      tell current session of w to write text (cmd as text)
+    end repeat
+    activate
+    return (id of w) as text
+  end tell
+end run
+"#;
+
+#[cfg(target_os = "macos")]
+const ITERM2_TAB_IN_WINDOW: &str = r#"
+on run argv
+  set wid to (item 1 of argv) as integer
+  set cmd to item 2 of argv
+  set mode to item 3 of argv
+  tell application "iTerm2"
+    set w to window id wid
+    if mode is "new" then
+      tell w to create tab with default profile
+    end if
+    tell current session of w to write text cmd
+  end tell
+  return "ok"
+end run
+"#;
+
+/// Open one iTerm2 window on the active Space, with one tab per request.
+/// The window opens with a plain shell when `reqs` is empty.
+pub async fn open_window(reqs: &[LaunchRequest]) -> Result<WindowResponse, CommError> {
+    let commands = reqs.iter().map(shell_command).collect::<Result<Vec<_>, _>>()?;
+
+    #[cfg(target_os = "macos")]
+    {
+        let osa = crate::osascript::Osascript {
+            timeout_ms: 10_000 + 2_000 * commands.len() as u64,
+            target_label: "iTerm2",
+        };
+        let args: Vec<&str> = commands.iter().map(String::as_str).collect();
+        let out = osa.run_with_args(&[ITERM2_WINDOW], &args).await?;
+        if out.exit_code == 0 {
+            if let Ok(window_id) = out.stdout.trim().parse::<i64>() {
+                return Ok(WindowResponse { window_id, commands });
+            }
+        }
+        Err(crate::focus::classify_osascript_error(out.exit_code, &out.stderr, "iTerm2"))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = commands;
+        Err(CommError::NotSupported)
+    }
+}
+
+/// Type the resume command into iTerm2 window `window_id`: into a new tab,
+/// or into its current session when `reuse_current` (the shell a fresh
+/// window opens with).
+pub async fn open_tab_in_window(
+    window_id: i64,
+    req: &LaunchRequest,
+    reuse_current: bool,
+) -> Result<LaunchResponse, CommError> {
+    let command = shell_command(req)?;
+
+    #[cfg(target_os = "macos")]
+    {
+        let osa = crate::osascript::Osascript {
+            timeout_ms: 10_000,
+            target_label: "iTerm2",
+        };
+        let wid = window_id.to_string();
+        let mode = if reuse_current { "reuse" } else { "new" };
+        let out = osa
+            .run_with_args(&[ITERM2_TAB_IN_WINDOW], &[&wid, &command, mode])
+            .await?;
+        if out.exit_code == 0 && out.stdout.trim() == "ok" {
+            return Ok(LaunchResponse { launched: true, command });
+        }
+        Err(crate::focus::classify_osascript_error(out.exit_code, &out.stderr, "iTerm2"))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window_id, command, reuse_current);
+        Err(CommError::NotSupported)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,6 +239,16 @@ mod tests {
         ))
         .unwrap();
         assert!(cmd.ends_with("codex resume -c tui.resume_cwd=current 01a04c15-4628-7913-bd1d-21ed78284c55"));
+    }
+
+    #[tokio::test]
+    async fn window_ops_validate_before_osascript() {
+        let bad = req("/tmp", &["claude", "a;b"]);
+        assert!(matches!(open_window(std::slice::from_ref(&bad)).await, Err(CommError::Validation { .. })));
+        assert!(matches!(
+            open_tab_in_window(1, &bad, false).await,
+            Err(CommError::Validation { .. })
+        ));
     }
 
     #[test]

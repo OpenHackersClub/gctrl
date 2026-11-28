@@ -90,6 +90,69 @@ pub async fn focus_tty(tty: &str) -> Result<FocusResponse, CommError> {
     }
 }
 
+#[cfg(target_os = "macos")]
+const CLOSE_BY_TTY: &str = r#"
+on run argv
+  set target_tty to item 1 of argv
+  if application "iTerm2" is running then
+    tell application "iTerm2"
+      repeat with w in windows
+        repeat with t in tabs of w
+          repeat with s in sessions of t
+            if tty of s is target_tty then
+              close s
+              return "iterm2"
+            end if
+          end repeat
+        end repeat
+      end repeat
+    end tell
+  end if
+  if application "Terminal" is running then
+    tell application "Terminal"
+      repeat with w in windows
+        repeat with t in tabs of w
+          if tty of t is target_tty then
+            close t
+            return "terminal"
+          end if
+        end repeat
+      end repeat
+    end tell
+  end if
+  return "not_found"
+end run
+"#;
+
+/// Close the iTerm2 session or Terminal.app tab whose tty is `tty`.
+/// Returns the app that closed it, or `None` when no pane matches. The
+/// caller checks that only a shell is left on the tty.
+pub async fn close_tty(tty: &str) -> Result<Option<String>, CommError> {
+    validate::tty(tty)?;
+
+    #[cfg(target_os = "macos")]
+    {
+        let osa = crate::osascript::Osascript {
+            timeout_ms: 5_000,
+            target_label: "terminal",
+        };
+        let out = osa.run_with_args(&[CLOSE_BY_TTY], &[tty]).await?;
+        if out.exit_code != 0 {
+            return Err(crate::focus::classify_osascript_error(out.exit_code, &out.stderr, "terminal"));
+        }
+        Ok(match out.stdout.trim() {
+            "iterm2" => Some("iTerm2".into()),
+            "terminal" => Some("Terminal".into()),
+            _ => None,
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(CommError::NotSupported)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,6 +165,7 @@ mod tests {
                 matches!(r, Err(CommError::Validation { field: "tty", .. })),
                 "accepted {bad:?}"
             );
+            assert!(matches!(close_tty(bad).await, Err(CommError::Validation { .. })));
         }
     }
 }

@@ -1,4 +1,4 @@
-import type { AgentOpenResult, AgentRun, InboxMessage } from "../types"
+import type { AgentGatherResult, AgentOpenResult, AgentRun, InboxMessage } from "../types"
 
 /** Board columns, most urgent first. Spec: agent-panel.md § States. */
 export type AgentColumn = "needs_you" | "running" | "idle" | "resumable" | "done"
@@ -192,4 +192,60 @@ export function openErrorMessage(error: unknown): string {
   if (text.startsWith("403")) return "Automation denied — allow gctrl to control iTerm2 in System Settings"
   if (text.startsWith("404")) return "Run no longer exists"
   return `Open failed: ${text}`
+}
+
+export interface GatherPreview {
+  /** No live process: resumes directly. */
+  resume: number
+  /** Live and idle: stopped, then resumed in the new window. */
+  move: number
+  /** Live and mid-turn (or unknown): moves when the turn ends. */
+  wait: number
+  /** Worktree removed, or live with no terminal. */
+  skip: number
+}
+
+/** How a gather treats each selected run (spec § Gather into a Space). */
+export function gatherPreview(runs: AgentRun[]): GatherPreview {
+  const p: GatherPreview = { resume: 0, move: 0, wait: 0, skip: 0 }
+  for (const r of runs) {
+    if (!r.cwd_exists) p.skip += 1
+    else if (!r.live) p.resume += 1
+    else if (!r.live.tty) p.skip += 1
+    else if (r.live.status === "idle") p.move += 1
+    else p.wait += 1
+  }
+  return p
+}
+
+/** Toast copy for a `POST /api/agents/gather` result. */
+export function gatherResultMessage(result: AgentGatherResult): OpenToast {
+  const count = (a: string) => result.items.filter((i) => i.action === a).length
+  const opened = count("resumed") + count("moved")
+  const queued = count("queued")
+  const stopped = count("stopped")
+  const skipped = result.items.filter((i) => i.action === "skipped")
+  const parts: string[] = []
+  if (opened > 0) parts.push(`${opened} in one iTerm2 window`)
+  if (queued > 0) parts.push(`${queued} waiting for ${queued === 1 ? "its" : "their"} turn to end`)
+  if (stopped > 0) parts.push(`${stopped} stopped but not resumed`)
+  if (skipped.length > 0) {
+    const why = [...new Set(skipped.map((i) => i.detail ?? "skipped"))].join(", ")
+    parts.push(`${skipped.length} skipped (${why})`)
+  }
+  const ok = opened + queued > 0
+  return { message: `${ok ? "Gathered" : "Nothing gathered"}: ${parts.join(" · ") || "no runs"}`, type: ok && stopped === 0 ? "success" : "error" }
+}
+
+/** Toast copy for a failed Space switch or gather call. */
+export function gatherErrorMessage(error: unknown, stage: "switch" | "gather"): string {
+  const text = error instanceof Error ? error.message : String(error)
+  if (stage === "switch") {
+    if (text.startsWith("403"))
+      return "Switching Spaces needs Accessibility for gctrld (System Settings → Privacy & Security → Accessibility)"
+    if (text.startsWith("501")) return "Space switching is off: enable the Mission Control shortcuts in Keyboard settings"
+    return `Space switch failed: ${text}`
+  }
+  if (text.startsWith("403")) return "Automation denied — allow gctrl to control iTerm2 in System Settings"
+  return `Gather failed: ${text}`
 }

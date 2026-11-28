@@ -1,5 +1,6 @@
 //! `/api/agents/*` routes. Contract: spec § HTTP API.
 
+use crate::gather::{gather, GatherRequest};
 use crate::index::{launch_request, AgentIndex, ListOptions};
 use crate::model::{AgentRun, OpenResponse};
 use axum::{
@@ -68,15 +69,18 @@ async fn runs(index: &Arc<AgentIndex>, max_age: Duration) -> Result<Vec<AgentRun
 
 async fn list(State(index): State<Arc<AgentIndex>>, Query(p): Query<ListParams>) -> Response {
     match runs(&index, LIST_MAX_AGE).await {
-        Ok(r) => Json(AgentIndex::list(
-            &r,
-            ListOptions {
-                include_headless: p.include_headless,
-                include_stale: p.include_stale,
-            },
-            Utc::now(),
-        ))
-        .into_response(),
+        Ok(r) => {
+            let mut resp = AgentIndex::list(
+                &r,
+                ListOptions {
+                    include_headless: p.include_headless,
+                    include_stale: p.include_stale,
+                },
+                Utc::now(),
+            );
+            resp.gather_queue = index.gather_queue();
+            Json(resp).into_response()
+        }
         Err(resp) => resp,
     }
 }
@@ -140,11 +144,28 @@ async fn open(
 }
 
 /// Mount `/api/agents/*` with its own index state.
+async fn gather_runs(State(index): State<Arc<AgentIndex>>, Json(req): Json<GatherRequest>) -> Response {
+    if req.ids.is_empty() {
+        return (StatusCode::BAD_REQUEST, "ids is empty").into_response();
+    }
+    match gather(index, req).await {
+        Ok(r) => Json(r).into_response(),
+        Err(e) => comm_error(e),
+    }
+}
+
+async fn cancel_gather(State(index): State<Arc<AgentIndex>>, Path(id): Path<String>) -> StatusCode {
+    index.dequeue_gather(&id);
+    StatusCode::NO_CONTENT
+}
+
 pub fn router<S: Clone + Send + Sync + 'static>(index: Arc<AgentIndex>) -> Router<S> {
     Router::new()
         .route("/api/agents", get(list))
         .route("/api/agents/{id}", get(get_one))
+        .route("/api/agents/gather", post(gather_runs))
         .route("/api/agents/{id}/open", post(open))
+        .route("/api/agents/{id}/gather", axum::routing::delete(cancel_gather))
         .with_state(index)
 }
 

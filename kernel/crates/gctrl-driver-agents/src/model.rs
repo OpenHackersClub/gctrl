@@ -7,15 +7,32 @@ use serde::{Deserialize, Serialize};
 pub enum Harness {
     ClaudeCode,
     Codex,
+    Hermes,
+    Pi,
 }
 
 impl Harness {
-    /// Prefix of a run id: `claude:<uuid>` or `codex:<uuid>`.
+    pub const ALL: [Harness; 4] = [Harness::ClaudeCode, Harness::Codex, Harness::Hermes, Harness::Pi];
+
+    /// Prefix of a run id: `claude:<id>`, `codex:<id>`, `hermes:<id>`, `pi:<id>`.
     pub const fn prefix(self) -> &'static str {
         match self {
             Harness::ClaudeCode => "claude",
             Harness::Codex => "codex",
+            Harness::Hermes => "hermes",
+            Harness::Pi => "pi",
         }
+    }
+
+    /// The fixed resume command for `native_id` (spec § Open and resume).
+    pub fn resume_argv(self, native_id: &str) -> Vec<String> {
+        let argv: Vec<&str> = match self {
+            Harness::ClaudeCode => vec!["claude", "--resume", native_id],
+            Harness::Codex => vec!["codex", "resume", "-c", "tui.resume_cwd=current", native_id],
+            Harness::Hermes => vec!["hermes", "--resume", native_id],
+            Harness::Pi => vec!["pi", "--session", native_id],
+        };
+        argv.into_iter().map(str::to_string).collect()
     }
 }
 
@@ -88,6 +105,26 @@ pub struct ListResponse {
     pub generated_at: String,
     pub runs: Vec<AgentRun>,
     pub hidden: Hidden,
+    /// Run ids waiting for their turn to end before a gather moves them.
+    #[serde(default)]
+    pub gather_queue: Vec<String>,
+}
+
+/// One run's outcome in a gather (spec § Gather into a Space).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GatherItem {
+    pub id: String,
+    /// `resumed`, `moved`, `queued` or `skipped`.
+    pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GatherResponse {
+    /// iTerm2 window id that holds the gathered tabs; None when nothing opened.
+    pub window_id: Option<i64>,
+    pub items: Vec<GatherItem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

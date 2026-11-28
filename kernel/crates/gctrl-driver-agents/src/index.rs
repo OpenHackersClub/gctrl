@@ -1,35 +1,36 @@
-//! In-memory index of agent runs, rebuilt from the harness stores.
+//! In-memory index of agent runs, rebuilt from the harness adapters.
 
-use crate::claude::{self, LiveEntry, Transcript};
-use crate::codex::{self, RolloutCache, Thread};
+use crate::adapter::{Adapter, RunRecord, ScanCtx};
+use crate::claude::ClaudeAdapter;
+use crate::codex::CodexAdapter;
+use crate::hermes::HermesAdapter;
 use crate::model::{AgentRun, Harness, Hidden, ListResponse, LiveInfo, LiveStatus, RunState};
-use crate::procs::{self, Proc};
+use crate::pi::PiAdapter;
+use crate::procs;
 use crate::project::Resolver;
-use crate::text::find_uuid;
-use chrono::{DateTime, SecondsFormat, TimeZone, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use gctrl_mac_comm::launch::{shell_command, LaunchRequest};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 /// A run with no live process and no activity for this long is stale.
 pub fn stale_after() -> chrono::Duration {
     chrono::Duration::days(7)
 }
 
-/// A Codex rollout written this recently means a turn is in progress.
-const BUSY_WINDOW: Duration = Duration::from_secs(10);
-
 /// Two launches of the same run inside this window are treated as one click.
 const LAUNCH_DEBOUNCE: Duration = Duration::from_secs(5);
 
-/// Claude config dirs are discovered under `home` on every refresh
-/// ([`claude::config_dirs`]); Codex lives in `codex_home`.
+/// Where each harness keeps its store. Claude config dirs are discovered
+/// under `home` on every refresh ([`crate::claude::config_dirs`]).
 #[derive(Debug, Clone)]
 pub struct Paths {
     pub home: PathBuf,
     pub codex_home: PathBuf,
+    pub hermes_home: PathBuf,
+    pub pi_sessions: PathBuf,
 }
 
 impl Paths {
@@ -37,11 +38,40 @@ impl Paths {
         Self {
             home: home.to_path_buf(),
             codex_home: home.join(".codex"),
+            hermes_home: home.join(".hermes"),
+            pi_sessions: home.join(".pi").join("agent").join("sessions"),
         }
     }
 
+    /// The current user's stores, honoring each harness's home override.
     pub fn detect() -> Self {
-        Self::from_home(&dirs::home_dir().unwrap_or_else(|| PathBuf::from("/nonexistent")))
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/nonexistent"));
+        let mut p = Self::from_home(&home);
+        let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+        if let Some(v) = env("CODEX_HOME") {
+            p.codex_home = v;
+        }
+        if let Some(v) = env("HERMES_HOME") {
+            p.hermes_home = v;
+        }
+        if let Some(v) = env("PI_CODING_AGENT_DIR") {
+            p.pi_sessions = v.join("sessions");
+        }
+        if let Some(v) = env("PI_CODING_AGENT_SESSION_DIR") {
+            p.pi_sessions = v;
+        }
+        p
+    }
+
+    /// One adapter per supported harness.
+    pub fn adapters(&self) -> Vec<Box<dyn Adapter>> {
+        let home = self.home.to_string_lossy().into_owned();
+        vec![
+            Box::new(ClaudeAdapter::new(self.home.clone())),
+            Box::new(CodexAdapter::new(self.codex_home.clone())),
+            Box::new(HermesAdapter::new(self.hermes_home.clone(), home)),
+            Box::new(PiAdapter::new(self.pi_sessions.clone())),
+        ]
     }
 }
 
@@ -52,17 +82,18 @@ pub struct ListOptions {
 }
 
 struct Inner {
-    transcripts: HashMap<PathBuf, Transcript>,
-    rollouts: RolloutCache,
+    adapters: Vec<Box<dyn Adapter>>,
     resolver: Resolver,
     runs: Vec<AgentRun>,
     refreshed: Option<Instant>,
 }
 
 pub struct AgentIndex {
-    paths: Paths,
     inner: Mutex<Inner>,
     launches: Mutex<HashMap<String, Instant>>,
+    gather_queue: Mutex<Vec<String>>,
+    /// Gather windows whose initial shell no run has used yet.
+    fresh_windows: Mutex<std::collections::HashSet<i64>>,
 }
 
 pub fn derive_state(archived: bool, live: Option<&LiveInfo>) -> RunState {
@@ -84,122 +115,30 @@ fn rfc3339(t: DateTime<Utc>) -> String {
     t.to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-fn parse_ts(s: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s).ok().map(|t| t.with_timezone(&Utc))
-}
-
-fn from_ms(ms: i64) -> DateTime<Utc> {
-    Utc.timestamp_millis_opt(ms).single().unwrap_or_default()
-}
-
-fn from_system(t: SystemTime) -> DateTime<Utc> {
-    DateTime::<Utc>::from(t)
-}
-
 /// Fixed resume templates (spec § Open and resume).
 pub fn launch_request(harness: Harness, native_id: &str, cwd: &str) -> LaunchRequest {
-    let argv: Vec<&str> = match harness {
-        Harness::ClaudeCode => vec!["claude", "--resume", native_id],
-        Harness::Codex => vec!["codex", "resume", "-c", "tui.resume_cwd=current", native_id],
-    };
     LaunchRequest {
         cwd: cwd.to_string(),
-        argv: argv.into_iter().map(str::to_string).collect(),
+        argv: harness.resume_argv(native_id),
     }
-}
-
-/// Live Claude sessions by session id. A registry entry counts when its pid
-/// exists and either its start time matches or the process is a `claude`
-/// CLI; a pid reused after a reboot matches neither.
-pub fn claude_live(registry: &[LiveEntry], procs: &HashMap<u32, Proc>) -> HashMap<String, LiveInfo> {
-    let mut out: HashMap<String, LiveInfo> = HashMap::new();
-    for e in registry {
-        let Some(p) = procs.get(&e.pid) else { continue };
-        let start_matches = e
-            .proc_start
-            .as_deref()
-            .map(procs::normalize_lstart)
-            .is_some_and(|s| s == p.lstart);
-        if !start_matches && !procs::is_claude_cli(p) {
-            continue;
-        }
-        let status = match e.status.as_deref() {
-            Some("busy") => LiveStatus::Busy,
-            Some("idle") => LiveStatus::Idle,
-            _ => LiveStatus::Unknown,
-        };
-        let info = LiveInfo {
-            pid: e.pid,
-            tty: p.tty.clone(),
-            status,
-        };
-        let key = e.session_id.to_ascii_lowercase();
-        match out.get(&key) {
-            Some(cur) if cur.status == LiveStatus::Busy => {}
-            _ => {
-                out.insert(key, info);
-            }
-        }
-    }
-    out
-}
-
-/// Live Codex threads by thread id. One interactive process per tty (the
-/// lowest pid, which is the parent of any helper it spawned). A process
-/// resumed by id carries the id in argv; otherwise it maps to the most
-/// recently updated unclaimed thread in its cwd.
-pub fn codex_live(
-    threads: &[Thread],
-    procs: &HashMap<u32, Proc>,
-    cwds: &HashMap<u32, String>,
-) -> HashMap<String, u32> {
-    let mut by_tty: HashMap<&str, &Proc> = HashMap::new();
-    for p in procs.values().filter(|p| procs::is_codex_cli(p)) {
-        let Some(tty) = p.tty.as_deref() else { continue };
-        match by_tty.get(tty) {
-            Some(cur) if cur.pid < p.pid => {}
-            _ => {
-                by_tty.insert(tty, p);
-            }
-        }
-    }
-    let known: HashSet<&str> = threads.iter().map(|t| t.id.as_str()).collect();
-    let mut claimed: HashMap<String, u32> = HashMap::new();
-    let mut pending: Vec<&Proc> = Vec::new();
-    for p in by_tty.values() {
-        match find_uuid(&p.command).filter(|id| known.contains(id.as_str())) {
-            Some(id) => {
-                claimed.insert(id, p.pid);
-            }
-            None => pending.push(p),
-        }
-    }
-    for p in pending {
-        let Some(cwd) = cwds.get(&p.pid) else { continue };
-        let newest = threads
-            .iter()
-            .filter(|t| &t.cwd == cwd && !claimed.contains_key(&t.id) && !t.headless())
-            .max_by_key(|t| t.updated_at_ms);
-        if let Some(t) = newest {
-            claimed.insert(t.id.clone(), p.pid);
-        }
-    }
-    claimed
 }
 
 impl AgentIndex {
     pub fn new(paths: Paths) -> Self {
-        let resolver = Resolver::new(paths.home.clone());
+        Self::with_adapters(paths.adapters(), paths.home)
+    }
+
+    pub fn with_adapters(adapters: Vec<Box<dyn Adapter>>, home: PathBuf) -> Self {
         Self {
-            paths,
             inner: Mutex::new(Inner {
-                transcripts: HashMap::new(),
-                rollouts: RolloutCache::default(),
-                resolver,
+                adapters,
+                resolver: Resolver::new(home),
                 runs: Vec::new(),
                 refreshed: None,
             }),
             launches: Mutex::new(HashMap::new()),
+            gather_queue: Mutex::new(Vec::new()),
+            fresh_windows: Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -214,199 +153,25 @@ impl AgentIndex {
         self.refresh(now)
     }
 
-    /// Rebuild every run from the harness stores and the process table.
+    /// Rebuild every run from the adapters and the process table.
     pub fn refresh(&self, now: DateTime<Utc>) -> Vec<AgentRun> {
         let procs = procs::snapshot();
+        let ctx = ScanCtx { procs: &procs, now };
         let mut guard = self.inner.lock().expect("agent index lock");
         let inner = &mut *guard;
-
-        let config = claude::config_dirs(&self.paths.home);
-        claude::scan(
-            &claude::unique_subdirs(&config, "projects"),
-            &mut inner.transcripts,
-        );
-        let registry: Vec<LiveEntry> = claude::unique_subdirs(&config, "sessions")
-            .iter()
-            .flat_map(|d| claude::read_registry(d))
+        let records: Vec<RunRecord> = inner
+            .adapters
+            .iter_mut()
+            .flat_map(|a| a.scan(&ctx))
             .collect();
-        let live = claude_live(&registry, &procs);
-
-        let mut runs = Vec::new();
-        let mut seen_claude: HashSet<String> = HashSet::new();
-        for t in inner.transcripts.values() {
-            let live_info = live.get(&t.session_id).cloned();
-            let cwd = t.cwd.clone().or_else(|| {
-                registry
-                    .iter()
-                    .find(|e| e.session_id.eq_ignore_ascii_case(&t.session_id))
-                    .and_then(|e| e.cwd.clone())
-            });
-            let Some(cwd) = cwd else { continue };
-            seen_claude.insert(t.session_id.clone());
-            let updated = t
-                .updated_at
-                .as_deref()
-                .and_then(parse_ts)
-                .or_else(|| t.mtime.map(from_system))
-                .unwrap_or(now);
-            let started = t.started_at.as_deref().and_then(parse_ts).unwrap_or(updated);
-            runs.push(self.build_run(
-                &mut inner.resolver,
-                BuildInput {
-                    harness: Harness::ClaudeCode,
-                    native_id: t.session_id.clone(),
-                    title: t.title().unwrap_or_else(|| "(untitled)".into()),
-                    name: t.agent_name.clone(),
-                    cwd,
-                    origin: None,
-                    git_branch: t.git_branch.clone(),
-                    last_prompt: t.last_prompt.clone(),
-                    pr: t.pr.clone(),
-                    cost_usd: t.cost_usd,
-                    tokens: None,
-                    model: None,
-                    started,
-                    updated,
-                    headless: t.headless(),
-                    archived: false,
-                    live: live_info,
-                },
-                now,
-            ));
-        }
-        // A live session with no transcript yet (no message sent).
-        for e in &registry {
-            let id = e.session_id.to_ascii_lowercase();
-            let (Some(info), Some(cwd)) = (live.get(&id), e.cwd.clone()) else {
-                continue;
-            };
-            if !seen_claude.insert(id.clone()) {
-                continue;
-            }
-            runs.push(self.build_run(
-                &mut inner.resolver,
-                BuildInput {
-                    harness: Harness::ClaudeCode,
-                    native_id: id,
-                    title: e.name.clone().unwrap_or_else(|| "(new session)".into()),
-                    name: e.name.clone(),
-                    cwd,
-                    origin: None,
-                    git_branch: None,
-                    last_prompt: None,
-                    pr: None,
-                    cost_usd: None,
-                    tokens: None,
-                    model: None,
-                    started: now,
-                    updated: now,
-                    headless: e.kind.as_deref() == Some("bg"),
-                    archived: false,
-                    live: Some(info.clone()),
-                },
-                now,
-            ));
-        }
-
-        let threads = codex::find_state_db(&self.paths.codex_home)
-            .map(|db| {
-                codex::read_threads(&db).unwrap_or_else(|e| {
-                    tracing::warn!(db = %db.display(), error = %e, "codex threads unreadable");
-                    Vec::new()
-                })
-            })
-            .unwrap_or_default();
-        let codex_pids: Vec<u32> = procs
-            .values()
-            .filter(|p| procs::is_codex_cli(p))
-            .map(|p| p.pid)
+        let mut runs: Vec<AgentRun> = records
+            .into_iter()
+            .map(|r| build_run(&mut inner.resolver, r, now))
             .collect();
-        let cwds = procs::cwds(&codex_pids);
-        let codex_live_map = codex_live(&threads, &procs, &cwds);
-        for t in &threads {
-            let rollout = PathBuf::from(&t.rollout_path);
-            let live_info = codex_live_map.get(&t.id).map(|pid| {
-                let busy = RolloutCache::mtime(&rollout)
-                    .and_then(|m| SystemTime::now().duration_since(m).ok())
-                    .is_some_and(|age| age < BUSY_WINDOW);
-                LiveInfo {
-                    pid: *pid,
-                    tty: procs.get(pid).and_then(|p| p.tty.clone()),
-                    status: if busy { LiveStatus::Busy } else { LiveStatus::Idle },
-                }
-            });
-            let updated = from_ms(t.updated_at_ms);
-            // Only read rollouts for runs the default view shows.
-            let last_prompt = if !t.headless()
-                && (live_info.is_some() || !is_stale(false, updated, now))
-            {
-                inner.rollouts.last_prompt(&rollout)
-            } else {
-                None
-            };
-            runs.push(self.build_run(
-                &mut inner.resolver,
-                BuildInput {
-                    harness: Harness::Codex,
-                    native_id: t.id.clone(),
-                    title: t.display_title(),
-                    name: t.name.clone().filter(|n| !n.is_empty()),
-                    cwd: t.cwd.clone(),
-                    origin: t.git_origin_url.clone(),
-                    git_branch: t.git_branch.clone(),
-                    last_prompt,
-                    pr: None,
-                    cost_usd: None,
-                    tokens: Some(t.tokens_used),
-                    model: t.model.clone(),
-                    started: from_ms(t.created_at_ms),
-                    updated,
-                    headless: t.headless(),
-                    archived: t.archived,
-                    live: live_info,
-                },
-                now,
-            ));
-        }
-
         runs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         inner.runs = runs.clone();
         inner.refreshed = Some(Instant::now());
         runs
-    }
-
-    fn build_run(&self, resolver: &mut Resolver, i: BuildInput, now: DateTime<Utc>) -> AgentRun {
-        let resolved = resolver.resolve(&i.cwd, i.origin.as_deref());
-        let cwd_exists = Path::new(&i.cwd).is_dir();
-        let resume_command = cwd_exists
-            .then(|| shell_command(&launch_request(i.harness, &i.native_id, &i.cwd)).ok())
-            .flatten();
-        let state = derive_state(i.archived, i.live.as_ref());
-        AgentRun {
-            id: format!("{}:{}", i.harness.prefix(), i.native_id),
-            harness: i.harness,
-            native_id: i.native_id,
-            title: i.title,
-            name: i.name,
-            project_key: resolved.key,
-            cwd: i.cwd,
-            cwd_exists,
-            worktree: resolved.worktree,
-            git_branch: i.git_branch,
-            last_prompt: i.last_prompt,
-            pr: i.pr,
-            cost_usd: i.cost_usd,
-            tokens: i.tokens,
-            model: i.model,
-            started_at: rfc3339(i.started),
-            updated_at: rfc3339(i.updated),
-            headless: i.headless,
-            archived: i.archived,
-            stale: is_stale(i.live.is_some(), i.updated, now),
-            live: i.live,
-            state,
-            resume_command,
-        }
     }
 
     /// Apply the default filters and count what they hide.
@@ -426,6 +191,7 @@ impl AgentIndex {
             generated_at: rfc3339(now),
             runs: out,
             hidden,
+            gather_queue: Vec::new(),
         }
     }
 
@@ -440,31 +206,78 @@ impl AgentIndex {
         l.insert(id.to_string(), Instant::now());
         true
     }
+
+    /// Runs a gather is waiting on.
+    pub fn gather_queue(&self) -> Vec<String> {
+        self.gather_queue.lock().expect("gather lock").clone()
+    }
+
+    /// Add `id` to the gather queue; false when it is already queued.
+    pub fn enqueue_gather(&self, id: &str) -> bool {
+        let mut q = self.gather_queue.lock().expect("gather lock");
+        if q.iter().any(|x| x == id) {
+            return false;
+        }
+        q.push(id.to_string());
+        true
+    }
+
+    pub fn dequeue_gather(&self, id: &str) {
+        self.gather_queue.lock().expect("gather lock").retain(|x| x != id);
+    }
+
+    /// Record that `window_id` opened with an unused shell.
+    pub fn mark_fresh_window(&self, window_id: i64) {
+        self.fresh_windows.lock().expect("window lock").insert(window_id);
+    }
+
+    /// True once for a window that still has its unused initial shell.
+    pub fn take_fresh_window(&self, window_id: i64) -> bool {
+        self.fresh_windows.lock().expect("window lock").remove(&window_id)
+    }
 }
 
-struct BuildInput {
-    harness: Harness,
-    native_id: String,
-    title: String,
-    name: Option<String>,
-    cwd: String,
-    origin: Option<String>,
-    git_branch: Option<String>,
-    last_prompt: Option<String>,
-    pr: Option<crate::model::PrLink>,
-    cost_usd: Option<f64>,
-    tokens: Option<i64>,
-    model: Option<String>,
-    started: DateTime<Utc>,
-    updated: DateTime<Utc>,
-    headless: bool,
-    archived: bool,
-    live: Option<LiveInfo>,
+fn build_run(resolver: &mut Resolver, r: RunRecord, now: DateTime<Utc>) -> AgentRun {
+    let resolved = resolver.resolve(&r.cwd, r.origin.as_deref());
+    let cwd_exists = Path::new(&r.cwd).is_dir();
+    let resume_command = cwd_exists
+        .then(|| shell_command(&launch_request(r.harness, &r.native_id, &r.cwd)).ok())
+        .flatten();
+    let state = derive_state(r.archived, r.live.as_ref());
+    AgentRun {
+        id: format!("{}:{}", r.harness.prefix(), r.native_id),
+        harness: r.harness,
+        native_id: r.native_id,
+        title: r.title,
+        name: r.name,
+        project_key: resolved.key,
+        cwd: r.cwd,
+        cwd_exists,
+        worktree: resolved.worktree,
+        git_branch: r.git_branch,
+        last_prompt: r.last_prompt,
+        pr: r.pr,
+        cost_usd: r.cost_usd,
+        tokens: r.tokens,
+        model: r.model,
+        started_at: rfc3339(r.started),
+        updated_at: rfc3339(r.updated),
+        headless: r.headless,
+        archived: r.archived,
+        stale: is_stale(r.live.is_some(), r.updated, now),
+        live: r.live,
+        state,
+        resume_command,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter::{match_processes, Candidate};
+    use crate::claude::{claude_live, LiveEntry};
+    use crate::procs::Proc;
+    use chrono::TimeZone;
     use rusqlite::Connection;
 
     const CLAUDE_SID: &str = "26e3373e-8358-416b-83f3-355a59325193";
@@ -472,6 +285,7 @@ mod tests {
     const SDK_SID: &str = "bbbbbbbb-8358-416b-83f3-355a59325193";
     const LIVE_ONLY_SID: &str = "cccccccc-8358-416b-83f3-355a59325193";
     const CODEX_ID: &str = "01a04c15-4628-7913-bd1d-21ed78284c55";
+    const PI_ID: &str = "019a0b7c-1d2e-7f30-8a41-5b6c7d8e9f01";
 
     fn proc(pid: u32, lstart: &str, tty: Option<&str>, command: &str) -> Proc {
         Proc {
@@ -539,22 +353,13 @@ mod tests {
         assert_eq!(l.tty.as_deref(), Some("/dev/ttys003"));
     }
 
-    fn thread(id: &str, cwd: &str, updated: i64, source: &str) -> Thread {
-        Thread {
-            id: id.into(),
-            rollout_path: String::new(),
-            cwd: cwd.into(),
-            title: "t".into(),
-            name: None,
-            first_user_message: None,
-            git_branch: None,
-            git_origin_url: None,
-            tokens_used: 0,
-            model: None,
-            archived: false,
-            source: source.into(),
-            created_at_ms: 0,
-            updated_at_ms: updated,
+    fn thread<'a>(id: &'a str, cwd: &'a str, updated: i64, source: &str) -> Candidate<'a> {
+        Candidate {
+            alias: id,
+            run: id,
+            cwd,
+            updated_ms: updated,
+            interactive: source != "exec",
         }
     }
 
@@ -578,7 +383,7 @@ mod tests {
         .collect();
         let cwds: HashMap<u32, String> =
             [(200, "/w/web".to_string()), (201, "/w/web".to_string())].into_iter().collect();
-        let live = codex_live(&threads, &procs, &cwds);
+        let live = match_processes(&threads, &procs, procs::is_codex_cli, |_| cwds);
         assert_eq!(live.get(CODEX_ID), Some(&100));
         assert_eq!(live.get("33333333-3333-3333-3333-333333333333"), Some(&200));
         assert_eq!(live.len(), 2);
@@ -593,6 +398,13 @@ mod tests {
             x.argv,
             vec!["codex", "resume", "-c", "tui.resume_cwd=current", CODEX_ID]
         );
+        let h = launch_request(Harness::Hermes, "20260420_134853_5501ee", "/w/api");
+        assert_eq!(h.argv, vec!["hermes", "--resume", "20260420_134853_5501ee"]);
+        let p = launch_request(Harness::Pi, CODEX_ID, "/w/api");
+        assert_eq!(p.argv, vec!["pi", "--session", CODEX_ID]);
+        for harness in Harness::ALL {
+            assert!(shell_command(&launch_request(harness, CLAUDE_SID, "/w/api")).is_ok());
+        }
     }
 
     fn transcript(cwd: &str, ts: &str, entry: &str) -> String {
@@ -666,6 +478,34 @@ mod tests {
         .unwrap();
         drop(c);
 
+        let hermes_home = home.join(".hermes");
+        std::fs::create_dir_all(&hermes_home).unwrap();
+        let h = Connection::open(hermes_home.join("state.db")).unwrap();
+        h.execute_batch(&format!(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT NOT NULL, started_at REAL NOT NULL,
+               ended_at REAL, end_reason TEXT, parent_session_id TEXT, title TEXT, cwd TEXT);
+             CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT,
+               tool_calls TEXT, timestamp REAL);
+             INSERT INTO sessions VALUES ('20261127_100000_abcdef', 'tui', 1795780800, NULL, NULL, NULL,
+               NULL, '{repo_s}');
+             INSERT INTO messages VALUES (1, '20261127_100000_abcdef', 'user', 'triage the inbox', NULL,
+               1795780801);"
+        ))
+        .unwrap();
+        drop(h);
+
+        let pi_dir = home.join(".pi/agent/sessions/--src-api--");
+        std::fs::create_dir_all(&pi_dir).unwrap();
+        std::fs::write(
+            pi_dir.join(format!("2026-11-27T10-00-00-000Z_{PI_ID}.jsonl")),
+            format!(
+                "{}\n{}\n",
+                format_args!(r#"{{"type":"session","version":3,"id":"{PI_ID}","timestamp":"2026-11-27T10:00:00.000Z","cwd":"{repo_s}"}}"#),
+                r#"{"type":"message","id":"a1","parentId":null,"timestamp":"2026-11-27T10:00:01.000Z","message":{"role":"user","content":"tidy the parser"}}"#
+            ),
+        )
+        .unwrap();
+
         let now = Utc.with_ymd_and_hms(2026, 11, 28, 0, 0, 0).unwrap();
         let idx = AgentIndex::new(Paths::from_home(home));
         let runs = idx.refresh(now);
@@ -701,6 +541,18 @@ mod tests {
         assert!(!codex.cwd_exists);
         assert_eq!(codex.resume_command, None);
         assert_eq!(codex.tokens, Some(1200));
+
+        let hermes = by_id["hermes:20261127_100000_abcdef"];
+        assert_eq!(hermes.title, "triage the inbox");
+        assert_eq!(hermes.project_key, "api");
+        assert_eq!(
+            hermes.resume_command.as_deref(),
+            Some(format!("cd '{repo_s}' && hermes --resume 20261127_100000_abcdef").as_str())
+        );
+
+        let pi = by_id[format!("pi:{PI_ID}").as_str()];
+        assert_eq!(pi.title, "tidy the parser");
+        assert_eq!(pi.state, RunState::Resumable);
 
         let default_view = AgentIndex::list(&runs, ListOptions::default(), now);
         assert_eq!(default_view.hidden, Hidden { headless: 1, stale: 1 });

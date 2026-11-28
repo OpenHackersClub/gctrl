@@ -613,7 +613,7 @@ export interface ScheduleRunNowResult {
 // ── Agent panel (kernel driver-agents, /api/agents) ──
 // Spec: vault/specs/architecture/apps/agent-panel.md § Model.
 
-export type AgentHarness = "claude-code" | "codex"
+export type AgentHarness = "claude-code" | "codex" | "hermes" | "pi"
 
 /** Kernel-derived state. Needs you is computed by the board from the inbox. */
 export type AgentRunState = "running" | "idle" | "resumable" | "done"
@@ -660,6 +660,20 @@ export interface AgentRunsResponse {
   generated_at: string
   runs: AgentRun[]
   hidden: { headless: number; stale: number }
+  /** Runs a gather waits on until their turn ends. */
+  gather_queue?: string[]
+}
+
+/** One run's outcome in `POST /api/agents/gather`. */
+export interface AgentGatherItem {
+  id: string
+  action: "resumed" | "moved" | "queued" | "stopped" | "skipped"
+  detail?: string | null
+}
+
+export interface AgentGatherResult {
+  window_id: number | null
+  items: AgentGatherItem[]
 }
 
 /** `POST /api/agents/{id}/open`. `action` is `focused` | `launched` | `none`,

@@ -8,18 +8,16 @@
 //! near the end of the file. The `*.key` files next to the registry hold
 //! socket credentials and are never opened.
 
-use crate::model::PrLink;
+use crate::adapter::{from_system, parse_ts, Adapter, RunRecord, ScanCtx};
+use crate::jsonl::{message_text, Cursor};
+use crate::model::{Harness, LiveInfo, LiveStatus, PrLink};
+use crate::procs::{self, Proc};
 use crate::text::{clip, is_human_prompt, is_uuid};
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
-
-const HEAD_BYTES: u64 = 64 * 1024;
-const TAIL_BYTES: u64 = 512 * 1024;
 
 #[derive(Debug, Clone, Default)]
 pub struct Transcript {
@@ -37,8 +35,7 @@ pub struct Transcript {
     pub pr: Option<PrLink>,
     pub cost_usd: Option<f64>,
     pub mtime: Option<SystemTime>,
-    offset: u64,
-    len: u64,
+    cursor: Cursor,
 }
 
 #[derive(Deserialize, Default)]
@@ -90,18 +87,6 @@ fn truthy(v: &Option<Value>) -> bool {
     v.as_ref().and_then(Value::as_bool).unwrap_or(false)
 }
 
-fn message_text(content: &Value) -> Option<String> {
-    match content {
-        Value::String(t) => Some(t.clone()),
-        Value::Array(items) => items.iter().find_map(|i| {
-            (i.get("type").and_then(Value::as_str) == Some("text"))
-                .then(|| i.get("text").and_then(Value::as_str).map(str::to_string))
-                .flatten()
-        }),
-        _ => None,
-    }
-}
-
 impl Transcript {
     pub fn new(session_id: impl Into<String>) -> Self {
         Self {
@@ -118,10 +103,10 @@ impl Transcript {
         let kind = s(&line.kind).unwrap_or("");
 
         if let Some(ts) = s(&line.timestamp) {
-            if self.started_at.as_deref().map_or(true, |cur| ts < cur) {
+            if self.started_at.as_deref().is_none_or(|cur| ts < cur) {
                 self.started_at = Some(ts.to_string());
             }
-            if self.updated_at.as_deref().map_or(true, |cur| ts > cur) {
+            if self.updated_at.as_deref().is_none_or(|cur| ts > cur) {
                 self.updated_at = Some(ts.to_string());
             }
         }
@@ -189,57 +174,20 @@ impl Transcript {
         }
     }
 
-    /// Fold every complete line of `buf` in. Returns the number of bytes
-    /// consumed (up to and including the last newline).
-    fn ingest(&mut self, buf: &[u8], skip_partial_first: bool) -> usize {
-        let Some(last_nl) = buf.iter().rposition(|b| *b == b'\n') else {
-            return 0;
-        };
-        let complete = &buf[..=last_nl];
-        let mut lines = complete.split(|b| *b == b'\n');
-        if skip_partial_first {
-            lines.next();
-        }
-        for l in lines {
-            if !l.is_empty() {
-                self.ingest_line(l);
-            }
-        }
-        last_nl + 1
-    }
-
     /// Bring the summary up to date with the file at `path`.
     pub fn refresh(&mut self, path: &Path) -> std::io::Result<()> {
-        let meta = std::fs::metadata(path)?;
-        let len = meta.len();
-        let mtime = meta.modified().ok();
-        if len == self.len && mtime == self.mtime {
+        let Some(update) = self.cursor.read(path)? else {
             return Ok(());
-        }
-        if len < self.offset {
+        };
+        if update.reset {
+            let cursor = std::mem::take(&mut self.cursor);
             *self = Transcript::new(std::mem::take(&mut self.session_id));
+            self.cursor = cursor;
         }
-        let mut f = File::open(path)?;
-
-        if self.offset == 0 && len > HEAD_BYTES + TAIL_BYTES {
-            let mut head = vec![0u8; HEAD_BYTES as usize];
-            f.read_exact(&mut head)?;
-            self.ingest(&head, false);
-            let tail_start = len - TAIL_BYTES;
-            f.seek(SeekFrom::Start(tail_start))?;
-            let mut tail = Vec::with_capacity(TAIL_BYTES as usize);
-            f.read_to_end(&mut tail)?;
-            let used = self.ingest(&tail, true);
-            self.offset = tail_start + used as u64;
-        } else {
-            f.seek(SeekFrom::Start(self.offset))?;
-            let mut rest = Vec::with_capacity((len - self.offset) as usize);
-            f.read_to_end(&mut rest)?;
-            let used = self.ingest(&rest, false);
-            self.offset += used as u64;
+        for line in &update.lines {
+            self.ingest_line(line);
         }
-        self.len = len;
-        self.mtime = mtime;
+        self.mtime = self.cursor.mtime();
         Ok(())
     }
 
@@ -366,9 +314,125 @@ pub fn read_registry(dir: &Path) -> Vec<LiveEntry> {
         .collect()
 }
 
+/// Live Claude sessions by session id. A registry entry counts when its pid
+/// exists and either its start time matches or the process is a `claude`
+/// CLI; a pid reused after a reboot matches neither.
+pub fn claude_live(registry: &[LiveEntry], procs: &HashMap<u32, Proc>) -> HashMap<String, LiveInfo> {
+    let mut out: HashMap<String, LiveInfo> = HashMap::new();
+    for e in registry {
+        let Some(p) = procs.get(&e.pid) else { continue };
+        let start_matches = e
+            .proc_start
+            .as_deref()
+            .map(procs::normalize_lstart)
+            .is_some_and(|s| s == p.lstart);
+        if !start_matches && !procs::is_claude_cli(p) {
+            continue;
+        }
+        let status = match e.status.as_deref() {
+            Some("busy") => LiveStatus::Busy,
+            Some("idle") => LiveStatus::Idle,
+            _ => LiveStatus::Unknown,
+        };
+        let info = LiveInfo {
+            pid: e.pid,
+            tty: p.tty.clone(),
+            status,
+        };
+        let key = e.session_id.to_ascii_lowercase();
+        match out.get(&key) {
+            Some(cur) if cur.status == LiveStatus::Busy => {}
+            _ => {
+                out.insert(key, info);
+            }
+        }
+    }
+    out
+}
+
+/// Claude Code adapter: every config dir under `home`.
+pub struct ClaudeAdapter {
+    home: PathBuf,
+    transcripts: HashMap<PathBuf, Transcript>,
+}
+
+impl ClaudeAdapter {
+    pub fn new(home: PathBuf) -> Self {
+        Self {
+            home,
+            transcripts: HashMap::new(),
+        }
+    }
+}
+
+impl Adapter for ClaudeAdapter {
+    fn harness(&self) -> Harness {
+        Harness::ClaudeCode
+    }
+
+    fn scan(&mut self, ctx: &ScanCtx<'_>) -> Vec<RunRecord> {
+        let config = config_dirs(&self.home);
+        scan(&unique_subdirs(&config, "projects"), &mut self.transcripts);
+        let registry: Vec<LiveEntry> = unique_subdirs(&config, "sessions")
+            .iter()
+            .flat_map(|d| read_registry(d))
+            .collect();
+        let live = claude_live(&registry, ctx.procs);
+
+        let mut out = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        for t in self.transcripts.values() {
+            let cwd = t.cwd.clone().or_else(|| {
+                registry
+                    .iter()
+                    .find(|e| e.session_id.eq_ignore_ascii_case(&t.session_id))
+                    .and_then(|e| e.cwd.clone())
+            });
+            let Some(cwd) = cwd else { continue };
+            seen.insert(t.session_id.clone());
+            let updated = t
+                .updated_at
+                .as_deref()
+                .and_then(parse_ts)
+                .or_else(|| t.mtime.map(from_system))
+                .unwrap_or(ctx.now);
+            let mut r = RunRecord::new(Harness::ClaudeCode, t.session_id.clone(), cwd, updated);
+            r.started = t.started_at.as_deref().and_then(parse_ts).unwrap_or(updated);
+            r.title = t.title().unwrap_or_else(|| "(untitled)".into());
+            r.name = t.agent_name.clone();
+            r.git_branch = t.git_branch.clone();
+            r.last_prompt = t.last_prompt.clone();
+            r.pr = t.pr.clone();
+            r.cost_usd = t.cost_usd;
+            r.headless = t.headless();
+            r.live = live.get(&t.session_id).cloned();
+            out.push(r);
+        }
+        // A live session with no transcript yet (no message sent).
+        for e in &registry {
+            let id = e.session_id.to_ascii_lowercase();
+            let (Some(info), Some(cwd)) = (live.get(&id), e.cwd.clone()) else {
+                continue;
+            };
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            let mut r = RunRecord::new(Harness::ClaudeCode, id, cwd, ctx.now);
+            r.title = e.name.clone().unwrap_or_else(|| "(new session)".into());
+            r.name = e.name.clone();
+            r.headless = e.kind.as_deref() == Some("bg");
+            r.live = Some(info.clone());
+            out.push(r);
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::jsonl::{HEAD_BYTES, TAIL_BYTES};
+    use std::fs::File;
     use std::io::Write;
 
     const SID: &str = "26e3373e-8358-416b-83f3-355a59325193";

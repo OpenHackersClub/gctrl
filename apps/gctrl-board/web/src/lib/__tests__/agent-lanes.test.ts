@@ -5,6 +5,9 @@ import {
   cardHeadline,
   columnFor,
   formatUsage,
+  gatherErrorMessage,
+  gatherPreview,
+  gatherResultMessage,
   laneSummary,
   needsYouSessionIds,
   openErrorMessage,
@@ -219,5 +222,47 @@ describe("openErrorMessage", () => {
     )
     expect(openErrorMessage(new Error("404: unknown run"))).toBe("Run no longer exists")
     expect(openErrorMessage(new Error("502: boom"))).toBe("Open failed: 502: boom")
+  })
+})
+
+describe("gather", () => {
+  const live = (status: "busy" | "idle" | "unknown", tty: string | null = "/dev/ttys001") => ({
+    pid: 1,
+    tty,
+    status,
+  })
+
+  it("previews how each selected run moves", () => {
+    const p = gatherPreview([
+      run({ id: "claude:a" }),
+      run({ id: "codex:b", live: live("idle") }),
+      run({ id: "hermes:c", live: live("busy") }),
+      run({ id: "pi:d", live: live("unknown") }),
+      run({ id: "claude:e", cwd_exists: false }),
+      run({ id: "claude:f", live: live("idle", null) }),
+    ])
+    expect(p).toEqual({ resume: 1, move: 1, wait: 2, skip: 2 })
+  })
+
+  it("summarizes a gather result", () => {
+    const t = gatherResultMessage({
+      window_id: 7,
+      items: [
+        { id: "a", action: "resumed" },
+        { id: "b", action: "moved" },
+        { id: "c", action: "queued" },
+        { id: "d", action: "skipped", detail: "cwd_missing" },
+      ],
+    })
+    expect(t.type).toBe("success")
+    expect(t.message).toBe("Gathered: 2 in one iTerm2 window · 1 waiting for its turn to end · 1 skipped (cwd_missing)")
+    const none = gatherResultMessage({ window_id: null, items: [{ id: "a", action: "skipped", detail: "unknown_run" }] })
+    expect(none.type).toBe("error")
+  })
+
+  it("explains switch and gather failures", () => {
+    expect(gatherErrorMessage(new Error("403: denied"), "switch")).toContain("Accessibility")
+    expect(gatherErrorMessage(new Error("501: off"), "switch")).toContain("Mission Control")
+    expect(gatherErrorMessage(new Error("403: x"), "gather")).toContain("Automation denied")
   })
 })

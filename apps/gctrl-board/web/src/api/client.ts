@@ -1,5 +1,6 @@
 import type {
   AcceptanceRollup,
+  AgentGatherResult,
   AgentOpenResult,
   AgentRunsResponse,
   Issue,
@@ -270,7 +271,7 @@ export const api = {
     capabilities: () => request<CommCapabilities>("/api/comm/capabilities"),
   },
 
-  // Kernel driver-agents — every Claude Code / Codex run on this machine.
+  // Kernel driver-agents — every coding-agent run on this machine.
   // Local-only: the Cloudflare Worker does not proxy these routes.
   // Spec: vault/specs/architecture/apps/agent-panel.md § HTTP API.
   agents: {
@@ -286,6 +287,14 @@ export const api = {
         `/api/agents/${encodeURIComponent(id)}/open${opts?.dryRun ? "?dry_run=true" : ""}`,
         { method: "POST" },
       ),
+    /** Resume `ids` as tabs of one new iTerm2 window on the active Space. */
+    gather: (ids: string[], opts: { closeOld: boolean }) =>
+      request<AgentGatherResult>(`/api/agents/gather`, {
+        method: "POST",
+        body: JSON.stringify({ ids, close_old: opts.closeOld }),
+      }),
+    cancelGather: (id: string) =>
+      request<null>(`/api/agents/${encodeURIComponent(id)}/gather`, { method: "DELETE" }),
   },
 
   // Kernel analytics + sessions — proxied by Vite dev server to :4318.
@@ -414,6 +423,8 @@ export const api = {
       }),
     unname: (spaceId: number) =>
       request<null>(`/api/macos/spaces/${spaceId}/name`, { method: "DELETE" }),
+    switchTo: (spaceId: number) =>
+      request<null>(`/api/macos/spaces/${spaceId}/switch`, { method: "POST" }),
     promptAccessibility: () =>
       request<{ accessibility: MacosPermissionStatus }>(
         `/api/macos/permissions/accessibility/prompt`,

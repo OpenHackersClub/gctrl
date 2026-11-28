@@ -12,6 +12,16 @@ const HARNESS_MARK: Record<AgentRun["harness"], { label: string; className: stri
     className: "bg-sky-500/10 text-sky-300 border-sky-500/25",
     title: "Codex",
   },
+  hermes: {
+    label: "HM",
+    className: "bg-fuchsia-500/10 text-fuchsia-300 border-fuchsia-500/25",
+    title: "Hermes Agent",
+  },
+  pi: {
+    label: "PI",
+    className: "bg-teal-500/10 text-teal-300 border-teal-500/25",
+    title: "Pi",
+  },
 }
 
 /** Left-border accent per column — same palette family as the issue board. */
@@ -37,18 +47,27 @@ interface Props {
   now: Date
   busy: boolean
   onOpen: (run: AgentRun) => void
+  /** Select mode: a click toggles selection instead of opening. */
+  selecting?: boolean
+  selected?: boolean
+  onSelect?: (run: AgentRun) => void
+  /** A gather waits for this run's turn to end. */
+  queued?: boolean
 }
 
-export function AgentRunCard({ run, column, now, busy, onOpen }: Props) {
-  const harness = HARNESS_MARK[run.harness]
+const FALLBACK_MARK = { label: "??", className: "bg-zinc-800 text-zinc-400 border-zinc-700", title: "Agent" }
+
+export function AgentRunCard({ run, column, now, busy, onOpen, selecting, selected, onSelect, queued }: Props) {
+  const harness = HARNESS_MARK[run.harness] ?? FALLBACK_MARK
   const usage = formatUsage(run)
   const headline = cardHeadline(run)
   // Claude keys transcripts by cwd: a removed worktree cannot be resumed.
   const blocked = run.live === null && !run.cwd_exists
-  const action = run.live ? "Focus terminal" : "Resume in iTerm2"
-  const disabled = blocked || busy
+  const action = selecting ? (selected ? "Deselect" : "Select") : run.live ? "Focus terminal" : "Resume in iTerm2"
+  const disabled = selecting ? false : blocked || busy
   const activate = () => {
-    if (!disabled) onOpen(run)
+    if (selecting) onSelect?.(run)
+    else if (!disabled) onOpen(run)
   }
   const tooltip = [run.cwd, run.resume_command ?? (blocked ? "worktree removed" : null)]
     .filter(Boolean)
@@ -71,14 +90,26 @@ export function AgentRunCard({ run, column, now, busy, onOpen }: Props) {
       title={tooltip}
       data-testid={`agent-card-${run.id}`}
       aria-label={`${action}: ${headline}`}
+      aria-pressed={selecting ? Boolean(selected) : undefined}
       className={`w-full text-left group border-l-2 ${COLUMN_BORDER[column]}
-        bg-zinc-900/80 border border-zinc-800/80 transition-all duration-100
+        bg-zinc-900/80 border transition-all duration-100
+        ${selected ? "border-emerald-500/70 ring-1 ring-emerald-500/40" : "border-zinc-800/80"}
         ${disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer hover:border-zinc-700 hover:bg-zinc-900"}
         ${busy ? "animate-pulse" : ""}`}
     >
       <div className="px-3 py-2.5 space-y-1.5">
         {/* Top row: state dot, harness, name, worktree */}
         <div className="flex items-center gap-1.5 min-w-0">
+          {selecting && (
+            <input
+              type="checkbox"
+              readOnly
+              tabIndex={-1}
+              checked={Boolean(selected)}
+              data-testid={`agent-select-${run.id}`}
+              className="accent-emerald-500 shrink-0 pointer-events-none"
+            />
+          )}
           <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${COLUMN_DOT[column]}`} />
           <span
             title={harness.title}
@@ -123,6 +154,14 @@ export function AgentRunCard({ run, column, now, busy, onOpen }: Props) {
           )}
           {blocked && (
             <span className="px-1.5 py-px bg-zinc-800 text-zinc-500 border border-zinc-700">worktree removed</span>
+          )}
+          {queued && (
+            <span
+              className="px-1.5 py-px bg-amber-500/10 text-amber-300 border border-amber-500/25"
+              title="Moves to the gather window when this turn ends"
+            >
+              waiting to move
+            </span>
           )}
           {!disabled && (
             <span className="ml-auto opacity-0 group-hover:opacity-100 text-emerald-400 transition-opacity">

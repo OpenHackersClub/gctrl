@@ -1,18 +1,20 @@
 # Agent Panel
 
-> A kanban board of every Claude Code and Codex conversation on the machine. Columns show state, swimlanes group runs by project, and a click focuses the live terminal pane or resumes the conversation in iTerm2. The board rebuilds from the harnesses' own stores, so it survives an app restart and a reboot.
+> A kanban board of every coding-agent conversation on the machine: Claude Code, Codex, Hermes Agent and Pi. Columns show state, swimlanes group runs by project, and a click focuses the live terminal pane or resumes the conversation in iTerm2. Selected runs can be gathered into one iTerm2 window on a chosen macOS Space. The board rebuilds from the harnesses' own stores, so it survives an app restart and a reboot.
 
 **Status**: in progress. Slices: [ROADMAP § Agent Panel](../../gctrl/ROADMAP.md#agent-panel--in-progress).
-**Scope**: kernel driver `gctrl-driver-agents`, mac-comm `launch` and `focus_tty`, the gctrl-board `/agents` page.
-**Related**: [adr-session-is-the-spine.md](adr-session-is-the-spine.md), [cc-permission-hook.md](cc-permission-hook.md), [mac-comm.md](../kernel/mac-comm.md).
+**Scope**: kernel driver `gctrl-driver-agents`, mac-comm `launch`, `open_window`, `focus_tty` and `close_tty`, driver-macos `switch_to`, the gctrl-board `/agents` page.
+**Related**: [adr-session-is-the-spine.md](adr-session-is-the-spine.md), [cc-permission-hook.md](cc-permission-hook.md), [mac-comm.md](../kernel/mac-comm.md), [driver-macos.md § Switching Spaces](../kernel/driver-macos.md#switching-spaces).
 
 ## Terms
 
-1. **Harness**: the agent CLI that owns a conversation. Values: `claude-code` and `codex`.
-2. **Run**: one conversation in one harness, identified by `<harness-prefix>:<native uuid>` (`claude:…`, `codex:…`).
-3. **Live**: the harness process for the run exists. For Claude Code, the process start time also matches the registry's `procStart`, or the process is a `claude` CLI. A pid reused after a reboot matches neither.
-4. **Headless**: a run with no interactive terminal: Codex `source = exec`, or a Claude transcript whose `entrypoint` is `sdk-cli`.
-5. **Stale**: a run that is not live and has no activity for 7 days or more.
+1. **Harness**: the agent CLI that owns a conversation. Values: `claude-code`, `codex`, `hermes`, `pi`.
+2. **Adapter**: the driver module that reads one harness's store and attributes its processes. Each adapter returns run records; the index turns records into runs.
+3. **Run**: one conversation in one harness, identified by `<harness-prefix>:<native id>` (`claude:…`, `codex:…`, `hermes:…`, `pi:…`).
+4. **Live**: a harness process for the run exists. See § Liveness.
+5. **Headless**: a run with no interactive terminal: Codex `source = exec`, a Claude transcript whose `entrypoint` is `sdk-cli`, or a Hermes session whose `source` is neither `cli` nor `tui` (gateway sessions such as Telegram and cron).
+6. **Stale**: a run that is not live and has no activity for 7 days or more.
+7. **Gather**: resuming a set of runs as tabs of one new iTerm2 window on one Space.
 
 ## Sources
 
@@ -22,43 +24,55 @@ The driver reads harness stores and never writes them.
 | --- | --- | --- |
 | Claude Code | `<config>/projects/<cwd-slug>/<uuid>.jsonl` (top level only; subagent transcripts are excluded) | `cwd`, `gitBranch`, `timestamp`, `entrypoint`, `custom-title.customTitle`, `agent-name.agentName`, `last-prompt.lastPrompt`, `pr-link.{prNumber,prUrl,prRepository}`, `cost-state.totalCostUSD` |
 | Claude Code | `<config>/sessions/<pid>.json` (live registry) | `pid`, `sessionId`, `cwd`, `status` (`busy`, `idle`, `shell`), `procStart`, `kind` |
-| Codex | `~/.codex/state_<n>.sqlite` → `threads` (highest `<n>` wins) | `id`, `cwd`, `name`, `title`, `first_user_message`, `git_branch`, `git_origin_url`, `tokens_used`, `model`, `archived`, `source`, `thread_source`, `created_at_ms`, `updated_at_ms`, `rollout_path` |
-| Codex | Tail of the thread's rollout JSONL | Last `response_item` message with `role = user` |
-| Both | `ps -axo pid=,lstart=,tty=,command=` with `LC_ALL=C TZ=UTC`, and `lsof -a -d cwd` | pid liveness, process start time, tty, Codex argv and cwd |
+| Codex | `$CODEX_HOME/state_<n>.sqlite` → `threads` (highest `<n>` wins; default `~/.codex`) | `id`, `cwd`, `name`, `title`, `first_user_message`, `git_branch`, `git_origin_url`, `tokens_used`, `model`, `archived`, `source`, `thread_source`, `created_at_ms`, `updated_at_ms`, `rollout_path` |
+| Codex | Tail of the thread's rollout JSONL | Last `response_item` message with `role = user`; last `event_msg` of type `task_started`, `task_complete` or `turn_aborted` |
+| Hermes Agent | `$HERMES_HOME/state.db` → `sessions`, `messages` (default `~/.hermes`) | `sessions.{id, source, cwd, title, model, started_at, ended_at, end_reason, parent_session_id, archived, input_tokens, output_tokens, actual_cost_usd, estimated_cost_usd}`; per session the first and last `user` message, and the role and `tool_calls` of the newest message |
+| Pi | `<sessions>/--<cwd>--/<timestamp>_<id>.jsonl`, where `<sessions>` is `$PI_CODING_AGENT_SESSION_DIR`, else `$PI_CODING_AGENT_DIR/sessions`, else `~/.pi/agent/sessions` | Header `session.{id, cwd, timestamp}`; `session_info.name`; `model_change.modelId`; `message.message.{role, content, model, stopReason}` |
+| All | `ps -axo pid=,lstart=,tty=,command=` with `LC_ALL=C TZ=UTC`, and `lsof -a -d cwd` | pid liveness, process start time, tty, argv and cwd |
 
 Rules:
 
 1. `<config>` is every Claude Code config dir: `~/.claude`, `~/.claude/clients/*`, `~/.claude-*` and `~/.config/claude/*`. These are the places a per-project `CLAUDE_CONFIG_DIR` (set by direnv) points. Each config dir keeps its own live registry. Their `projects/` dirs are often symlinks to one store, so the driver scans each real path once.
 2. The driver never opens `<config>/sessions/*.key`. Those files hold socket credentials.
 3. Codex rows with `thread_source` other than `user` (guardian reviews, subagents) are excluded.
-4. The driver parses a JSONL transcript incrementally from its last byte offset. A file that shrinks is parsed again from the start.
-5. The Codex database opens with `mode=ro`. When Codex is not running, the WAL index is absent and a read-only connection cannot create it. The driver then opens the database with `immutable=1`, which is safe because with no `-wal` file the main database file holds every committed write.
-6. A prompt shown on a card excludes harness-injected text: lines that start with `<`, the AGENTS.md preamble, and messages relayed from another agent session.
+4. The driver parses JSONL transcripts (Claude, Pi) incrementally from the last byte offset. A file read for the first time is parsed whole when it is at most 576 KiB, else as its first 64 KiB and last 512 KiB. A file that shrinks is parsed again from the start.
+5. SQLite stores (Codex, Hermes) open with `mode=ro`. When the harness is not running, the WAL index is absent and a read-only connection cannot create it. The driver then opens the database with `immutable=1`, which is safe because with no `-wal` file the main database file holds every committed write. Queries read `PRAGMA table_info` first and treat missing columns as `NULL`.
+6. Hermes context compression ends a session with `end_reason = 'compression'` and continues in a child session. A chain is one run: the newest session, with the oldest session's `started_at` and first prompt. Hermes rows with active-message tracking (`messages.active`) count only active messages.
+7. A prompt shown on a card excludes harness-injected text: lines that start with `<`, the AGENTS.md preamble, and messages relayed from another agent session.
+
+## Liveness
+
+1. **Claude Code**: a registry entry is live when its pid exists and either the process start time equals `procStart` or the process is a `claude` CLI. A pid reused after a reboot matches neither.
+2. **Codex, Hermes, Pi**: the driver attributes harness processes to runs.
+   1. A harness process is one whose executable is the harness name (`codex`, `hermes`, `pi`), or an interpreter (`node`, `bun`, `deno`, `python`, `python3`, `python3.N`) whose first argument is a script with that name. Codex processes inside an `.app` bundle are excluded.
+   2. One process per tty counts: the lowest pid, which is the parent of any helper it spawned.
+   3. A process whose argv contains a run id belongs to that run. For Hermes, an id earlier in a compression chain belongs to the chain's run.
+   4. Otherwise the process belongs to the most recently updated unclaimed interactive run whose cwd equals the process cwd (`lsof`).
 
 ## Model
 
-The index lives in kernel memory. It is rebuilt from the sources at kernel start and refreshed when `GET /api/agents` is called more than 2 s after the last refresh. Mirroring runs into the `sessions` table is tracked in #240.
+The index lives in kernel memory. It is rebuilt from the adapters at kernel start and refreshed when `GET /api/agents` is called more than 2 s after the last refresh. Mirroring runs into the `sessions` table is tracked in #240.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `id` | string | `claude:<uuid>` or `codex:<uuid>` |
-| `harness` | `claude-code` \| `codex` | Owning harness |
-| `native_id` | string | The harness session or thread uuid |
-| `title` | string | Claude custom title, then the Codex thread name or title, then the first prompt (cut to 120 chars) |
-| `name` | string \| null | Claude `agent-name` (the `/rename` name), or the Codex thread name |
+| `id` | string | `<harness-prefix>:<native id>` |
+| `harness` | `claude-code` \| `codex` \| `hermes` \| `pi` | Owning harness |
+| `native_id` | string | The harness's own session or thread id |
+| `title` | string | Claude custom title; Codex thread name or title; Hermes session title; Pi session name; else the first prompt (cut to 120 chars) |
+| `name` | string \| null | Claude `agent-name` (the `/rename` name), Codex thread name, Hermes title, Pi session name |
 | `project_key` | string | See § Project key |
-| `cwd` | string | Working directory of the run |
+| `cwd` | string | Working directory of the run. A Hermes session with no recorded cwd uses the home directory. |
 | `cwd_exists` | boolean | Whether `cwd` exists now |
 | `worktree` | string \| null | The cwd's directory name when the cwd is a linked git worktree |
-| `git_branch` | string \| null | Branch at the last record |
+| `git_branch` | string \| null | Branch at the last record (Claude, Codex) |
 | `last_prompt` | string \| null | Last user prompt, cut to 200 chars |
 | `pr` | `{number, url, repository}` \| null | Last `pr-link` record (Claude) |
-| `cost_usd` | number \| null | Claude `cost-state.totalCostUSD` |
-| `tokens` | number \| null | Codex `tokens_used` |
-| `model` | string \| null | Codex `model` |
+| `cost_usd` | number \| null | Claude `cost-state.totalCostUSD`; Hermes actual, else estimated, cost |
+| `tokens` | number \| null | Codex `tokens_used`; Hermes input plus output tokens |
+| `model` | string \| null | Codex, Hermes or Pi model |
 | `started_at`, `updated_at` | RFC 3339 | First and last activity |
-| `headless`, `archived`, `stale` | boolean | See § Terms. `archived` is Codex `archived = 1`. |
-| `live` | `{pid, tty, status}` \| null | `status` is `busy`, `idle` or `unknown` |
+| `headless`, `archived`, `stale` | boolean | See § Terms. `archived` is Codex or Hermes `archived = 1`. |
+| `live` | `{pid, tty, status}` \| null | `status` is `busy`, `idle` or `unknown` (Claude `shell`) |
 | `state` | `running` \| `idle` \| `resumable` \| `done` | See § States |
 | `resume_command` | string \| null | Display copy of the launch command; null when `cwd_exists` is false |
 
@@ -73,10 +87,19 @@ The index lives in kernel memory. It is rebuilt from the sources at kernel start
 
 | State | Column | Condition |
 | --- | --- | --- |
-| `running` | Running | Live, and Claude `status = busy` or the Codex rollout file changed in the last 10 s |
+| `running` | Running | Live, and `live.status = busy` |
 | `idle` | Idle | Live, and not running |
 | `resumable` | Resumable | Not live |
 | `done` | Done | `archived` |
+
+`live.status` is `busy` while a turn is open:
+
+| Harness | Busy when |
+| --- | --- |
+| Claude Code | Registry `status = busy` |
+| Codex | The rollout's last turn event is `task_started`; with no turn event in the tail, the rollout changed in the last 10 s |
+| Hermes Agent | The newest message has role `user` or `tool`, or role `assistant` with tool calls |
+| Pi | The newest message has role `user` or `toolResult`, or role `assistant` with `stopReason = toolUse` |
 
 The **Needs you** column is computed by the board. A run is in Needs you when an open inbox message with `requires_action = true` has `context.session_id` equal to the run's `native_id`. The kernel driver makes no assumptions about apps.
 
@@ -88,7 +111,8 @@ The **Needs you** column is computed by the board. A run is in Needs you when an
 {
   "generated_at": "2026-11-28T09:00:00Z",
   "runs": [ { "id": "claude:26e3…", "harness": "claude-code", "state": "idle", "…": "…" } ],
-  "hidden": { "headless": 12, "stale": 340 }
+  "hidden": { "headless": 12, "stale": 340 },
+  "gather_queue": ["codex:01a0…"]
 }
 ```
 
@@ -103,6 +127,31 @@ The **Needs you** column is computed by the board. A run is in Needs you when an
 | Unknown id | 404 | `unknown run` |
 | Not live and `cwd_exists = false` | 409 | `cwd_missing` |
 | Automation denied | 403 | From mac-comm |
+
+`POST /api/agents/gather` with `{"ids": ["claude:…", "codex:…"], "close_old": true}`
+
+```json
+{
+  "window_id": 4012,
+  "items": [
+    { "id": "claude:26e3…", "action": "moved", "detail": "closed old iTerm2 pane" },
+    { "id": "codex:01a0…", "action": "queued", "detail": "waits for its turn to end" },
+    { "id": "pi:019a…", "action": "skipped", "detail": "cwd_missing" }
+  ]
+}
+```
+
+| `action` | Meaning |
+| --- | --- |
+| `resumed` | Not live; resumed in the gather window |
+| `moved` | Was idle; stopped, then resumed in the gather window |
+| `queued` | Mid-turn or status unknown; moves when its turn ends |
+| `stopped` | Stopped, but the resume failed; the run is Resumable on the board |
+| `skipped` | `unknown_run`, `already_queued`, `cwd_missing`, `no_tty` or `did_not_exit` |
+
+A body with no ids returns 400. When opening the window fails, the call returns the mac-comm error status (403 when Automation is denied) and no run is stopped.
+
+`DELETE /api/agents/{id}/gather` removes a run from the gather queue (204).
 
 ## Open and resume
 
@@ -125,27 +174,95 @@ sequenceDiagram
     K->>M: focus_tty(tty)
     M->>I: select the session whose tty matches
   else not live
-    K->>K: validate uuid and cwd
+    K->>K: validate id and cwd
     K->>M: launch(command)
     M->>I: new tab, write text command
   end
   K-->>P: action
 ```
 
-1. The launch command is a fixed template: `cd '<cwd>' && claude --resume <uuid>` or `cd '<cwd>' && codex resume -c tui.resume_cwd=current <uuid>`.
-2. `<uuid>` matches `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`. `<cwd>` passes the mac-comm `cwd` validator, which excludes `'`, so single quotes are safe.
-3. AppleScript receives the command as `item 1 of argv` and never concatenates it into script text.
-4. `write text` types into the tab's interactive login shell. User shell functions and aliases for `claude` and `codex` apply, and direnv exports the project's `CLAUDE_CONFIG_DIR` on `cd`, so the harness finds the transcript.
+1. The launch command is a fixed template per harness:
+
+   | Harness | Command |
+   | --- | --- |
+   | Claude Code | `cd '<cwd>' && claude --resume <id>` |
+   | Codex | `cd '<cwd>' && codex resume -c tui.resume_cwd=current <id>` |
+   | Hermes Agent | `cd '<cwd>' && hermes --resume <id>` |
+   | Pi | `cd '<cwd>' && pi --session <id>` |
+
+2. Every argv token, `<id>` included, matches `^[A-Za-z0-9._=:/@+-]{1,128}$`. `<cwd>` passes the mac-comm `cwd` validator, which excludes `'`, so single quotes are safe.
+3. AppleScript receives the command as an `argv` item and never concatenates it into script text.
+4. `write text` types into the tab's interactive login shell. User shell functions and aliases for each harness apply, and direnv exports the project's `CLAUDE_CONFIG_DIR` on `cd`, so the harness finds the transcript.
 5. Claude keys transcripts by cwd slug and cannot resume from another directory. When `cwd_exists` is false, the board disables Resume.
 6. Open re-probes liveness before it acts, and debounces launches of one run for 5 s. A run that is open in any terminal is focused, never launched a second time.
+
+## Gather into a Space
+
+The operator selects runs on the board, picks a Space, and confirms. The board switches to the Space, then calls the gather route. A new window opens on the active Space, so the window lands on the chosen Space.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor U as Operator
+  box rgba(37,99,235,0.15) gctrl
+    participant P as Agents page
+    participant D as driver-macos
+    participant K as driver-agents
+    participant M as mac-comm
+  end
+  box rgba(156,163,175,0.15) macOS
+    participant I as iTerm2
+  end
+  U->>P: select runs, pick Space, Gather
+  P->>D: POST /api/macos/spaces/{id}/switch
+  D-->>P: 204 once the Space is active
+  P->>K: POST /api/agents/gather
+  K->>K: refresh liveness (ps)
+  K->>M: open_window(first resumable run)
+  M->>I: create window, write text
+  loop each idle run
+    K->>K: SIGTERM, wait up to 5 s for exit
+    K->>M: open_tab_in_window(window, command)
+    opt close_old and only a shell is left on the old tty
+      K->>M: close_tty(old tty)
+    end
+  end
+  K-->>P: items (busy runs queued)
+  rect rgba(217,119,6,0.15)
+    loop every 3 s, up to 4 h, per queued run
+      K->>K: refresh; when idle, SIGTERM and wait
+      K->>M: open_tab_in_window(window, command)
+    end
+  end
+```
+
+1. The board omits the switch when the chosen Space is the current one. A switch failure aborts the gather: 403 means gctrld lacks Accessibility, 501 means the Mission Control shortcuts are off.
+2. Runs are planned from a fresh refresh:
+   1. Not live, cwd present: resume.
+   2. Live with `status = idle`: stop, then resume.
+   3. Live with `status = busy` or `unknown`: queue.
+   4. Live with no tty, cwd gone, already queued, or unknown id: skip.
+3. The window opens before any process is stopped. It opens with the first directly resumable run's command; when there is none, the first run moved into it, stopped or queued, reuses the window's initial shell.
+4. Stopping sends SIGTERM to the run's pid after checking the pid is still on the run's tty, then waits up to 5 s for it to exit. A run that does not exit is skipped (`did_not_exit`). Every harness writes each message as it completes, so an idle run's conversation is on disk.
+5. With `close_old`, the pane a stopped run leaves behind is closed only when every process on its tty is a shell or `login`.
+6. A queued run is checked every 3 s. When its turn ends it is stopped and resumed in the gather window. When that window is gone, it resumes in a new window. It leaves the queue when moved, when it disappears, when `DELETE /api/agents/{id}/gather` cancels it, or after 4 h.
+7. At most 32 runs move per gather.
+
+## Adding a harness
+
+1. Add a `Harness` variant with its run-id prefix and resume argv (`model.rs`).
+2. Add an adapter that implements `Adapter::scan` and returns one `RunRecord` per run (`adapter.rs` is the contract). An adapter without a live registry attributes processes with `adapter::match_processes`.
+3. Register the adapter in `Paths::adapters` with its store path and environment override.
+4. Add the harness mark to the board card.
 
 ## Board page
 
 1. Route `/agents` in the gctrl-board SPA, with a nav entry. gctrl-desktop renders the page.
 2. Columns: Needs you, Running, Idle, Resumable, Done (collapsed). Swimlanes: one per `project_key`, sorted by the most urgent column, then by `updated_at`. A lane with no live run collapses to one summary line.
 3. Header toggles: **Show headless** and **Show stale (7d+)**. Both are off by default and map to the query parameters.
-4. A card shows `name [worktree]` (or the title), a harness mark, the branch, one line of the last prompt, the relative `updated_at`, cost or tokens, and a PR chip.
+4. A card shows `name [worktree]` (or the title), a harness mark (CC, CX, HM, PI), the branch, one line of the last prompt, the relative `updated_at`, cost or tokens, and a PR chip. A run in `gather_queue` shows **waiting to move**.
 5. A click calls `POST /api/agents/{id}/open`, and a toast shows the result. The page polls every 5 s.
+6. **Select** switches the page to select mode: a click toggles a card's selection. **Gather N into a Space…** opens a dialog with the user desktops from `GET /api/macos/spaces` (the current one preselected), a preview of how each run moves, and **Close the panes they leave behind** (on by default).
 
 ## Privacy
 

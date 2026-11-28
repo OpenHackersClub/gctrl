@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from "react"
 import { api } from "../api/client"
 import { AgentRunCard } from "../components/AgentRunCard"
+import { GatherDialog } from "../components/GatherDialog"
 import { useAgents } from "../hooks/useAgents"
 import {
   AGENT_COLUMNS,
@@ -9,6 +10,8 @@ import {
   type AgentLane,
   buildLanes,
   columnFor,
+  gatherErrorMessage,
+  gatherResultMessage,
   laneSummary,
   needsYouSessionIds,
   openErrorMessage,
@@ -29,8 +32,9 @@ interface Props {
 }
 
 /**
- * Every Claude Code / Codex run on this machine: state columns × project
- * swimlanes. Spec: vault/specs/architecture/apps/agent-panel.md § Board page.
+ * Every coding-agent run on this machine (Claude Code, Codex, Hermes, Pi):
+ * state columns × project swimlanes. Spec:
+ * vault/specs/architecture/apps/agent-panel.md § Board page.
  */
 export function AgentsPage({ onToast }: Props) {
   const [includeHeadless, setIncludeHeadless] = useState(false)
@@ -39,6 +43,10 @@ export function AgentsPage({ onToast }: Props) {
   // Lanes the operator toggled away from their default (live ⇒ open).
   const [toggledLanes, setToggledLanes] = useState<ReadonlySet<string>>(new Set())
   const [opening, setOpening] = useState<string | null>(null)
+  const [selecting, setSelecting] = useState(false)
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
+  const [gatherOpen, setGatherOpen] = useState(false)
+  const [gathering, setGathering] = useState(false)
 
   const { data, messages, loading, error, refresh } = useAgents({ includeHeadless, includeStale })
 
@@ -76,6 +84,55 @@ export function AgentsPage({ onToast }: Props) {
     [onToast, refresh],
   )
 
+  const toggleSelected = useCallback((run: AgentRun) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(run.id)) next.delete(run.id)
+      else next.add(run.id)
+      return next
+    })
+  }, [])
+
+  const exitSelect = useCallback(() => {
+    setSelecting(false)
+    setSelected(new Set())
+    setGatherOpen(false)
+  }, [])
+
+  const selectedRuns = useMemo(
+    () => (data?.runs ?? []).filter((r) => selected.has(r.id)),
+    [data, selected],
+  )
+  const queued = useMemo(() => new Set(data?.gather_queue ?? []), [data])
+
+  const handleGather = useCallback(
+    async ({ spaceId, closeOld }: { spaceId: number | null; closeOld: boolean }) => {
+      setGathering(true)
+      try {
+        if (spaceId !== null) {
+          try {
+            await api.macos.switchTo(spaceId)
+          } catch (e) {
+            onToast(gatherErrorMessage(e, "switch"), "error")
+            return
+          }
+          // Let the Space transition finish so the window opens on the target.
+          await new Promise((r) => setTimeout(r, 600))
+        }
+        const result = await api.agents.gather([...selected], { closeOld })
+        const toast = gatherResultMessage(result)
+        onToast(toast.message, toast.type)
+        exitSelect()
+        refresh()
+      } catch (e) {
+        onToast(gatherErrorMessage(e, "gather"), "error")
+      } finally {
+        setGathering(false)
+      }
+    },
+    [selected, onToast, exitSelect, refresh],
+  )
+
   const totals = useMemo(() => {
     const counts: Record<AgentColumn, number> = { needs_you: 0, running: 0, idle: 0, resumable: 0, done: 0 }
     for (const r of data?.runs ?? []) counts[columnFor(r, needsYou)] += 1
@@ -108,6 +165,36 @@ export function AgentsPage({ onToast }: Props) {
         <span className="ml-auto text-zinc-500">
           {data ? `${data.runs.length} runs · ${lanes.length} projects` : ""}
         </span>
+        {selecting ? (
+          <>
+            <button
+              type="button"
+              data-testid="gather-open"
+              disabled={selected.size === 0}
+              onClick={() => setGatherOpen(true)}
+              className="px-2 py-1 bg-emerald-600/80 text-white hover:bg-emerald-500 disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed"
+            >
+              Gather {selected.size} into a Space…
+            </button>
+            <button
+              type="button"
+              onClick={exitSelect}
+              className="px-2 py-1 text-zinc-400 hover:text-zinc-200 cursor-pointer"
+            >
+              Cancel
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            data-testid="agents-select"
+            onClick={() => setSelecting(true)}
+            title="Select runs to gather into one iTerm2 window on a Space"
+            className="px-2 py-1 border border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700 cursor-pointer"
+          >
+            Select
+          </button>
+        )}
         {error && (
           <span className="text-rose-400" title={error}>
             kernel unreachable — showing last result
@@ -168,12 +255,24 @@ export function AgentsPage({ onToast }: Props) {
                   opening={opening}
                   onToggle={toggleLane}
                   onOpen={handleOpen}
+                  selecting={selecting}
+                  selected={selected}
+                  queued={queued}
+                  onSelect={toggleSelected}
                 />
               )
             })}
           </div>
         )}
       </div>
+      {gatherOpen && (
+        <GatherDialog
+          runs={selectedRuns}
+          busy={gathering}
+          onClose={() => setGatherOpen(false)}
+          onConfirm={handleGather}
+        />
+      )}
     </div>
   )
 }
@@ -187,6 +286,10 @@ function Lane({
   opening,
   onToggle,
   onOpen,
+  selecting,
+  selected,
+  queued,
+  onSelect,
 }: {
   lane: AgentLane
   expanded: boolean
@@ -196,6 +299,10 @@ function Lane({
   opening: string | null
   onToggle: (key: string) => void
   onOpen: (run: AgentRun) => void
+  selecting: boolean
+  selected: ReadonlySet<string>
+  queued: ReadonlySet<string>
+  onSelect: (run: AgentRun) => void
 }) {
   return (
     <section data-testid={`agents-lane-${lane.projectKey}`} className="border border-zinc-800/60 bg-zinc-950/40">
@@ -227,6 +334,10 @@ function Lane({
                     now={now}
                     busy={opening === run.id}
                     onOpen={onOpen}
+                    selecting={selecting}
+                    selected={selected.has(run.id)}
+                    queued={queued.has(run.id)}
+                    onSelect={onSelect}
                   />
                 ))}
               </div>

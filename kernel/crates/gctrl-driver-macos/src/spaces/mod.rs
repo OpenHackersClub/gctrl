@@ -15,6 +15,7 @@ pub mod id;
 pub mod layout;
 pub mod mc_detect;
 pub mod overlay;
+pub mod switch;
 
 use std::sync::Arc;
 
@@ -284,15 +285,60 @@ pub mod ffi_port {
             StorageSpaces { state: self.state.clone() }.unname(space_id)
         }
 
-        fn switch_to(&self, _space_id: SpaceId) -> Result<(), PlatformError> {
-            // Switching Spaces from a non-foreground process requires
-            // either a synthesized CGEvent matching the user's
-            // configured shortcut (fragile, accessibility-required)
-            // or a private CGS API (rejected v1). Keep this
-            // Unsupported until the spec calls a strategy.
-            Err(PlatformError::Unsupported {
-                what: "spaces.switch_to deferred to follow-up".into(),
-            })
+        /// Post the user's Mission Control shortcut ([`crate::spaces::switch`])
+        /// and wait for CGS to report the target as active.
+        fn switch_to(&self, target: SpaceId) -> Result<(), PlatformError> {
+            use crate::spaces::switch::{self, Step};
+            use gctrl_core::platform::PermissionStatus;
+            use std::time::{Duration, Instant};
+
+            let display = primary_display_uuid();
+            let mut live = self.live(&display)?;
+            live.sort_by_key(|l| l.index);
+            let current = || self.cgs.current_space(&display);
+            let start = current().ok_or(PlatformError::DisplayGone)?;
+            let table = switch::read_table();
+            let wait_until = |done: &dyn Fn(Option<SpaceId>) -> bool, ms: u64| {
+                let deadline = Instant::now() + Duration::from_millis(ms);
+                while Instant::now() < deadline {
+                    if done(current()) {
+                        return true;
+                    }
+                    std::thread::sleep(Duration::from_millis(40));
+                }
+                done(current())
+            };
+            let Some(step) = switch::plan(&live, start, target, table.as_ref())? else {
+                return Ok(());
+            };
+            if crate::permissions::ax_status() != PermissionStatus::Granted {
+                return Err(PlatformError::PermissionDenied {
+                    what: "accessibility (needed to post the Space-switch shortcut)".into(),
+                });
+            }
+            match step {
+                Step::Direct(hk) => {
+                    switch::post(hk)?;
+                    wait_until(&|c| c == Some(target), 2_000);
+                }
+                Step::Repeat(hk, n) => {
+                    for _ in 0..n {
+                        let before = current();
+                        switch::post(hk)?;
+                        if !wait_until(&|c| c != before, 1_500) {
+                            break;
+                        }
+                    }
+                }
+            }
+            if current() == Some(target) {
+                let _ = self.state.events.send(SpaceEvent::Switched { id: target });
+                Ok(())
+            } else {
+                Err(PlatformError::Underlying(
+                    "the Space-switch shortcut did not reach the target Space".into(),
+                ))
+            }
         }
     }
 }
