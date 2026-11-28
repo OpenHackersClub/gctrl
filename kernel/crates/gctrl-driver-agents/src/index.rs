@@ -4,7 +4,8 @@ use crate::adapter::{Adapter, RunRecord, ScanCtx};
 use crate::claude::ClaudeAdapter;
 use crate::codex::CodexAdapter;
 use crate::hermes::HermesAdapter;
-use crate::model::{AgentRun, Harness, Hidden, ListResponse, LiveInfo, LiveStatus, RunState};
+use crate::kernel_maps::{KernelMaps, MapUpdate};
+use crate::model::{AgentRun, Harness, Hidden, ListResponse, LiveInfo, LiveStatus, RunState, SessionMap};
 use crate::pi::PiAdapter;
 use crate::procs;
 use crate::project::Resolver;
@@ -32,6 +33,8 @@ pub struct Paths {
     pub codex_home: PathBuf,
     pub hermes_home: PathBuf,
     pub pi_sessions: PathBuf,
+    /// Where maps reported through `POST /api/agents/{id}/map` are kept.
+    pub maps_dir: PathBuf,
 }
 
 impl Paths {
@@ -41,6 +44,7 @@ impl Paths {
             codex_home: home.join(".codex"),
             hermes_home: home.join(".hermes"),
             pi_sessions: home.join(".pi").join("agent").join("sessions"),
+            maps_dir: home.join(".gctrl").join("agent-maps"),
         }
     }
 
@@ -48,6 +52,9 @@ impl Paths {
     pub fn detect() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/nonexistent"));
         let mut p = Self::from_home(&home);
+        if let Some(data) = dirs::data_dir() {
+            p.maps_dir = data.join("gctrl").join("agent-maps");
+        }
         let env = |k: &str| {
             std::env::var_os(k)
                 .filter(|v| !v.is_empty())
@@ -95,6 +102,7 @@ struct Inner {
 
 pub struct AgentIndex {
     inner: Mutex<Inner>,
+    reported: KernelMaps,
     operations: Mutex<Operations>,
     /// Gather windows whose initial shell no run has used yet.
     fresh_windows: Mutex<std::collections::HashSet<i64>>,
@@ -182,11 +190,19 @@ pub fn launch_request(harness: Harness, native_id: &str, cwd: &str) -> LaunchReq
 
 impl AgentIndex {
     pub fn new(paths: Paths) -> Self {
-        Self::with_adapters(paths.adapters(), paths.home)
+        let reported = KernelMaps::open(paths.maps_dir.clone());
+        Self::with_parts(paths.adapters(), paths.home, reported)
     }
 
+    /// An index over `adapters` whose reported maps live under `home`.
     pub fn with_adapters(adapters: Vec<Box<dyn Adapter>>, home: PathBuf) -> Self {
+        let reported = KernelMaps::open(home.join(".gctrl").join("agent-maps"));
+        Self::with_parts(adapters, home, reported)
+    }
+
+    pub fn with_parts(adapters: Vec<Box<dyn Adapter>>, home: PathBuf, reported: KernelMaps) -> Self {
         Self {
+            reported,
             inner: Mutex::new(Inner {
                 adapters,
                 resolver: Resolver::new(home),
@@ -215,11 +231,12 @@ impl AgentIndex {
         let ctx = ScanCtx { procs: &procs, now };
         let mut guard = self.inner.lock().expect("agent index lock");
         let inner = &mut *guard;
-        let records: Vec<RunRecord> = inner
+        let mut records: Vec<RunRecord> = inner
             .adapters
             .iter_mut()
             .flat_map(|a| a.scan(&ctx))
             .collect();
+        apply_reported(&mut records, &self.reported.all());
         let mut runs: Vec<AgentRun> = records
             .into_iter()
             .map(|r| build_run(&mut inner.resolver, r, now))
@@ -228,6 +245,13 @@ impl AgentIndex {
         inner.runs = runs.clone();
         inner.refreshed = Some(Instant::now());
         runs
+    }
+
+    /// Apply a map update reported for run `id`; the next list reflects it.
+    pub fn update_map(&self, id: &str, upd: MapUpdate) -> Result<SessionMap, String> {
+        let map = self.reported.update(id, upd)?;
+        self.inner.lock().expect("agent index lock").refreshed = None;
+        Ok(map)
     }
 
     /// Apply the default filters and count what they hide.
@@ -240,7 +264,9 @@ impl AgentIndex {
             } else if r.stale && !opts.include_stale {
                 hidden.stale += 1;
             } else {
-                out.push(r.clone());
+                // The list carries goal and progress; the full map comes
+                // with `GET /api/agents/{id}`.
+                out.push(AgentRun { map: None, ..r.clone() });
             }
         }
         ListResponse {
@@ -315,6 +341,25 @@ impl AgentIndex {
     }
 }
 
+/// A map reported to the kernel replaces the harness's own when it is newer.
+fn apply_reported(records: &mut [RunRecord], reported: &HashMap<String, SessionMap>) {
+    for r in records.iter_mut() {
+        let id = format!("{}:{}", r.harness.prefix(), r.native_id);
+        let Some(m) = reported.get(&id) else { continue };
+        if r.map.as_ref().is_some_and(|cur| cur.updated_at > m.updated_at) {
+            continue;
+        }
+        if m.goal.is_some() {
+            r.goal = m.goal.clone();
+        }
+        r.progress = Some(m.progress());
+        if r.name.is_none() {
+            r.name = m.name.clone();
+        }
+        r.map = Some(m.clone());
+    }
+}
+
 fn build_run(resolver: &mut Resolver, r: RunRecord, now: DateTime<Utc>) -> AgentRun {
     let resolved = resolver.resolve(&r.cwd, r.origin.as_deref());
     let cwd_exists = Path::new(&r.cwd).is_dir();
@@ -335,6 +380,7 @@ fn build_run(resolver: &mut Resolver, r: RunRecord, now: DateTime<Utc>) -> Agent
         git_branch: r.git_branch,
         goal: r.goal,
         progress: r.progress,
+        map: r.map,
         last_prompt: r.last_prompt,
         pr: r.pr,
         cost_usd: r.cost_usd,

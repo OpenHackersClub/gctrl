@@ -10,8 +10,9 @@
 
 use crate::adapter::{from_system, parse_ts, Adapter, RunRecord, ScanCtx};
 use crate::jsonl::{message_text, Cursor};
-use crate::model::{Harness, LiveInfo, LiveStatus, PrLink, Progress};
-use crate::session_map::{is_snapshot_line, tool_result_text, SessionMap};
+use crate::model::{Harness, LiveInfo, LiveStatus, PrLink, Progress, SessionMap};
+use crate::map_store::MapStores;
+use crate::session_map::{is_snapshot_line, tool_result_text, TranscriptMap};
 use crate::procs::{self, Proc};
 use crate::text::{clip, is_human_prompt, is_uuid};
 use serde::Deserialize;
@@ -41,8 +42,8 @@ pub struct Transcript {
     pub last_prompt: Option<String>,
     pub pr: Option<PrLink>,
     pub cost_usd: Option<f64>,
-    /// Session-map goal, status, summary and steps.
-    pub map: SessionMap,
+    /// The session map as the transcript records it.
+    pub map: TranscriptMap,
     /// The `/goal` condition.
     pub goal_condition: Option<String>,
     pub mtime: Option<SystemTime>,
@@ -234,11 +235,16 @@ impl Transcript {
     /// What the session is working toward: the session-map goal (which
     /// already reflects `/goal`), else the `/goal` condition.
     pub fn goal(&self) -> Option<String> {
-        self.map.goal.clone().or_else(|| self.goal_condition.clone())
+        self.map.map.goal.clone().or_else(|| self.goal_condition.clone())
     }
 
     pub fn progress(&self) -> Option<Progress> {
-        self.map.seen().then(|| self.map.progress.clone())
+        self.map.progress()
+    }
+
+    /// The transcript's session map, when it recorded one.
+    pub fn session_map(&self) -> Option<SessionMap> {
+        self.map.seen().then(|| self.map.map.clone())
     }
 
     /// Bring the summary up to date with the file at `path`.
@@ -478,6 +484,7 @@ pub fn claude_live(registry: &[LiveEntry], procs: &HashMap<u32, Proc>) -> HashMa
 pub struct ClaudeAdapter {
     home: PathBuf,
     transcripts: HashMap<PathBuf, Transcript>,
+    stores: MapStores,
 }
 
 impl ClaudeAdapter {
@@ -485,6 +492,7 @@ impl ClaudeAdapter {
         Self {
             home,
             transcripts: HashMap::new(),
+            stores: MapStores::default(),
         }
     }
 }
@@ -502,6 +510,9 @@ impl Adapter for ClaudeAdapter {
             .flat_map(|d| read_registry(d))
             .collect();
         let live = claude_live(&registry, ctx.procs);
+        // The session-map mod's store is the authoritative map; the
+        // transcript is the fallback.
+        let stored = self.stores.read(&config);
 
         let mut out = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
@@ -523,14 +534,22 @@ impl Adapter for ClaudeAdapter {
             let mut r = RunRecord::new(Harness::ClaudeCode, t.session_id.clone(), cwd, updated);
             r.started = t.started_at.as_deref().and_then(parse_ts).unwrap_or(updated);
             r.title = t.title().unwrap_or_else(|| "(untitled)".into());
+            let map = stored.get(&t.session_id).cloned().or_else(|| t.session_map());
             // `/rename` wins; the session-map name covers unrenamed sessions.
-            r.name = t.agent_name.clone().or_else(|| t.map.name.clone());
+            r.name = t
+                .agent_name
+                .clone()
+                .or_else(|| map.as_ref().and_then(|m| m.name.clone()));
             r.git_branch = t.git_branch.clone();
-            r.goal = t.goal();
-            r.progress = t.progress();
+            r.goal = map
+                .as_ref()
+                .and_then(|m| m.goal.clone())
+                .or_else(|| t.goal_condition.clone());
+            r.progress = map.as_ref().map(SessionMap::progress);
             r.last_prompt = t.last_prompt.clone();
             r.pr = t.pr.clone();
             r.cost_usd = t.cost_usd;
+            r.map = map;
             r.headless = t.headless();
             r.live = live.get(&t.session_id).cloned();
             out.push(r);
@@ -549,6 +568,11 @@ impl Adapter for ClaudeAdapter {
             r.name = e.name.clone();
             r.headless = e.kind.as_deref() == Some("bg");
             r.live = Some(info.clone());
+            if let Some(m) = stored.get(&r.native_id) {
+                r.goal = m.goal.clone();
+                r.progress = Some(m.progress());
+                r.map = Some(m.clone());
+            }
             out.push(r);
         }
         out
@@ -649,7 +673,7 @@ mod tests {
         let mut t = Transcript::new(SID);
         t.refresh(&p).unwrap();
         assert_eq!(t.goal().as_deref(), Some("new goal"));
-        assert_eq!(t.map.name.as_deref(), Some("s-big"));
+        assert_eq!(t.map.map.name.as_deref(), Some("s-big"));
         assert_eq!(t.progress().unwrap().current_step.as_deref(), Some("b"));
     }
 

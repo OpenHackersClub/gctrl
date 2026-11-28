@@ -80,6 +80,121 @@ pub struct Progress {
     pub steps_total: u32,
 }
 
+/// One step of a session map. `status` is `pending`, `in_progress` or `completed`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MapStep {
+    pub text: String,
+    pub status: String,
+}
+
+/// One open hand-off. `who` is `operator`, an agent, or a session (`s-<id>`);
+/// `type` is `signoff`, `ops` or `task`; `n` is the `\N` the reply gave it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MapHandoff {
+    pub who: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n: Option<u32>,
+    #[serde(default)]
+    pub pinned: bool,
+}
+
+/// A GitHub issue or PR the session touched; `roles` lists what it did.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MapRef {
+    pub kind: String,
+    pub repo: String,
+    pub number: u64,
+    pub url: String,
+    #[serde(default)]
+    pub roles: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+}
+
+/// A report page the session drafted or opened.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MapReport {
+    pub slug: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unanswered: Option<u32>,
+    #[serde(default)]
+    pub done: bool,
+}
+
+/// What a session reports about its own work: the session map. The shape
+/// follows the Claude Code session-map mod and is harness-neutral; any
+/// harness can report one through `POST /api/agents/{id}/map`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SessionMap {
+    /// `session-map` (the Claude Code mod's store), `transcript` (parsed
+    /// from the run's own records) or `kernel` (reported to the kernel).
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
+    /// The goal came from `/goal`; the agent's updates keep it.
+    #[serde(default)]
+    pub goal_pinned: bool,
+    /// Why a `/goal` waits on the operator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_paused_for: Option<String>,
+    /// `active`, `blocked`, `handoff` or `done`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub steps: Vec<MapStep>,
+    #[serde(default)]
+    pub handoffs: Vec<MapHandoff>,
+    #[serde(default)]
+    pub refs: Vec<MapRef>,
+    #[serde(default)]
+    pub reports: Vec<MapReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// RFC 3339.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+impl SessionMap {
+    /// The card summary: status, summary, current step and step counts.
+    pub fn progress(&self) -> Progress {
+        let current = self
+            .steps
+            .iter()
+            .find(|s| s.status == "in_progress")
+            .or_else(|| self.steps.iter().find(|s| s.status == "pending"))
+            .map(|s| s.text.clone());
+        Progress {
+            status: if self.goal_paused_for.is_some() {
+                Some("blocked".into())
+            } else {
+                self.status.clone()
+            },
+            summary: self.summary.clone(),
+            current_step: current,
+            steps_done: self.steps.iter().filter(|s| s.status == "completed").count() as u32,
+            steps_total: self.steps.len() as u32,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRun {
     pub id: String,
@@ -95,6 +210,9 @@ pub struct AgentRun {
     /// The outcome the run is working toward, one line.
     pub goal: Option<String>,
     pub progress: Option<Progress>,
+    /// The full session map; `GET /api/agents/{id}` carries it, the list does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map: Option<SessionMap>,
     pub last_prompt: Option<String>,
     pub pr: Option<PrLink>,
     pub cost_usd: Option<f64>,

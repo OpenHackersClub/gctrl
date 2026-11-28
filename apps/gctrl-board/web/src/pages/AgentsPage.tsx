@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { api } from "../api/client"
+import { AgentDetailPane } from "../components/AgentDetailPane"
 import { AgentRunCard } from "../components/AgentRunCard"
 import { GatherDialog } from "../components/GatherDialog"
 import { ProjectFilter } from "../components/ProjectFilter"
@@ -63,6 +64,7 @@ export function AgentsPage({ onToast }: Props) {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   const [gatherOpen, setGatherOpen] = useState(false)
   const [gathering, setGathering] = useState(false)
+  const [inspectedId, setInspectedId] = useState<string | null>(null)
 
   const { data, messages, loading, error, refresh } = useAgents({ includeHeadless, includeStale })
 
@@ -130,6 +132,11 @@ export function AgentsPage({ onToast }: Props) {
     [data, selected],
   )
   const queued = useMemo(() => new Set(data?.gather_queue ?? []), [data])
+  const inspected = useMemo(
+    () => (inspectedId ? (data?.runs ?? []).find((r) => r.id === inspectedId) ?? null : null),
+    [data, inspectedId],
+  )
+  const inspect = useCallback((run: AgentRun) => setInspectedId((cur) => (cur === run.id ? null : run.id)), [])
 
   const handleGather = useCallback(
     async ({ spaceId, closeOld }: { spaceId: number | null; closeOld: boolean }) => {
@@ -297,12 +304,25 @@ export function AgentsPage({ onToast }: Props) {
                   selected={selected}
                   queued={queued}
                   onSelect={toggleSelected}
+                  inspectedId={inspectedId}
+                  onInspect={inspect}
                 />
               )
             })}
           </div>
         )}
       </div>
+      {inspected && (
+        <AgentDetailPane
+          run={inspected}
+          refreshKey={data?.generated_at ?? ""}
+          now={now}
+          busy={opening === inspected.id}
+          onClose={() => setInspectedId(null)}
+          onOpen={handleOpen}
+          onToast={onToast}
+        />
+      )}
       {gatherOpen && (
         <GatherDialog
           runs={selectedRuns}
@@ -328,6 +348,8 @@ function Lane({
   selected,
   queued,
   onSelect,
+  inspectedId,
+  onInspect,
 }: {
   lane: AgentLane
   expanded: boolean
@@ -341,6 +363,8 @@ function Lane({
   selected: ReadonlySet<string>
   queued: ReadonlySet<string>
   onSelect: (run: AgentRun) => void
+  inspectedId: string | null
+  onInspect: (run: AgentRun) => void
 }) {
   return (
     <section data-testid={`agents-lane-${lane.projectKey}`} className="border border-zinc-800/60 bg-zinc-950/40">
@@ -376,6 +400,8 @@ function Lane({
                     selected={selected.has(run.id)}
                     queued={queued.has(run.id)}
                     onSelect={onSelect}
+                    inspected={inspectedId === run.id}
+                    onInspect={onInspect}
                   />
                 ))}
               </div>

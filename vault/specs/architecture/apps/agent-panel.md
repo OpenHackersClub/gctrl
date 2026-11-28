@@ -15,6 +15,7 @@
 5. **Headless**: a run with no interactive terminal: Codex `source = exec`, a Claude transcript whose `entrypoint` is `sdk-cli`, or a Hermes session whose `source` is neither `cli` nor `tui` (gateway sessions such as Telegram and cron).
 6. **Stale**: a run that is not live and has no activity for 7 days or more.
 7. **Gather**: resuming a set of runs as tabs of one new iTerm2 window on one Space.
+8. **Session map**: what a session reports about its own work: goal, status (`active`, `blocked`, `handoff`, `done`) with a one-line summary, steps, open hand-offs, GitHub refs and reports. The shape follows the Claude Code session-map mod and is harness-neutral.
 
 ## Sources
 
@@ -24,6 +25,8 @@ The driver reads harness stores and never writes them.
 | --- | --- | --- |
 | Claude Code | `<config>/projects/<cwd-slug>/<uuid>.jsonl` (top level only; subagent transcripts are excluded) | `cwd`, `gitBranch`, `timestamp`, `entrypoint`, `custom-title.customTitle`, `agent-name.agentName`, `last-prompt.lastPrompt`, `pr-link.{prNumber,prUrl,prRepository}`, `cost-state.totalCostUSD` |
 | Claude Code | Session-map records in the same transcript: `assistant` → `tool_use` named `*session-map__update` (input `goal`, `status`, `summary`, `steps`), its `tool_result` (the printed map: `Session <name> […]`, `Goal:`, `Status: <status> — <summary>`, `Steps:` lines `- [x]`, `- [>]`, `- [ ]`), and `attachment` of type `goal_status` (`/goal` `condition`) | goal, session name, status, summary, steps |
+| Claude Code | `<config>/plugins/store/session-map_*.json` (the session-map mod's store) | `map:<session id>` → `map`: `name`, `goal`, `isGoalPinned`, `goalPausedFor`, `status`, `summary`, `steps`, `handoffs`, `refs`, `reports`, `where.{repo,branch}`, `updatedAt` |
+| Any harness | `<data dir>/gctrl/agent-maps/<harness>_<native id>.json`, written by `POST /api/agents/{id}/map` | The session map in the gctrl shape |
 | Claude Code | `<config>/sessions/<pid>.json` (live registry) | `pid`, `sessionId`, `cwd`, `status` (`busy`, `idle`, `shell`), `procStart`, `kind` |
 | Codex | `$CODEX_HOME/state_<n>.sqlite` → `threads` (highest `<n>` wins; default `~/.codex`) | `id`, `cwd`, `name`, `title`, `first_user_message`, `git_branch`, `git_origin_url`, `tokens_used`, `model`, `archived`, `source`, `thread_source`, `created_at_ms`, `updated_at_ms`, `rollout_path` |
 | Codex | Tail of the thread's rollout JSONL | Last `response_item` message with `role = user`; last `event_msg` of type `task_started`, `task_complete` or `turn_aborted` |
@@ -40,7 +43,8 @@ Rules:
 5. SQLite stores (Codex, Hermes) open with `mode=ro`. When the harness is not running, the WAL index is absent and a read-only connection cannot create it. The driver then opens the database with `immutable=1`, which is safe because with no `-wal` file the main database file holds every committed write. Queries read `PRAGMA table_info` first and treat missing columns as `NULL`.
 6. Hermes context compression ends a session with `end_reason = 'compression'` and continues in a child session. A chain MUST retain the oldest session's run identity, `started_at` and first prompt; `native_id` MUST identify the newest session for resuming. Hermes rows with active-message tracking (`messages.active`) count only active messages.
 7. A session-map tool result follows its call and prints the whole map, so it overrides the call's input. Only transcript lines that name `session-map__update`, `goal_status`, or a printed `Goal:` / `Status:` line are parsed in full. When a first read of a transcript changed in the last 7 days finds no printed map in its tail, the driver scans the skipped middle backward, up to 64 MiB, and stops at the newest printed map.
-8. A prompt shown on a card excludes harness-injected text: lines that start with `<`, the AGENTS.md preamble, and messages relayed from another agent session.
+8. A run's session map comes from the first source that holds it: for Claude Code, the session-map mod's store, then the transcript. A map reported to the kernel replaces either when its `updated_at` is newer. The mod's store is read again only when its file changes; when two config dirs hold the same session, the newer map wins. Store fields of an unknown shape are read leniently.
+9. A prompt shown on a card excludes harness-injected text: lines that start with `<`, the AGENTS.md preamble, and messages relayed from another agent session.
 
 ## Liveness
 
@@ -68,6 +72,7 @@ The index lives in kernel memory. It is built on a background thread at kernel s
 | `worktree` | string \| null | The cwd's directory name when the cwd is a linked git worktree |
 | `git_branch` | string \| null | Branch at the last record (Claude, Codex) |
 | `goal` | string \| null | The outcome the run works toward, cut to 160 chars. Claude: the session-map goal (which already reflects `/goal`), else the `/goal` condition. Codex: the generated thread name, unless `/rename` replaced it with an `s-` handle or it equals the title. |
+| `map` | session map \| null | The full session map (§ Terms), with `source` = `session-map`, `transcript` or `kernel`. Only `GET /api/agents/{id}` carries it; the list leaves it out. |
 | `progress` | `{status, summary, current_step, steps_done, steps_total}` \| null | Claude session map: `status` (`active`, `blocked`, `handoff`, `done`), the one-line summary, the step in progress (else the first pending step), and step counts. Null when the session never reported a map. |
 | `last_prompt` | string \| null | Last user prompt, cut to 200 chars |
 | `pr` | `{number, url, repository}` \| null | Last `pr-link` record (Claude) |
@@ -158,6 +163,21 @@ The **Needs you** column is computed by the board. A live run is in Needs you wh
 A body with no ids returns 400. When opening the window fails, the call returns the mac-comm error status (403 when Automation is denied) and no run is stopped.
 
 `DELETE /api/agents/{id}/gather` removes a run from the gather queue (204).
+
+`GET /api/agents/{id}` returns one run with its `map`.
+
+`POST /api/agents/{id}/map` reports a session map for any harness, so a Codex, Hermes or Pi session (or a hook) can show the same goal, steps and hand-offs as a Claude session:
+
+```json
+{ "goal": "Fix billing rounding", "status": "active", "summary": "patch written",
+  "steps": [{ "text": "repro", "status": "completed" }, { "text": "patch", "status": "in_progress" }],
+  "handoffs": [{ "who": "operator", "type": "signoff", "action": "Approve the migration", "n": 1 }] }
+```
+
+1. The body takes the session-map update tool's fields (`goal`, `status`, `summary`, `name`, `steps`) plus `handoffs`, `clearHandoffs`, `refs`, `repo` and `branch`. A field left out keeps its value; a list replaces the stored list.
+2. `{id}` is `<harness prefix>:<native id>` with a known prefix; the run need not be indexed yet.
+3. 400 when `status`, a step status or a hand-off type is outside its set, or past 50 steps, 30 hand-offs or 40 refs. Text is cut to 300 characters; refs keep `https://` URLs only.
+4. The response is the stored map; the next list reflects it.
 
 ## Open and resume
 
@@ -274,8 +294,10 @@ sequenceDiagram
    3. Where the work stands: a `blocked`, `handoff` or `done` chip, then the current step (else the summary) and `steps_done/steps_total`.
    4. Bottom row: the branch, the relative `updated_at`, cost or tokens, and a PR chip. A run in `gather_queue` shows **waiting to move**.
    5. The last prompt appears only in the hover tooltip, with the goal, summary, cwd and resume command.
-5. A click calls `POST /api/agents/{id}/open`, and a toast shows the result. The page polls every 5 s.
-6. **Select** switches the page to select mode: a click toggles a card's selection. **Gather N into a Space…** opens a dialog with the user desktops from `GET /api/macos/spaces` (the current one preselected), a preview of how each run moves, and **Close the panes they leave behind** (on by default).
+5. **iTerm2 ↗** and the pane's terminal button call `POST /api/agents/{id}/open`, and a toast shows the result. The page polls every 5 s.
+6. A click on a card opens the **session-map pane** beside the board: goal (📌 when set with `/goal`, ⏸ with the reason while paused), status chip and summary, hand-offs grouped by recipient (operator first, `\N` or `→`), a progress bar and the step list, GitHub refs as links, reports, and the run's cwd, last prompt, model, usage, process and map source. **Go to iTerm2** (live) or **Resume in iTerm2** opens the terminal, **Copy map** copies the map as text in the mod's brief format, and Escape closes the pane. The pane re-reads `GET /api/agents/{id}` on every list poll.
+7. Each card's **iTerm2 ↗** button focuses the live pane or resumes the run, without opening the session-map pane.
+8. **Select** switches the page to select mode: a click toggles a card's selection. **Gather N into a Space…** opens a dialog with the user desktops from `GET /api/macos/spaces` (the current one preselected), a preview of how each run moves, and **Close the panes they leave behind** (on by default).
 
 ## Privacy
 

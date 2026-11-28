@@ -646,6 +646,7 @@ mod tests {
             git_branch: None,
             goal: None,
             progress: None,
+            map: None,
             last_prompt: None,
             pr: None,
             cost_usd: None,

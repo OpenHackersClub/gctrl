@@ -3,7 +3,7 @@
 //! [`crate::model::AgentRun`]s. Adding a harness means adding one adapter
 //! and one [`Harness`] variant with its resume command.
 
-use crate::model::{Harness, LiveInfo, PrLink, Progress};
+use crate::model::{Harness, LiveInfo, PrLink, Progress, SessionMap};
 use crate::procs::Proc;
 use chrono::{DateTime, TimeZone, Utc};
 use std::collections::{HashMap, HashSet};
@@ -24,6 +24,7 @@ pub struct RunRecord {
     pub git_branch: Option<String>,
     pub goal: Option<String>,
     pub progress: Option<Progress>,
+    pub map: Option<SessionMap>,
     pub last_prompt: Option<String>,
     pub pr: Option<PrLink>,
     pub cost_usd: Option<f64>,
@@ -50,6 +51,7 @@ impl RunRecord {
             git_branch: None,
             goal: None,
             progress: None,
+            map: None,
             last_prompt: None,
             pr: None,
             cost_usd: None,

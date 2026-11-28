@@ -168,6 +168,19 @@ async fn gather_runs(
     }
 }
 
+async fn update_map(
+    State(index): State<Arc<AgentIndex>>,
+    Path(id): Path<String>,
+    Json(upd): Json<crate::kernel_maps::MapUpdate>,
+) -> Response {
+    let idx = Arc::clone(&index);
+    match tokio::task::spawn_blocking(move || idx.update_map(&id, upd)).await {
+        Ok(Ok(map)) => Json(map).into_response(),
+        Ok(Err(e)) => (StatusCode::BAD_REQUEST, e).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
 async fn cancel_gather(State(index): State<Arc<AgentIndex>>, Path(id): Path<String>) -> StatusCode {
     index.dequeue_gather(&id);
     StatusCode::NO_CONTENT
@@ -179,6 +192,7 @@ pub fn router<S: Clone + Send + Sync + 'static>(index: Arc<AgentIndex>) -> Route
         .route("/api/agents/{id}", get(get_one))
         .route("/api/agents/gather", post(gather_runs))
         .route("/api/agents/{id}/open", post(open))
+        .route("/api/agents/{id}/map", post(update_map))
         .route(
             "/api/agents/{id}/gather",
             axum::routing::delete(cancel_gather),
@@ -233,6 +247,42 @@ mod tests {
 
     fn app(home: &std::path::Path) -> Router {
         router::<()>(Arc::new(AgentIndex::new(Paths::from_home(home))))
+    }
+
+    #[tokio::test]
+    async fn reported_map_shows_on_the_run_and_only_in_detail() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().join("api");
+        std::fs::create_dir_all(&cwd).unwrap();
+        fake_home(tmp.path(), cwd.to_str().unwrap());
+        let index = Arc::new(AgentIndex::new(Paths::from_home(tmp.path())));
+        let post = |body: serde_json::Value| {
+            router::<()>(Arc::clone(&index)).oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/agents/claude:{SID}/map"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+        };
+        let bad = post(serde_json::json!({"status": "sleeping"})).await.unwrap();
+        assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+        let ok = post(serde_json::json!({"goal": "Ship the API", "status": "blocked",
+            "steps": [{"text": "tests", "status": "in_progress"}]}))
+        .await
+        .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+
+        let (_, list) = call(router::<()>(Arc::clone(&index)), "GET", "/api/agents").await;
+        let run = &list["runs"][0];
+        assert_eq!(run["goal"], "Ship the API");
+        assert_eq!(run["progress"]["status"], "blocked");
+        assert!(run.get("map").is_none());
+
+        let (_, one) = call(router::<()>(Arc::clone(&index)), "GET", &format!("/api/agents/claude:{SID}")).await;
+        assert_eq!(one["map"]["source"], "kernel");
+        assert_eq!(one["map"]["steps"][0]["text"], "tests");
     }
 
     #[tokio::test]

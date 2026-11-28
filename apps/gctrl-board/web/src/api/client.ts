@@ -2,6 +2,7 @@ import type {
   AcceptanceRollup,
   AgentGatherResult,
   AgentOpenResult,
+  AgentRun,
   AgentRunsResponse,
   Issue,
   MoveIssueResult,
@@ -282,6 +283,8 @@ export const api = {
       })
       return request<AgentRunsResponse>(`/api/agents?${qs.toString()}`)
     },
+    /** One run with its full session map. */
+    get: (id: string) => request<AgentRun>(`/api/agents/${encodeURIComponent(id)}`),
     open: (id: string, opts?: { dryRun?: boolean }) =>
       request<AgentOpenResult>(
         `/api/agents/${encodeURIComponent(id)}/open${opts?.dryRun ? "?dry_run=true" : ""}`,

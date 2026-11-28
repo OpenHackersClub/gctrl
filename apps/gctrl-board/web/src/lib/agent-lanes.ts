@@ -1,4 +1,4 @@
-import type { AgentGatherResult, AgentOpenResult, AgentRun, InboxMessage } from "../types"
+import type { AgentGatherResult, AgentOpenResult, AgentRun, InboxMessage, MapHandoff, SessionMap } from "../types"
 
 /** Board columns, most urgent first. Spec: agent-panel.md § States. */
 export type AgentColumn = "needs_you" | "running" | "idle" | "resumable" | "done"
@@ -300,4 +300,54 @@ export function visibleLanes(lanes: AgentLane[], hidden: ReadonlySet<string>): A
 /** Hidden set for "Live only": every project with no live run. */
 export function hideAllButLive(options: ProjectOption[]): Set<string> {
   return new Set(options.filter((o) => !o.live).map((o) => o.key))
+}
+
+export interface HandoffGroup {
+  who: string
+  rows: MapHandoff[]
+}
+
+/** Hand-offs grouped by recipient in order of first appearance, operator first. */
+export function handoffGroups(handoffs: MapHandoff[]): HandoffGroup[] {
+  const groups: HandoffGroup[] = []
+  for (const h of handoffs) {
+    const g = groups.find((x) => x.who === h.who)
+    if (g) g.rows.push(h)
+    else groups.push({ who: h.who, rows: [h] })
+  }
+  const isOp = (g: HandoffGroup) => g.who.toLowerCase() === "operator"
+  return [...groups.filter(isOp), ...groups.filter((g) => !isOp(g))]
+}
+
+const TYPE_LABEL: Record<MapHandoff["type"], string> = { signoff: "[SignOff]", ops: "[Ops]", task: "[Task]" }
+const STEP_MARK = { completed: "x", in_progress: ">", pending: " " } as const
+
+/** The map as plain text, the same brief the session-map mod copies. */
+export function mapBrief(run: AgentRun, map: SessionMap): string {
+  const where = [map.repo, map.branch].filter(Boolean).join(" · ")
+  const lines = [
+    `Session ${run.name ?? run.native_id}${where ? ` [${where}]` : ""}`,
+    `Goal: ${map.goal ?? run.goal ?? "(not set)"}`,
+    `Status: ${map.status ?? "active"}${map.summary ? ` — ${map.summary}` : ""}`,
+  ]
+  if (map.handoffs.length > 0) {
+    lines.push(
+      "Hand-offs:",
+      ...handoffGroups(map.handoffs).flatMap((g) =>
+        g.rows.map(
+          (h) => `${h.n == null ? "→" : `\\${h.n}`} ${h.who} ${TYPE_LABEL[h.type]} ${h.action}${h.why ? ` — ${h.why}` : ""}`,
+        ),
+      ),
+    )
+  }
+  if (map.steps.length > 0) lines.push("Steps:", ...map.steps.map((s) => `- [${STEP_MARK[s.status]}] ${s.text}`))
+  if (map.refs.length > 0) {
+    lines.push(
+      "GitHub:",
+      ...map.refs.map(
+        (r) => `- ${r.kind === "pr" ? "PR" : "Issue"} ${r.repo}#${r.number}${r.state ? ` (${r.state})` : ""} ${r.roles.join(", ")}`,
+      ),
+    )
+  }
+  return lines.join("\n")
 }

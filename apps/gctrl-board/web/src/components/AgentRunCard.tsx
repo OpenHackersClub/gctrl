@@ -53,6 +53,10 @@ interface Props {
   onSelect?: (run: AgentRun) => void
   /** A gather waits for this run's turn to end. */
   queued?: boolean
+  /** Click shows the run's session map; the iTerm2 button opens the terminal. */
+  onInspect?: (run: AgentRun) => void
+  /** The run shown in the detail pane. */
+  inspected?: boolean
 }
 
 const FALLBACK_MARK = { label: "??", className: "bg-zinc-800 text-zinc-400 border-zinc-700", title: "Agent" }
@@ -64,7 +68,19 @@ const STATUS_CHIP: Record<string, string> = {
   done: "bg-emerald-500/10 text-emerald-300 border-emerald-500/25",
 }
 
-export function AgentRunCard({ run, column, now, busy, onOpen, selecting, selected, onSelect, queued }: Props) {
+export function AgentRunCard({
+  run,
+  column,
+  now,
+  busy,
+  onOpen,
+  selecting,
+  selected,
+  onSelect,
+  queued,
+  onInspect,
+  inspected,
+}: Props) {
   const harness = HARNESS_MARK[run.harness] ?? FALLBACK_MARK
   const usage = formatUsage(run)
   const headline = cardHeadline(run)
@@ -73,10 +89,18 @@ export function AgentRunCard({ run, column, now, busy, onOpen, selecting, select
   const status = run.progress?.status ?? null
   // Claude keys transcripts by cwd: a removed worktree cannot be resumed.
   const blocked = run.live === null && !run.cwd_exists
-  const action = selecting ? (selected ? "Deselect" : "Select") : run.live ? "Focus terminal" : "Resume in iTerm2"
-  const disabled = selecting ? false : blocked || busy
+  const terminalAction = run.live ? "Go to iTerm2" : "Resume in iTerm2"
+  const action = selecting
+    ? selected
+      ? "Deselect"
+      : "Select"
+    : onInspect
+      ? "Show session map"
+      : terminalAction
+  const disabled = selecting || onInspect ? false : blocked || busy
   const activate = () => {
     if (selecting) onSelect?.(run)
+    else if (onInspect) onInspect(run)
     else if (!disabled) onOpen(run)
   }
   const tooltip = [
@@ -109,7 +133,7 @@ export function AgentRunCard({ run, column, now, busy, onOpen, selecting, select
       aria-pressed={selecting ? Boolean(selected) : undefined}
       className={`w-full text-left group border-l-2 ${COLUMN_BORDER[column]}
         bg-zinc-900/80 border transition-all duration-100
-        ${selected ? "border-emerald-500/70 ring-1 ring-emerald-500/40" : "border-zinc-800/80"}
+        ${selected || inspected ? "border-emerald-500/70 ring-1 ring-emerald-500/40" : "border-zinc-800/80"}
         ${disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer hover:border-zinc-700 hover:bg-zinc-900"}
         ${busy ? "animate-pulse" : ""}`}
     >
@@ -190,10 +214,23 @@ export function AgentRunCard({ run, column, now, busy, onOpen, selecting, select
               waiting to move
             </span>
           )}
-          {!disabled && (
-            <span className="ml-auto opacity-0 group-hover:opacity-100 text-emerald-400 transition-opacity">
-              {action} →
-            </span>
+          {!selecting && (
+            <button
+              type="button"
+              data-testid={`agent-iterm-${run.id}`}
+              disabled={blocked || busy}
+              onClick={(e) => {
+                e.stopPropagation()
+                onOpen(run)
+              }}
+              onKeyDown={(e) => e.stopPropagation()}
+              title={run.resume_command ?? terminalAction}
+              aria-label={`${terminalAction}: ${headline}`}
+              className="ml-auto px-1.5 py-px border border-zinc-700 text-zinc-400 hover:text-emerald-300 hover:border-emerald-500/50
+                opacity-70 group-hover:opacity-100 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+            >
+              iTerm2 ↗
+            </button>
           )}
         </div>
       </div>

@@ -8,7 +8,9 @@ import {
   columnFor,
   formatUsage,
   gatherErrorMessage,
+  handoffGroups,
   hideAllButLive,
+  mapBrief,
   projectOptions,
   visibleLanes,
   gatherPreview,
@@ -333,5 +335,48 @@ describe("project filter", () => {
 
   it("live only hides every project without a live run", () => {
     expect([...hideAllButLive(projectOptions(lanes))]).toEqual(["api"])
+  })
+})
+
+describe("session map", () => {
+  const map = {
+    source: "session-map",
+    goal: "Ship the panel",
+    status: "active",
+    summary: "pane done",
+    steps: [
+      { text: "scan", status: "completed" as const },
+      { text: "pane", status: "in_progress" as const },
+    ],
+    handoffs: [
+      { who: "codex", type: "task" as const, action: "Fix lipo" },
+      { who: "operator", type: "ops" as const, action: "Grant Accessibility", why: "binary swap", n: 1 },
+    ],
+    refs: [{ kind: "pr" as const, repo: "acme/api", number: 7, url: "https://github.com/acme/api/pull/7", roles: ["created"], state: "OPEN" }],
+    reports: [],
+    repo: "acme/api",
+    branch: "main",
+  }
+
+  it("groups hand-offs with the operator first", () => {
+    expect(handoffGroups(map.handoffs).map((g) => g.who)).toEqual(["operator", "codex"])
+  })
+
+  it("renders the brief the session-map mod copies", () => {
+    expect(mapBrief(run({ id: "claude:a", name: "s-panel" }), map)).toBe(
+      [
+        "Session s-panel [acme/api · main]",
+        "Goal: Ship the panel",
+        "Status: active — pane done",
+        "Hand-offs:",
+        "\\1 operator [Ops] Grant Accessibility — binary swap",
+        "→ codex [Task] Fix lipo",
+        "Steps:",
+        "- [x] scan",
+        "- [>] pane",
+        "GitHub:",
+        "- PR acme/api#7 (OPEN) created",
+      ].join("\n"),
+    )
   })
 })

@@ -20,6 +20,8 @@ pub mod gather;
 pub mod hermes;
 pub mod index;
 pub mod jsonl;
+pub mod kernel_maps;
+pub mod map_store;
 pub mod model;
 pub mod pi;
 pub mod procs;
