@@ -1796,6 +1796,7 @@ dependencies = [
  "dirs",
  "gctrl-mac-comm",
  "http-body-util",
+ "memchr",
  "regex",
  "rusqlite",
  "serde",

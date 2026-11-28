@@ -24,6 +24,10 @@ pub struct Update {
     /// The file shrank: state built from earlier lines is void.
     pub reset: bool,
     pub lines: Vec<Vec<u8>>,
+    /// `lines[..head_lines]` precede the skipped range; the rest follow it.
+    pub head_lines: usize,
+    /// The byte range a first read skipped between head and tail.
+    pub gap: Option<(u64, u64)>,
 }
 
 /// Push every complete line of `buf` to `out`; returns the bytes consumed
@@ -59,11 +63,15 @@ impl Cursor {
         }
         let mut f = File::open(path)?;
         let mut lines = Vec::new();
+        let mut gap = None;
+        let mut head_lines = None;
         if self.offset == 0 && len > HEAD_BYTES + TAIL_BYTES {
             let mut head = vec![0u8; HEAD_BYTES as usize];
             f.read_exact(&mut head)?;
-            split(&head, false, &mut lines);
+            let head_used = split(&head, false, &mut lines);
+            head_lines = Some(lines.len());
             let tail_start = len - TAIL_BYTES;
+            gap = Some((head_used, tail_start));
             f.seek(SeekFrom::Start(tail_start))?;
             let mut tail = Vec::with_capacity(TAIL_BYTES as usize);
             f.read_to_end(&mut tail)?;
@@ -76,7 +84,13 @@ impl Cursor {
         }
         self.len = len;
         self.mtime = mtime;
-        Ok(Some(Update { reset, lines }))
+        let head_lines = head_lines.unwrap_or(lines.len());
+        Ok(Some(Update {
+            reset,
+            lines,
+            head_lines,
+            gap,
+        }))
     }
 }
 
@@ -121,6 +135,22 @@ mod tests {
         let u = c.read(&p).unwrap().unwrap();
         assert!(u.reset);
         assert_eq!(u.lines, vec![b"z".to_vec()]);
+        assert_eq!(u.gap, None);
+    }
+
+    #[test]
+    fn first_read_of_a_large_file_reports_the_skipped_range() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("big.jsonl");
+        let line = format!("{}\n", "x".repeat(1023));
+        std::fs::write(&p, line.repeat(1024)).unwrap(); // 1 MiB
+        let mut c = Cursor::default();
+        let u = c.read(&p).unwrap().unwrap();
+        let (lo, hi) = u.gap.unwrap();
+        assert_eq!(lo, HEAD_BYTES);
+        assert_eq!(hi, 1024 * 1024 - TAIL_BYTES);
+        assert_eq!(u.head_lines, 64);
+        assert_eq!(u.lines.len(), 64 + 511);
     }
 
     #[test]
@@ -129,7 +159,10 @@ mod tests {
         let path = tmp.path().join("session.jsonl");
         std::fs::write(&path, "a\npartial-data").unwrap();
         let mut cursor = Cursor::default();
-        assert_eq!(cursor.read(&path).unwrap().unwrap().lines, vec![b"a".to_vec()]);
+        assert_eq!(
+            cursor.read(&path).unwrap().unwrap().lines,
+            vec![b"a".to_vec()]
+        );
 
         std::fs::write(&path, "b\nx").unwrap();
         let update = cursor.read(&path).unwrap().unwrap();

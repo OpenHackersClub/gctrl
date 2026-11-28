@@ -23,6 +23,7 @@ pub struct SessionMap {
     pub goal: Option<String>,
     pub progress: Progress,
     seen: bool,
+    snapshot: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -41,6 +42,11 @@ impl SessionMap {
     /// Whether any session-map record was seen.
     pub fn seen(&self) -> bool {
         self.seen
+    }
+
+    /// Whether a printed map (the whole state) was applied.
+    pub fn has_snapshot(&self) -> bool {
+        self.snapshot
     }
 
     fn set_steps(&mut self, steps: &[(StepState, String)]) {
@@ -93,6 +99,7 @@ impl SessionMap {
             return false;
         }
         self.seen = true;
+        self.snapshot = true;
         if let Some(first) = text.lines().next().and_then(|l| l.strip_prefix("Session ")) {
             let name = first.split(" [").next().unwrap_or("").trim();
             // A session with no name prints its id, which says less than its title.
@@ -137,6 +144,13 @@ impl SessionMap {
         self.set_steps(&steps);
         true
     }
+}
+
+/// Whether a raw transcript line may carry a printed map.
+pub fn is_snapshot_line(raw: &[u8]) -> bool {
+    memchr::memmem::find(raw, br#""type":"user""#).is_some()
+        && (memchr::memmem::find(raw, b"\\nGoal: ").is_some()
+            || memchr::memmem::find(raw, b"\\nStatus: ").is_some())
 }
 
 /// The text of a `tool_result` block: a string, or its text parts joined.

@@ -11,7 +11,7 @@
 use crate::adapter::{from_system, parse_ts, Adapter, RunRecord, ScanCtx};
 use crate::jsonl::{message_text, Cursor};
 use crate::model::{Harness, LiveInfo, LiveStatus, PrLink, Progress};
-use crate::session_map::{tool_result_text, SessionMap};
+use crate::session_map::{is_snapshot_line, tool_result_text, SessionMap};
 use crate::procs::{self, Proc};
 use crate::text::{clip, is_human_prompt, is_uuid};
 use serde::Deserialize;
@@ -19,6 +19,12 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+
+/// A large transcript changed this recently gets its skipped middle scanned
+/// for the session map; older ones are stale and keep head and tail only.
+const GAP_SCAN_RECENT: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+/// Most bytes of a transcript's middle scanned for the session map.
+const GAP_SCAN_MAX: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Default)]
 pub struct Transcript {
@@ -245,10 +251,68 @@ impl Transcript {
             *self = Transcript::new(std::mem::take(&mut self.session_id));
             self.cursor = cursor;
         }
-        for line in &update.lines {
+        let (head, tail) = update.lines.split_at(update.head_lines);
+        for line in head {
+            self.ingest_line(line);
+        }
+        // The latest printed session map may sit in the skipped middle of a
+        // large file; find it before folding in the newer tail.
+        if let Some(gap) = update.gap {
+            let recent = self
+                .cursor
+                .mtime()
+                .and_then(|m| m.elapsed().ok())
+                .is_some_and(|age| age < GAP_SCAN_RECENT);
+            if recent && !tail.iter().any(|l| is_snapshot_line(l)) {
+                if let Err(e) = self.scan_gap_for_map(path, gap) {
+                    tracing::debug!(path = %path.display(), error = %e, "gap scan failed");
+                }
+            }
+        }
+        for line in tail {
             self.ingest_line(line);
         }
         self.mtime = self.cursor.mtime();
+        Ok(())
+    }
+
+    /// Read `gap` backward in chunks for the newest printed session map, and
+    /// the newest `/goal` while passing. Stops at the first map found or after
+    /// [`GAP_SCAN_MAX`] bytes.
+    fn scan_gap_for_map(&mut self, path: &Path, (lo, hi): (u64, u64)) -> std::io::Result<()> {
+        use std::io::{Read, Seek, SeekFrom};
+        const CHUNK: u64 = 1024 * 1024;
+        const OVERLAP: u64 = 64 * 1024;
+        let floor = lo.max(hi.saturating_sub(GAP_SCAN_MAX));
+        let mut f = std::fs::File::open(path)?;
+        let mut end = hi;
+        while end > floor {
+            let start = end.saturating_sub(CHUNK).max(floor);
+            let read_end = (end + OVERLAP).min(hi);
+            let mut buf = vec![0u8; (read_end - start) as usize];
+            f.seek(SeekFrom::Start(start))?;
+            f.read_exact(&mut buf)?;
+            let mut lines: Vec<&[u8]> = buf.split(|b| *b == b'\n').collect();
+            // Drop the partial first and last lines; the overlap covers them.
+            if start > lo {
+                lines.remove(0);
+            }
+            lines.pop();
+            for line in lines.iter().rev() {
+                if self.goal_condition.is_none()
+                    && memchr::memmem::find(line, br#""goal_status""#).is_some()
+                {
+                    self.ingest_goal_records("attachment", line);
+                }
+                if is_snapshot_line(line) {
+                    self.ingest_goal_records("user", line);
+                    if self.map.has_snapshot() {
+                        return Ok(());
+                    }
+                }
+            }
+            end = start;
+        }
         Ok(())
     }
 
@@ -565,6 +629,28 @@ mod tests {
         t2.refresh(&p2).unwrap();
         assert_eq!(t2.goal().as_deref(), Some("fix CI"));
         assert_eq!(t2.progress(), None);
+    }
+
+    #[test]
+    fn finds_the_session_map_in_the_middle_of_a_large_transcript() {
+        let tmp = tempfile::tempdir().unwrap();
+        let filler = |n: usize| -> String {
+            let line = serde_json::json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "x".repeat(2000)}]}}).to_string();
+            (0..n).map(|_| format!("{line}\n")).collect()
+        };
+        let map = |goal: &str| {
+            serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t","content":format!("Session s-big [acme/api · main]\nGoal: {goal}\nStatus: active — midway\nSteps:\n- [x] a\n- [>] b")}]}}).to_string() + "\n"
+        };
+        // head filler, an old map, a newer map, then 600 KiB of filler so both
+        // maps fall in the skipped middle.
+        let body = filler(40) + &map("old goal") + &filler(200) + &map("new goal") + &filler(300);
+        let p = write(tmp.path(), &body);
+        assert!(std::fs::metadata(&p).unwrap().len() > HEAD_BYTES + TAIL_BYTES);
+        let mut t = Transcript::new(SID);
+        t.refresh(&p).unwrap();
+        assert_eq!(t.goal().as_deref(), Some("new goal"));
+        assert_eq!(t.map.name.as_deref(), Some("s-big"));
+        assert_eq!(t.progress().unwrap().current_step.as_deref(), Some("b"));
     }
 
     #[test]

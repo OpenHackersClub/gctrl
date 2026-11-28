@@ -12,6 +12,7 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 regex = "1"
+memchr = "2"
 rusqlite = { version = "0.31", features = ["bundled"] }
 gctrl-mac-comm = { path = "../gctrl-mac-comm" }
 
