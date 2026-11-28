@@ -86,9 +86,8 @@ struct GitInfo {
 const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    use std::io::Read;
     use std::process::Stdio;
-    let mut child = Command::new("git")
+    let child = Command::new("git")
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -99,25 +98,44 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-    let deadline = std::time::Instant::now() + GIT_TIMEOUT;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut out = String::new();
-                child.stdout.take()?.read_to_string(&mut out).ok()?;
-                return status.success().then(|| out.trim().to_string());
-            }
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            _ => {
-                tracing::debug!(dir = %dir.display(), "git timed out");
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
+    let pid = child.id();
+    // A helper thread blocks in wait(); the caller waits on the channel, so
+    // the call returns the moment git exits. A sleep-and-poll loop would not:
+    // macOS stretches short sleeps for a background launchd job.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    match rx.recv_timeout(GIT_TIMEOUT) {
+        Ok(Ok(out)) => out
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()),
+        Ok(Err(_)) => None,
+        Err(_) => {
+            tracing::debug!(dir = %dir.display(), "git timed out");
+            let _ = Command::new("/bin/kill").args(["-9", &pid.to_string()]).status();
+            None
+        }
+    }
+}
+
+/// `url` of `[remote "origin"]` in a git config file.
+fn origin_from_config(config: &str) -> Option<String> {
+    let mut in_origin = false;
+    for line in config.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            in_origin = t == r#"[remote "origin"]"#;
+        } else if in_origin {
+            if let Some((k, v)) = t.split_once('=') {
+                if k.trim() == "url" {
+                    return Some(v.trim().to_string()).filter(|u| !u.is_empty());
+                }
             }
         }
     }
+    None
 }
 
 /// Folders macOS guards with a privacy prompt. Reading inside them raises
@@ -134,25 +152,23 @@ fn git_info(dir: &Path) -> GitInfo {
         dir,
         &["rev-parse", "--show-toplevel", "--git-dir", "--git-common-dir"],
     );
-    let (toplevel, linked_worktree) = match rev {
+    let (toplevel, linked_worktree, common_dir) = match rev {
         Some(out) => {
             let parts: Vec<&str> = out.lines().collect();
             let top = parts.first().map(PathBuf::from);
-            let linked = match (parts.get(1), parts.get(2)) {
-                (Some(gd), Some(cd)) => {
-                    let gd = dir.join(gd);
-                    let cd = dir.join(cd);
-                    gd.canonicalize().ok() != cd.canonicalize().ok()
-                }
+            let common = parts.get(2).map(|cd| dir.join(cd));
+            let linked = match (parts.get(1), &common) {
+                (Some(gd), Some(cd)) => dir.join(gd).canonicalize().ok() != cd.canonicalize().ok(),
                 _ => false,
             };
-            (top, linked)
+            (top, linked, common)
         }
-        None => (None, false),
+        None => (None, false, None),
     };
-    let origin = toplevel
-        .as_ref()
-        .and_then(|_| git(dir, &["remote", "get-url", "origin"]));
+    // The origin is read from the shared config file: one process per repo.
+    let origin = common_dir
+        .and_then(|cd| std::fs::read_to_string(cd.join("config")).ok())
+        .and_then(|c| origin_from_config(&c));
     GitInfo {
         toplevel,
         linked_worktree,
@@ -275,6 +291,13 @@ mod tests {
             got,
             Some((PathBuf::from("/Users/me/src/api"), Some("feat-x".into())))
         );
+    }
+
+    #[test]
+    fn reads_origin_from_git_config() {
+        let cfg = "[core]\n\tbare = false\n[remote \"upstream\"]\n\turl = git@github.com:up/x.git\n[remote \"origin\"]\n\turl = git@github.com:acme/payments.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n";
+        assert_eq!(origin_from_config(cfg).as_deref(), Some("git@github.com:acme/payments.git"));
+        assert_eq!(origin_from_config("[core]\n"), None);
     }
 
     #[test]

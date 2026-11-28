@@ -32,7 +32,19 @@ pub mod text;
 pub use index::{AgentIndex, ListOptions, Paths};
 pub use model::{AgentRun, Harness, ListResponse, OpenResponse, RunState};
 
-/// Router over the current user's home directory.
+/// Router over the current user's home directory. The index is built on a
+/// background thread at kernel start, so the first `/api/agents` call does
+/// not pay for the cold scan.
 pub fn default_router<S: Clone + Send + Sync + 'static>() -> axum::Router<S> {
-    routes::router(std::sync::Arc::new(AgentIndex::new(Paths::detect())))
+    let index = std::sync::Arc::new(AgentIndex::new(Paths::detect()));
+    let warm = std::sync::Arc::clone(&index);
+    std::thread::Builder::new()
+        .name("agents-warmup".into())
+        .spawn(move || {
+            let started = std::time::Instant::now();
+            let runs = warm.refresh(chrono::Utc::now());
+            tracing::info!(runs = runs.len(), ms = started.elapsed().as_millis() as u64, "agent index warmed");
+        })
+        .ok();
+    routes::router(index)
 }

@@ -53,7 +53,7 @@ Rules:
 
 ## Model
 
-The index lives in kernel memory. It is rebuilt from the adapters at kernel start and refreshed when `GET /api/agents` is called more than 2 s after the last refresh. Mirroring runs into the `sessions` table is tracked in #240.
+The index lives in kernel memory. It is built on a background thread at kernel start and refreshed when `GET /api/agents` is called more than 2 s after the last refresh. Mirroring runs into the `sessions` table is tracked in #240.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
