@@ -240,10 +240,9 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["action"], "would_launch");
-        assert_eq!(
-            body["command"],
-            format!("cd '{cwd_s}' && claude --resume {SID}")
-        );
+        let command = body["command"].as_str().unwrap();
+        assert!(command.starts_with(&format!("cd '{cwd_s}' && ")));
+        assert!(command.ends_with(&format!(" && claude --resume {SID}")));
     }
 
     #[tokio::test]

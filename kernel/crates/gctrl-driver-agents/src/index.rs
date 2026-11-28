@@ -537,10 +537,9 @@ mod tests {
         if !my_start.is_empty() {
             assert_eq!(live.state, RunState::Running);
         }
-        assert_eq!(
-            live.resume_command.as_deref(),
-            Some(format!("cd '{repo_s}' && claude --resume {CLAUDE_SID}").as_str())
-        );
+        let command = live.resume_command.as_deref().unwrap();
+        assert!(command.starts_with(&format!("cd '{repo_s}' && ")));
+        assert!(command.ends_with(&format!(" && claude --resume {CLAUDE_SID}")));
 
         let old = by_id[format!("claude:{OLD_SID}").as_str()];
         assert!(old.stale);
@@ -564,10 +563,9 @@ mod tests {
         let hermes = by_id["hermes:20261127_100000_abcdef"];
         assert_eq!(hermes.title, "triage the inbox");
         assert_eq!(hermes.project_key, "api");
-        assert_eq!(
-            hermes.resume_command.as_deref(),
-            Some(format!("cd '{repo_s}' && hermes --resume 20261127_100000_abcdef").as_str())
-        );
+        let command = hermes.resume_command.as_deref().unwrap();
+        assert!(command.starts_with(&format!("cd '{repo_s}' && ")));
+        assert!(command.ends_with(" && hermes --resume 20261127_100000_abcdef"));
 
         let pi = by_id[format!("pi:{PI_ID}").as_str()];
         assert_eq!(pi.title, "tidy the parser");

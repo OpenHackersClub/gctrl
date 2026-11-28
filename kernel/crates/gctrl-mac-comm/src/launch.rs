@@ -2,7 +2,7 @@
 //!
 //! mac-comm owns the shell string. Callers pass a working directory and an
 //! argv; [`shell_command`] validates both and renders
-//! `cd '<cwd>' && <argv…>`. The cwd validator excludes `'`, so single quotes
+//! `cd '<cwd>'`, activates direnv, then invokes the argv. The cwd validator excludes `'`, so single quotes
 //! make every allowed cwd character literal. Each argv token matches a strict
 //! allowlist with no shell metacharacters. The rendered command reaches
 //! AppleScript as `item 1 of argv` and is never spliced into script source.
@@ -47,7 +47,13 @@ pub fn shell_command(req: &LaunchRequest) -> Result<String, CommError> {
             });
         }
     }
-    Ok(format!("cd '{}' && {}", req.cwd, req.argv.join(" ")))
+    Ok(format!(
+        "cd '{}' && {{ if command -v direnv >/dev/null 2>&1; then \
+         _gctrl_direnv=$(direnv export bash) && eval \"$_gctrl_direnv\" && unset _gctrl_direnv; \
+         fi; }} && {}",
+        req.cwd,
+        req.argv.join(" ")
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -225,10 +231,8 @@ mod tests {
             &["claude", "--resume", "26e3373e-8358-416b-83f3-355a59325193"],
         ))
         .unwrap();
-        assert_eq!(
-            cmd,
-            "cd '/Users/me/wt/acme/api/fix (2)' && claude --resume 26e3373e-8358-416b-83f3-355a59325193"
-        );
+        assert!(cmd.starts_with("cd '/Users/me/wt/acme/api/fix (2)' && "));
+        assert!(cmd.ends_with(" && claude --resume 26e3373e-8358-416b-83f3-355a59325193"));
     }
 
     #[test]
@@ -239,6 +243,37 @@ mod tests {
         ))
         .unwrap();
         assert!(cmd.ends_with("codex resume -c tui.resume_cwd=current 01a04c15-4628-7913-bd1d-21ed78284c55"));
+    }
+
+    #[test]
+    fn activates_project_environment_before_bash_prompt_hook() {
+        let command = shell_command(&req("/tmp", &["fake_harness"])).unwrap();
+        let script = format!(
+            "PROMPT_COMMAND='export CLAUDE_CONFIG_DIR=project-account'; \
+             direnv() {{ printf '%s\\n' 'export CLAUDE_CONFIG_DIR=project-account'; }}; \
+             fake_harness() {{ printf '%s' \"$CLAUDE_CONFIG_DIR\"; }}; {command}"
+        );
+        let output = std::process::Command::new("bash")
+            .args(["--noprofile", "--norc", "-c", &script])
+            .env("CLAUDE_CONFIG_DIR", "previous-account")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), "project-account");
+    }
+
+    #[test]
+    fn failed_project_environment_does_not_start_harness() {
+        let command = shell_command(&req("/tmp", &["fake_harness"])).unwrap();
+        let script = format!(
+            "direnv() {{ return 1; }}; fake_harness() {{ printf started; }}; {command}"
+        );
+        let output = std::process::Command::new("bash")
+            .args(["--noprofile", "--norc", "-c", &script])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
     }
 
     #[tokio::test]

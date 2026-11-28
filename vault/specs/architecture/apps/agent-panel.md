@@ -192,7 +192,7 @@ sequenceDiagram
 
 2. Every argv token, `<id>` included, matches `^[A-Za-z0-9._=:/@+-]{1,128}$`. `<cwd>` passes the mac-comm `cwd` validator, which excludes `'`, so single quotes are safe.
 3. AppleScript receives the command as an `argv` item and never concatenates it into script text.
-4. `write text` types into the tab's interactive login shell. User shell functions and aliases for each harness apply, and direnv exports the project's `CLAUDE_CONFIG_DIR` on `cd`, so the harness finds the transcript.
+4. `write text` MUST type into the tab's interactive login shell so user shell functions and aliases apply. After `cd`, the command MUST apply `direnv export bash` when direnv is available, before invoking the harness. Failed environment activation MUST prevent launch. This applies the project's `CLAUDE_CONFIG_DIR` before a Bash prompt hook runs.
 5. Claude keys transcripts by cwd slug and cannot resume from another directory. When `cwd_exists` is false, the board disables Resume.
 6. Open re-probes liveness before it acts, and debounces launches of one run for 5 s. A run that is open in any terminal is focused, never launched a second time.
 
