@@ -4,6 +4,10 @@
 use std::collections::HashMap;
 use std::process::Command;
 
+// Absolute paths: the launchd kernel's PATH can leave out /usr/sbin.
+const PS: &str = "/bin/ps";
+const LSOF: &str = "/usr/sbin/lsof";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Proc {
     pub pid: u32,
@@ -47,7 +51,7 @@ pub fn parse_ps(out: &str) -> Vec<Proc> {
 pub fn snapshot() -> HashMap<u32, Proc> {
     // Claude Code records `procStart` as C-locale `lstart` in UTC; matching
     // that format is what lets a reused pid be told apart after a reboot.
-    let out = Command::new("ps")
+    let out = Command::new(PS)
         .args(["-axo", "pid=,ppid=,lstart=,tty=,command="])
         .env("LC_ALL", "C")
         .env("TZ", "UTC")
@@ -172,7 +176,7 @@ pub fn cwds(pids: &[u32]) -> HashMap<u32, String> {
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(",");
-    match Command::new("lsof")
+    match Command::new(LSOF)
         .args(["-a", "-d", "cwd", "-Fpn", "-p", &list])
         .output()
     {

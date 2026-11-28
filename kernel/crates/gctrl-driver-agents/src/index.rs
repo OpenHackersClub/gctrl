@@ -253,19 +253,19 @@ impl AgentIndex {
         runs
     }
 
-    /// The live run whose process is `pid` or an ancestor of it: the run a
-    /// command started inside an agent session belongs to.
+    /// The live run whose process is `pid` or its nearest ancestor: the run
+    /// a command started inside an agent session belongs to. The index is
+    /// refreshed first, so a session started inside another session's shell
+    /// resolves to itself, not to the older session around it.
     pub fn run_for_process(&self, pid: u32, now: DateTime<Utc>) -> Option<String> {
-        let chain = procs::ancestors(&procs::snapshot(), pid);
-        let find = |runs: &[AgentRun]| {
-            chain.iter().find_map(|p| {
-                runs.iter()
-                    .find(|r| r.live.as_ref().is_some_and(|l| l.pid == *p))
-                    .map(|r| r.id.clone())
-            })
-        };
-        find(&self.refresh_if_older(Duration::from_secs(30), now))
-            .or_else(|| find(&self.refresh(now)))
+        let runs = self.refresh(now);
+        let live: HashMap<u32, &str> = runs
+            .iter()
+            .filter_map(|r| r.live.as_ref().map(|l| (l.pid, r.id.as_str())))
+            .collect();
+        procs::ancestors(&procs::snapshot(), pid)
+            .into_iter()
+            .find_map(|p| live.get(&p).map(|id| id.to_string()))
     }
 
     /// Apply a map update reported for run `id`; the next list reflects it.
