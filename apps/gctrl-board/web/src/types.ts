@@ -630,6 +630,15 @@ export interface AgentPr {
   repository: string | null
 }
 
+/** Where a run's work stands, as the agent last reported it (Claude session map). */
+export interface AgentProgress {
+  status: string | null
+  summary: string | null
+  current_step: string | null
+  steps_done: number
+  steps_total: number
+}
+
 export interface AgentRun {
   id: string
   harness: AgentHarness
@@ -641,6 +650,9 @@ export interface AgentRun {
   cwd_exists: boolean
   worktree: string | null
   git_branch: string | null
+  /** The outcome the run is working toward. */
+  goal?: string | null
+  progress?: AgentProgress | null
   last_prompt: string | null
   pr: AgentPr | null
   cost_usd: number | null

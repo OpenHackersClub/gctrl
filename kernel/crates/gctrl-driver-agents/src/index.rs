@@ -333,6 +333,8 @@ fn build_run(resolver: &mut Resolver, r: RunRecord, now: DateTime<Utc>) -> Agent
         cwd_exists,
         worktree: resolved.worktree,
         git_branch: r.git_branch,
+        goal: r.goal,
+        progress: r.progress,
         last_prompt: r.last_prompt,
         pr: r.pr,
         cost_usd: r.cost_usd,

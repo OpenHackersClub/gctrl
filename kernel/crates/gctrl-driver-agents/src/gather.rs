@@ -644,6 +644,8 @@ mod tests {
             cwd_exists,
             worktree: None,
             git_branch: None,
+            goal: None,
+            progress: None,
             last_prompt: None,
             pr: None,
             cost_usd: None,

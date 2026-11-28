@@ -1,5 +1,5 @@
 import type { AgentRun } from "../types"
-import { type AgentColumn, cardHeadline, formatUsage, relativeTime } from "../lib/agent-lanes"
+import { type AgentColumn, cardGoal, cardHeadline, cardProgress, formatUsage, relativeTime } from "../lib/agent-lanes"
 
 const HARNESS_MARK: Record<AgentRun["harness"], { label: string; className: string; title: string }> = {
   "claude-code": {
@@ -57,10 +57,20 @@ interface Props {
 
 const FALLBACK_MARK = { label: "??", className: "bg-zinc-800 text-zinc-400 border-zinc-700", title: "Agent" }
 
+/** Session-map states worth a chip; `active` is the default and shows none. */
+const STATUS_CHIP: Record<string, string> = {
+  blocked: "bg-rose-500/10 text-rose-300 border-rose-500/25",
+  handoff: "bg-amber-500/10 text-amber-300 border-amber-500/25",
+  done: "bg-emerald-500/10 text-emerald-300 border-emerald-500/25",
+}
+
 export function AgentRunCard({ run, column, now, busy, onOpen, selecting, selected, onSelect, queued }: Props) {
   const harness = HARNESS_MARK[run.harness] ?? FALLBACK_MARK
   const usage = formatUsage(run)
   const headline = cardHeadline(run)
+  const goal = cardGoal(run)
+  const progress = cardProgress(run)
+  const status = run.progress?.status ?? null
   // Claude keys transcripts by cwd: a removed worktree cannot be resumed.
   const blocked = run.live === null && !run.cwd_exists
   const action = selecting ? (selected ? "Deselect" : "Select") : run.live ? "Focus terminal" : "Resume in iTerm2"
@@ -69,7 +79,13 @@ export function AgentRunCard({ run, column, now, busy, onOpen, selecting, select
     if (selecting) onSelect?.(run)
     else if (!disabled) onOpen(run)
   }
-  const tooltip = [run.cwd, run.resume_command ?? (blocked ? "worktree removed" : null)]
+  const tooltip = [
+    run.goal ? `Goal: ${run.goal}` : null,
+    run.progress?.summary ? `Now: ${run.progress.summary}` : null,
+    run.last_prompt ? `Last prompt: ${run.last_prompt}` : null,
+    run.cwd,
+    run.resume_command ?? (blocked ? "worktree removed" : null),
+  ]
     .filter(Boolean)
     .join("\n")
 
@@ -123,17 +139,28 @@ export function AgentRunCard({ run, column, now, busy, onOpen, selecting, select
           )}
         </div>
 
-        {/* Title when the name differs from it */}
-        {run.name && run.title !== run.name && (
-          <p className="text-[12px] text-zinc-400 leading-snug line-clamp-1">{run.title}</p>
+        {/* Goal: what the run is working toward */}
+        {goal && (
+          <p className="text-[12.5px] text-zinc-200 leading-snug line-clamp-2" data-testid="agent-goal">
+            {goal}
+          </p>
         )}
 
-        {/* Last prompt, one line */}
-        {run.last_prompt && (
-          <p className="text-[12px] text-zinc-500 leading-snug truncate">
-            <span className="opacity-50 mr-1">›</span>
-            {run.last_prompt}
-          </p>
+        {/* Where the work stands: current step or summary, step count */}
+        {(progress || (status && STATUS_CHIP[status])) && (
+          <div className="flex items-center gap-1.5 min-w-0 text-[11.5px] text-zinc-400" data-testid="agent-progress">
+            {status && STATUS_CHIP[status] && (
+              <span className={`text-[9px] font-mono uppercase tracking-wider px-1 py-px border shrink-0 ${STATUS_CHIP[status]}`}>
+                {status}
+              </span>
+            )}
+            {progress && (
+              <span className="truncate">
+                <span className="opacity-50 mr-1">▸</span>
+                {progress}
+              </span>
+            )}
+          </div>
         )}
 
         {/* Bottom row: branch, time, usage, PR */}

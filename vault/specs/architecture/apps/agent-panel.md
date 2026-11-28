@@ -23,6 +23,7 @@ The driver reads harness stores and never writes them.
 | Harness | Store | Fields |
 | --- | --- | --- |
 | Claude Code | `<config>/projects/<cwd-slug>/<uuid>.jsonl` (top level only; subagent transcripts are excluded) | `cwd`, `gitBranch`, `timestamp`, `entrypoint`, `custom-title.customTitle`, `agent-name.agentName`, `last-prompt.lastPrompt`, `pr-link.{prNumber,prUrl,prRepository}`, `cost-state.totalCostUSD` |
+| Claude Code | Session-map records in the same transcript: `assistant` → `tool_use` named `*session-map__update` (input `goal`, `status`, `summary`, `steps`), its `tool_result` (the printed map: `Session <name> […]`, `Goal:`, `Status: <status> — <summary>`, `Steps:` lines `- [x]`, `- [>]`, `- [ ]`), and `attachment` of type `goal_status` (`/goal` `condition`) | goal, session name, status, summary, steps |
 | Claude Code | `<config>/sessions/<pid>.json` (live registry) | `pid`, `sessionId`, `cwd`, `status` (`busy`, `idle`, `shell`), `procStart`, `kind` |
 | Codex | `$CODEX_HOME/state_<n>.sqlite` → `threads` (highest `<n>` wins; default `~/.codex`) | `id`, `cwd`, `name`, `title`, `first_user_message`, `git_branch`, `git_origin_url`, `tokens_used`, `model`, `archived`, `source`, `thread_source`, `created_at_ms`, `updated_at_ms`, `rollout_path` |
 | Codex | Tail of the thread's rollout JSONL | Last `response_item` message with `role = user`; last `event_msg` of type `task_started`, `task_complete` or `turn_aborted` |
@@ -38,7 +39,8 @@ Rules:
 4. The driver parses JSONL transcripts (Claude, Pi) incrementally from the last byte offset. A file read for the first time is parsed whole when it is at most 576 KiB, else as its first 64 KiB and last 512 KiB. A file that shrinks is parsed again from the start.
 5. SQLite stores (Codex, Hermes) open with `mode=ro`. When the harness is not running, the WAL index is absent and a read-only connection cannot create it. The driver then opens the database with `immutable=1`, which is safe because with no `-wal` file the main database file holds every committed write. Queries read `PRAGMA table_info` first and treat missing columns as `NULL`.
 6. Hermes context compression ends a session with `end_reason = 'compression'` and continues in a child session. A chain MUST retain the oldest session's run identity, `started_at` and first prompt; `native_id` MUST identify the newest session for resuming. Hermes rows with active-message tracking (`messages.active`) count only active messages.
-7. A prompt shown on a card excludes harness-injected text: lines that start with `<`, the AGENTS.md preamble, and messages relayed from another agent session.
+7. A session-map tool result follows its call and prints the whole map, so it overrides the call's input. Only transcript lines that name `session-map__update`, `goal_status`, or a printed `Goal:` / `Status:` line are parsed in full.
+8. A prompt shown on a card excludes harness-injected text: lines that start with `<`, the AGENTS.md preamble, and messages relayed from another agent session.
 
 ## Liveness
 
@@ -59,12 +61,14 @@ The index lives in kernel memory. It is rebuilt from the adapters at kernel star
 | `harness` | `claude-code` \| `codex` \| `hermes` \| `pi` | Owning harness |
 | `native_id` | string | The harness's own session or thread id |
 | `title` | string | Claude custom title; Codex thread name or title; Hermes session title; Pi session name; else the first prompt (cut to 120 chars) |
-| `name` | string \| null | Claude `agent-name` (the `/rename` name), Codex thread name, Hermes title, Pi session name |
+| `name` | string \| null | Claude `agent-name` (the `/rename` name), else the session-map name; Codex thread name; Hermes title; Pi session name |
 | `project_key` | string | See § Project key |
 | `cwd` | string | Working directory of the run. A Hermes session with no recorded cwd uses the home directory. |
 | `cwd_exists` | boolean | Whether `cwd` exists now |
 | `worktree` | string \| null | The cwd's directory name when the cwd is a linked git worktree |
 | `git_branch` | string \| null | Branch at the last record (Claude, Codex) |
+| `goal` | string \| null | The outcome the run works toward, cut to 160 chars. Claude: the session-map goal (which already reflects `/goal`), else the `/goal` condition. Codex: the generated thread name, unless `/rename` replaced it with an `s-` handle or it equals the title. |
+| `progress` | `{status, summary, current_step, steps_done, steps_total}` \| null | Claude session map: `status` (`active`, `blocked`, `handoff`, `done`), the one-line summary, the step in progress (else the first pending step), and step counts. Null when the session never reported a map. |
 | `last_prompt` | string \| null | Last user prompt, cut to 200 chars |
 | `pr` | `{number, url, repository}` \| null | Last `pr-link` record (Claude) |
 | `cost_usd` | number \| null | Claude `cost-state.totalCostUSD`; Hermes actual, else estimated, cost |
@@ -101,7 +105,7 @@ The index lives in kernel memory. It is rebuilt from the adapters at kernel star
 | Hermes Agent | The newest message has role `user` or `tool`, or role `assistant` with tool calls |
 | Pi | The newest message has role `user` or `toolResult`, or role `assistant` with `stopReason = toolUse` |
 
-The **Needs you** column is computed by the board. A run is in Needs you when an open inbox message with `requires_action = true` has `context.session_id` equal to the run's `native_id`. The kernel driver makes no assumptions about apps.
+The **Needs you** column is computed by the board. A live run is in Needs you when an open inbox message with `requires_action = true` has `context.session_id` equal to the run's `native_id`, or when its `progress.status` is `blocked` or `handoff`. The kernel driver makes no assumptions about apps.
 
 ## HTTP API
 
@@ -261,7 +265,12 @@ sequenceDiagram
 1. Route `/agents` in the gctrl-board SPA, with a nav entry. gctrl-desktop renders the page.
 2. Columns: Needs you, Running, Idle, Resumable, Done (collapsed). Swimlanes: one per `project_key`, sorted by the most urgent column, then by `updated_at`. A lane with no live run collapses to one summary line.
 3. Header toggles: **Show headless** and **Show stale (7d+)**. Both are off by default and map to the query parameters.
-4. A card shows `name [worktree]` (or the title), a harness mark (CC, CX, HM, PI), the branch, one line of the last prompt, the relative `updated_at`, cost or tokens, and a PR chip. A run in `gather_queue` shows **waiting to move**.
+4. A card identifies the run by what it is working on:
+   1. Top row: `name [worktree]` (or the title) and a harness mark (CC, CX, HM, PI).
+   2. The goal, up to two lines. With no goal, the title when it differs from the headline.
+   3. Where the work stands: a `blocked`, `handoff` or `done` chip, then the current step (else the summary) and `steps_done/steps_total`.
+   4. Bottom row: the branch, the relative `updated_at`, cost or tokens, and a PR chip. A run in `gather_queue` shows **waiting to move**.
+   5. The last prompt appears only in the hover tooltip, with the goal, summary, cwd and resume command.
 5. A click calls `POST /api/agents/{id}/open`, and a toast shows the result. The page polls every 5 s.
 6. **Select** switches the page to select mode: a click toggles a card's selection. **Gather N into a Space…** opens a dialog with the user desktops from `GET /api/macos/spaces` (the current one preselected), a preview of how each run moves, and **Close the panes they leave behind** (on by default).
 

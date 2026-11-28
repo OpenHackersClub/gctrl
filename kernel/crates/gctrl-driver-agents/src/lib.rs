@@ -25,6 +25,7 @@ pub mod pi;
 pub mod procs;
 pub mod project;
 pub mod routes;
+pub mod session_map;
 pub mod sqlite_ro;
 pub mod text;
 

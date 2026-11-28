@@ -10,7 +10,8 @@
 
 use crate::adapter::{from_system, parse_ts, Adapter, RunRecord, ScanCtx};
 use crate::jsonl::{message_text, Cursor};
-use crate::model::{Harness, LiveInfo, LiveStatus, PrLink};
+use crate::model::{Harness, LiveInfo, LiveStatus, PrLink, Progress};
+use crate::session_map::{tool_result_text, SessionMap};
 use crate::procs::{self, Proc};
 use crate::text::{clip, is_human_prompt, is_uuid};
 use serde::Deserialize;
@@ -34,6 +35,10 @@ pub struct Transcript {
     pub last_prompt: Option<String>,
     pub pr: Option<PrLink>,
     pub cost_usd: Option<f64>,
+    /// Session-map goal, status, summary and steps.
+    pub map: SessionMap,
+    /// The `/goal` condition.
+    pub goal_condition: Option<String>,
     pub mtime: Option<SystemTime>,
     cursor: Cursor,
 }
@@ -101,6 +106,7 @@ impl Transcript {
             return;
         };
         let kind = s(&line.kind).unwrap_or("");
+        self.ingest_goal_records(kind, raw);
 
         if let Some(ts) = s(&line.timestamp) {
             if self.started_at.as_deref().is_none_or(|cur| ts < cur) {
@@ -172,6 +178,61 @@ impl Transcript {
             }
             _ => {}
         }
+    }
+
+    /// Session-map calls and results, and `/goal`. Only lines that name
+    /// them are parsed in full.
+    fn ingest_goal_records(&mut self, kind: &str, raw: &[u8]) {
+        let has = |needle: &[u8]| raw.windows(needle.len()).any(|w| w == needle);
+        let wanted = match kind {
+            "assistant" => has(b"session-map__update"),
+            "user" => has(b"\\nGoal: ") || has(b"\\nStatus: "),
+            "attachment" => has(b"\"goal_status\""),
+            _ => false,
+        };
+        if !wanted {
+            return;
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(raw) else {
+            return;
+        };
+        if kind == "attachment" {
+            let a = &v["attachment"];
+            if a["type"] == "goal_status" {
+                if let Some(c) = a["condition"].as_str().filter(|c| !c.trim().is_empty()) {
+                    self.goal_condition = Some(clip(c, 160));
+                }
+            }
+            return;
+        }
+        let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else {
+            return;
+        };
+        for b in blocks {
+            match b["type"].as_str() {
+                Some("tool_use")
+                    if b["name"].as_str().is_some_and(|n| n.ends_with("session-map__update")) =>
+                {
+                    self.map.apply_input(&b["input"]);
+                }
+                Some("tool_result") => {
+                    if let Some(text) = tool_result_text(b) {
+                        self.map.apply_result(&text);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// What the session is working toward: the session-map goal (which
+    /// already reflects `/goal`), else the `/goal` condition.
+    pub fn goal(&self) -> Option<String> {
+        self.map.goal.clone().or_else(|| self.goal_condition.clone())
+    }
+
+    pub fn progress(&self) -> Option<Progress> {
+        self.map.seen().then(|| self.map.progress.clone())
     }
 
     /// Bring the summary up to date with the file at `path`.
@@ -398,8 +459,11 @@ impl Adapter for ClaudeAdapter {
             let mut r = RunRecord::new(Harness::ClaudeCode, t.session_id.clone(), cwd, updated);
             r.started = t.started_at.as_deref().and_then(parse_ts).unwrap_or(updated);
             r.title = t.title().unwrap_or_else(|| "(untitled)".into());
-            r.name = t.agent_name.clone();
+            // `/rename` wins; the session-map name covers unrenamed sessions.
+            r.name = t.agent_name.clone().or_else(|| t.map.name.clone());
             r.git_branch = t.git_branch.clone();
+            r.goal = t.goal();
+            r.progress = t.progress();
             r.last_prompt = t.last_prompt.clone();
             r.pr = t.pr.clone();
             r.cost_usd = t.cost_usd;
@@ -473,6 +537,34 @@ mod tests {
         assert_eq!(t.pr.as_ref().map(|p| p.number), Some(236));
         assert_eq!(t.cost_usd, Some(8.48));
         assert!(!t.headless());
+    }
+
+    #[test]
+    fn reads_goal_and_progress_from_session_map_and_goal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let body = [
+            r#"{"type":"attachment","attachment":{"type":"goal_status","met":false,"condition":"ship the parser"}}"#.to_string(),
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"mcp__session-map__update","input":{"goal":"Parser ships","status":"active","steps":[{"text":"tests","status":"completed"},{"text":"refactor","status":"in_progress"}]}}]}}"#.to_string(),
+            serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"Session s-parser [acme/api · main]\nGoal: Parser ships\nStatus: active — refactor half done\nSteps:\n- [x] tests\n- [>] refactor"}]}}).to_string(),
+        ]
+        .join("\n")
+            + "\n";
+        let p = write(tmp.path(), &body);
+        let mut t = Transcript::new(SID);
+        t.refresh(&p).unwrap();
+        assert_eq!(t.goal().as_deref(), Some("Parser ships"));
+        let pr = t.progress().unwrap();
+        assert_eq!(pr.summary.as_deref(), Some("refactor half done"));
+        assert_eq!(pr.current_step.as_deref(), Some("refactor"));
+        assert_eq!((pr.steps_done, pr.steps_total), (1, 2));
+
+        // A session with only `/goal` uses its condition.
+        let p2 = tmp.path().join("goal-only.jsonl");
+        std::fs::write(&p2, r#"{"type":"attachment","attachment":{"type":"goal_status","condition":"fix CI"}}"#.to_string() + "\n").unwrap();
+        let mut t2 = Transcript::new(SID);
+        t2.refresh(&p2).unwrap();
+        assert_eq!(t2.goal().as_deref(), Some("fix CI"));
+        assert_eq!(t2.progress(), None);
     }
 
     #[test]

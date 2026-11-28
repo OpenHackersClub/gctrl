@@ -260,6 +260,9 @@ impl Adapter for CodexAdapter {
                 r.started = from_ms(t.created_at_ms);
                 r.title = t.display_title();
                 r.name = t.name.clone().filter(|n| !n.is_empty());
+                // Codex names a thread with a generated summary until
+                // `/rename` replaces it with a session handle.
+                r.goal = r.name.clone().filter(|n| !n.starts_with("s-") && n != &t.title);
                 r.origin = t.git_origin_url.clone();
                 r.git_branch = t.git_branch.clone();
                 r.last_prompt = tail.last_prompt.clone();

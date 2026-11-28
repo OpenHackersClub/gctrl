@@ -67,6 +67,19 @@ pub struct PrLink {
     pub repository: Option<String>,
 }
 
+/// Where a run's work stands, as the agent last reported it (the Claude
+/// session map: `status`, one-line `summary`, step list).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Progress {
+    /// `active`, `blocked`, `handoff` or `done`.
+    pub status: Option<String>,
+    pub summary: Option<String>,
+    /// The step marked in progress, else the first pending one.
+    pub current_step: Option<String>,
+    pub steps_done: u32,
+    pub steps_total: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRun {
     pub id: String,
@@ -79,6 +92,9 @@ pub struct AgentRun {
     pub cwd_exists: bool,
     pub worktree: Option<String>,
     pub git_branch: Option<String>,
+    /// The outcome the run is working toward, one line.
+    pub goal: Option<String>,
+    pub progress: Option<Progress>,
     pub last_prompt: Option<String>,
     pub pr: Option<PrLink>,
     pub cost_usd: Option<f64>,

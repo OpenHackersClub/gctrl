@@ -55,14 +55,19 @@ export function needsYouSessionIds(messages: InboxMessage[], now: Date): Set<str
   return ids
 }
 
+/** Session-map states that hand the run to the operator. */
+const WAITING_STATUSES = new Set(["blocked", "handoff"])
+
 /**
- * Column for one run. A request in the inbox only counts while the run's
- * process is live — a dead process cannot answer a prompt.
+ * Column for one run. An inbox request, or a session map that reports
+ * `blocked` or `handoff`, only counts while the run's process is live — a
+ * dead process cannot answer.
  */
 export function columnFor(run: AgentRun, needsYou: ReadonlySet<string>): AgentColumn {
   if (run.state === "done") return "done"
   const isLive = run.state === "running" || run.state === "idle"
-  if (isLive && needsYou.has(run.native_id)) return "needs_you"
+  const waiting = WAITING_STATUSES.has(run.progress?.status ?? "")
+  if (isLive && (needsYou.has(run.native_id) || waiting)) return "needs_you"
   return run.state
 }
 
@@ -145,6 +150,26 @@ export function relativeTime(iso: string, now: Date): string {
 /** Card headline: the `/rename` or thread name, else the title. */
 export function cardHeadline(run: AgentRun): string {
   return run.name ?? run.title
+}
+
+/**
+ * What the card leads with: the goal, else the title when the headline is a
+ * different name. Null when it would repeat the headline.
+ */
+export function cardGoal(run: AgentRun): string | null {
+  const headline = cardHeadline(run)
+  const goal = run.goal ?? (run.title !== headline ? run.title : null)
+  return goal && goal !== headline ? goal : null
+}
+
+/** One line on where the work stands: current step or summary, with step count. */
+export function cardProgress(run: AgentRun): string | null {
+  const p = run.progress
+  if (!p) return null
+  const text = p.current_step ?? p.summary
+  const count = p.steps_total > 0 ? `${p.steps_done}/${p.steps_total}` : null
+  if (!text) return count
+  return count ? `${text} · ${count}` : text
 }
 
 export function formatUsage(run: AgentRun): string | null {
