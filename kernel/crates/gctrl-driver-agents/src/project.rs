@@ -68,17 +68,52 @@ struct GitInfo {
     origin: Option<String>,
 }
 
+/// A git call that takes longer than this is abandoned; the index must not
+/// wait on a slow or blocked repository.
+const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = Command::new("git")
         .arg("-C")
         .arg(dir)
         .args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    let deadline = std::time::Instant::now() + GIT_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut out = String::new();
+                child.stdout.take()?.read_to_string(&mut out).ok()?;
+                return status.success().then(|| out.trim().to_string());
+            }
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            _ => {
+                tracing::debug!(dir = %dir.display(), "git timed out");
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+/// Folders macOS guards with a privacy prompt. Reading inside them raises
+/// that prompt for the kernel, and the read blocks until someone answers,
+/// so the resolver runs no git there and keys the run by directory name.
+fn privacy_protected(home: &Path, dir: &Path) -> bool {
+    ["Documents", "Desktop", "Downloads", "Library/Mobile Documents"]
+        .iter()
+        .any(|sub| dir.starts_with(home.join(sub)))
 }
 
 fn git_info(dir: &Path) -> GitInfo {
@@ -146,7 +181,10 @@ impl Resolver {
                 None => (None, None),
             }
         };
-        let info = dir.as_deref().map(git_info);
+        let info = dir
+            .as_deref()
+            .filter(|d| !privacy_protected(&self.home, d))
+            .map(git_info);
 
         let origin = origin_hint
             .filter(|o| !o.is_empty())
@@ -219,6 +257,28 @@ mod tests {
             got,
             Some((PathBuf::from("/Users/me/src/api"), Some("feat-x".into())))
         );
+    }
+
+    #[test]
+    fn skips_git_in_privacy_protected_folders() {
+        let home = Path::new("/Users/me");
+        assert!(privacy_protected(home, Path::new("/Users/me/Documents/Codex/2026-09-06/we")));
+        assert!(privacy_protected(home, Path::new("/Users/me/Desktop/demo")));
+        assert!(!privacy_protected(home, Path::new("/Users/me/workspaces/acme/api")));
+        assert!(!privacy_protected(home, Path::new("/Users/me/DocumentsArchive")));
+
+        // A git repo inside Documents keys by its directory name, not origin.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("Documents").join("scratch");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [
+            &["init", "-q"][..],
+            &["remote", "add", "origin", "git@github.com:acme/payments.git"][..],
+        ] {
+            assert!(Command::new("git").arg("-C").arg(&repo).args(args).status().unwrap().success());
+        }
+        let mut r = Resolver::new(tmp.path().to_path_buf());
+        assert_eq!(r.resolve(repo.to_str().unwrap(), None).key, "scratch");
     }
 
     #[test]
