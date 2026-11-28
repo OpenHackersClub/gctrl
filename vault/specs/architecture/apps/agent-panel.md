@@ -87,7 +87,7 @@ The index lives in kernel memory. It is rebuilt from the adapters at kernel star
 3. When the cwd is gone, a cwd under `~/wt/<path>/<name>` resolves through `~/workspaces/<path>`. A cwd under `<repo>/.claude/worktrees/<name>` resolves through `<repo>`. Any other cwd resolves through its nearest existing ancestor.
 4. The key keeps only `[A-Za-z0-9._-]` and is cut to 64 characters.
 5. A cwd under `~/Documents`, `~/Desktop`, `~/Downloads` or `~/Library/Mobile Documents` is keyed by its directory name, with no git call. macOS guards those folders with a privacy prompt; a read inside them from the kernel raises the prompt and blocks until it is answered.
-6. A git call that takes longer than 3 s is abandoned, and the run falls back to the next rule.
+6. A git call that takes longer than 3 s is abandoned and counts as no repository, so rule 1 falls back to the cwd basename.
 
 ## States
 
