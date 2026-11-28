@@ -53,7 +53,7 @@ impl Cursor {
         if len == self.len && mtime == self.mtime {
             return Ok(None);
         }
-        let reset = len < self.offset;
+        let reset = len < self.len;
         if reset {
             *self = Cursor::default();
         }
@@ -121,5 +121,19 @@ mod tests {
         let u = c.read(&p).unwrap().unwrap();
         assert!(u.reset);
         assert_eq!(u.lines, vec![b"z".to_vec()]);
+    }
+
+    #[test]
+    fn resets_when_truncated_inside_an_unfinished_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        std::fs::write(&path, "a\npartial-data").unwrap();
+        let mut cursor = Cursor::default();
+        assert_eq!(cursor.read(&path).unwrap().unwrap().lines, vec![b"a".to_vec()]);
+
+        std::fs::write(&path, "b\nx").unwrap();
+        let update = cursor.read(&path).unwrap().unwrap();
+        assert!(update.reset);
+        assert_eq!(update.lines, vec![b"b".to_vec()]);
     }
 }
