@@ -56,7 +56,7 @@ pub fn shell_command(req: &LaunchRequest) -> Result<String, CommError> {
     ))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 const ITERM2_LAUNCH: &str = r#"
 on run argv
   set cmd to item 1 of argv
@@ -64,11 +64,13 @@ on run argv
     activate
     if (count of windows) is 0 then
       set w to (create window with default profile)
+      set target_session to current session of tab 1 of w
     else
       set w to current window
-      tell w to create tab with default profile
+      tell w to set created_tab to (create tab with default profile)
+      set target_session to current session of created_tab
     end if
-    tell current session of w to write text cmd
+    tell target_session to write text cmd
   end tell
   return "ok"
 end run
@@ -114,7 +116,7 @@ pub struct WindowResponse {
     pub commands: Vec<String>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 const ITERM2_WINDOW: &str = r#"
 on run argv
   tell application "iTerm2"
@@ -123,10 +125,12 @@ on run argv
     repeat with cmd in argv
       if is_first then
         set is_first to false
+        set target_session to current session of tab 1 of w
       else
-        tell w to create tab with default profile
+        tell w to set created_tab to (create tab with default profile)
+        set target_session to current session of created_tab
       end if
-      tell current session of w to write text (cmd as text)
+      tell target_session to write text (cmd as text)
     end repeat
     activate
     return (id of w) as text
@@ -134,7 +138,7 @@ on run argv
 end run
 "#;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 const ITERM2_TAB_IN_WINDOW: &str = r#"
 on run argv
   set wid to (item 1 of argv) as integer
@@ -143,9 +147,12 @@ on run argv
   tell application "iTerm2"
     set w to window id wid
     if mode is "new" then
-      tell w to create tab with default profile
+      tell w to set created_tab to (create tab with default profile)
+      set target_session to current session of created_tab
+    else
+      set target_session to current session of tab 1 of w
     end if
-    tell current session of w to write text cmd
+    tell target_session to write text cmd
   end tell
   return "ok"
 end run
@@ -180,8 +187,8 @@ pub async fn open_window(reqs: &[LaunchRequest]) -> Result<WindowResponse, CommE
 }
 
 /// Type the resume command into iTerm2 window `window_id`: into a new tab,
-/// or into its current session when `reuse_current` (the shell a fresh
-/// window opens with).
+/// or into its first tab when `reuse_current` (the shell a fresh window opens
+/// with). Each call writes to its captured session, independent of tab selection.
 pub async fn open_tab_in_window(
     window_id: i64,
     req: &LaunchRequest,
@@ -274,6 +281,15 @@ mod tests {
             .unwrap();
         assert!(!output.status.success());
         assert!(output.stdout.is_empty());
+    }
+
+    #[test]
+    fn scripts_target_the_created_session() {
+        for script in [ITERM2_LAUNCH, ITERM2_WINDOW, ITERM2_TAB_IN_WINDOW] {
+            assert!(!script.contains("tell current session of w to write"));
+            assert!(script.contains("tell target_session to write text"));
+        }
+        assert!(ITERM2_TAB_IN_WINDOW.contains("current session of tab 1 of w"));
     }
 
     #[tokio::test]
