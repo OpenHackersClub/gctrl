@@ -17,8 +17,14 @@ export type Route =
   | { page: "analytics"; tab: AnalyticsTab; sessionId: string | null }
   | { page: "settings"; section: "macos-spaces" }
   | { page: "schedule"; name: string | null; runId: string | null }
+  | { page: "agents" }
 
 export function parseRoute(pathname: string): Route {
+  // /agents — every Claude Code / Codex run (agent-panel.md § Board page)
+  if (pathname === "/agents" || pathname === "/agents/") {
+    return { page: "agents" }
+  }
+
   // /analytics/sessions/:sessionId
   const analyticsSession = pathname.match(/^\/analytics\/sessions\/([^/]+)/)
   if (analyticsSession) {

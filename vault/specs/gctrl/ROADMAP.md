@@ -102,6 +102,23 @@ Observe & Eval owns both the **substrate** (metrics, prompts, judges, datasets, 
 |------|-------------|----------|------------|-------|
 | URL routing (system-wide link router) | gctrl-desktop as default browser; kernel rewrites + routes every out-of-browser link to an explicit browser/profile/app target. Spec: [url-routing.md](../architecture/kernel/url-routing.md) | P1 | driver-macos `PlatformPort` | [#228](https://github.com/OpenHackersClub/gctrl/issues/228) |
 
+## Agent Panel — In Progress
+
+**Goal:** One kanban board of every coding-agent run on the machine (Claude Code, Codex, Hermes Agent, Pi), grouped by project, where a click focuses the live pane or resumes the run in iTerm2, and selected runs gather into one window on a Space. Spec: [agent-panel.md](../architecture/apps/agent-panel.md).
+
+| Task | Description | Priority | Depends On | Issue |
+|------|-------------|----------|------------|-------|
+| Harness scan | `gctrl-driver-agents` reads Claude Code transcripts and live registry plus Codex `threads`; `GET /api/agents` with headless and stale filters | P0 | — | [#237](https://github.com/OpenHackersClub/gctrl/issues/237) |
+| Board page | `/agents` kanban: state columns × project swimlanes, Needs you from inbox | P0 | Harness scan | [#238](https://github.com/OpenHackersClub/gctrl/issues/238) |
+| Open | `POST /api/agents/{id}/open`: focus by tty, or resume in a new iTerm2 tab | P0 | Board page | [#239](https://github.com/OpenHackersClub/gctrl/issues/239) |
+| Lifecycle hooks | One hook script for both harnesses, installer, `sessions` mirroring | P1 | Harness scan | [#240](https://github.com/OpenHackersClub/gctrl/issues/240) |
+| Done overlay | Drag to Done, archived threads, merged PRs | P1 | Board page | [#241](https://github.com/OpenHackersClub/gctrl/issues/241) |
+| Harness adapters | `Adapter` contract; Hermes Agent and Pi adapters; per-harness busy detection | P0 | Harness scan | [#244](https://github.com/OpenHackersClub/gctrl/issues/244) |
+| Gather into a Space | Select runs, switch Space by Mission Control shortcut, resume them as tabs of one iTerm2 window; mid-turn runs move when the turn ends | P1 | Open | [#245](https://github.com/OpenHackersClub/gctrl/issues/245) |
+| Resume all | Per-lane action that reopens every Resumable run | P2 | Open | [#242](https://github.com/OpenHackersClub/gctrl/issues/242) |
+
+**Done when:** after a reboot, the `/agents` page lists every non-stale interactive run by project, and one click reopens a run in iTerm2 in its original directory.
+
 ## Backlog (unprioritized)
 
 - Protobuf OTLP support (currently JSON only)

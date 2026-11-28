@@ -74,20 +74,7 @@ fn classify_error(
     stderr: &str,
     target: &'static str,
 ) -> Result<FocusResponse, CommError> {
-    // -1743: Apple Events authorization denied. The error code lands in
-    // stderr from osascript; checking stderr is reliable across macOS
-    // versions (the exit code is always non-zero on these conditions).
-    if stderr.contains("-1743") || stderr.contains("not allowed assistive access") {
-        return Err(CommError::AutomationDenied { target });
-    }
-    // -600: application is not running (NSAppleScriptError "application isn't running").
-    if stderr.contains("-600") || stderr.contains("isn't running") {
-        return Err(CommError::TargetNotRunning { target });
-    }
-    Err(CommError::OsascriptFailed {
-        exit_code,
-        stderr: stderr.to_string(),
-    })
+    Err(super::classify_osascript_error(exit_code, stderr, target))
 }
 
 #[cfg(test)]

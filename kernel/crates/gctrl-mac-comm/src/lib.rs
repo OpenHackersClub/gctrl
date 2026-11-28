@@ -28,6 +28,8 @@
 pub mod capabilities;
 pub mod error;
 pub mod focus;
+pub mod focus_tty;
+pub mod launch;
 pub mod model;
 pub mod osascript;
 pub mod rate_limit;
@@ -36,5 +38,7 @@ pub mod validate;
 pub use capabilities::{capabilities, Capabilities};
 pub use error::CommError;
 pub use focus::focus;
+pub use focus_tty::{close_tty, focus_tty};
+pub use launch::{launch, open_tab_in_window, open_window, LaunchRequest, LaunchResponse, WindowResponse};
 pub use model::{FocusRequest, FocusResponse, TerminalApp, TerminalContext};
 pub use rate_limit::RateLimiter;

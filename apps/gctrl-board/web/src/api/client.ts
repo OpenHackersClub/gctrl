@@ -1,5 +1,8 @@
 import type {
   AcceptanceRollup,
+  AgentGatherResult,
+  AgentOpenResult,
+  AgentRunsResponse,
   Issue,
   MoveIssueResult,
   Project,
@@ -268,6 +271,32 @@ export const api = {
     capabilities: () => request<CommCapabilities>("/api/comm/capabilities"),
   },
 
+  // Kernel driver-agents — every coding-agent run on this machine.
+  // Local-only: the Cloudflare Worker does not proxy these routes.
+  // Spec: vault/specs/architecture/apps/agent-panel.md § HTTP API.
+  agents: {
+    list: (params: { includeHeadless: boolean; includeStale: boolean }) => {
+      const qs = new URLSearchParams({
+        include_headless: String(params.includeHeadless),
+        include_stale: String(params.includeStale),
+      })
+      return request<AgentRunsResponse>(`/api/agents?${qs.toString()}`)
+    },
+    open: (id: string, opts?: { dryRun?: boolean }) =>
+      request<AgentOpenResult>(
+        `/api/agents/${encodeURIComponent(id)}/open${opts?.dryRun ? "?dry_run=true" : ""}`,
+        { method: "POST" },
+      ),
+    /** Resume `ids` as tabs of one new iTerm2 window on the active Space. */
+    gather: (ids: string[], opts: { closeOld: boolean }) =>
+      request<AgentGatherResult>(`/api/agents/gather`, {
+        method: "POST",
+        body: JSON.stringify({ ids, close_old: opts.closeOld }),
+      }),
+    cancelGather: (id: string) =>
+      request<null>(`/api/agents/${encodeURIComponent(id)}/gather`, { method: "DELETE" }),
+  },
+
   // Kernel analytics + sessions — proxied by Vite dev server to :4318.
   // In production these hit the same origin and must be routed by the Worker
   // to the kernel HTTP API (see gctrl-analytics spec §5).
@@ -394,6 +423,8 @@ export const api = {
       }),
     unname: (spaceId: number) =>
       request<null>(`/api/macos/spaces/${spaceId}/name`, { method: "DELETE" }),
+    switchTo: (spaceId: number) =>
+      request<null>(`/api/macos/spaces/${spaceId}/switch`, { method: "POST" }),
     promptAccessibility: () =>
       request<{ accessibility: MacosPermissionStatus }>(
         `/api/macos/permissions/accessibility/prompt`,

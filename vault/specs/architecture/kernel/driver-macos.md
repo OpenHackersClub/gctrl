@@ -108,6 +108,15 @@ pub struct Space {
 
 `SpaceId` is opaque: internally a `u64` derived from the CGS private space identifier, but consumers MUST treat it as an unhashable token. The IDs are stable within a login session and re-emitted on `loginwindow` reset; the driver re-keys persisted mappings using a `(display_uuid, index)` fallback when CGS IDs change after a reboot or display reconfiguration.
 
+### Switching Spaces
+
+macOS has no public API that changes the active Space. `switch_to` posts the Mission Control keyboard shortcut the user has bound, read from `com.apple.symbolichotkeys` (`AppleSymbolicHotKeys`), as a key-down/key-up pair at the HID level (`CGEventPost`):
+
+1. When the target is a user desktop and "Switch to Desktop N" (hotkey ids 118–133) is enabled, one keystroke.
+2. Otherwise "Move left a space" or "Move right a space" (ids 79 and 81, Control-← and Control-→ by default), once per Space between the current Space and the target, waiting up to 1.5 s for CGS to report each change.
+
+`switch_to` returns after CGS reports the target as the active Space, and emits `SpaceEvent::Switched`. It returns `PermissionDenied` without Accessibility, `Unsupported` when both shortcut families are off, and `Underlying` when the target is on another display or the keystrokes end on another Space. Implementation: `kernel/crates/gctrl-driver-macos/src/spaces/switch.rs`.
+
 ### Other capability ports (planned, not v1)
 
 | Port | Purpose | macOS surface |
@@ -215,7 +224,7 @@ The driver explicitly requests permissions on first use, surfaces denial states 
 
 | Capability | macOS permission | Where the prompt appears |
 |---|---|---|
-| `spaces` | Accessibility (`kAXTrustedCheckOptionPrompt`) | First call to `name()`; deferred until needed. Without this, `spaces` is not in `capabilities` and `name()` returns `PermissionDenied`. |
+| `spaces` | Accessibility (`kAXTrustedCheckOptionPrompt`) | First call to `name()` or `switch_to()`; deferred until needed. Without this, `spaces` is not in `capabilities` and both return `PermissionDenied`. |
 | `notifications` | `UNAuthorizationStatus` | First call to post a notification |
 | `screen_capture` (planned) | `CGRequestScreenCaptureAccess` | First call |
 
@@ -257,6 +266,7 @@ Naming follows the `{driver}_*` convention from [driver-github's tables](../../i
 | Symptom | Driver behavior | Surfaced to consumer as |
 |---|---|---|
 | User has not granted Accessibility | `capabilities` excludes `spaces`; `name()` returns `PermissionDenied` | `permissions.accessibility = "denied"` in `/health`; UI shows "grant Accessibility" CTA |
+| Mission Control Space shortcuts are all off | `switch_to` returns `Unsupported` | 501 with the shortcut names to enable |
 | `SkyLight.framework` symbols missing on a future macOS | Driver detects via `dlsym` probe at startup, downgrades capability | `capabilities` omits `spaces`, banner in Electron CTA |
 | Mission Control thumbnail-rect layout doesn't match the snapshot fixture (macOS major bump) | Driver detects mismatch, downgrades capability with `version_skew=true` | `capabilities` omits `spaces`; user sees "incompatible macOS version, update gctrl" |
 | Display unplugged mid-call | Returns `PlatformError::DisplayGone`; cold index entries kept (re-bind on next plug) | 410 Gone |

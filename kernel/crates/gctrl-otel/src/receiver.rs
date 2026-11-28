@@ -421,6 +421,9 @@ fn build_router(state: Arc<AppState>) -> Router {
         // macOS communication driver (LKM — focus iTerm2/Terminal sessions
         // from inbox deeplinks). On non-macOS the routes return 501.
         .merge(crate::comm_routes::router::<()>())
+        // Agent runs driver (LKM — Claude Code + Codex runs on this machine;
+        // focus or resume through mac-comm). Spec: apps/agent-panel.md.
+        .merge(gctrl_driver_agents::default_router::<()>())
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {

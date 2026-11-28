@@ -13,6 +13,7 @@ import { InboxPage } from "./pages/InboxPage"
 import { AnalyticsPage } from "./pages/AnalyticsPage"
 import { SchedulePage } from "./pages/SchedulePage"
 import { MacosSpacesPage } from "./pages/MacosSpacesPage"
+import { AgentsPage } from "./pages/AgentsPage"
 import { api } from "./api/client"
 import type { DesktopShim } from "./lib/desktop-env"
 import type { Issue, InboxStats } from "./types"
@@ -243,7 +244,9 @@ export function App() {
           ? "schedule"
           : route.page === "settings"
             ? "settings"
-            : "board"
+            : route.page === "agents"
+              ? "agents"
+              : "board"
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-200 font-body grid-bg flex">
@@ -383,6 +386,8 @@ export function App() {
           <SchedulePage route={route} navigate={navigate} />
         ) : route.page === "settings" ? (
           <MacosSpacesPage />
+        ) : route.page === "agents" ? (
+          <AgentsPage onToast={addToast} />
         ) : (
           <AnalyticsPage route={route} navigate={navigate} />
         )}

@@ -202,4 +202,24 @@ describe("api client base URL resolution", () => {
     expect(fetchMock.mock.calls[1][0]).toBe("/api/schedules/audit.codebase/disable")
     expect(fetchMock.mock.calls[1][1]?.method).toBe("POST")
   })
+
+  // driver-agents routes live at the kernel root (`/api/agents`).
+  it("agents.list passes both filter flags", async () => {
+    setDesktop(undefined)
+    await api.agents.list({ includeHeadless: false, includeStale: true })
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/agents?include_headless=false&include_stale=true",
+    )
+  })
+
+  it("agents.open POSTs to the encoded run id, with dry_run only when asked", async () => {
+    setDesktop(undefined)
+    await api.agents.open("claude:26e3373e-8358-416b-83f3-355a59325193")
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/agents/claude%3A26e3373e-8358-416b-83f3-355a59325193/open",
+    )
+    expect(fetchMock.mock.calls[0][1]?.method).toBe("POST")
+    await api.agents.open("codex:abc", { dryRun: true })
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/agents/codex%3Aabc/open?dry_run=true")
+  })
 })
