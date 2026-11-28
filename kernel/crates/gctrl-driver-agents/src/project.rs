@@ -43,13 +43,8 @@ fn basename(p: &Path) -> Option<String> {
 /// `<repo>/.claude/worktrees/<name>` maps to `<repo>`; anything else maps to
 /// its nearest existing ancestor.
 pub fn missing_cwd_candidate(home: &Path, cwd: &Path) -> Option<(PathBuf, Option<String>)> {
-    if let Ok(rest) = cwd.strip_prefix(home.join("wt")) {
-        let name = basename(cwd);
-        if let Some(parent) = rest.parent() {
-            if !parent.as_os_str().is_empty() {
-                return Some((home.join("workspaces").join(parent), name));
-            }
-        }
+    if let Some(hit) = wt_checkout(home, cwd) {
+        return Some(hit);
     }
     let s = cwd.to_str()?;
     if let Some((repo, wt)) = s.split_once("/.claude/worktrees/") {
@@ -60,6 +55,24 @@ pub fn missing_cwd_candidate(home: &Path, cwd: &Path) -> Option<(PathBuf, Option
         .skip(1)
         .find(|a| a.is_dir())
         .map(|a| (a.to_path_buf(), None))
+}
+
+/// `~/wt/<path>/<name>` → (`~/workspaces/<path>`, `<name>`): a worktree and
+/// the canonical checkout it was created from.
+fn wt_checkout(home: &Path, cwd: &Path) -> Option<(PathBuf, Option<String>)> {
+    let rest = cwd.strip_prefix(home.join("wt")).ok()?;
+    let parent = rest.parent().filter(|p| !p.as_os_str().is_empty())?;
+    Some((home.join("workspaces").join(parent), basename(cwd)))
+}
+
+/// True when `a` and `b` are on the same volume. macOS guards other volumes
+/// (external disks, separately mounted APFS volumes) with a privacy prompt.
+fn same_volume(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(x), Ok(y)) => x.dev() == y.dev(),
+        _ => false,
+    }
 }
 
 struct GitInfo {
@@ -174,7 +187,12 @@ impl Resolver {
 
     fn compute(&self, cwd: &Path, exists: bool, origin_hint: Option<&str>) -> Resolved {
         let (dir, mapped_worktree) = if exists {
-            (Some(cwd.to_path_buf()), None)
+            // A worktree under ~/wt resolves through its canonical checkout:
+            // same project key, and git runs on the home volume.
+            match wt_checkout(&self.home, cwd) {
+                Some((checkout, name)) if checkout.is_dir() => (Some(checkout), name),
+                _ => (Some(cwd.to_path_buf()), None),
+            }
         } else {
             match missing_cwd_candidate(&self.home, cwd) {
                 Some((d, wt)) => (Some(d).filter(|d| d.is_dir()), wt),
@@ -183,7 +201,7 @@ impl Resolver {
         };
         let info = dir
             .as_deref()
-            .filter(|d| !privacy_protected(&self.home, d))
+            .filter(|d| !privacy_protected(&self.home, d) && same_volume(&self.home, d))
             .map(git_info);
 
         let origin = origin_hint
@@ -257,6 +275,26 @@ mod tests {
             got,
             Some((PathBuf::from("/Users/me/src/api"), Some("feat-x".into())))
         );
+    }
+
+    #[test]
+    fn existing_wt_worktree_resolves_through_its_checkout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let checkout = home.join("workspaces/acme/api");
+        let worktree = home.join("wt/acme/api/fix-login");
+        std::fs::create_dir_all(&checkout).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        for args in [
+            &["init", "-q"][..],
+            &["remote", "add", "origin", "git@github.com:acme/payments.git"][..],
+        ] {
+            assert!(Command::new("git").arg("-C").arg(&checkout).args(args).status().unwrap().success());
+        }
+        let mut r = Resolver::new(home.to_path_buf());
+        let got = r.resolve(worktree.to_str().unwrap(), None);
+        assert_eq!(got.key, "payments");
+        assert_eq!(got.worktree.as_deref(), Some("fix-login"));
     }
 
     #[test]
