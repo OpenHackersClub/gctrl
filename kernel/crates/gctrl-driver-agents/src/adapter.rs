@@ -14,6 +14,8 @@ use std::time::SystemTime;
 pub struct RunRecord {
     pub harness: Harness,
     pub native_id: String,
+    /// Stable conversation identity; the root session for compression chains.
+    pub identity: String,
     pub title: String,
     pub name: Option<String>,
     pub cwd: String,
@@ -37,6 +39,7 @@ impl RunRecord {
     pub fn new(harness: Harness, native_id: String, cwd: String, at: DateTime<Utc>) -> Self {
         Self {
             harness,
+            identity: native_id.clone(),
             native_id,
             title: "(untitled)".into(),
             name: None,

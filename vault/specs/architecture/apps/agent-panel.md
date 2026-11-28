@@ -37,7 +37,7 @@ Rules:
 3. Codex rows with `thread_source` other than `user` (guardian reviews, subagents) are excluded.
 4. The driver parses JSONL transcripts (Claude, Pi) incrementally from the last byte offset. A file read for the first time is parsed whole when it is at most 576 KiB, else as its first 64 KiB and last 512 KiB. A file that shrinks is parsed again from the start.
 5. SQLite stores (Codex, Hermes) open with `mode=ro`. When the harness is not running, the WAL index is absent and a read-only connection cannot create it. The driver then opens the database with `immutable=1`, which is safe because with no `-wal` file the main database file holds every committed write. Queries read `PRAGMA table_info` first and treat missing columns as `NULL`.
-6. Hermes context compression ends a session with `end_reason = 'compression'` and continues in a child session. A chain is one run: the newest session, with the oldest session's `started_at` and first prompt. Hermes rows with active-message tracking (`messages.active`) count only active messages.
+6. Hermes context compression ends a session with `end_reason = 'compression'` and continues in a child session. A chain MUST retain the oldest session's run identity, `started_at` and first prompt; `native_id` MUST identify the newest session for resuming. Hermes rows with active-message tracking (`messages.active`) count only active messages.
 7. A prompt shown on a card excludes harness-injected text: lines that start with `<`, the AGENTS.md preamble, and messages relayed from another agent session.
 
 ## Liveness
@@ -55,7 +55,7 @@ The index lives in kernel memory. It is rebuilt from the adapters at kernel star
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `id` | string | `<harness-prefix>:<native id>` |
+| `id` | string | `<harness-prefix>:<conversation id>`; Hermes uses the compression chain's root id, other harnesses use `native_id` |
 | `harness` | `claude-code` \| `codex` \| `hermes` \| `pi` | Owning harness |
 | `native_id` | string | The harness's own session or thread id |
 | `title` | string | Claude custom title; Codex thread name or title; Hermes session title; Pi session name; else the first prompt (cut to 120 chars) |

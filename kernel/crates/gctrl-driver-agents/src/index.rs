@@ -245,7 +245,7 @@ fn build_run(resolver: &mut Resolver, r: RunRecord, now: DateTime<Utc>) -> Agent
         .flatten();
     let state = derive_state(r.archived, r.live.as_ref());
     AgentRun {
-        id: format!("{}:{}", r.harness.prefix(), r.native_id),
+        id: format!("{}:{}", r.harness.prefix(), r.identity),
         harness: r.harness,
         native_id: r.native_id,
         title: r.title,

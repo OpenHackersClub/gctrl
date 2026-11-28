@@ -391,4 +391,35 @@ mod tests {
         idx.dequeue_gather("claude:x");
         assert!(idx.gather_queue().is_empty());
     }
+
+    #[test]
+    fn hermes_compression_keeps_queued_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = rusqlite::Connection::open(tmp.path().join("state.db")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL,
+               ended_at REAL, end_reason TEXT, parent_session_id TEXT, cwd TEXT);
+             CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT,
+               content TEXT, tool_calls TEXT, timestamp REAL);
+             INSERT INTO sessions VALUES ('root', 'cli', 1, NULL, NULL, NULL, '/tmp');
+             INSERT INTO messages VALUES (1, 'root', 'user', 'work', NULL, 2);"
+        ).unwrap();
+        let index = AgentIndex::with_adapters(
+            vec![Box::new(crate::hermes::HermesAdapter::new(tmp.path().to_path_buf(), "/tmp".into()))],
+            tmp.path().to_path_buf(),
+        );
+        let before = index.refresh(Utc::now());
+        let queued_id = before[0].id.clone();
+        assert!(index.enqueue_gather(&queued_id));
+        db.execute_batch(
+            "UPDATE sessions SET ended_at=3, end_reason='compression' WHERE id='root';
+             INSERT INTO sessions VALUES ('child', 'cli', 3, NULL, NULL, 'root', '/tmp');
+             INSERT INTO messages VALUES (2, 'child', 'assistant', 'done', NULL, 4);"
+        ).unwrap();
+        let after = index.refresh(Utc::now());
+        let queued = after.iter().find(|run| run.id == queued_id).expect("queued conversation survives compression");
+        assert_eq!(queued.native_id, "child");
+        assert_eq!(launch_request(queued.harness, &queued.native_id, &queued.cwd).argv, ["hermes", "--resume", "child"]);
+        assert_eq!(index.gather_queue(), [queued_id]);
+    }
 }

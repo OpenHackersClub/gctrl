@@ -227,6 +227,7 @@ impl Adapter for HermesAdapter {
                     .unwrap_or(leaf);
                 let updated = from_secs_f64(updated_ms(leaf) as f64 / 1000.0);
                 let mut r = RunRecord::new(Harness::Hermes, leaf.id.clone(), cwd, updated);
+                r.identity = root.id.clone();
                 r.started = from_secs_f64(root.started_at);
                 let first_prompt = root
                     .first_prompt
