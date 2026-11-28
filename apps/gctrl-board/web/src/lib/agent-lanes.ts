@@ -274,3 +274,30 @@ export function gatherErrorMessage(error: unknown, stage: "switch" | "gather"): 
   if (text.startsWith("403")) return "Automation denied — allow gctrl to control iTerm2 in System Settings"
   return `Gather failed: ${text}`
 }
+
+export interface ProjectOption {
+  key: string
+  runs: number
+  live: boolean
+}
+
+/** Every project on the board, alphabetical, for the project filter. */
+export function projectOptions(lanes: AgentLane[]): ProjectOption[] {
+  return lanes
+    .map((l) => ({
+      key: l.projectKey,
+      runs: AGENT_COLUMNS.reduce((n, c) => n + l.counts[c], 0),
+      live: l.live,
+    }))
+    .sort((a, b) => a.key.localeCompare(b.key))
+}
+
+/** Lanes whose project the operator has not hidden. */
+export function visibleLanes(lanes: AgentLane[], hidden: ReadonlySet<string>): AgentLane[] {
+  return hidden.size === 0 ? lanes : lanes.filter((l) => !hidden.has(l.projectKey))
+}
+
+/** Hidden set for "Live only": every project with no live run. */
+export function hideAllButLive(options: ProjectOption[]): Set<string> {
+  return new Set(options.filter((o) => !o.live).map((o) => o.key))
+}

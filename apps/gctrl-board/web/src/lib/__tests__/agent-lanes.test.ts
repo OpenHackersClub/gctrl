@@ -8,6 +8,9 @@ import {
   columnFor,
   formatUsage,
   gatherErrorMessage,
+  hideAllButLive,
+  projectOptions,
+  visibleLanes,
   gatherPreview,
   gatherResultMessage,
   laneSummary,
@@ -302,5 +305,33 @@ describe("goal and progress", () => {
     expect(columnFor(ended, new Set())).toBe("resumable")
     const active = run({ id: "claude:c", state: "idle", live, progress: progress() })
     expect(columnFor(active, new Set())).toBe("idle")
+  })
+})
+
+describe("project filter", () => {
+  const live = { pid: 1, tty: "/dev/ttys001", status: "idle" as const }
+  const lanes = buildLanes(
+    [
+      run({ id: "claude:a", project_key: "web", state: "idle", live }),
+      run({ id: "claude:b", project_key: "api", state: "resumable" }),
+      run({ id: "codex:c", project_key: "api", state: "resumable" }),
+    ],
+    new Set(),
+  )
+
+  it("lists projects alphabetically with run counts and liveness", () => {
+    expect(projectOptions(lanes)).toEqual([
+      { key: "api", runs: 2, live: false },
+      { key: "web", runs: 1, live: true },
+    ])
+  })
+
+  it("hides the projects the operator unticked", () => {
+    expect(visibleLanes(lanes, new Set()).map((l) => l.projectKey).sort()).toEqual(["api", "web"])
+    expect(visibleLanes(lanes, new Set(["api"])).map((l) => l.projectKey)).toEqual(["web"])
+  })
+
+  it("live only hides every project without a live run", () => {
+    expect([...hideAllButLive(projectOptions(lanes))]).toEqual(["api"])
   })
 })

@@ -1,7 +1,8 @@
-import { useCallback, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { api } from "../api/client"
 import { AgentRunCard } from "../components/AgentRunCard"
 import { GatherDialog } from "../components/GatherDialog"
+import { ProjectFilter } from "../components/ProjectFilter"
 import { useAgents } from "../hooks/useAgents"
 import {
   AGENT_COLUMNS,
@@ -13,6 +14,8 @@ import {
   gatherErrorMessage,
   gatherResultMessage,
   laneSummary,
+  projectOptions,
+  visibleLanes,
   needsYouSessionIds,
   openErrorMessage,
   openResultMessage,
@@ -29,6 +32,19 @@ const COLUMN_ACCENT: Record<AgentColumn, string> = {
 
 interface Props {
   onToast: (message: string, type?: "error" | "success") => void
+}
+
+/** Projects the operator hid from the board; a new project shows by default. */
+const HIDDEN_PROJECTS_KEY = "gctrl.agents.hiddenProjects"
+
+function loadHiddenProjects(): Set<string> {
+  try {
+    const raw = typeof window !== "undefined" ? window.localStorage.getItem(HIDDEN_PROJECTS_KEY) : null
+    const parsed: unknown = raw ? JSON.parse(raw) : []
+    return new Set(Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [])
+  } catch {
+    return new Set()
+  }
 }
 
 /**
@@ -56,7 +72,17 @@ export function AgentsPage({ onToast }: Props) {
     () => needsYouSessionIds(messages, new Date(nowMinute * 60_000)),
     [messages, nowMinute],
   )
-  const lanes = useMemo(() => buildLanes(data?.runs ?? [], needsYou), [data, needsYou])
+  const [hiddenProjects, setHiddenProjects] = useState<ReadonlySet<string>>(loadHiddenProjects)
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(HIDDEN_PROJECTS_KEY, JSON.stringify([...hiddenProjects]))
+    } catch {
+      // Storage unavailable (private mode): the filter lasts for this visit.
+    }
+  }, [hiddenProjects])
+  const allLanes = useMemo(() => buildLanes(data?.runs ?? [], needsYou), [data, needsYou])
+  const projects = useMemo(() => projectOptions(allLanes), [allLanes])
+  const lanes = useMemo(() => visibleLanes(allLanes, hiddenProjects), [allLanes, hiddenProjects])
 
   const toggleLane = useCallback((key: string) => {
     setToggledLanes((prev) => {
@@ -135,9 +161,12 @@ export function AgentsPage({ onToast }: Props) {
 
   const totals = useMemo(() => {
     const counts: Record<AgentColumn, number> = { needs_you: 0, running: 0, idle: 0, resumable: 0, done: 0 }
-    for (const r of data?.runs ?? []) counts[columnFor(r, needsYou)] += 1
+    for (const r of data?.runs ?? []) {
+      if (!hiddenProjects.has(r.project_key)) counts[columnFor(r, needsYou)] += 1
+    }
     return counts
-  }, [data, needsYou])
+  }, [data, needsYou, hiddenProjects])
+  const visibleRuns = AGENT_COLUMNS.reduce((n, c) => n + totals[c], 0)
 
   const gridTemplate = `repeat(4, minmax(220px, 1fr)) ${showDone ? "minmax(220px, 1fr)" : "7rem"}`
 
@@ -163,8 +192,13 @@ export function AgentsPage({ onToast }: Props) {
           </span>
         )}
         <span className="ml-auto text-zinc-500">
-          {data ? `${data.runs.length} runs · ${lanes.length} projects` : ""}
+          {data
+            ? hiddenProjects.size > 0
+              ? `${visibleRuns} of ${data.runs.length} runs · ${lanes.length} of ${allLanes.length} projects`
+              : `${data.runs.length} runs · ${allLanes.length} projects`
+            : ""}
         </span>
+        <ProjectFilter options={projects} hidden={hiddenProjects} onChange={setHiddenProjects} />
         {selecting ? (
           <>
             <button
@@ -238,7 +272,11 @@ export function AgentsPage({ onToast }: Props) {
           <p className="text-[13px] font-mono text-zinc-600 px-2 py-8">loading runs…</p>
         ) : lanes.length === 0 ? (
           <p className="text-[13px] font-mono text-zinc-600 px-2 py-8">
-            {error ? `Cannot reach /api/agents: ${error}` : "No runs match the filters."}
+            {error
+              ? `Cannot reach /api/agents: ${error}`
+              : hiddenProjects.size > 0 && allLanes.length > 0
+                ? "Every project with runs is hidden — open Projects to show some."
+                : "No runs match the filters."}
           </p>
         ) : (
           <div className="flex flex-col gap-2">

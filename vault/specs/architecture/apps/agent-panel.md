@@ -267,6 +267,7 @@ sequenceDiagram
 1. Route `/agents` in the gctrl-board SPA, with a nav entry. gctrl-desktop renders the page.
 2. Columns: Needs you, Running, Idle, Resumable, Done (collapsed). Swimlanes: one per `project_key`, sorted by the most urgent column, then by `updated_at`. A lane with no live run collapses to one summary line.
 3. Header toggles: **Show headless** and **Show stale (7d+)**. Both are off by default and map to the query parameters.
+   **Projects** is a multi-select of the swimlanes to show: one checkbox per project with its run count and a live mark, a text filter, **All**, **None**, **Live only** (projects with a live run), and **only** per project. The page stores the hidden projects in `localStorage` (`gctrl.agents.hiddenProjects`), so a new project shows by default. Column counts and the run total count only shown projects.
 4. A card identifies the run by what it is working on:
    1. Top row: `name [worktree]` (or the title) and a harness mark (CC, CX, HM, PI).
    2. The goal, up to two lines. With no goal, the title when it differs from the headline.
