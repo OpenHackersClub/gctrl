@@ -315,18 +315,17 @@ pub fn read_registry(dir: &Path) -> Vec<LiveEntry> {
 }
 
 /// Live Claude sessions by session id. A registry entry counts when its pid
-/// exists and either its start time matches or the process is a `claude`
-/// CLI; a pid reused after a reboot matches neither.
+/// exists and its recorded start time matches. Entries without a start time
+/// require a `claude` CLI process.
 pub fn claude_live(registry: &[LiveEntry], procs: &HashMap<u32, Proc>) -> HashMap<String, LiveInfo> {
     let mut out: HashMap<String, LiveInfo> = HashMap::new();
     for e in registry {
         let Some(p) = procs.get(&e.pid) else { continue };
-        let start_matches = e
-            .proc_start
-            .as_deref()
-            .map(procs::normalize_lstart)
-            .is_some_and(|s| s == p.lstart);
-        if !start_matches && !procs::is_claude_cli(p) {
+        let matches = match e.proc_start.as_deref() {
+            Some(start) => procs::normalize_lstart(start) == p.lstart,
+            None => procs::is_claude_cli(p),
+        };
+        if !matches {
             continue;
         }
         let status = match e.status.as_deref() {

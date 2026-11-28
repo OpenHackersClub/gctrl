@@ -353,6 +353,25 @@ mod tests {
         assert_eq!(l.tty.as_deref(), Some("/dev/ttys003"));
     }
 
+    #[test]
+    fn claude_liveness_requires_known_start_time_even_for_another_claude() {
+        let mut entry = LiveEntry {
+            pid: 11,
+            session_id: OLD_SID.into(),
+            cwd: None,
+            status: Some("idle".into()),
+            proc_start: Some("Mon Nov 16 08:00:00 2026".into()),
+            kind: None,
+            name: None,
+        };
+        let process = proc(11, "Sat Nov 28 09:00:00 2026", Some("/dev/ttys003"), "claude --resume another");
+        let procs = [(11, process)].into_iter().collect();
+        assert!(claude_live(&[entry.clone()], &procs).is_empty());
+
+        entry.proc_start = None;
+        assert_eq!(claude_live(&[entry], &procs).len(), 1);
+    }
+
     fn thread<'a>(id: &'a str, cwd: &'a str, updated: i64, source: &str) -> Candidate<'a> {
         Candidate {
             alias: id,

@@ -42,7 +42,7 @@ Rules:
 
 ## Liveness
 
-1. **Claude Code**: a registry entry is live when its pid exists and either the process start time equals `procStart` or the process is a `claude` CLI. A pid reused after a reboot matches neither.
+1. **Claude Code**: a registry entry MUST have a live pid whose normalized process start time equals its `procStart`. An entry without `procStart` MUST identify a `claude` CLI process instead.
 2. **Codex, Hermes, Pi**: the driver attributes harness processes to runs.
    1. A harness process is one whose executable is the harness name (`codex`, `hermes`, `pi`), or an interpreter (`node`, `bun`, `deno`, `python`, `python3`, `python3.N`) whose first argument is a script with that name. Codex processes inside an `.app` bundle are excluded.
    2. One process per tty counts: the lowest pid, which is the parent of any helper it spawned.
